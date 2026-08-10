@@ -66,7 +66,7 @@ pub use hamming_dispatch::{
     cpu_caps, cpu_has_avx2, cpu_has_avx512, path_name as hamming_kernel_name,
     select_best_hamming_kernel, CpuCaps,
 };
-pub use memory_doc::{MemoryDoc, MemoryDocView, MemoryLayer, VectorClock};
+pub use memory_doc::{MemoryDoc, MemoryDocView, MemoryLayer, MemoryState, VectorClock};
 pub use sgdb::{Hit, Sgdb};
 pub use storage::{InMemory, Storage, SgdbError};
 pub use tickv::{

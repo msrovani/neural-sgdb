@@ -9,11 +9,21 @@ use alloc::vec::Vec;
 
 use crate::art::ArtIndex;
 use crate::bq::BqFlatIndex;
-use crate::memory_doc::{MemoryDoc, MemoryDocView, MemoryLayer};
+use crate::memory_doc::{MemoryDoc, MemoryDocView, MemoryLayer, MemoryState};
 use crate::storage::{Storage, SgdbError};
 
 /// Contador monotônico de handles internos (ART / BQ ids).
 static NEXT_ID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+
+/// Namespace lateral de estado lógico (`sys/state/<storage_key>` → u8).
+/// Persistido via Storage CRU (não NMD1) — o contrato byte-idêntico com o OS
+/// fica intacto (maturation P5).
+fn state_key(sk: &str) -> Vec<u8> {
+    let mut k = Vec::with_capacity(10 + sk.len());
+    k.extend_from_slice(b"sys/state/");
+    k.extend_from_slice(sk.as_bytes());
+    k
+}
 
 fn is_ram_layer(layer: MemoryLayer) -> bool {
     matches!(layer, MemoryLayer::L0Sensory | MemoryLayer::L1Working)
@@ -223,6 +233,27 @@ impl AiosDatabaseEngine {
 
     pub fn bq_len(&self) -> usize {
         self.bq.len()
+    }
+
+    /// Estado lógico de um doc por storage key (default `Active`).
+    /// Lê o side-table `sys/state/` (Storage cru) — não afeta o NMD1.
+    pub fn get_state(&mut self, sk: &str) -> MemoryState {
+        match self.storage.get(&state_key(sk)) {
+            Ok(Some(b)) if b.len() == 1 => MemoryState::from_u8(b[0]).unwrap_or(MemoryState::Active),
+            _ => MemoryState::Active,
+        }
+    }
+
+    /// Seta estado lógico (persiste em `sys/state/`). Estado é metadado de
+    /// memória — a deleção FÍSICA continua sendo via `Storage::delete`.
+    pub fn set_state(&mut self, sk: &str, st: MemoryState) -> Result<(), SgdbError> {
+        if st == MemoryState::Active {
+            // Active = default: remove o registro lateral (economia)
+            self.storage.delete(&state_key(sk))?;
+        } else {
+            self.storage.put(&state_key(sk), &[st as u8])?;
+        }
+        Ok(())
     }
 }
 

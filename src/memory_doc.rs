@@ -19,6 +19,9 @@ pub enum MemoryLayer {
 }
 
 impl MemoryLayer {
+    /// Ponto ÚNICO de validação de layer a partir de bytes externos
+    /// (maturation P5 — decode rejeita layer inválida; nenhum valor inválido
+    /// entra no storage silenciosamente).
     pub fn from_u8(v: u8) -> Option<Self> {
         match v {
             0 => Some(Self::L0Sensory),
@@ -42,6 +45,38 @@ impl MemoryLayer {
             Self::L5Procedural => "L5",
             Self::L6Reserved => "L6",
             Self::L7Identity => "L7",
+        }
+    }
+}
+
+/// Estado lógico de uma memória (maturation P5 — modelo mínimo explícito).
+///
+/// Distingue **deleção física** (remove do storage, via `Storage::delete` /
+/// tombstone) de **estado lógico** (memória continua representável na
+/// história, apenas marcada). `Active` é o default; `Superseded` preserva a
+/// cadeia causal (ex: "mudou para Y" supersede "morava em X") sem apagar X.
+///
+/// **NÃO é serializado no NMD1** — o contrato byte-idêntico com o OS fica
+/// intacto; o estado vive em memória e é persistido em namespace lateral
+/// (`sys/state/`, via `Storage` cru — ver engine).
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MemoryState {
+    #[default]
+    Active = 0,
+    Superseded = 1,
+    Archived = 2,
+    Invalidated = 3,
+}
+
+impl MemoryState {
+    pub fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(Self::Active),
+            1 => Some(Self::Superseded),
+            2 => Some(Self::Archived),
+            3 => Some(Self::Invalidated),
+            _ => None,
         }
     }
 }

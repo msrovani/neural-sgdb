@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 
 use crate::bq::quantize_f32;
 use crate::engine::AiosDatabaseEngine;
-use crate::memory_doc::{MemoryDoc, MemoryLayer};
+use crate::memory_doc::{MemoryDoc, MemoryLayer, MemoryState};
 use crate::storage::{Storage, SgdbError};
 
 /// Resultado de recall semântico.
@@ -31,10 +31,59 @@ impl Sgdb {
     /// Rebuilds ART/BQ from persisted docs — **propagates rebuild errors**
     /// (P1: an unreadable storage does not open as a silent "ready").
     pub fn open(backend: impl Storage + 'static) -> Result<Self, SgdbError> {
-        let mut engine = AiosDatabaseEngine::new(1, Box::new(backend));
+        Self::open_with_node_id(1, backend)
+    }
+
+    /// Idem `open`, com node_id local explícito (maturation P5 — identidade de
+    /// nó estável, nunca confundida com memory_id; self/remote distinto).
+    pub fn open_with_node_id(
+        node_id: u8,
+        backend: impl Storage + 'static,
+    ) -> Result<Self, SgdbError> {
+        let mut engine = AiosDatabaseEngine::new(node_id, Box::new(backend));
         let recovered = engine.rebuild_indices_from_storage()?;
         crate::sgdb_log!("Sgdb open: {recovered} docs reindexados (ART/BQ)");
         Ok(Sgdb { engine })
+    }
+
+    /// Node_id local (vector clock / origem) — estável por instância.
+    pub fn node_id(&self) -> u8 {
+        self.engine.node_id
+    }
+
+    /// Estado lógico de uma memória (default `Active`). Estado ≠ deleção
+    /// física: `superseded`/`archived`/`invalidated` continuam representáveis
+    /// na história (maturation P5).
+    pub fn get_state(&mut self, key: &str) -> Result<MemoryState, SgdbError> {
+        let sk = self.resolve_storage_key(key);
+        Ok(self.engine.get_state(&sk))
+    }
+
+    /// Seta estado lógico de uma memória (persiste em `sys/state/`).
+    pub fn set_state(&mut self, key: &str, st: MemoryState) -> Result<(), SgdbError> {
+        let sk = self.resolve_storage_key(key);
+        self.engine.set_state(&sk, st)
+    }
+
+    /// Conveniência cognitiva: marca `old` como `Superseded` (histórico
+    /// preservado, sem `delete` físico) — a cadeia causal sobrevive para CRDT
+    /// (Doc 04 §3).
+    pub fn supersede(&mut self, old: &str, new: &str) -> Result<(), SgdbError> {
+        let old_sk = self.resolve_storage_key(old);
+        let new_sk = self.resolve_storage_key(new);
+        self.engine.set_state(&old_sk, MemoryState::Superseded)?;
+        self.engine.set_state(&new_sk, MemoryState::Active)
+    }
+
+    /// Resolve uma chave lógica para storage key canônica `md/Lx/...`.
+    /// Aceita tanto `md/Lx/k` quanto `Lx/k` ou `k` (heurística por camada
+    /// ativa é do caller; aqui só normaliza prefixo).
+    fn resolve_storage_key(&self, key: &str) -> String {
+        if key.starts_with("md/") || key.starts_with("sys/") {
+            String::from(key)
+        } else {
+            alloc::format!("md/{key}")
+        }
     }
 
     /// Recovery observável (P1): docs reindexados no último open/rebuild.
@@ -516,5 +565,43 @@ mod tests {
             assert!(db.scan_prefix("md/L3/").unwrap().len() >= 1);
         }
         let _ = std::fs::remove_file(&path);
+    }
+
+    // ── Memory state model (maturation P5) ─────────────────────────────────
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn memory_state_default_active_and_persists() {
+        let dir = std::env::temp_dir().join("neural_sgdb_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("state.db");
+        let _ = std::fs::remove_file(&path);
+        {
+            let mut db = Sgdb::open(crate::storage::FileStorage::open(&path).unwrap()).unwrap();
+            db.remember_fact("fato", 1).unwrap();
+            let key = "md/L3/ts/0000000000000001";
+            // default é Active
+            assert_eq!(db.get_state(key).unwrap(), MemoryState::Active);
+            // supersede: old → Superseded, new → Active (histórico preservado)
+            db.supersede(key, "md/L3/ts/0000000000000002").unwrap();
+            assert_eq!(db.get_state(key).unwrap(), MemoryState::Superseded);
+        }
+        // estado persiste no reopen (side-table sys/state/ via Storage cru)
+        {
+            let mut db = Sgdb::open(crate::storage::FileStorage::open(&path).unwrap()).unwrap();
+            assert_eq!(
+                db.get_state("md/L3/ts/0000000000000001").unwrap(),
+                MemoryState::Superseded
+            );
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn node_id_explicit_and_stable() {
+        let mut db = Sgdb::open_with_node_id(7, InMemory::new()).unwrap();
+        assert_eq!(db.node_id(), 7);
+        db.remember_fact("f", 1).unwrap();
+        assert_eq!(db.node_id(), 7); // estável
     }
 }
