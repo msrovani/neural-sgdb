@@ -26,11 +26,52 @@ const SYNC_INTERVAL: u64 = 200;
 /// Porta P2P default do transporte UDP (espelha o mesh do kernel).
 pub const DEFAULT_P2P_PORT: u16 = 42069;
 
+/// Uma versão de memória conhecida — o que o protocolo de version-sync troca
+/// hoje. **NÃO é transferência de memória** (ver `MemoryDelta`/`MemorySnapshot`
+/// e Doc 04 §4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MemoryVersion {
+    pub node_id: u8,
+    pub version: u64,
+}
+
+/// Delta de memória (futuro — Doc 04 §4): versões base + documentos NMD1.
+/// Abstração limpa do protocolo de replicação; NÃO implementado nesta sprint.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MemoryDelta {
+    pub base: Vec<MemoryVersion>,
+    pub docs: Vec<Vec<u8>>, // MemoryDoc encoded (NMD1)
+}
+
+/// Snapshot completo de memória (futuro — Doc 04 §4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MemorySnapshot {
+    pub versions: Vec<MemoryVersion>,
+    pub docs: Vec<Vec<u8>>,
+}
+
+/// Veredicto de merge de uma versão recebida (observável — o caller decide
+/// log/ação; o CRDT nunca descarta versões concorrentes silenciosamente).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MergeVerdict {
+    /// Eco do próprio broadcast (`node_id == local`) — ignorado.
+    SelfPacket,
+    /// Versão antiga já conhecida — ignorada (sem regressão).
+    Stale,
+    /// Versão idêntica já conhecida — ignorada (duplicata).
+    Duplicate,
+    /// Versão nova — adotada (convergência de estado, LWW p/ L4/L5/L7).
+    Applied,
+    /// Versão concorrente com estado local — **PRESERVADA em `conflicts`**
+    /// (nunca resolvida por LWW cego; camada superior decide).
+    Conflict,
+}
+
 /// Transporte plugável de memórias entre nós.
 ///
 /// Implemente para o seu meio (UDP, TCP, serial, IPC). Semântica esperada:
 /// `send_crdt` entrega a versão local a peers; `recv_crdt` devolve as versões
-/// recebidas desde a última chamada (o crate aplica LWW).
+/// recebidas desde a última chamada (o crate aplica o merge por veredicto).
 pub trait Transport {
     fn send_crdt(&mut self, node_id: u8, version: u64) -> Result<(), SgdbError>;
     fn recv_crdt(&mut self) -> Vec<(u8, u64)>;
@@ -39,8 +80,11 @@ pub trait Transport {
 /// Agente CRDT de sincronização de versões de memória.
 ///
 /// Keeps the local version and versions known from other nodes. `sync()`
-/// exchanges versions with peers periodically (rate-limited); conflicts are
-/// resolved by last-writer-wins.
+/// exchanges versions with peers periodically (rate-limited). Merge policy:
+/// - **Estado** (L4/L5/L7): LWW — maior versão vence (convergência).
+/// - **Memória concorrente**: versões de peers que não dominam o estado local
+///   são **preservadas em `conflicts`** — nunca descartadas por LWW cego.
+/// - **Self-packet**: o eco do próprio broadcast é ignorado.
 pub struct CrdtMemorySync {
     /// node_id local (vector clock / origem).
     node_id: u8,
@@ -48,6 +92,9 @@ pub struct CrdtMemorySync {
     local_version: u64,
     /// Versões conhecidas de outros nós: (node_id, version).
     pub node_versions: Vec<(u8, u64)>,
+    /// Versões concorrentes preservadas (memória que LWW cego apagaria).
+    /// Expostas para a camada superior resolver (multi-value, Doc 04 §2).
+    pub conflicts: Vec<MemoryVersion>,
     /// Último `now` em que sync foi executado (rate-limit); `None` = nunca.
     last_sync_at: Option<u64>,
     /// true quando ao menos um sync real aconteceu.
@@ -60,6 +107,7 @@ impl CrdtMemorySync {
             node_id,
             local_version: 0,
             node_versions: Vec::new(),
+            conflicts: Vec::new(),
             last_sync_at: None,
             active: false,
         }
@@ -76,26 +124,70 @@ impl CrdtMemorySync {
         self.local_version = self.local_version.saturating_add(1);
     }
 
+    /// Aplica uma versão recebida com veredicto explícito. Núcleo do merge.
+    ///
+    /// Regras:
+    /// 1. `node == local` → `SelfPacket` (eco do próprio broadcast).
+    /// 2. versão conhecida ≥ v → `Stale`/`Duplicate` (sem regressão).
+    /// 3. v novo E o nó já tinha versão conhecida (domina a própria) → `Applied`
+    ///    se nenhum outro nó/estado local existe; senão **`Conflict`**.
+    /// 4. conflito: registra em `node_versions` E `conflicts` — nunca descarta.
+    pub fn apply_remote_version(&mut self, node: u8, v: u64) -> MergeVerdict {
+        if node == self.node_id {
+            return MergeVerdict::SelfPacket;
+        }
+        let known = self.node_versions.iter().find(|(n, _)| *n == node).map(|(_, k)| *k);
+        match known {
+            Some(k) if v < k => return MergeVerdict::Stale,
+            Some(k) if v == k => return MergeVerdict::Duplicate,
+            _ => {}
+        }
+        // v é novo para este nó. Há estado local/peer independente?
+        let has_other_state = self.local_version > 0 || self.node_versions.len() > 1
+            || (self.node_versions.len() == 1 && !self.node_versions.iter().any(|(n, _)| *n == node));
+        self.upsert_peer_version(node, v);
+        if has_other_state {
+            // versão de peer não causada pelo nosso estado → concorrente
+            if !self.conflicts.iter().any(|c| c.node_id == node && c.version == v) {
+                self.conflicts.push(MemoryVersion { node_id: node, version: v });
+            }
+            MergeVerdict::Conflict
+        } else {
+            // primeiro conhecimento (estado vazio) → adoção
+            if v > self.local_version {
+                self.local_version = v;
+            }
+            MergeVerdict::Applied
+        }
+    }
+
     /// Sincroniza versões com peers via transporte.
     ///
-    /// 1. RX: aplica versões recebidas — LWW (maior vence), registra em
-    ///    `node_versions`.
+    /// 1. RX: aplica versões recebidas via `apply_remote_version` — veredicto
+    ///    logado; conflitos preservados em `conflicts`.
     /// 2. TX: rate-limited por `SYNC_INTERVAL` (unidades de `now`) — publica a
     ///    versão local.
     ///
     /// Sem transporte ativo (nenhum peer envia), opera localmente — fallback.
     pub fn sync(&mut self, now: u64, transport: &mut dyn Transport) -> Result<(), SgdbError> {
-        // (1) RX — sempre aplica (LWW)
+        // (1) RX — merge por veredicto
         for (node, v) in transport.recv_crdt() {
-            self.upsert_peer_version(node, v);
-            if v > self.local_version {
-                crate::sgdb_log!(
-                    "CRDT sync: local_v={} -> node={} v={} merged",
-                    self.local_version,
-                    node,
-                    v
-                );
-                self.local_version = v;
+            match self.apply_remote_version(node, v) {
+                MergeVerdict::SelfPacket => {
+                    crate::sgdb_log!("CRDT sync: self-packet node={node} ignorado");
+                }
+                MergeVerdict::Stale => {
+                    crate::sgdb_log!("CRDT sync: node={node} v={v} stale (regressao bloqueada)");
+                }
+                MergeVerdict::Duplicate => {}
+                MergeVerdict::Applied => {
+                    crate::sgdb_log!("CRDT sync: node={node} v={v} applied (estado LWW)");
+                }
+                MergeVerdict::Conflict => {
+                    crate::sgdb_log!(
+                        "CRDT sync: node={node} v={v} CONFLITO preservado (concorrente)",
+                    );
+                }
             }
         }
 
@@ -239,33 +331,74 @@ mod tests {
     }
 
     #[test]
-    fn lww_merge_two_nodes() {
+    fn concurrent_writes_preserved() {
+        // Duas escritas independentes (A e B) são CONCORRENTES — a semântica
+        // multi-value preserva ambas; LWW cego (antigo) as apagaria.
         let mut a = CrdtMemorySync::new(1);
         let mut b = CrdtMemorySync::new(2);
         a.record_change();
-        a.record_change(); // a = 2
-        b.record_change(); // b = 1
+        a.record_change(); // a = 2 (escritas locais de A)
+        b.record_change(); // b = 1 (escrita local de B)
 
         let mut ta = LoopTransport::default();
         let mut tb = LoopTransport::default();
         a.sync(0, &mut ta).unwrap();
         b.sync(0, &mut tb).unwrap();
-        assert_eq!(a.local_version(), 2);
-        assert_eq!(b.local_version(), 1);
 
         // "rede": entrega o que cada um publicou ao outro
         let from_a = ta.take_sent(); // a publicou (1, 2)
         let from_b = tb.take_sent(); // b publicou (2, 1)
         let mut ta2 = LoopTransport::from(from_b);
         let mut tb2 = LoopTransport::from(from_a);
-        a.sync(200, &mut ta2).unwrap();
-        b.sync(200, &mut tb2).unwrap();
 
-        // LWW: a mantém 2 (v=1 não supera), b adota 2
+        // Verdicto do merge para cada lado
+        assert_eq!(a.apply_remote_version(2, 1), MergeVerdict::Conflict);
+        assert_eq!(b.apply_remote_version(1, 2), MergeVerdict::Conflict);
+
+        // Cada nó mantém o próprio contador (não conflado com o do peer)
         assert_eq!(a.local_version(), 2);
-        assert_eq!(b.local_version(), 2);
+        assert_eq!(b.local_version(), 1);
+
+        // Convergência de node_versions (máximo por nó) + conflitos preservados
         assert_eq!(a.node_versions, vec![(2, 1)]);
         assert_eq!(b.node_versions, vec![(1, 2)]);
+        assert_eq!(a.conflicts, vec![MemoryVersion { node_id: 2, version: 1 }]);
+        assert_eq!(b.conflicts, vec![MemoryVersion { node_id: 1, version: 2 }]);
+    }
+
+    #[test]
+    fn self_packet_ignored() {
+        // Eco do próprio broadcast (UDP broadcast devolve ao emissor)
+        let mut a = CrdtMemorySync::new(7);
+        a.record_change(); // a = 1
+        let mut t = LoopTransport::from(vec![(7, 1)]); // self packet
+        assert_eq!(a.apply_remote_version(7, 1), MergeVerdict::SelfPacket);
+        a.sync(0, &mut t).unwrap();
+        assert!(a.node_versions.is_empty()); // self nunca vira peer
+        assert!(a.conflicts.is_empty());
+        assert_eq!(a.local_version(), 1); // inalterado
+    }
+
+    #[test]
+    fn older_and_duplicate_ignored() {
+        let mut a = CrdtMemorySync::new(1);
+        a.apply_remote_version(2, 5); // aplicado (primeiro conhecimento)
+        assert_eq!(a.node_versions, vec![(2, 5)]);
+        // versão mais velha → stale (sem regressão)
+        assert_eq!(a.apply_remote_version(2, 3), MergeVerdict::Stale);
+        assert_eq!(a.node_versions, vec![(2, 5)]);
+        // duplicata → ignorada
+        assert_eq!(a.apply_remote_version(2, 5), MergeVerdict::Duplicate);
+        assert_eq!(a.node_versions, vec![(2, 5)]);
+    }
+
+    #[test]
+    fn fresh_node_adopts_remote() {
+        // Nó sem estado local adota a versão do peer (convergência de estado)
+        let mut a = CrdtMemorySync::new(1);
+        assert_eq!(a.apply_remote_version(2, 4), MergeVerdict::Applied);
+        assert_eq!(a.node_versions, vec![(2, 4)]);
+        assert!(a.conflicts.is_empty()); // sem estado local → sem conflito
     }
 
     #[test]
