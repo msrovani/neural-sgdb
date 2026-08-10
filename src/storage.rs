@@ -264,6 +264,40 @@ impl FileStorage {
             .map_err(|_| SgdbError::Storage("write"))?;
         f.flush().map_err(|_| SgdbError::Storage("flush"))
     }
+
+    /// Compactação (maturation P4): reescreve o **live set** (map atual) como
+    /// records frescos num arquivo temporário e troca atomicamente via rename.
+    ///
+    /// - Preserva keys vivas; remove tombstones e versões obsoletas (map já é
+    ///   last-wins, e keys deletadas não estão no map).
+    /// - Crash-safe: enquanto o temp não é renomeado, o arquivo original
+    ///   permanece íntegro (recovery normal). Um temp órfão é sobrescrito na
+    ///   próxima compactação.
+    /// - Explícito/manual — sem threads nem async (decisão da sprint §7).
+    pub fn compact(&mut self) -> Result<(), SgdbError> {
+        use std::io::Write;
+        let tmp = self.path.with_extension("compact.tmp");
+        let mut f = std::fs::File::create(&tmp)
+            .map_err(|_| SgdbError::Storage("compact create"))?;
+        for (key, val) in self.map.iter() {
+            let mut kv = Vec::with_capacity(key.len() + val.len());
+            kv.extend_from_slice(key);
+            kv.extend_from_slice(val);
+            let mut buf = Vec::with_capacity(12 + key.len() + val.len());
+            buf.extend_from_slice(&(key.len() as u32).to_le_bytes());
+            buf.extend_from_slice(&(val.len() as u32).to_le_bytes());
+            buf.extend_from_slice(&crc32(&kv).to_le_bytes());
+            buf.extend_from_slice(key);
+            buf.extend_from_slice(val);
+            f.write_all(&buf)
+                .map_err(|_| SgdbError::Storage("compact write"))?;
+        }
+        f.flush().map_err(|_| SgdbError::Storage("compact flush"))?;
+        drop(f);
+        // troca atômica: rename sobre o original (Windows: MoveFileEx replace)
+        std::fs::rename(&tmp, &self.path)
+            .map_err(|_| SgdbError::Storage("compact rename"))
+    }
 }
 
 #[cfg(feature = "file-storage")]
@@ -576,6 +610,81 @@ mod tests {
         let mut s = FileStorage::open(&p).unwrap();
         assert_eq!(s.get(b"a").unwrap(), Some(b"1".to_vec()));
         assert!(s.get(b"p").unwrap().is_none()); // record parcial descartado
+        let _ = std::fs::remove_file(&p);
+    }
+
+    // ── Compaction: pre/post state, tombstones, atomicidade (maturation P4) ─
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn compact_preserves_live_removes_dead() {
+        let p = tmp_path("fz_compact.db");
+        {
+            let mut s = FileStorage::open(&p).unwrap();
+            s.put(b"a", b"1").unwrap();
+            s.put(b"b", b"2").unwrap();
+            s.put(b"a", b"1v2").unwrap(); // overwrite → versão obsoleta no log
+            s.put(b"c", b"3").unwrap();
+            s.delete(b"c").unwrap(); // tombstone
+            // pré-compactação: log contém a, b, a(v2), c, tombstone(c)
+            assert_eq!(s.get(b"a").unwrap(), Some(b"1v2".to_vec()));
+            assert_eq!(s.get(b"b").unwrap(), Some(b"2".to_vec()));
+            assert!(s.get(b"c").unwrap().is_none());
+            s.compact().unwrap();
+            // pós: mapa in-memory intacto
+            assert_eq!(s.get(b"a").unwrap(), Some(b"1v2".to_vec()));
+            assert_eq!(s.get(b"b").unwrap(), Some(b"2".to_vec()));
+        }
+        // reopen do arquivo compactado: só o live set sobreviveu
+        let mut s = FileStorage::open(&p).unwrap();
+        assert_eq!(s.get(b"a").unwrap(), Some(b"1v2".to_vec()));
+        assert_eq!(s.get(b"b").unwrap(), Some(b"2".to_vec()));
+        assert!(s.get(b"c").unwrap().is_none()); // tombstone não ressuscitou
+        // atomicidade: sem arquivo temp órfão
+        assert!(!p.with_extension("compact.tmp").exists());
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn compact_shrinks_file() {
+        let p = tmp_path("fz_shrink.db");
+        let before_len;
+        let after_len;
+        {
+            let mut s = FileStorage::open(&p).unwrap();
+            for i in 0..100 {
+                s.put(format!("k{i:03}").as_bytes(), b"value").unwrap();
+            }
+            for i in (0..100).step_by(2) {
+                s.delete(format!("k{i:03}").as_bytes()).unwrap(); // 50 tombstones
+            }
+            before_len = std::fs::metadata(&p).unwrap().len();
+            s.compact().unwrap();
+            after_len = std::fs::metadata(&p).unwrap().len();
+        }
+        // 50 keys vivas, 50 tombstoned — compactação remove os tombstones
+        assert!(after_len < before_len, "compact não encolheu: {before_len}→{after_len}");
+        let s = FileStorage::open(&p).unwrap();
+        assert_eq!(s.map.len(), 50);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn compact_recovery_after_crash_temp() {
+        // Temp órfão (crash antes do rename) é sobrescrito na próxima compact
+        let p = tmp_path("fz_crashcompact.db");
+        let tmp = p.with_extension("compact.tmp");
+        std::fs::write(&tmp, b"orphan-garbage").unwrap(); // crash simulado
+        {
+            let mut s = FileStorage::open(&p).unwrap();
+            s.put(b"a", b"1").unwrap();
+            s.compact().unwrap(); // sobrescreve o órfão
+        }
+        let mut s = FileStorage::open(&p).unwrap();
+        assert_eq!(s.get(b"a").unwrap(), Some(b"1".to_vec()));
+        assert!(!tmp.exists()); // órfão substituído
         let _ = std::fs::remove_file(&p);
     }
 }
