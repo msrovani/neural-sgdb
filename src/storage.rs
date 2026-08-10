@@ -136,7 +136,7 @@ impl FileStorage {
             }
             // Trunca cauda inválida
             if valid_end < data.len() {
-                use std::io::{Seek, SeekFrom, Write};
+                use std::io::{Seek, SeekFrom};
                 let mut f = std::fs::OpenOptions::new()
                     .write(true)
                     .open(&path)?;

@@ -70,6 +70,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+## MCP (agentes de IA)
+
+`cargo run --release --example mcp_server` expõe `remember` / `recall` /
+`rag_context` como MCP tools (JSON-RPC 2.0 sobre stdio, handshake
+`2025-11-25`) — conectável a Claude Code, Cursor e OpenCode:
+
+```bash
+# Claude Code
+claude mcp add neural-sgdb -- cargo run --release --example mcp_server
+```
+
+⚠️ O embedding de recall no MCP é de **demonstração** (hash de trigramas);
+para recall semântico real, forneça embeddings próprios via `remember_semantic`
+/ `recall`.
+
+## Benchmarks
+
+`cargo run --release --example bench` — números do ambiente local (AVX2):
+ART get P50≈200ns, ART insert P50≈800ns, BQ top-5 ≈310µs em 10k×1024 dims,
+recall@5 BQ vs FP32-exact = 100% (trade-off da quantização 1-bit, medido).
+
 ## Licença
 
 Licenciado sob **MIT** **ou** **Apache-2.0** (dual license), à sua escolha.
@@ -80,6 +101,11 @@ Licenciado sob **MIT** **ou** **Apache-2.0** (dual license), à sua escolha.
 - [x] Trait de storage plugável (InMemory + FileStorage) e relógio/CPUID injetáveis
 - [x] CRDT sync de memórias como feature opcional `p2p` (`CrdtMemorySync` +
       trait `Transport` + `UdpTransport` std; merge LWW simétrico)
-- [ ] Benchmarks publicados (P50/P99, recall vs FP32)
-- [ ] Interop de storage TKLV byte a byte com o OS (FileStorage → formato TickvLite)
-- [ ] Camada MCP server para agentes externos consumirem memória
+- [x] Benchmarks publicados (`cargo run --release --example bench` — ART
+      P50/P99, BQ top-k, recall BQ vs FP32)
+- [x] Camada MCP server (`cargo run --release --example mcp_server` — expõe
+      `remember`/`recall`/`rag_context` a agentes de IA via MCP sobre stdio;
+      embedding demo por trigramas)
+- [ ] Interop de storage TKLV byte a byte com o OS (FileStorage → formato
+      TickvLite) — **adiado**: requer o leitor TickvLite do OS no host para
+      verificação honesta; NMD1 (documento) já é interoperável

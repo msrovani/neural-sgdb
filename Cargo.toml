@@ -10,3 +10,6 @@ repository = "https://github.com/msrovani/neural-sgdb"
 default = ["std"]
 std = []
 p2p = ["std"]
+
+[dev-dependencies]
+serde_json = "1"
