@@ -5,7 +5,7 @@
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
-/// Erro de storage/documento.
+/// Storage/document error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SgdbError {
     /// Falha de backend (mensagem curta estática).

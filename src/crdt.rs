@@ -1,13 +1,13 @@
-//! CRDT Memory Sync (port de `k_ai::sgdb::crdt_sync`, ADR-0081 C4).
+//! CRDT Memory Sync (port of `k_ai::sgdb::crdt_sync`, ADR-0081 C4).
 //!
-//! Replica o estado de memória (versões) entre nós via
-//! Conflict-free Replicated Data Type: **last-writer-wins** — cada nó publica
-//! sua versão local; versões maiores que a local são adotadas (merge).
+//! Replicates memory state (versions) between nodes via
+//! Conflict-free Replicated Data Type: **last-writer-wins** — each node
+//! publishes its local version; versions higher than local are adopted (merge).
 //!
-//! ## Diferenças vs kernel (honestidade)
-//! - O kernel usa o mesh P2P assinado (`k_nano::net::udp_broadcast`, Fase A
-//!   fail-closed, roles Master/Worker). Aqui o transporte é uma trait
-//!   plugável (`Transport`): o merge é simétrico (todo nó publica e adota LWW).
+//! ## Differences vs the kernel (honesty)
+//! - The kernel uses the signed P2P mesh (`k_nano::net::udp_broadcast`, Phase A
+//!   fail-closed, Master/Worker roles). Here the transport is a pluggable trait
+//!   (`Transport`): the merge is symmetric (every node publishes and adopts LWW).
 //! - Wire format próprio: `[node_id u8][version u64 LE]` (9 bytes) — sem
 //!   assinatura. **Em produção, use um transporte autenticado** (TLS/UDP com
 //!   assinatura) — o `UdpTransport` entregue é demonstração/desenvolvimento.
@@ -38,9 +38,9 @@ pub trait Transport {
 
 /// Agente CRDT de sincronização de versões de memória.
 ///
-/// Mantém versão local e versões conhecidas de outros nós. `sync()` troca
-/// versões com os pares periodicamente (rate-limited); conflitos resolvidos
-/// por last-writer-wins.
+/// Keeps the local version and versions known from other nodes. `sync()`
+/// exchanges versions with peers periodically (rate-limited); conflicts are
+/// resolved by last-writer-wins.
 pub struct CrdtMemorySync {
     /// node_id local (vector clock / origem).
     node_id: u8,

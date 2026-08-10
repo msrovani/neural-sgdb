@@ -288,6 +288,6 @@ mod tests {
         assert!(smoke_1024());
     }
 
-    // (teste de injeção de caps removido: SELECTED é estática global e testes
-    // paralelos criam corrida; smoke_1024 cobre a correção dos kernels)
+    // (caps-injection test removed: SELECTED is a global static and parallel
+    // tests race; smoke_1024 covers kernel correctness)
 }

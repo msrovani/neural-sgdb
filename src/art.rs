@@ -857,10 +857,10 @@ mod tests {
 
     #[test]
     fn art_shared_prefix_split() {
-        // Chaves contract-compliant (sufixos largura fixa — SEM relação de
-        // prefixo, ex: "k0000/01" vs "k0000/10"). Limitação herdada do ART
-        // upstream: chaves onde uma é prefixo de outra não são suportadas
-        // (ver docs/api.md "Limitações herdadas").
+        // Contract-compliant keys (fixed-width suffixes — NO prefix
+        // relationship, e.g. "k0000/01" vs "k0000/10"). Inherited ART
+        // limitation: keys where one is a prefix of another are not supported
+        // (see docs/api.md "Inherited limitations").
         let mut art = ArtIndex::new();
         for i in 0..50 {
             art.insert(&alloc::format!("k{:04}/{:02}", i / 16, i), i as u64);

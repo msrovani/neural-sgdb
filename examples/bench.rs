@@ -1,12 +1,12 @@
-//! Benchmarks publicados (roadmap item 4) — zero-dep, host (`std`).
+//! Published benchmarks (roadmap item 4) — zero-dep, host (`std`).
 //!
-//! Rode com: `cargo run --release --example bench`
+//! Run with: `cargo run --release --example bench`
 //!
-//! Mede:
+//! Measures:
 //! - ART: insert/get/scan_prefix latency (P50/P99)
 //! - BQ: recall top-k latency (P50/P99)
-//! - Recall BQ vs FP32 puro: recall@k (fração dos verdadeiros top-k FP32
-//!   encontrados pelo BQ) — o trade-off da quantização binária, medido.
+//! - Recall BQ vs pure FP32: recall@k (fraction of the true FP32 top-k
+//!   found by BQ) — the binary quantization trade-off, measured.
 
 use std::time::{Duration, Instant};
 

@@ -4,7 +4,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-/// Camadas de memória cognitiva (ADR-0060 / 0063).
+/// Cognitive memory layers (ADR-0060 / 0063).
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MemoryLayer {
@@ -325,8 +325,8 @@ mod tests {
 
     #[test]
     fn golden_nmd1_bytes() {
-        // Golden byte-exato (P2 — versionamento de formato): layout NMD1 fixo
-        // por contrato com o OS. doc L1 "k" payload [0xAA] sem clock tick e sem
+        // Byte-exact golden (P2 — format versioning): fixed NMD1 layout by
+        // contract with the OS. doc L1 "k" payload [0xAA], no clock tick, no
         // bitvec:
         //   magic NMD1 | layer 0x01 | klen 0x01 u32le | 'k' |
         //   VectorClock 72B (8×0xFF nodes + 8×0 u64) | plen 0x01 u32le | 0xAA |

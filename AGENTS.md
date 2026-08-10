@@ -88,7 +88,27 @@ cargo check --no-default-features --target x86_64-unknown-none   # no_std gate
   `demo_embed` embedding is a trigram hash — NOT a real semantic model.
 - **TickvFile** (`src/tickv.rs`): does not write checkpoints (v0.1) — the OS
   mounts by full scan; GC/compaction is v0.2. 512-aligned records, tombstone
-  `vlen=0` or `TKL\0`.
+  `vlen=0` or `TKL\0`. **`scan_volume` MUST skip in-place tombstones
+  (`hdr[3]==0`) before CRC** — otherwise OS-written deletes resurrect (bughunt
+  #1 CRÍTICO, fixed).
 - **CRDT** (`src/crdt.rs`): rate-limit uses `Option<u64>` (the 0 sentinel fails
   on first sync at now=0); `UdpTransport` is an unauthenticated demo — use a
-  signed transport in production.
+  signed transport in production. `set_cpu_caps` must rearm `SELECTED`
+  (bughunt #9).
+- **Storage CRC** (`src/storage.rs`): FileStorage CRC covers **key‖val**, not
+  just the key — bit rot in values must be detected (bughunt #2).
+- **Recall sort** (`src/sgdb.rs`): sort by the raw u32 score (FP32 0..10000 vs
+  ham 0..64 share the OS ordering space); `sk.replacen("/L4/", "/L2/", 1)` for
+  the companion-text lookup — a key containing `/L4/` must not be corrupted
+  (bughunt #3/#6).
+- **clamp** (`src/sgdb.rs`): truncate at a char boundary — `&s[..max]` panics
+  mid multi-byte char (bughunt #7).
+- **Bench baseline** (`examples/bench.rs`): recall@k must compare against true
+  FP32 cosine over the original f32 vectors, never hamming over the same
+  quantized bits (tautological, bughunt #4).
+- **Features** (Cargo.toml): `std`, `file-storage`, `simd-runtime`, `p2p`
+  (opt-in). Default = `["std","file-storage","simd-runtime"]`. no_std gate:
+  `cargo check --no-default-features --target x86_64-unknown-none`.
+- **Format contracts**: NMD1/TKLV byte-identical to the OS — golden tests
+  (`golden_nmd1_bytes`, `golden_record_bytes`, `fnv1a64_known_vector`) pin the
+  layout; change them in the same commit as any format change.

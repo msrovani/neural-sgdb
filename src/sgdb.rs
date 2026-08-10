@@ -20,16 +20,16 @@ pub struct Hit {
     pub dist: f32,
 }
 
-/// Banco de memória cognitiva. `Sgdb::open(backend)` + remember/recall.
+/// Cognitive memory database. `Sgdb::open(backend)` + remember/recall.
 pub struct Sgdb {
     engine: AiosDatabaseEngine,
 }
 
 impl Sgdb {
-    /// Abre com um backend de storage (`InMemory` para testes, `FileStorage`
-    /// para persistência em arquivo, ou seu próprio impl de `Storage`).
-    /// Reconstrói ART/BQ a partir de docs persistidos — **propaga erro de
-    /// rebuild** (P1: storage ilegível não abre "ready" silencioso).
+    /// Opens with a storage backend (`InMemory` for tests, `FileStorage`
+    /// for file persistence, or your own `Storage` impl).
+    /// Rebuilds ART/BQ from persisted docs — **propagates rebuild errors**
+    /// (P1: an unreadable storage does not open as a silent "ready").
     pub fn open(backend: impl Storage + 'static) -> Result<Self, SgdbError> {
         let mut engine = AiosDatabaseEngine::new(1, Box::new(backend));
         let recovered = engine.rebuild_indices_from_storage()?;
@@ -182,8 +182,8 @@ impl Sgdb {
                 },
                 _ => (ham, ham as f32),
             };
-            // texto companion L2 (storage key direta; só a 1ª ocorrência do
-            // prefixo /L4/ — chave com "/L4/" no corpo não é corrompida)
+            // L2 companion text (direct storage key; only the 1st occurrence
+            // of the /L4/ prefix — a key containing "/L4/" is not corrupted)
             let text = self
                 .engine
                 .get_by_storage_key(&sk.replacen("/L4/", "/L2/", 1))

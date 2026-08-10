@@ -1,21 +1,21 @@
 //! # neural-sgdb
 //!
-//! Banco de memória persistente e transferível para agentes de IA.
-//! **Memórias, não dados.**
+//! Persistent, transferable memory database for AI agents.
+//! **Memories, not data.**
 //!
-//! Núcleo extraído do [neural-os-core](https://github.com/msrovani/neural-os-core)
-//! (`k_ai::sgdb`, ADR-0063) como projeto comunitário independente, dual-mode
-//! `no_std` + `std`, zero dependências externas.
+//! Core extracted from [neural-os-core](https://github.com/msrovani/neural-os-core)
+//! (`k_ai::sgdb`, ADR-0063) as an independent community project, dual-mode
+//! `no_std` + `std`, zero external dependencies.
 //!
-//! - 8 camadas de memória L0–L7 (Sensory → Working → Episódica → Semântica →
-//!   Procedural → Identidade)
-//! - `remember` / `recall` semântico: BQ (quantização binária) + rescore FP32,
-//!   dispatch SIMD AVX-512 / AVX2 / scalar
-//! - Índice ART (Adaptive Radix Tree) O(k) para chaves/fatos
-//! - Storage plugável via `Storage` trait (entregues: `InMemory`, `FileStorage`)
-//! - Formato `MemoryDoc` (NMD1) byte-idêntico ao do OS mãe (interop)
+//! - 8 memory layers L0–L7 (Sensory → Working → Episodic → Semantic →
+//!   Procedural → Identity)
+//! - Semantic `remember` / `recall`: BQ (binary quantization) + FP32 rescore,
+//!   SIMD dispatch AVX-512 / AVX2 / scalar
+//! - ART (Adaptive Radix Tree) O(k) index for keys/facts
+//! - Pluggable storage via `Storage` trait (shipped: `InMemory`, `FileStorage`)
+//! - `MemoryDoc` (NMD1) format byte-identical to the parent OS (interop)
 //!
-//! ## Exemplo
+//! ## Example
 //!
 //! ```
 //! use neural_sgdb::{Sgdb, InMemory};

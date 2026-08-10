@@ -15,16 +15,17 @@
 //!   u64le | fnv1a64 u64le | n u32le | (klen u16le | key | off u64le)ⁿ`.
 //! - EOF: janela de 16 bytes toda `0x00` ou toda `0xFF`.
 //!
-//! ## Direções de interop
-//! - **Ler volume do OS:** `scan_volume` replica a semântica do `recover()` do
-//!   OS (hunt 512-aligned em corrupção, last-wins por key, tombstone vlen=0).
-//! - **Escrever volume legível pelo OS:** `TickvFile` (backend `Storage`)
-//!   grava records TKLV byte-exatos; o OS monta por scan completo (fallback de
-//!   `recover()`, sem ckpt — o `TickvFile` não escreve checkpoint no v0.1).
+//! ## Interop directions
+//! - **Read an OS volume:** `scan_volume` replicates the OS `recover()`
+//!   semantics (512-aligned corrupt hunt, last-wins per key, `vlen=0`
+//!   tombstone, in-place `TKL\0` tombstone skip).
+//! - **Write an OS-readable volume:** `TickvFile` (a `Storage` backend) writes
+//!   byte-exact TKLV records; the OS mounts by full scan (`recover()` fallback,
+//!   no ckpt — `TickvFile` does not write a checkpoint in v0.1).
 //!
-//! ⚠️ Sem ckpt no v0.1: volumes do crate sobem no OS via scan total (correto,
-//! mais lento que fast-mount). GC/compactação (zero-fill + reescrever live set)
-//! fica para v0.2 — append-only até lá.
+//! ⚠️ No ckpt in v0.1: crate volumes mount in the OS via full scan (correct,
+//! slower than fast-mount). GC/compaction (zero-fill + rewrite live set)
+//! stays for v0.2 — append-only until then.
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -42,7 +43,7 @@ pub const HEADER: usize = 16;
 /// Limites do leitor (paridade com `recover()` do OS).
 pub const MAX_KLEN: usize = 4096;
 pub const MAX_VLEN: usize = 1024 * 1024;
-/// Chave canônica do checkpoint.
+/// Canonical checkpoint key.
 pub const CKPT_KEY: &str = "sys/tickv_ckpt";
 
 /// Tamanho total de um record no volume (múltiplo de 512).
@@ -125,7 +126,7 @@ fn fnv1a64_entries(entries: &[(String, u64)]) -> u64 {
 /// Resultado de um scan de volume (semântica do `recover()` do OS).
 #[derive(Debug, Default)]
 pub struct ScanResult {
-    /// Chave → (valor, offset). Última ocorrência vence (index aponta p/ newest).
+    /// Key → (value, offset). Last occurrence wins (index points to newest).
     pub map: BTreeMap<String, Vec<u8>>,
     /// Records corrompidos pulados (CRC falhou / header inválido).
     pub corrupt: u64,

@@ -1,9 +1,9 @@
-//! MCP server (roadmap item 5) — expõe neural-sgdb a agentes de IA
-//! (Claude Code, Cursor, OpenCode) via Model Context Protocol sobre stdio.
+//! MCP server (roadmap item 5) — exposes neural-sgdb to AI agents
+//! (Claude Code, Cursor, OpenCode) via the Model Context Protocol over stdio.
 //!
-//! Rode com: `cargo run --release --example mcp_server` e aponte o cliente MCP
-//! para o binário (ex: `claude mcp add neural-sgdb -- cargo run --release
-//! --example mcp_server`).
+//! Run with: `cargo run --release --example mcp_server` and point the MCP
+//! client at the binary (e.g. `claude mcp add neural-sgdb -- cargo run
+//! --release --example mcp_server`).
 //!
 //! Protocolo: JSON-RPC 2.0 sobre stdio, uma mensagem por linha (`\n`), stdout
 //! SÓ com mensagens MCP (logs → stderr). Handshake legado `2025-11-25`
@@ -24,16 +24,16 @@ use serde_json::{json, Value};
 /// colide — ms*1000 + seq garante unicidade no mesmo milissegundo).
 static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Embedding de demonstração: hash determinístico de trigramas de caracteres
-/// → vetor 256-dim normalizado. Suficiente para recall por similaridade de
-/// texto curto; NÃO é um modelo semântico real.
+/// Demo embedding: deterministic character-trigram hash → normalized 256-dim
+/// vector. Good enough for short-text similarity recall; NOT a real semantic
+/// model.
 fn demo_embed(text: &str) -> Vec<f32> {
     const DIM: usize = 256;
     let mut v = vec![0f32; DIM];
     let bytes = text.as_bytes();
     let mut seed = 0x9E37_79B9_7F4A_7C15u64;
-    // texto < 3 bytes: sem trigramas → vetor zero degenerado; fallback por
-    // bytes individuais (fix #10)
+    // text < 3 bytes: no trigrams → degenerate zero vector; fallback by
+    // individual bytes (fix #10)
     let windows: Vec<&[u8]> = if bytes.len() < 3 {
         bytes.iter().map(|b| std::slice::from_ref(b)).collect()
     } else {
@@ -155,8 +155,8 @@ fn main() {
                             send(&error_response(&id, -32602, "parametro 'text' obrigatorio"));
                             continue;
                         }
-                        // chave única: ms + contador monotônico (2 remembers no
-                        // mesmo ms não colidem — bughunt #10)
+                        // unique key: ms + monotonic counter (2 remembers in
+                        // the same ms do not collide — bughunt #10)
                         let key = format!("mcp/{:06}", {
                             let ms = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
