@@ -247,11 +247,16 @@ impl AiosDatabaseEngine {
     /// Seta estado lógico (persiste em `sys/state/`). Estado é metadado de
     /// memória — a deleção FÍSICA continua sendo via `Storage::delete`.
     pub fn set_state(&mut self, sk: &str, st: MemoryState) -> Result<(), SgdbError> {
+        let k = state_key(sk);
         if st == MemoryState::Active {
-            // Active = default: remove o registro lateral (economia)
-            self.storage.delete(&state_key(sk))?;
+            // Active = default: remove o registro lateral SOMENTE se existir
+            // (LOW #5, review P6 — delete incondicional cresceria o log com
+            // tombstone para chave nunca setada, ex: todo supersede novo→Active)
+            if self.storage.get(&k)?.is_some() {
+                self.storage.delete(&k)?;
+            }
         } else {
-            self.storage.put(&state_key(sk), &[st as u8])?;
+            self.storage.put(&k, &[st as u8])?;
         }
         Ok(())
     }

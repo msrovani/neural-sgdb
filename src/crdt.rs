@@ -90,6 +90,11 @@ pub struct CrdtMemorySync {
     node_id: u8,
     /// Versão monotônica local — incrementada a cada `record_change()`.
     local_version: u64,
+    /// Escritas PRÓPRIAS (nunca adotadas de peers) — a base de "estado
+    /// independente" para detecção de concorrência. Sem isto, um `local_version`
+    /// adotado de um peer (Applied) faria o sucessor causal do MESMO peer virar
+    /// Conflict para sempre e o mesh nunca convergiria (review P6, MED #2).
+    own_writes: u64,
     /// Versões conhecidas de outros nós: (node_id, version).
     pub node_versions: Vec<(u8, u64)>,
     /// Versões concorrentes preservadas (memória que LWW cego apagaria).
@@ -106,6 +111,7 @@ impl CrdtMemorySync {
         Self {
             node_id,
             local_version: 0,
+            own_writes: 0,
             node_versions: Vec::new(),
             conflicts: Vec::new(),
             last_sync_at: None,
@@ -118,10 +124,17 @@ impl CrdtMemorySync {
         self.local_version
     }
 
+    /// Número de escritas locais (estado independente — base da detecção de
+    /// concorrência).
+    pub fn own_writes(&self) -> u64 {
+        self.own_writes
+    }
+
     /// Marca uma mutação no banco local — incrementa a versão.
     /// Chamar após cada escrita (remember_*, put, checkpoint).
     pub fn record_change(&mut self) {
         self.local_version = self.local_version.saturating_add(1);
+        self.own_writes = self.own_writes.saturating_add(1);
     }
 
     /// Aplica uma versão recebida com veredicto explícito. Núcleo do merge.
@@ -142,8 +155,12 @@ impl CrdtMemorySync {
             Some(k) if v == k => return MergeVerdict::Duplicate,
             _ => {}
         }
-        // v é novo para este nó. Há estado local/peer independente?
-        let has_other_state = self.local_version > 0 || self.node_versions.len() > 1
+        // v é novo para este nó. Há ESTADO PRÓPRIO independente?
+        // (review P6, MED #2: usa own_writes — escritas locais — e NÃO
+        // local_version, que é adotado de peers no Applied; senão o sucessor
+        // causal do mesmo peer vira Conflict para sempre e o mesh nunca
+        // converge em estado estacionário)
+        let has_other_state = self.own_writes > 0 || self.node_versions.len() > 1
             || (self.node_versions.len() == 1 && !self.node_versions.iter().any(|(n, _)| *n == node));
         self.upsert_peer_version(node, v);
         if has_other_state {

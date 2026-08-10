@@ -192,7 +192,19 @@ impl FileStorage {
                 // length absurdo — checar antes do bound de vlen (senão o
                 // tombstone é tratado como corrupção e a chave ressuscita)
                 if vlen == TOMBSTONE {
-                    map.remove(&data[off + 12..off + 12 + klen]);
+                    // HIGH #1 (review P6): bounds ANTES do slice — um tombstone
+                    // truncado (klen prometido mas key cortada no crash) nunca
+                    // deve panicar; encerra a leitura como cauda corrompida.
+                    if off + 12 + klen > data.len() {
+                        break;
+                    }
+                    // MED #3 (review P6): tombstone também é verificado por CRC
+                    // (key bit-rot não deve deletar a chave errada silenciosamente)
+                    let tomb_key = &data[off + 12..off + 12 + klen];
+                    if crc32(tomb_key) != crc {
+                        break;
+                    }
+                    map.remove(tomb_key);
                     let end = off + 12 + klen;
                     off = end;
                     valid_end = end;
@@ -285,7 +297,11 @@ impl FileStorage {
             kv.extend_from_slice(val);
             let mut buf = Vec::with_capacity(12 + key.len() + val.len());
             buf.extend_from_slice(&(key.len() as u32).to_le_bytes());
-            buf.extend_from_slice(&(val.len() as u32).to_le_bytes());
+            // LOW #4 (review P6): espelha o append — valor vazio = TOMBSTONE,
+            // senão a mesma chave mudaria de significado pós-compactação
+            // (append grava u32::MAX p/ delete; compact gravaria vlen=0 = put)
+            let vlen = if val.is_empty() { TOMBSTONE } else { val.len() as u32 };
+            buf.extend_from_slice(&vlen.to_le_bytes());
             buf.extend_from_slice(&crc32(&kv).to_le_bytes());
             buf.extend_from_slice(key);
             buf.extend_from_slice(val);
@@ -529,6 +545,26 @@ mod tests {
         assert_eq!(s.get(b"a").unwrap(), Some(b"1".to_vec()));
         assert!(s.get(b"b").unwrap().is_none()); // CRC falho → para aí
         assert!(std::fs::metadata(&p).unwrap().len() < blen as u64); // truncado
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn recovery_truncated_tombstone_never_panics() {
+        // HIGH #1 (review P6): tombstone com klen prometido mas key cortada no
+        // crash — o open NUNCA deve panicar (slice fora de bounds); encerra a
+        // leitura como cauda corrompida e preserva os records anteriores.
+        let p = tmp_path("fz_tomb_trunc.db");
+        let mut data = rec(b"a", b"1");
+        // header de tombstone (klen=100, vlen=u32::MAX) mas SEM os 100 bytes
+        // de key — cauda cortada exatamente no header
+        data.extend_from_slice(&100u32.to_le_bytes()); // klen
+        data.extend_from_slice(&TOMBSTONE.to_le_bytes()); // vlen
+        data.extend_from_slice(&0u32.to_le_bytes()); // crc (irrelevante)
+        write_raw(&p, &data);
+        let mut s = FileStorage::open(&p).unwrap(); // não panics
+        assert_eq!(s.get(b"a").unwrap(), Some(b"1".to_vec()));
+        assert!(s.map.len() == 1);
         let _ = std::fs::remove_file(&p);
     }
 
