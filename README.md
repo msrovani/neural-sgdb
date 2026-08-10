@@ -36,10 +36,39 @@ sem SQL, sem filesystem tradicional, sem runtime externo.
 
 ## Estado
 
-Em extração ativa do neural-os-core. O núcleo portátil (ART + MemoryDoc + BQ +
-Hamming SIMD) está sendo isolado em crate independente. A reference
-implementation roda em bare-metal no OS mãe; este repo segue com ciclo próprio
-de docs, CI e benchmarks.
+**v0.1 extraído** ✅ — o núcleo portátil está no repo como crate `neural-sgdb`
+dual-mode (`no_std` + `std`, zero dependências):
+
+- `cargo test` no host: **20 testes + doc-test passando**
+- `cargo check --no-default-features --target x86_64-unknown-none`: **limpo**
+- Portados: ART (Node4/16/48/256 + SSE), MemoryDoc L0–L7 (formato NMD1
+  byte-idêntico ao OS mãe), BQ + Hamming SIMD (AVX-512/AVX2/scalar), engine
+  instance-based
+- Novos: `Storage` trait + `InMemory` + `FileStorage` (append-log com CRC32,
+  crash-safe) + facade `Sgdb` (`remember_exchange`, `remember_semantic`,
+  `recall`, `rag_context`, `remember_fact`, `scan_prefix`, `checkpoint`)
+- Contrato de API completo em [`docs/api.md`](docs/api.md)
+
+A reference implementation roda em bare-metal no OS mãe (`k_ai::sgdb`, AGPL);
+este repo evolui separado (MIT OR Apache-2.0).
+
+## Uso rápido
+
+```rust
+use neural_sgdb::{Sgdb, FileStorage};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut db = Sgdb::open(FileStorage::open("agent_memory.db")?)?;
+
+    db.remember_exchange("qual o clima?", "sol, 24 graus")?;
+    db.remember_semantic("turno:1", "clima ensolarado em sao paulo", &emb)?;
+
+    let hits = db.recall(&query_emb, 5)?;
+    let ctx = db.rag_context(&query_emb, 3)?;
+    println!("{ctx}");
+    Ok(())
+}
+```
 
 ## Licença
 
@@ -47,8 +76,9 @@ Licenciado sob **MIT** **ou** **Apache-2.0** (dual license), à sua escolha.
 
 ## Roadmap
 
-- [ ] Extração do núcleo portátil (ART, MemoryDoc L0–L7, BQ + Hamming SIMD)
-- [ ] Trait de storage plugável (RAM → flash → file) e relógio/CPUID injetáveis
-- [ ] CRDT sync de memórias como feature opcional `p2p`
+- [x] Extração do núcleo portátil (ART, MemoryDoc L0–L7, BQ + Hamming SIMD)
+- [x] Trait de storage plugável (InMemory + FileStorage) e relógio/CPUID injetáveis
+- [ ] CRDT sync de memórias como feature opcional `p2p` (port de `crdt_sync`)
 - [ ] Benchmarks publicados (P50/P99, recall vs FP32)
+- [ ] Interop de storage TKLV byte a byte com o OS (FileStorage → formato TickvLite)
 - [ ] Camada MCP server para agentes externos consumirem memória

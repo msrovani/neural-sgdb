@@ -157,8 +157,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## Critérios de aceite da extração
 
 - [ ] `cargo test` no repo neural-sgdb passa (host) com `InMemory` + `FileStorage`
-- [ ] `cargo check --target x86_64-unknown-none` passa (no_std, sem features)
+- [ ] `cargo check --no-default-features --target x86_64-unknown-none` passa (no_std, alloc-only, zero deps)
 - [ ] Roundtrip `FileStorage`: put → reopen → get, sobrevive a crash simulado
-- [ ] Interop: arquivo `mem.db` gravado pelo neural-sgdb é legível pelo port do
-      OS (e vice-versa) — mesmo formato `TKLV`/`NMD1`
+- [ ] **Interop de documento (v0.1):** `MemoryDoc` (NMD1) — encode/decode
+      byte-idêntico ao do OS (`crates/k_ai/src/sgdb/memory_doc.rs`); um documento
+      NMD1 escrito por um é lido pelo outro
+- [ ] **Interop de storage (pós-v0.1):** `FileStorage` replicar o formato de
+      registros `TKLV`/`TKCK` do TickvLite para compatibilidade byte a byte de
+      volumes — adiado (FileStorage v0.1 usa append-log próprio, CRC por registro)
 - [ ] Zero dependência de `k_nano` / kernel no código do crate
+
+## Nota — relação com o OS (Modo 1)
+
+Repo separado, evolução independente. O neural-os-core **mantém** `k_ai::sgdb`
+interno (AGPL) — não há fiação (path dep nem versão) neste momento. O ponto de
+compatibilidade entre os dois é o **formato de documento NMD1** (acima). Se um
+dia o OS passar a consumir o produto do repo, será por versão publicada no
+crates.io, não por acoplamento de filesystem.
