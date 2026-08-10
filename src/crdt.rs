@@ -260,8 +260,11 @@ impl Transport for UdpTransport {
         loop {
             match self.socket.recv(&mut self.buf) {
                 Ok(n) if n >= 9 => {
+                    // parsing safety (maturation P2): leitura checada, sem unwrap
                     let node = self.buf[0];
-                    let v = u64::from_le_bytes(self.buf[1..9].try_into().unwrap());
+                    let mut vb = [0u8; 8];
+                    vb.copy_from_slice(&self.buf[1..9]);
+                    let v = u64::from_le_bytes(vb);
                     out.push((node, v));
                 }
                 Ok(_) => continue,

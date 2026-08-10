@@ -114,9 +114,9 @@ const MAX_KLEN: usize = 4096;
 const MAX_VLEN: usize = 1024 * 1024;
 
 /// Parse seguro de u32 LE: retorna `None` se o slice é curto — nunca panics
-/// em dados externos (maturation P2: parsing safety).
-#[cfg(feature = "file-storage")]
-fn le32(b: &[u8]) -> Option<u32> {
+/// em dados externos (maturation P2: parsing safety). `pub(crate)` para o
+/// codec TKLV (tickv.rs) reutilizar; puro e no_std-safe, sem gate.
+pub(crate) fn le32(b: &[u8]) -> Option<u32> {
     if b.len() < 4 {
         return None;
     }

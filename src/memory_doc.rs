@@ -267,10 +267,9 @@ impl MemoryDoc {
         }
         let layer = MemoryLayer::from_u8(data[4]).ok_or("bad layer")?;
         let mut off = 5;
-        if off + 4 > data.len() {
-            return Err("trunc keylen");
-        }
-        let klen = u32::from_le_bytes(data[off..off + 4].try_into().unwrap()) as usize;
+        // Parsing safety (maturation P2): leitura checada, sem unwrap em dados
+        // externos — helpers `rd_u32`/`rd_u64` retornam Option (bounds-checked)
+        let klen = rd_u32(data, off).ok_or("trunc keylen")? as usize;
         off += 4;
         if off + klen > data.len() {
             return Err("trunc key");
@@ -281,10 +280,7 @@ impl MemoryDoc {
         off += klen;
         let (clock, n) = VectorClock::decode(&data[off..]).ok_or("trunc clock")?;
         off += n;
-        if off + 4 > data.len() {
-            return Err("trunc plen");
-        }
-        let plen = u32::from_le_bytes(data[off..off + 4].try_into().unwrap()) as usize;
+        let plen = rd_u32(data, off).ok_or("trunc plen")? as usize;
         off += 4;
         if off + plen > data.len() {
             return Err("trunc payload");
@@ -297,17 +293,14 @@ impl MemoryDoc {
         let has_bv = data[off];
         off += 1;
         let bitvec = if has_bv == 1 {
-            if off + 4 > data.len() {
-                return Err("trunc bvlen");
-            }
-            let n = u32::from_le_bytes(data[off..off + 4].try_into().unwrap()) as usize;
+            let n = rd_u32(data, off).ok_or("trunc bvlen")? as usize;
             off += 4;
             if off + n * 8 > data.len() {
                 return Err("trunc bv");
             }
             let mut bv = Vec::with_capacity(n);
             for _ in 0..n {
-                bv.push(u64::from_le_bytes(data[off..off + 8].try_into().unwrap()));
+                bv.push(rd_u64(data, off).ok_or("trunc bv")?);
                 off += 8;
             }
             Some(bv)
@@ -322,6 +315,19 @@ impl MemoryDoc {
             bitvec,
         })
     }
+}
+
+/// Lê u32 LE em `off` sem unwrap — `None` se fora dos limites
+/// (parsing safety, maturation P2).
+fn rd_u32(data: &[u8], off: usize) -> Option<u32> {
+    let b = data.get(off..off.checked_add(4)?)?;
+    Some(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+}
+
+/// Lê u64 LE em `off` sem unwrap — `None` se fora dos limites.
+fn rd_u64(data: &[u8], off: usize) -> Option<u64> {
+    let b = data.get(off..off.checked_add(8)?)?;
+    Some(u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
 }
 
 /// Overlay zero-copy sobre buffer NMD1 (sem clonar payload).
@@ -355,10 +361,7 @@ impl<'a> MemoryDocView<'a> {
             return Err("trunc clock");
         }
         off += 72; // VectorClock fixed size
-        if off + 4 > data.len() {
-            return Err("trunc plen");
-        }
-        let plen = u32::from_le_bytes(data[off..off + 4].try_into().unwrap()) as usize;
+        let plen = rd_u32(data, off).ok_or("trunc plen")? as usize;
         off += 4;
         if off + plen > data.len() {
             return Err("trunc payload");

@@ -32,7 +32,7 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::storage::crc32;
+use crate::storage::{crc32, le32};
 
 /// Magic TKLV — 4º byte 'V' (valid); tombstone in-place troca por 0x00.
 pub const MAGIC: &[u8; 4] = b"TKLV";
@@ -158,8 +158,8 @@ pub fn scan_volume(data: &[u8]) -> ScanResult {
             off = (off + 512) & !511;
             continue;
         }
-        let klen = u32::from_le_bytes(hdr[4..8].try_into().unwrap()) as usize;
-        let vlen = u32::from_le_bytes(hdr[8..12].try_into().unwrap()) as usize;
+        let klen = le32(&hdr[4..8]).unwrap_or(0) as usize;
+        let vlen = le32(&hdr[8..12]).unwrap_or(0) as usize;
         // Bounds first (paridade com recover() do OS — hdr absurdo NÃO para o
         // scan; pula para o próximo boundary 512 e continua)
         if klen > MAX_KLEN || vlen > MAX_VLEN {
@@ -179,7 +179,7 @@ pub fn scan_volume(data: &[u8]) -> ScanResult {
             continue;
         }
         let body = &data[off as usize + HEADER..off as usize + HEADER + klen + vlen];
-        let want = u32::from_le_bytes(hdr[12..16].try_into().unwrap());
+        let want = le32(&hdr[12..16]).unwrap_or(0);
         if crc32(body) != want {
             out.corrupt += 1;
             off = (off + 512) & !511;
