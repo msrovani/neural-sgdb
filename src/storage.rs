@@ -26,6 +26,28 @@ impl core::fmt::Display for SgdbError {
 #[cfg(feature = "std")]
 impl std::error::Error for SgdbError {}
 
+/// Nível de durabilidade garantido por um backend (maturation P4).
+///
+/// Durabilidade ≠ persistência: "write retornou Ok" não significa "sobreviveu
+/// a power loss". Os níveis são cumulativos:
+///
+/// - `Buffered`: dados no buffer do OS — sobrevive a crash do processo, NÃO a
+///   power loss.
+/// - `Flushed`: write + flush — sobrevive a crash do processo; NÃO garante
+///   sobrevivência a power loss em hardware real.
+/// - `Durable`: write + flush + sync (fsync/fdatasync) — sobrevive a power
+///   loss.
+///
+/// O default do crate é `Flushed` (performance). `sync_durable()` é a
+/// operação explícita para quem precisa de `Durable` (ex: checkpoint) — o
+/// caller decide o custo.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Durability {
+    Buffered,
+    Flushed,
+    Durable,
+}
+
 /// Backend plugável. Semântica: append-log power-loss safe — `put` idempotente,
 /// `delete` grava tombstone; o crate garante CRC + recuperação de crash sobre
 /// qualquer impl que siga essa semântica.
@@ -35,6 +57,21 @@ pub trait Storage {
     fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, SgdbError>;
     fn scan_prefix(&mut self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, SgdbError>;
     fn delete(&mut self, key: &[u8]) -> Result<(), SgdbError>;
+
+    /// Nível de durabilidade garantido pelo `put` deste backend.
+    /// Default `Buffered` — backends que fazem flush por write reportam
+    /// `Flushed`; quem faz sync reporta `Durable`.
+    fn durability(&self) -> Durability {
+        Durability::Buffered
+    }
+
+    /// Persistência durável explícita (fsync/fdatasync quando suportado).
+    /// No-op por default; o backend reporta o nível real via `durability()`.
+    /// Não é chamado automaticamente pelo crate — o caller decide (ex:
+    /// checkpoint = Durable, turno = Flushed).
+    fn sync_durable(&mut self) -> Result<(), SgdbError> {
+        Ok(())
+    }
 }
 
 /// RAM-only (testes/prototipagem). Volátil — não persiste.
@@ -52,6 +89,10 @@ impl InMemory {
 impl Storage for InMemory {
     fn name(&self) -> &'static str {
         "in-memory"
+    }
+    fn durability(&self) -> Durability {
+        // RAM pura — não sobrevive a crash nem power loss
+        Durability::Buffered
     }
     fn put(&mut self, key: &[u8], val: &[u8]) -> Result<(), SgdbError> {
         self.map.insert(key.to_vec(), val.to_vec());
@@ -230,6 +271,22 @@ impl Storage for FileStorage {
     fn name(&self) -> &'static str {
         "file"
     }
+    fn durability(&self) -> Durability {
+        // write + flush por append → sobrevive a crash de processo; NÃO
+        // garante power loss (fsync é explícito via sync_durable)
+        Durability::Flushed
+    }
+    fn sync_durable(&mut self) -> Result<(), SgdbError> {
+        // fsync/fdatasync real: força dados do page cache para o dispositivo.
+        // Handle read+write: no Windows, FlushFileBuffers (sync_all) exige
+        // acesso de escrita — handle read-only falha.
+        let f = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&self.path)
+            .map_err(|_| SgdbError::Storage("open sync"))?;
+        f.sync_all().map_err(|_| SgdbError::Storage("sync_all"))
+    }
     fn put(&mut self, key: &[u8], val: &[u8]) -> Result<(), SgdbError> {
         self.append(key, val)?;
         self.map.insert(key.to_vec(), val.to_vec());
@@ -275,6 +332,29 @@ mod tests {
         s.delete(b"a").unwrap();
         assert!(s.get(b"a").unwrap().is_none());
         assert_eq!(s.scan_prefix(b"a").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn durability_levels_reported() {
+        // Durability honesta (maturation P4): InMemory = Buffered (RAM pura)
+        let im = InMemory::new();
+        assert_eq!(im.durability(), Durability::Buffered);
+        #[cfg(feature = "file-storage")]
+        {
+            // FileStorage = Flushed (write+flush, sem fsync automático)
+            let dir = std::env::temp_dir().join("neural_sgdb_test");
+            let _ = std::fs::create_dir_all(&dir);
+            let p = dir.join("dur.db");
+            let _ = std::fs::remove_file(&p);
+            let mut fs = FileStorage::open(&p).unwrap();
+            assert_eq!(fs.durability(), Durability::Flushed);
+            fs.put(b"k", b"v").unwrap();
+            // sync_durable explícito funciona (fsync real em arquivo)
+            assert!(fs.sync_durable().is_ok());
+            let mut fs2 = FileStorage::open(&p).unwrap();
+            assert_eq!(fs2.get(b"k").unwrap(), Some(b"v".to_vec()));
+            let _ = std::fs::remove_file(&p);
+        }
     }
 
     #[cfg(feature = "file-storage")]
