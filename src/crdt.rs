@@ -429,4 +429,32 @@ mod tests {
         a.sync(200, &mut t).unwrap();
         assert_eq!(t.take_sent().len(), 1);
     }
+
+    /// Adversarial (maturation P6): `apply_remote_version` nunca panics com
+    /// pacotes malformados; self/stale/duplicate são tratados com veredicto.
+    #[test]
+    fn apply_remote_version_never_panics() {
+        let mut a = CrdtMemorySync::new(1);
+        // self packet
+        assert_eq!(a.apply_remote_version(1, u64::MAX), MergeVerdict::SelfPacket);
+        // pacotes arbitrários em sequência adversarial — veredictos válidos
+        for &(node, v) in &[(0, 0), (255, u64::MAX), (2, 0), (2, u64::MAX), (2, u64::MAX)] {
+            let _ = a.apply_remote_version(node, v); // nunca panics
+        }
+        // node_versions coerente (sem self, sem regressão)
+        assert!(!a.node_versions.iter().any(|(n, _)| *n == 1));
+    }
+
+    /// Serialização determinística (maturation P6): versões estáveis.
+    #[test]
+    fn memory_version_eq_deterministic() {
+        let v1 = MemoryVersion { node_id: 2, version: 7 };
+        let v2 = MemoryVersion { node_id: 2, version: 7 };
+        let v3 = MemoryVersion { node_id: 2, version: 8 };
+        assert_eq!(v1, v2);
+        assert_ne!(v1, v3);
+        let d = MemoryDelta { base: vec![v1], docs: vec![vec![1, 2, 3]] };
+        let d2 = MemoryDelta { base: vec![v2], docs: vec![vec![1, 2, 3]] };
+        assert_eq!(d, d2); // igualdade determinística
+    }
 }

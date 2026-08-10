@@ -352,6 +352,39 @@ mod tests {
         assert_eq!(scan.map.get("k1").map(|v| v.as_slice()), Some(&b"v1"[..]));
     }
 
+    /// Fuzz determinístico (maturation P6): scan_volume NUNCA panics com
+    /// entrada corrompida/truncada — falha segura (corrupt/truncated) em vez
+    /// de panic.
+    #[test]
+    fn scan_never_panics_on_malformed() {
+        let mut state = 0xDEAD_BEEF_CAFE_F00Du64;
+        let bytes = |n: usize, s: &mut u64| -> Vec<u8> {
+            (0..n)
+                .map(|_| {
+                    *s = s.wrapping_mul(1103515245).wrapping_add(12345);
+                    ((*s >> 32) & 0xFF) as u8
+                })
+                .collect()
+        };
+        for len in 0..256usize {
+            for _ in 0..8 {
+                let data = bytes(len, &mut state);
+                let _ = scan_volume(&data); // nunca panics
+            }
+        }
+        // volume válido truncado em todo ponto
+        let mut good = Vec::new();
+        for i in 0..10 {
+            good.extend_from_slice(&encode_record(
+                alloc::format!("md/L3/{i:04}").as_bytes(),
+                b"payload",
+            ));
+        }
+        for cut in 0..good.len() {
+            let _ = scan_volume(&good[..cut]); // truncado em todo ponto
+        }
+    }
+
     #[test]
     fn fnv1a64_known_vector() {
         // Vetor FNV-1a 64 conhecido: fnv1a64("a") = 0xaf63dc4c8601ec8c

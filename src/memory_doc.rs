@@ -464,6 +464,37 @@ mod tests {
         assert!(MemoryDocView::parse(b"XXXX").is_err());
     }
 
+    /// Fuzz determinístico (maturation P6): decoders NUNCA panics com entrada
+    /// corrompida/truncada — falha segura (Err) em vez de panic.
+    #[test]
+    fn decode_never_panics_on_malformed() {
+        // sementes determinísticas de LCG — entrada adversarial variada
+        let mut state = 0x1234_5678_9ABC_DEF0u64;
+        let bytes = |n: usize, s: &mut u64| -> Vec<u8> {
+            (0..n)
+                .map(|_| {
+                    *s = s.wrapping_mul(1103515245).wrapping_add(12345);
+                    ((*s >> 32) & 0xFF) as u8
+                })
+                .collect()
+        };
+        for len in 0..64usize {
+            for _ in 0..32 {
+                let data = bytes(len, &mut state);
+                // decode e view nunca panics
+                let _ = MemoryDoc::decode(&data);
+                let _ = MemoryDocView::parse(&data);
+            }
+        }
+        // casos específicos: magic ok mas campos truncados
+        let mut good = MemoryDoc::new(MemoryLayer::L4Semantic, "k", vec![0xAA]);
+        good.bitvec = Some(vec![1, 2, 3]);
+        let enc = good.encode();
+        for cut in 0..enc.len() {
+            let _ = MemoryDoc::decode(&enc[..cut]); // truncado em todo ponto
+        }
+    }
+
     #[test]
     fn golden_nmd1_bytes() {
         // Byte-exact golden (P2 — format versioning): fixed NMD1 layout by
