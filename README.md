@@ -91,6 +91,16 @@ semantic recall, provide your own embeddings via `remember_semantic` / `recall`.
 ART get P50≈200ns, ART insert P50≈800ns, BQ top-5 ≈310µs over 10k×1024 dims,
 recall@5 BQ vs FP32-exact = 100% (measured 1-bit quantization trade-off).
 
+## Docs
+
+- **API contract** — [`docs/api.md`](docs/api.md) (Storage trait, seams,
+  migration map, format versioning, feature matrix, CRDT policy)
+- **Architecture v0.2 (design)** — [`docs/architecture/`](docs/architecture/)
+  — Memory Model (01), Lifecycle (02), Retrieval (03), Distributed (04),
+  Storage (05), Cognitive API (06) — formalizes the *cognitive memory system*
+  step on top of the current *memory substrate*
+- **AI agent guides** — `AGENTS.md`, `CLAUDE.md`, `codemap.md` (atlas)
+
 ## License
 
 Licensed under **MIT** **or** **Apache-2.0** (dual license), your choice.

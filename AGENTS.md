@@ -1,8 +1,9 @@
 # AGENTS.md — neural-sgdb
 
 Guide for AI agents (OpenCode, Cursor, Windsurf, Claude Code) working in this
-repo. **Read `codemap.md` (atlas) and `docs/api.md` (contract) before editing
-code.**
+repo. **Read `codemap.md` (atlas), `docs/api.md` (contract) and
+`docs/architecture/` (v0.2 design — Memory Model, Lifecycle, Retrieval,
+Distributed, Storage, Cognitive API) before editing code.**
 
 ## Repository Map
 
