@@ -106,6 +106,15 @@ Licenciado sob **MIT** **ou** **Apache-2.0** (dual license), à sua escolha.
 - [x] Camada MCP server (`cargo run --release --example mcp_server` — expõe
       `remember`/`recall`/`rag_context` a agentes de IA via MCP sobre stdio;
       embedding demo por trigramas)
-- [ ] Interop de storage TKLV byte a byte com o OS (FileStorage → formato
-      TickvLite) — **adiado**: requer o leitor TickvLite do OS no host para
-      verificação honesta; NMD1 (documento) já é interoperável
+- [x] **Interop de storage TKLV/TKCK byte a byte com o OS** (`src/tickv.rs`:
+      codec byte-exato + backend `TickvFile` legível pelo OS; golden test +
+      re-parse `scan_volume`; NMD1 e TKLV interoperáveis)
+
+## Interop com o neural-os-core
+
+- **NMD1 (documento):** `MemoryDoc` encode/decode byte-idêntico ao OS
+- **TKLV/TKCK (storage):** `tickv::encode_record`/`scan_volume` replicam o
+  formato do TickvLite (`crates/k_nano/src/storage/tickv.rs`) — um volume
+  gravado por um lado é lido pelo outro. `TickvFile` grava records 512-alinhados
+  com CRC32 IEEE sobre key‖val; tombstone `TKL\0`/`vlen=0`; EOF all-0x00/0xFF.
+  Nota: sem checkpoint no v0.1 (o OS monta por scan completo); GC em v0.2.

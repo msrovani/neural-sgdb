@@ -52,6 +52,7 @@ pub mod bq;
 pub mod hamming_dispatch;
 pub mod memory_doc;
 pub mod storage;
+pub mod tickv;
 
 #[cfg(feature = "p2p")]
 pub mod crdt;
@@ -68,7 +69,13 @@ pub use hamming_dispatch::{
 pub use memory_doc::{MemoryDoc, MemoryDocView, MemoryLayer, VectorClock};
 pub use sgdb::{Hit, Sgdb};
 pub use storage::{InMemory, Storage, SgdbError};
+pub use tickv::{
+    encode_ckpt, encode_record, fnv1a64, scan_volume, CKPT_KEY, MAGIC, MAX_KLEN, MAX_VLEN,
+    record_size,
+};
 #[cfg(feature = "std")]
 pub use storage::FileStorage;
+#[cfg(feature = "std")]
+pub use tickv::TickvFile;
 #[cfg(feature = "p2p")]
 pub use crdt::{demo as crdt_demo, CrdtMemorySync, Transport, UdpTransport, DEFAULT_P2P_PORT};

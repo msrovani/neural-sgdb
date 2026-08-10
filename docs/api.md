@@ -156,21 +156,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Critérios de aceite da extração
 
-- [ ] `cargo test` no repo neural-sgdb passa (host) com `InMemory` + `FileStorage`
-- [ ] `cargo check --no-default-features --target x86_64-unknown-none` passa (no_std, alloc-only, zero deps)
-- [ ] Roundtrip `FileStorage`: put → reopen → get, sobrevive a crash simulado
-- [ ] **Interop de documento (v0.1):** `MemoryDoc` (NMD1) — encode/decode
+- [x] `cargo test` no repo neural-sgdb passa (host) com `InMemory` + `FileStorage` + `TickvFile`
+- [x] `cargo check --no-default-features --target x86_64-unknown-none` passa (no_std, alloc-only, zero deps)
+- [x] Roundtrip `FileStorage`: put → reopen → get, sobrevive a crash simulado
+- [x] **Interop de documento (v0.1):** `MemoryDoc` (NMD1) — encode/decode
       byte-idêntico ao do OS (`crates/k_ai/src/sgdb/memory_doc.rs`); um documento
       NMD1 escrito por um é lido pelo outro
-- [ ] **Interop de storage (pós-v0.1):** `FileStorage` replicar o formato de
-      registros `TKLV`/`TKCK` do TickvLite para compatibilidade byte a byte de
-      volumes — adiado (FileStorage v0.1 usa append-log próprio, CRC por registro)
-- [ ] Zero dependência de `k_nano` / kernel no código do crate
+- [x] **Interop de storage (v0.1.1):** codec TKLV/TKCK byte-exato do TickvLite do
+      OS em `src/tickv.rs` (`encode_record`/`scan_volume`/`encode_ckpt`/`fnv1a64`)
+      + backend `TickvFile` (grava records 512-alinhados, CRC32 IEEE sobre key‖val,
+      tombstone `TKL\0`/`vlen=0`, EOF all-0x00/0xFF). Verificado por teste de ouro
+      (golden bytes) + re-parse `scan_volume` (mesma semântica do `recover()` do
+      OS) + paridade com InMemory. Nota: `TickvFile` não escreve checkpoint
+      (v0.1) — o OS monta por scan completo; GC/compactação fica para v0.2
+- [x] Zero dependência de `k_nano` / kernel no código do crate
 
 ## Nota — relação com o OS (Modo 1)
 
 Repo separado, evolução independente. O neural-os-core **mantém** `k_ai::sgdb`
-interno (AGPL) — não há fiação (path dep nem versão) neste momento. O ponto de
-compatibilidade entre os dois é o **formato de documento NMD1** (acima). Se um
-dia o OS passar a consumir o produto do repo, será por versão publicada no
-crates.io, não por acoplamento de filesystem.
+interno (AGPL) — não há fiação (path dep nem versão) neste momento. Os pontos de
+compatibilidade entre os dois são: **formato de documento NMD1** (byte-idêntico)
+e **formato de storage TKLV/TKCK** (`src/tickv.rs`, byte-exato). Se um dia o OS
+passar a consumir o produto do repo, será por versão publicada no crates.io, não
+por acoplamento de filesystem.
