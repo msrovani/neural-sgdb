@@ -200,8 +200,25 @@ impl Sgdb {
                 },
             ));
         }
-        out.sort_by_key(|(score, _)| *score);
-        Ok(out.into_iter().take(k).map(|(_, h)| h).collect())
+        // Dedupe por storage key mantendo o MELHOR score: um overwrite em L4
+        // re-insere no BQ (append) sem remover o id antigo — sem dedupe, o
+        // recall devolveria a mesma memória 2x (ids → mesma key → mesmo doc).
+        let mut best: alloc::collections::BTreeMap<String, (u32, Hit)> =
+            alloc::collections::BTreeMap::new();
+        for (score, h) in out {
+            match best.get(&h.key) {
+                Some((s0, _)) if *s0 <= score => continue, // mantém o melhor
+                _ => {
+                    best.insert(h.key.clone(), (score, h));
+                }
+            }
+        }
+        // Sort determinístico: score u32 (paridade OS: fp32 0..10000 vs ham
+        // 0..64 no mesmo espaço) + tie-break estável por storage key — mesma
+        // DB + mesma query + mesmo k ⇒ mesmos resultados ordenados.
+        let mut ranked: Vec<(u32, Hit)> = best.into_values().collect();
+        ranked.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.key.cmp(&b.1.key)));
+        Ok(ranked.into_iter().take(k).map(|(_, h)| h).collect())
     }
 
     /// RAG context: recall + fetch payload + formato string pro prompt.
@@ -399,5 +416,56 @@ mod tests {
         assert_eq!(l1.len(), 1);
         assert_eq!(l2.len(), 1);
         assert_eq!(l3.len(), 1);
+    }
+
+    // ── Index/storage consistency: overwrite + determinism (maturation P2) ──
+
+    #[test]
+    fn overwrite_no_duplicate_recall() {
+        // Overwrite em L4 re-insere no BQ (append) sem remover o id antigo —
+        // o recall deve deduplicar por storage key mantendo o melhor score.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("k1", "old", &[1.0, -1.0, 1.0, -1.0]).unwrap();
+        db.remember_semantic("k1", "new", &[-1.0, 1.0, -1.0, 1.0]).unwrap();
+        let hits = db.recall(&[-1.0, 1.0, -1.0, 1.0], 10).unwrap();
+        // apenas UMA entrada para k1 (dedupe por key), com o melhor score
+        let k1: Vec<&Hit> = hits.iter().filter(|h| h.key.contains("k1")).collect();
+        assert_eq!(k1.len(), 1, "overwrite duplicou no recall: {:?}", hits);
+        assert_eq!(k1[0].text, "new");
+    }
+
+    #[test]
+    fn recall_deterministic() {
+        // Mesma DB + mesma query + mesmo k ⇒ mesmos resultados na mesma ordem
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        for i in 0..20 {
+            let emb = [1.0, -1.0, (i as f32 - 10.0) / 10.0, -1.0];
+            db.remember_semantic(&format!("d{i}"), &format!("doc {i}"), &emb).unwrap();
+        }
+        let q = [1.0, -1.0, 0.0, -1.0];
+        let a = db.recall(&q, 10).unwrap();
+        let b = db.recall(&q, 10).unwrap();
+        assert_eq!(a.len(), b.len());
+        for (x, y) in a.iter().zip(b.iter()) {
+            assert_eq!(x.key, y.key, "ordem não determinística");
+            assert_eq!(x.dist.to_bits(), y.dist.to_bits());
+        }
+    }
+
+    #[test]
+    fn recall_tie_break_by_key() {
+        // Scores empatados: tie-break determinístico por storage key
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        // embeddings idênticos → mesmo score; keys diferentes → ordem por key
+        db.remember_semantic("z", "z-doc", &[1.0, 1.0, 1.0, 1.0]).unwrap();
+        db.remember_semantic("a", "a-doc", &[1.0, 1.0, 1.0, 1.0]).unwrap();
+        db.remember_semantic("m", "m-doc", &[1.0, 1.0, 1.0, 1.0]).unwrap();
+        let hits = db.recall(&[1.0, 1.0, 1.0, 1.0], 10).unwrap();
+        let keys: Vec<&str> = hits.iter().map(|h| h.key.as_str()).collect();
+        // 3 entradas, ordenadas por key (a, m, z) no empate
+        assert_eq!(keys.len(), 3);
+        assert!(keys[0].ends_with("/a"), "esperava /a primeiro: {keys:?}");
+        assert!(keys[1].ends_with("/m"), "esperava /m segundo: {keys:?}");
+        assert!(keys[2].ends_with("/z"), "esperava /z terceiro: {keys:?}");
     }
 }
