@@ -53,6 +53,9 @@ pub mod hamming_dispatch;
 pub mod memory_doc;
 pub mod storage;
 
+#[cfg(feature = "p2p")]
+pub mod crdt;
+
 mod engine;
 mod sgdb;
 
@@ -67,3 +70,5 @@ pub use sgdb::{Hit, Sgdb};
 pub use storage::{InMemory, Storage, SgdbError};
 #[cfg(feature = "std")]
 pub use storage::FileStorage;
+#[cfg(feature = "p2p")]
+pub use crdt::{demo as crdt_demo, CrdtMemorySync, Transport, UdpTransport, DEFAULT_P2P_PORT};

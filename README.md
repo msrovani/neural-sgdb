@@ -78,7 +78,8 @@ Licenciado sob **MIT** **ou** **Apache-2.0** (dual license), à sua escolha.
 
 - [x] Extração do núcleo portátil (ART, MemoryDoc L0–L7, BQ + Hamming SIMD)
 - [x] Trait de storage plugável (InMemory + FileStorage) e relógio/CPUID injetáveis
-- [ ] CRDT sync de memórias como feature opcional `p2p` (port de `crdt_sync`)
+- [x] CRDT sync de memórias como feature opcional `p2p` (`CrdtMemorySync` +
+      trait `Transport` + `UdpTransport` std; merge LWW simétrico)
 - [ ] Benchmarks publicados (P50/P99, recall vs FP32)
 - [ ] Interop de storage TKLV byte a byte com o OS (FileStorage → formato TickvLite)
 - [ ] Camada MCP server para agentes externos consumirem memória

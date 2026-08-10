@@ -9,3 +9,4 @@ repository = "https://github.com/msrovani/neural-sgdb"
 [features]
 default = ["std"]
 std = []
+p2p = ["std"]
