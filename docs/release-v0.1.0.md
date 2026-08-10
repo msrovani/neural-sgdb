@@ -1,35 +1,35 @@
 # neural-sgdb v0.1.0
 
-**Banco de memória persistente e transferível para agentes de IA — memórias, não dados.**
+**Persistent, transferable memory database for AI agents — memories, not data.**
 
-Núcleo extraído do [neural-os-core](https://github.com/msrovani/neural-os-core)
-(`k_ai::sgdb`, ADR-0063) como projeto comunitário independente: **zero deps,
+Core extracted from [neural-os-core](https://github.com/msrovani/neural-os-core)
+(`k_ai::sgdb`, ADR-0063) as an independent community project: **zero deps,
 dual-mode `no_std` + `std`, MIT OR Apache-2.0**.
 
-## O que entrega
+## What it delivers
 
-- **8 camadas de memória L0–L7** (Sensory → Working → Episódica → Semântica →
-  Procedural → Identidade) com formato `MemoryDoc` (NMD1) byte-idêntico ao OS
-- **`remember` / `recall` semântico** — BQ (quantização binária) + rescore FP32,
-  dispatch SIMD AVX-512 / AVX2 / scalar
-- **Índice ART** (Adaptive Radix Tree) O(k), Node4→16→48→256
-- **Storage plugável** via `Storage` trait — `InMemory`, `FileStorage`
-  (append-log CRC32 crash-safe) e **`TickvFile` (formato TKLV byte-exato do
-  TickvLite do OS — interop de volumes)**
-- **CRDT memory sync** (feature `p2p`) — `CrdtMemorySync` + `Transport` +
-  `UdpTransport`, merge LWW simétrico
+- **8 memory layers L0–L7** (Sensory → Working → Episodic → Semantic →
+  Procedural → Identity) with `MemoryDoc` (NMD1) format byte-identical to the OS
+- **Semantic `remember` / `recall`** — BQ (binary quantization) + FP32 rescore,
+  SIMD dispatch AVX-512 / AVX2 / scalar
+- **ART index** (Adaptive Radix Tree) O(k), Node4→16→48→256
+- **Pluggable storage** via `Storage` trait — `InMemory`, `FileStorage`
+  (CRC32 crash-safe append-log) and **`TickvFile` (byte-exact TKLV format of
+  the OS TickvLite — volume interop)**
+- **CRDT memory sync** (`p2p` feature) — `CrdtMemorySync` + `Transport` +
+  `UdpTransport`, symmetric LWW merge
 - **Benchmarks** — ART P50/P99, BQ top-k, recall BQ vs FP32
-- **MCP server** — `remember`/`recall`/`rag_context` para agentes de IA
-  (Claude Code, Cursor, OpenCode) via MCP sobre stdio
+- **MCP server** — `remember`/`recall`/`rag_context` for AI agents
+  (Claude Code, Cursor, OpenCode) via MCP over stdio
 
-## Verificação
+## Verification
 
-- `cargo test` — 30+1 testes (default), 34+1 com `p2p`
-- `cargo check --no-default-features --target x86_64-unknown-none` — limpo
-- Interop: NMD1 e TKLV/TKCK verificados por golden test + re-parse
-  (`scan_volume`, semântica do `recover()` do OS)
+- `cargo test` — 30+1 tests (default), 34+1 with `p2p`
+- `cargo check --no-default-features --target x86_64-unknown-none` — clean
+- Interop: NMD1 and TKLV/TKCK verified by golden test + re-parse
+  (`scan_volume`, OS `recover()` semantics)
 
 ## Roadmap
 
-6/6 completo. Próximos (v0.2): GC/compactação do `TickvFile`, checkpoint TKCK
-no backend, CI GitHub Actions.
+6/6 complete. Next (v0.2): `TickvFile` GC/compaction, TKCK checkpoint in the
+backend, GitHub Actions CI.

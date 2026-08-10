@@ -7,8 +7,10 @@ description = "Persistent, transferable memory substrate for AI agents (no_std +
 repository = "https://github.com/msrovani/neural-sgdb"
 
 [features]
-default = ["std"]
+default = ["std", "file-storage", "simd-runtime"]
 std = []
+file-storage = ["std"]
+simd-runtime = ["std"]
 p2p = ["std"]
 
 [dev-dependencies]

@@ -1,7 +1,7 @@
 # CLAUDE.md — neural-sgdb
 
-Guia para Claude Code trabalhar neste repo. **Leia `AGENTS.md` (regras + API
-rápida), `codemap.md` (atlas) e `docs/api.md` (contrato) antes de editar código.**
+Guide for Claude Code working in this repo. **Read `AGENTS.md` (rules + quick
+API), `codemap.md` (atlas) and `docs/api.md` (contract) before editing code.**
 
 ## Repository Map
 
@@ -15,26 +15,26 @@ Before working on any task, read `codemap.md` to understand:
 For deep work on a specific folder, also read that folder's `codemap.md`
 (`src/codemap.md`, `examples/codemap.md`).
 
-## Resumo executivo
+## Executive summary
 
-Banco de memória para agentes de IA (**memórias, não dados**): camadas L0–L7,
-recall semântico BQ + FP32 (sem FAISS/HNSW), índice ART O(k), storage plugável,
-CRDT p2p, MCP server. Zero deps, `no_std` + `std`, MIT OR Apache-2.0. Interop
-com o neural-os-core via NMD1 e TKLV byte-idênticos.
+Memory database for AI agents (**memories, not data**): L0–L7 layers, semantic
+recall BQ + FP32 (no FAISS/HNSW), O(k) ART index, pluggable storage, CRDT p2p,
+MCP server. Zero deps, `no_std` + `std`, MIT OR Apache-2.0. Interop with
+neural-os-core via byte-identical NMD1 and TKLV formats.
 
-## Regras essenciais (detalhes no AGENTS.md)
+## Essential rules (details in AGENTS.md)
 
-1. **Zero deps no `[dependencies]`** — só `alloc`/`std`; dev-deps só p/ examples
-2. **`cargo check --no-default-features --target x86_64-unknown-none`** deve passar
-3. **`f32::sqrt` não existe no core** p/ x86_64-unknown-none — use `sqrt_f32`
-4. **Formatos NMD1/TKLV são contratos byte-idênticos ao OS** — não alterar layout
-5. **Verificação**: `cargo test` (+ `--features p2p`) e ambos `cargo check`
+1. **Zero deps in `[dependencies]`** — only `alloc`/`std`; dev-deps only for examples
+2. **`cargo check --no-default-features --target x86_64-unknown-none`** must pass
+3. **`f32::sqrt` does not exist in core** for x86_64-unknown-none — use `sqrt_f32`
+4. **NMD1/TKLV formats are byte-identical contracts with the OS** — do not change layout
+5. **Verification**: `cargo test` (+ `--features p2p`) and both `cargo check`
 
-## Comandos
+## Commands
 
 ```bash
-cargo test                                   # 30+1 testes
-cargo test --features p2p                    # 34+1
+cargo test                                   # 31+1 tests
+cargo test --features p2p                    # 35+1
 cargo run --release --example bench          # benchmarks
 cargo run --release --example mcp_server     # MCP server
 cargo check --no-default-features --target x86_64-unknown-none

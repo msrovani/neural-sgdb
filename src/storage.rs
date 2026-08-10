@@ -91,19 +91,20 @@ pub fn crc32(data: &[u8]) -> u32 {
     !crc
 }
 
-/// Append-log em arquivo (`std`): registros `[klen u32][vlen u32][crc u32][key][val]`,
-/// tombstone = vlen `u32::MAX`. Ao abrir, valida CRC de cada registro e trunca
-/// cauda corrompida (crash) — registros anteriores intactos.
-#[cfg(feature = "std")]
+/// Append-log em arquivo (feature `file-storage`): registros
+/// `[klen u32][vlen u32][crc u32][key][val]`, tombstone = vlen `u32::MAX`.
+/// Ao abrir, valida CRC de cada registro e trunca cauda corrompida (crash) —
+/// registros anteriores intactos.
+#[cfg(feature = "file-storage")]
 pub struct FileStorage {
     path: std::path::PathBuf,
     map: BTreeMap<Vec<u8>, Vec<u8>>,
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "file-storage")]
 const TOMBSTONE: u32 = u32::MAX;
 
-#[cfg(feature = "std")]
+#[cfg(feature = "file-storage")]
 impl FileStorage {
     pub fn open(path: impl AsRef<std::path::Path>) -> std::io::Result<Self> {
         let path = path.as_ref().to_path_buf();
@@ -123,7 +124,11 @@ impl FileStorage {
                 }
                 let key = &data[off + 12..off + 12 + klen];
                 let val = &data[off + 12 + klen..end];
-                if crc32(key) != crc {
+                // CRC cobre key‖val (integridade do valor — bit rot não passa)
+                let mut kv = Vec::with_capacity(klen + val.len());
+                kv.extend_from_slice(key);
+                kv.extend_from_slice(val);
+                if crc32(&kv) != crc {
                     break; // corrompido
                 }
                 if vlen == TOMBSTONE {
@@ -157,7 +162,11 @@ impl FileStorage {
         let mut buf = Vec::with_capacity(12 + key.len() + val.len());
         buf.extend_from_slice(&(key.len() as u32).to_le_bytes());
         buf.extend_from_slice(&vlen.to_le_bytes());
-        buf.extend_from_slice(&crc32(key).to_le_bytes());
+        // CRC cobre key‖val
+        let mut kv = Vec::with_capacity(key.len() + val.len());
+        kv.extend_from_slice(key);
+        kv.extend_from_slice(val);
+        buf.extend_from_slice(&crc32(&kv).to_le_bytes());
         buf.extend_from_slice(key);
         buf.extend_from_slice(val);
         let mut f = std::fs::OpenOptions::new()
@@ -171,7 +180,7 @@ impl FileStorage {
     }
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "file-storage")]
 impl Storage for FileStorage {
     fn name(&self) -> &'static str {
         "file"
@@ -223,7 +232,7 @@ mod tests {
         assert_eq!(s.scan_prefix(b"a").unwrap().len(), 1);
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(feature = "file-storage")]
     #[test]
     fn file_roundtrip() {
         let dir = std::env::temp_dir().join("neural_sgdb_test");
@@ -243,7 +252,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(feature = "file-storage")]
     #[test]
     fn file_crash_tail() {
         use std::io::Write;
@@ -271,7 +280,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(feature = "file-storage")]
     #[test]
     fn file_delete_tombstone() {
         let dir = std::env::temp_dir().join("neural_sgdb_test");

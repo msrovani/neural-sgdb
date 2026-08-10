@@ -1,58 +1,59 @@
 # neural-sgdb
 
-**Banco de memória persistente e transferível para agentes de IA.**
+**Persistent, transferable memory database for AI agents.**
 
-> Memórias, não dados.
+> Memories, not data.
 
-`neural-sgdb` é um substrato de memória para sistemas de IA: o que ele armazena,
-sincroniza e transfere são **memórias** — com camada cognitiva, vector clock e
-identidade — não pacotes de dados genéricos.
+`neural-sgdb` is a memory substrate for AI systems: what it stores, syncs and
+transfers are **memories** — with cognitive layer, vector clock and identity —
+not generic data packets.
 
-Nascido dentro do [neural-os-core](https://github.com/msrovani/neural-os-core),
-um OS bare-metal com IA desde o boot, este projeto é a extração independente do
-seu sistema de gestão de memórias (SGDB) para uso da comunidade.
+Born inside [neural-os-core](https://github.com/msrovani/neural-os-core), a
+bare-metal OS with AI from boot, this project is the independent extraction of
+its memory management system (SGDB) for community use.
 
-## O que ele faz
+## What it does
 
-- **8 camadas de memória (L0–L7):** Sensory → Working → Episódica Curta/Longa →
-  Semântica → Procedural → Identidade
-- **`remember` / `recall` semântico:** busca vetorial binária quantizada (BQ) com
-  dispatch SIMD (AVX-512 / AVX2 / scalar), sem dependências externas (sem FAISS,
-  sem HNSW)
-- **Transferência de memórias entre nós:** sincronização CRDT (last-write-wins)
-  — memórias viajam entre agentes/instâncias com versionamento, não pacotes
-- **Persistência power-loss safe:** append-log com CRC; memória sobrevive a
-  crash/reinício (checkpoint/restore)
-- **Busca por chave/fato em O(k):** índice ART (Adaptive Radix Tree)
-  Node4→16→48→256, sem rebalanceamento
-- **`no_std` + `std`:** roda em bare-metal e em aplicações host — um único núcleo
+- **8 memory layers (L0–L7):** Sensory → Working → Short/Long-term Episodic →
+  Semantic → Procedural → Identity
+- **Semantic `remember` / `recall`:** binary-quantized vector search (BQ) with
+  SIMD dispatch (AVX-512 / AVX2 / scalar), no external dependencies (no FAISS,
+  no HNSW)
+- **Memory transfer between nodes:** CRDT synchronization (last-write-wins) —
+  memories travel between agents/instances with versioning, not packets
+- **Power-loss safe persistence:** append-log with CRC; memory survives
+  crash/restart (checkpoint/restore)
+- **O(k) key/fact lookup:** ART (Adaptive Radix Tree) index Node4→16→48→256,
+  no rebalancing
+- **`no_std` + `std`:** runs on bare-metal and host applications — one core
 
-## Por que memórias?
+## Why memories?
 
-Agentes de IA hoje têm contexto efêmero. `neural-sgdb` dá a eles um cérebro
-persistente: camadas de memória com semântica real, recall semântico em
-microssegundos e a capacidade de **transferir memórias entre instâncias** —
-sem SQL, sem filesystem tradicional, sem runtime externo.
+AI agents today have ephemeral context. `neural-sgdb` gives them a persistent
+brain: memory layers with real semantics, microsecond semantic recall and the
+ability to **transfer memories between instances** — no SQL, no traditional
+filesystem, no external runtime.
 
-## Estado
+## Status
 
-**v0.1 extraído** ✅ — o núcleo portátil está no repo como crate `neural-sgdb`
-dual-mode (`no_std` + `std`, zero dependências):
+**v0.1 extracted** ✅ — the portable core lives in this repo as the
+`neural-sgdb` crate, dual-mode (`no_std` + `std`, zero dependencies):
 
-- `cargo test` no host: **20 testes + doc-test passando**
-- `cargo check --no-default-features --target x86_64-unknown-none`: **limpo**
-- Portados: ART (Node4/16/48/256 + SSE), MemoryDoc L0–L7 (formato NMD1
-  byte-idêntico ao OS mãe), BQ + Hamming SIMD (AVX-512/AVX2/scalar), engine
-  instance-based
-- Novos: `Storage` trait + `InMemory` + `FileStorage` (append-log com CRC32,
-  crash-safe) + facade `Sgdb` (`remember_exchange`, `remember_semantic`,
-  `recall`, `rag_context`, `remember_fact`, `scan_prefix`, `checkpoint`)
-- Contrato de API completo em [`docs/api.md`](docs/api.md)
+- `cargo test` on host: **30 tests + doc-test passing**
+- `cargo check --no-default-features --target x86_64-unknown-none`: **clean**
+- Ported: ART (Node4/16/48/256 + SSE), MemoryDoc L0–L7 (NMD1 format
+  byte-identical to the parent OS), BQ + Hamming SIMD (AVX-512/AVX2/scalar),
+  instance-based engine
+- New: `Storage` trait + `InMemory` + `FileStorage` (CRC32 append-log,
+  crash-safe) + `TickvFile` (TKLV byte-exact OS format) + `Sgdb` facade
+  (`remember_exchange`, `remember_semantic`, `recall`, `rag_context`,
+  `remember_fact`, `scan_prefix`, `checkpoint`)
+- Full API contract in [`docs/api.md`](docs/api.md)
 
-A reference implementation roda em bare-metal no OS mãe (`k_ai::sgdb`, AGPL);
-este repo evolui separado (MIT OR Apache-2.0).
+The reference implementation runs on bare-metal in the parent OS
+(`k_ai::sgdb`, AGPL); this repo evolves separately (MIT OR Apache-2.0).
 
-## Uso rápido
+## Quick start
 
 ```rust
 use neural_sgdb::{Sgdb, FileStorage};
@@ -60,8 +61,8 @@ use neural_sgdb::{Sgdb, FileStorage};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut db = Sgdb::open(FileStorage::open("agent_memory.db")?)?;
 
-    db.remember_exchange("qual o clima?", "sol, 24 graus")?;
-    db.remember_semantic("turno:1", "clima ensolarado em sao paulo", &emb)?;
+    db.remember_exchange("how's the weather?", "sunny, 24 degrees")?;
+    db.remember_semantic("turn:1", "sunny weather in sao paulo", &emb)?;
 
     let hits = db.recall(&query_emb, 5)?;
     let ctx = db.rag_context(&query_emb, 3)?;
@@ -70,51 +71,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-## MCP (agentes de IA)
+## MCP (AI agents)
 
-`cargo run --release --example mcp_server` expõe `remember` / `recall` /
-`rag_context` como MCP tools (JSON-RPC 2.0 sobre stdio, handshake
-`2025-11-25`) — conectável a Claude Code, Cursor e OpenCode:
+`cargo run --release --example mcp_server` exposes `remember` / `recall` /
+`rag_context` as MCP tools (JSON-RPC 2.0 over stdio, `2025-11-25` handshake) —
+connectable to Claude Code, Cursor and OpenCode:
 
 ```bash
 # Claude Code
 claude mcp add neural-sgdb -- cargo run --release --example mcp_server
 ```
 
-⚠️ O embedding de recall no MCP é de **demonstração** (hash de trigramas);
-para recall semântico real, forneça embeddings próprios via `remember_semantic`
-/ `recall`.
+⚠️ The MCP recall embedding is a **demo** (character-trigram hash); for real
+semantic recall, provide your own embeddings via `remember_semantic` / `recall`.
 
 ## Benchmarks
 
-`cargo run --release --example bench` — números do ambiente local (AVX2):
-ART get P50≈200ns, ART insert P50≈800ns, BQ top-5 ≈310µs em 10k×1024 dims,
-recall@5 BQ vs FP32-exact = 100% (trade-off da quantização 1-bit, medido).
+`cargo run --release --example bench` — local environment numbers (AVX2):
+ART get P50≈200ns, ART insert P50≈800ns, BQ top-5 ≈310µs over 10k×1024 dims,
+recall@5 BQ vs FP32-exact = 100% (measured 1-bit quantization trade-off).
 
-## Licença
+## License
 
-Licenciado sob **MIT** **ou** **Apache-2.0** (dual license), à sua escolha.
+Licensed under **MIT** **or** **Apache-2.0** (dual license), your choice.
 
 ## Roadmap
 
-- [x] Extração do núcleo portátil (ART, MemoryDoc L0–L7, BQ + Hamming SIMD)
-- [x] Trait de storage plugável (InMemory + FileStorage) e relógio/CPUID injetáveis
-- [x] CRDT sync de memórias como feature opcional `p2p` (`CrdtMemorySync` +
-      trait `Transport` + `UdpTransport` std; merge LWW simétrico)
-- [x] Benchmarks publicados (`cargo run --release --example bench` — ART
+- [x] Portable core extraction (ART, MemoryDoc L0–L7, BQ + Hamming SIMD)
+- [x] Pluggable Storage trait (InMemory + FileStorage) and injectable clock/CPUID
+- [x] CRDT memory sync as optional `p2p` feature (`CrdtMemorySync` +
+      `Transport` trait + std `UdpTransport`; symmetric LWW merge)
+- [x] Published benchmarks (`cargo run --release --example bench` — ART
       P50/P99, BQ top-k, recall BQ vs FP32)
-- [x] Camada MCP server (`cargo run --release --example mcp_server` — expõe
-      `remember`/`recall`/`rag_context` a agentes de IA via MCP sobre stdio;
-      embedding demo por trigramas)
-- [x] **Interop de storage TKLV/TKCK byte a byte com o OS** (`src/tickv.rs`:
-      codec byte-exato + backend `TickvFile` legível pelo OS; golden test +
-      re-parse `scan_volume`; NMD1 e TKLV interoperáveis)
+- [x] MCP server layer (`cargo run --release --example mcp_server` — exposes
+      `remember`/`recall`/`rag_context` to AI agents via MCP over stdio;
+      trigram demo embedding)
+- [x] **Byte-exact TKLV/TKCK storage interop with the OS** (`src/tickv.rs`:
+      byte-exact codec + OS-readable `TickvFile` backend; golden test +
+      `scan_volume` re-parse; NMD1 and TKLV interoperable)
 
-## Interop com o neural-os-core
+## Interop with neural-os-core
 
-- **NMD1 (documento):** `MemoryDoc` encode/decode byte-idêntico ao OS
-- **TKLV/TKCK (storage):** `tickv::encode_record`/`scan_volume` replicam o
-  formato do TickvLite (`crates/k_nano/src/storage/tickv.rs`) — um volume
-  gravado por um lado é lido pelo outro. `TickvFile` grava records 512-alinhados
-  com CRC32 IEEE sobre key‖val; tombstone `TKL\0`/`vlen=0`; EOF all-0x00/0xFF.
-  Nota: sem checkpoint no v0.1 (o OS monta por scan completo); GC em v0.2.
+- **NMD1 (document):** `MemoryDoc` encode/decode byte-identical to the OS
+- **TKLV/TKCK (storage):** `tickv::encode_record`/`scan_volume` replicate the
+  TickvLite format (`crates/k_nano/src/storage/tickv.rs`) — a volume written on
+  either side is read by the other. `TickvFile` writes 512-aligned records with
+  IEEE CRC32 over key‖val; tombstone `TKL\0`/`vlen=0`; EOF all-0x00/0xFF.
+  Note: no checkpoint in v0.1 (the OS mounts by full scan); GC in v0.2.

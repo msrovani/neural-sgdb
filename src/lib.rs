@@ -73,9 +73,9 @@ pub use tickv::{
     encode_ckpt, encode_record, fnv1a64, scan_volume, CKPT_KEY, MAGIC, MAX_KLEN, MAX_VLEN,
     record_size,
 };
-#[cfg(feature = "std")]
+#[cfg(feature = "file-storage")]
 pub use storage::FileStorage;
-#[cfg(feature = "std")]
+#[cfg(feature = "file-storage")]
 pub use tickv::TickvFile;
 #[cfg(feature = "p2p")]
 pub use crdt::{demo as crdt_demo, CrdtMemorySync, Transport, UdpTransport, DEFAULT_P2P_PORT};

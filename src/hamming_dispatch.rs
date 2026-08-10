@@ -23,9 +23,10 @@ pub struct CpuCaps {
     pub avx512: bool,
 }
 
-/// Detecta/consulta capacidades SIMD. Em `std`, auto-detecta. Em `no_std`,
-/// retorna o que foi injetado via `set_cpu_caps` (default: scalar).
-#[cfg(all(feature = "std", target_arch = "x86_64"))]
+/// Detecta/consulta capacidades SIMD. Com `simd-runtime` (default), auto-detecta
+/// via `is_x86_feature_detected!`; sem ele, usa o que foi injetado via
+/// `set_cpu_caps` (default: scalar — sempre correto).
+#[cfg(all(feature = "simd-runtime", target_arch = "x86_64"))]
 pub fn cpu_caps() -> CpuCaps {
     CpuCaps {
         avx2: std::arch::is_x86_feature_detected!("avx2"),
@@ -33,7 +34,7 @@ pub fn cpu_caps() -> CpuCaps {
     }
 }
 
-#[cfg(not(all(feature = "std", target_arch = "x86_64")))]
+#[cfg(not(all(feature = "simd-runtime", target_arch = "x86_64")))]
 pub fn cpu_caps() -> CpuCaps {
     let v = MANUAL_CAPS.load(Ordering::Relaxed);
     CpuCaps {
@@ -43,6 +44,9 @@ pub fn cpu_caps() -> CpuCaps {
 }
 
 /// Injeta capacidades (no_std: chamar no boot do embedder).
+/// Rearma `SELECTED` para que a próxima chamada reavalie o kernel — sem isso,
+/// um `hamming()` antes da injeção travaria o path em scalar para sempre
+/// (bughunt #9).
 pub fn set_cpu_caps(c: CpuCaps) {
     let mut v = 0u8;
     if c.avx2 {
@@ -52,6 +56,7 @@ pub fn set_cpu_caps(c: CpuCaps) {
         v |= 2;
     }
     MANUAL_CAPS.store(v, Ordering::Relaxed);
+    SELECTED.store(false, Ordering::Relaxed);
 }
 
 pub fn cpu_has_avx2() -> bool {

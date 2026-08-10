@@ -20,6 +20,10 @@ use std::io::{self, BufRead, Write};
 use neural_sgdb::{FileStorage, Sgdb};
 use serde_json::{json, Value};
 
+/// Contador monotônico para chaves de `remember` (fix #10: mesma chave ms
+/// colide — ms*1000 + seq garante unicidade no mesmo milissegundo).
+static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Embedding de demonstração: hash determinístico de trigramas de caracteres
 /// → vetor 256-dim normalizado. Suficiente para recall por similaridade de
 /// texto curto; NÃO é um modelo semântico real.
@@ -28,8 +32,15 @@ fn demo_embed(text: &str) -> Vec<f32> {
     let mut v = vec![0f32; DIM];
     let bytes = text.as_bytes();
     let mut seed = 0x9E37_79B9_7F4A_7C15u64;
-    for w in bytes.windows(3) {
-        // FNV-1a sobre o trigrama
+    // texto < 3 bytes: sem trigramas → vetor zero degenerado; fallback por
+    // bytes individuais (fix #10)
+    let windows: Vec<&[u8]> = if bytes.len() < 3 {
+        bytes.iter().map(|b| std::slice::from_ref(b)).collect()
+    } else {
+        bytes.windows(3).collect()
+    };
+    for w in windows {
+        // FNV-1a sobre o n-grama
         let mut h = 0xcbf2_9ce4_8422_2325u64;
         for &b in w {
             h ^= b as u64;
@@ -144,8 +155,16 @@ fn main() {
                             send(&error_response(&id, -32602, "parametro 'text' obrigatorio"));
                             continue;
                         }
-                        let key = format!("mcp/{}", std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0));
+                        // chave única: ms + contador monotônico (2 remembers no
+                        // mesmo ms não colidem — bughunt #10)
+                        let key = format!("mcp/{:06}", {
+                            let ms = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis())
+                                .unwrap_or(0);
+                            let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            ms * 1000 + seq as u128
+                        });
                         let emb = demo_embed(text);
                         match db.remember_semantic(&key, text, &emb) {
                             Ok(()) => send(&json!({"jsonrpc":"2.0","id":id,"result":{

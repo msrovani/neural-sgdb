@@ -159,19 +159,27 @@ pub fn scan_volume(data: &[u8]) -> ScanResult {
         }
         let klen = u32::from_le_bytes(hdr[4..8].try_into().unwrap()) as usize;
         let vlen = u32::from_le_bytes(hdr[8..12].try_into().unwrap()) as usize;
+        // Bounds first (paridade com recover() do OS — hdr absurdo NÃO para o
+        // scan; pula para o próximo boundary 512 e continua)
+        if klen > MAX_KLEN || vlen > MAX_VLEN {
+            out.corrupt += 1;
+            off = (off + 512) & !511;
+            continue;
+        }
         let total = record_size(klen, vlen) as u64;
         if off + total > size {
             out.truncated = true;
             break;
         }
+        // Tombstone in-place (`TKL\0`): o OS invalida magic[3]=0 preservando
+        // klen/vlen/crc/body — pula SEM indexar e SEM checar CRC (recover).
+        if hdr[3] == 0 {
+            off += total;
+            continue;
+        }
         let body = &data[off as usize + HEADER..off as usize + HEADER + klen + vlen];
         let want = u32::from_le_bytes(hdr[12..16].try_into().unwrap());
         if crc32(body) != want {
-            out.corrupt += 1;
-            off = (off + 512) & !511;
-            continue;
-        }
-        if klen > MAX_KLEN || vlen > MAX_VLEN {
             out.corrupt += 1;
             off = (off + 512) & !511;
             continue;
@@ -197,13 +205,13 @@ pub fn scan_volume(data: &[u8]) -> ScanResult {
 /// - `put`: append de record TKLV (512-alinhado, CRC sobre key‖val).
 /// - `delete`: append de record com `vlen = 0` (tombstone que o OS reconhece).
 /// - **Não escreve checkpoint** (v0.1): o OS monta por scan completo.
-#[cfg(feature = "std")]
+#[cfg(feature = "file-storage")]
 pub struct TickvFile {
     path: std::path::PathBuf,
     map: BTreeMap<String, Vec<u8>>,
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "file-storage")]
 impl TickvFile {
     pub fn open(path: impl AsRef<std::path::Path>) -> std::io::Result<Self> {
         let path = path.as_ref().to_path_buf();
@@ -230,7 +238,7 @@ impl TickvFile {
     }
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "file-storage")]
 impl crate::storage::Storage for TickvFile {
     fn name(&self) -> &'static str {
         "tickv"

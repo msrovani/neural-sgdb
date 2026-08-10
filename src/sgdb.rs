@@ -28,11 +28,18 @@ pub struct Sgdb {
 impl Sgdb {
     /// Abre com um backend de storage (`InMemory` para testes, `FileStorage`
     /// para persistência em arquivo, ou seu próprio impl de `Storage`).
-    /// Reconstrói ART/BQ a partir de docs persistidos.
+    /// Reconstrói ART/BQ a partir de docs persistidos — **propaga erro de
+    /// rebuild** (P1: storage ilegível não abre "ready" silencioso).
     pub fn open(backend: impl Storage + 'static) -> Result<Self, SgdbError> {
         let mut engine = AiosDatabaseEngine::new(1, Box::new(backend));
-        let _ = engine.rebuild_indices_from_storage();
+        let recovered = engine.rebuild_indices_from_storage()?;
+        crate::sgdb_log!("Sgdb open: {recovered} docs reindexados (ART/BQ)");
         Ok(Sgdb { engine })
+    }
+
+    /// Recovery observável (P1): docs reindexados no último open/rebuild.
+    pub fn recovered_records(&self) -> usize {
+        self.engine.art.len
     }
 
     /// Pós-turno: L1 working (user) + L2 episódico curto (assistant).
@@ -153,6 +160,8 @@ impl Sgdb {
     }
 
     /// Recall L4: BQ top-k, depois rescore FP32 nos candidatos (padrão Qdrant).
+    /// Sort pelo score bruto u32 (paridade com o OS: fp32 ∈ 0..10000 vs ham ∈
+    /// 0..64 convivem no mesmo espaço de ordenação — layers.rs:108-118).
     pub fn recall(&mut self, query: &[f32], k: usize) -> Result<Vec<Hit>, SgdbError> {
         if query.is_empty() {
             return Ok(Vec::new());
@@ -160,35 +169,39 @@ impl Sgdb {
         let k = k.max(1);
         let cand = (k * 4).max(k);
         let hits = self.engine.bq_top_k_f32(query, cand);
-        let mut out: Vec<Hit> = Vec::new();
+        let mut out: Vec<(u32, Hit)> = Vec::new();
         for (id, ham) in hits {
             let Some(sk) = self.engine.storage_key_of(id).map(String::from) else {
                 continue;
             };
-            let dist = match self.engine.get_by_storage_key(&sk) {
+            // score bruto u32: fp32 rescore OU hamming (mesma escala de ordenação do OS)
+            let (score, dist) = match self.engine.get_by_storage_key(&sk) {
                 Ok(Some(doc)) => match Self::fp32_dist_u32(query, &doc.payload) {
-                    Some(d) => d as f32 / 10_000.0,
-                    None => ham as f32 / 64.0,
+                    Some(d) => (d, d as f32 / 10_000.0),
+                    None => (ham, ham as f32),
                 },
-                _ => ham as f32 / 64.0,
+                _ => (ham, ham as f32),
             };
-            // texto companion L2 (storage key direta, sem re-prefixar)
+            // texto companion L2 (storage key direta; só a 1ª ocorrência do
+            // prefixo /L4/ — chave com "/L4/" no corpo não é corrompida)
             let text = self
                 .engine
-                .get_by_storage_key(&sk.replace("/L4/", "/L2/"))
+                .get_by_storage_key(&sk.replacen("/L4/", "/L2/", 1))
                 .ok()
                 .flatten()
                 .map(|d| String::from_utf8_lossy(&d.payload).into_owned())
                 .unwrap_or_default();
-            out.push(Hit {
-                key: sk,
-                text,
-                dist,
-            });
+            out.push((
+                score,
+                Hit {
+                    key: sk,
+                    text,
+                    dist,
+                },
+            ));
         }
-        out.sort_by(|a, b| a.dist.partial_cmp(&b.dist).unwrap_or(core::cmp::Ordering::Equal));
-        out.truncate(k);
-        Ok(out)
+        out.sort_by_key(|(score, _)| *score);
+        Ok(out.into_iter().take(k).map(|(_, h)| h).collect())
     }
 
     /// RAG context: recall + fetch payload + formato string pro prompt.
@@ -267,7 +280,15 @@ fn clamp(s: &str, max: usize) -> String {
     if s.len() <= max {
         String::from(s)
     } else {
-        let mut t = String::from(&s[..max]);
+        // corte em fronteira de char (evita panic em byte-200 no meio de
+        // caractere multi-byte — bughunt #7)
+        let cut = s
+            .char_indices()
+            .take_while(|(i, _)| *i <= max)
+            .map(|(i, _)| i)
+            .last()
+            .unwrap_or(max.min(s.len()));
+        let mut t = String::from(&s[..cut]);
         t.push('…');
         t
     }
@@ -338,6 +359,7 @@ mod tests {
         assert!(l1.len() >= 1);
     }
 
+    #[cfg(feature = "file-storage")]
     #[test]
     fn file_backend_full_flow() {
         let dir = std::env::temp_dir().join("neural_sgdb_test");

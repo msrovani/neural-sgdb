@@ -128,7 +128,9 @@ impl AiosDatabaseEngine {
     }
 
     /// Reconstrói ART/BQ a partir de keys Storage `md/*` (pós-remount).
-    pub fn rebuild_indices_from_storage(&mut self) -> usize {
+    /// Retorna o número de docs reindexados; propaga erro de scan (P1 —
+    /// recovery observável: storage ilegível NÃO abre "ready" silencioso).
+    pub fn rebuild_indices_from_storage(&mut self) -> Result<usize, SgdbError> {
         self.art.clear();
         self.bq.clear();
         self.id_to_sk.clear();
@@ -146,20 +148,19 @@ impl AiosDatabaseEngine {
                 n += 1;
             }
         }
-        if let Ok(keys) = self.storage.scan_prefix(b"md/") {
-            for (sk_bytes, bytes) in keys {
-                let sk = String::from_utf8_lossy(&sk_bytes).into_owned();
-                if self.ram_l0l1.contains_key(&sk) {
-                    continue;
-                }
-                if let Ok(doc) = MemoryDoc::decode(&bytes) {
-                    let id = NEXT_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                    self.index_doc(id, &doc, &sk);
-                    n += 1;
-                }
+        let keys = self.storage.scan_prefix(b"md/")?;
+        for (sk_bytes, bytes) in keys {
+            let sk = String::from_utf8_lossy(&sk_bytes).into_owned();
+            if self.ram_l0l1.contains_key(&sk) {
+                continue;
+            }
+            if let Ok(doc) = MemoryDoc::decode(&bytes) {
+                let id = NEXT_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                self.index_doc(id, &doc, &sk);
+                n += 1;
             }
         }
-        n
+        Ok(n)
     }
 
     pub fn get(&mut self, layer: MemoryLayer, key: &str) -> Result<Option<MemoryDoc>, SgdbError> {

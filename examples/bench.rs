@@ -11,7 +11,7 @@
 use std::time::{Duration, Instant};
 
 use neural_sgdb::art::ArtIndex;
-use neural_sgdb::bq::{quantize_f32, BqFlatIndex};
+use neural_sgdb::bq::BqFlatIndex;
 use neural_sgdb::hamming_dispatch::{select_best_hamming_kernel, path_name};
 use neural_sgdb::{InMemory, Sgdb};
 
@@ -87,16 +87,33 @@ fn main() {
     let avg = t0.elapsed() / 100;
     println!("BQ top-5    {VECS} vec x {DIM} dims : {avg:?} avg/query (kernel={})", path_name());
 
-    // ── Recall BQ vs FP32: recall@5 em 200 queries ─────────────────────────
-    let q_bits = quantize_f32(&query);
-    // top-5 exato FP32 (coseno) vs top-5 BQ (Hamming)
+    // ── Recall BQ vs FP32: recall@5 ────────────────────────────────────────
+    // Baseline HONESTO: cosseno FP32 real sobre os vetores f32 originais
+    // (não hamming sobre os mesmos bits quantizados — aquilo é tautológico).
+    let mut vectors: Vec<Vec<f32>> = Vec::with_capacity(VECS);
+    for i in 0..VECS {
+        let mut v = vec![0f32; DIM];
+        let mut state = (i as u64).wrapping_mul(1103515245).wrapping_add(12345);
+        for x in v.iter_mut() {
+            state = state.wrapping_mul(1103515245).wrapping_add(12345);
+            *x = ((state >> 32) as i32 % 200) as f32 / 100.0 - 1.0;
+        }
+        vectors.push(v);
+    }
+    // top-5 exato por cosseno FP32
     let mut fp32_scores: Vec<(u64, f64)> = Vec::with_capacity(VECS);
-    for (i, id) in bq.ids.iter().enumerate() {
-        let start = i * bq.words_per_vec;
-        let bits = &bq.flat[start..start + bq.words_per_vec];
-        // distância cosseno sobre os bits (proxy determinístico da query)
-        let ham = neural_sgdb::hamming(&q_bits, bits) as f64;
-        fp32_scores.push((*id, ham));
+    for (i, v) in vectors.iter().enumerate() {
+        let mut dot = 0.0f64;
+        let mut nq = 0.0f64;
+        let mut nv = 0.0f64;
+        for d in 0..DIM {
+            dot += query[d] as f64 * v[d] as f64;
+            nq += query[d] as f64 * query[d] as f64;
+            nv += v[d] as f64 * v[d] as f64;
+        }
+        let denom = (nq * nv).sqrt().max(1e-12);
+        let cos = dot / denom;
+        fp32_scores.push((i as u64, 1.0 - cos));
     }
     fp32_scores.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
     let exact_top5: Vec<u64> = fp32_scores.iter().take(5).map(|(id, _)| *id).collect();
@@ -104,7 +121,7 @@ fn main() {
     let hit = exact_top5.iter().filter(|id| bq_top5.contains(id)).count();
     let recall = hit as f64 / 5.0;
     println!(
-        "recall@5    BQ vs FP32-exact: {:.0}% ({hit}/5 top-5 coincidem; trade-off da quantização 1-bit)",
+        "recall@5    BQ vs FP32-cosine-exact: {:.0}% ({hit}/5 top-5 coincidem; trade-off real da quantização 1-bit)",
         recall * 100.0
     );
 

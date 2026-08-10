@@ -322,4 +322,27 @@ mod tests {
         assert!(MemoryDoc::decode(b"XXXXgarbage").is_err());
         assert!(MemoryDocView::parse(b"XXXX").is_err());
     }
+
+    #[test]
+    fn golden_nmd1_bytes() {
+        // Golden byte-exato (P2 — versionamento de formato): layout NMD1 fixo
+        // por contrato com o OS. doc L1 "k" payload [0xAA] sem clock tick e sem
+        // bitvec:
+        //   magic NMD1 | layer 0x01 | klen 0x01 u32le | 'k' |
+        //   VectorClock 72B (8×0xFF nodes + 8×0 u64) | plen 0x01 u32le | 0xAA |
+        //   bitflag 0x00
+        let doc = MemoryDoc::new(MemoryLayer::L1Working, "k", vec![0xAA]);
+        let enc = doc.encode();
+        let mut want: Vec<u8> = Vec::new();
+        want.extend_from_slice(b"NMD1");
+        want.push(0x01); // L1
+        want.extend_from_slice(&1u32.to_le_bytes());
+        want.push(b'k');
+        want.extend_from_slice(&[0xFFu8; 8]); // nodes
+        want.extend_from_slice(&[0u8; 64]); // counts
+        want.extend_from_slice(&1u32.to_le_bytes());
+        want.push(0xAA);
+        want.push(0x00); // bitflag: sem bitvec
+        assert_eq!(enc, want);
+    }
 }
