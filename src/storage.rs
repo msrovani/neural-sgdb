@@ -252,6 +252,13 @@ impl FileStorage {
 
     fn append(&mut self, key: &[u8], val: &[u8]) -> Result<(), SgdbError> {
         use std::io::Write;
+        // Bounds check ANTES do append (bughunt #11): um valor/chave acima dos
+        // limites (MAX_KLEN/MAX_VLEN) era aceito aqui mas REJEITADO no recovery
+        // (open), que para e TRUNCA o arquivo — apagando silenciosamente todos
+        // os registros posteriores. Rejeitar na escrita = paridade com TickvFile.
+        if key.len() > MAX_KLEN || val.len() > MAX_VLEN {
+            return Err(SgdbError::Storage("limits"));
+        }
         let vlen = if val.is_empty() {
             TOMBSTONE // delete: marker vlen
         } else {
@@ -339,7 +346,15 @@ impl Storage for FileStorage {
     }
     fn put(&mut self, key: &[u8], val: &[u8]) -> Result<(), SgdbError> {
         self.append(key, val)?;
-        self.map.insert(key.to_vec(), val.to_vec());
+        // Valor vazio == tombstone no log (vlen u32::MAX) — o mapa deve
+        // espelhar o mesmo (bughunt #11): senão put(k, &[]) devolveria
+        // Some([]) em sessão mas None após reopen (last-wins inconsistente
+        // entre os dois pontos de leitura).
+        if val.is_empty() {
+            self.map.remove(key);
+        } else {
+            self.map.insert(key.to_vec(), val.to_vec());
+        }
         Ok(())
     }
     fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, SgdbError> {
@@ -471,6 +486,56 @@ mod tests {
             assert!(s.get(b"x").unwrap().is_none());
         }
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn put_oversized_rejected_before_append() {
+        // bughunt #11: um valor acima de MAX_VLEN era ACEITO no put mas
+        // REJEITADO no recovery (open), que para e TRUNCA o arquivo — todos os
+        // registros posteriores eram silenciosamente apagados. A escrita deve
+        // falhar na origem (paridade com TickvFile), preservando o log.
+        let p = tmp_path("fz_oversize.db");
+        {
+            let mut s = FileStorage::open(&p).unwrap();
+            s.put(b"a", b"1").unwrap();
+            let big = vec![0u8; MAX_VLEN + 1];
+            assert!(s.put(b"big", &big).is_err(), "oversized put deveria falhar");
+            let long_key = vec![b'k'; MAX_KLEN + 1];
+            assert!(s.put(&long_key, b"v").is_err(), "oversized key deveria falhar");
+            s.put(b"b", b"2").unwrap(); // log intacto após a rejeição
+        }
+        {
+            let mut s = FileStorage::open(&p).unwrap();
+            assert_eq!(s.get(b"a").unwrap(), Some(b"1".to_vec()));
+            assert_eq!(s.get(b"b").unwrap(), Some(b"2".to_vec()));
+            assert!(s.get(b"big").unwrap().is_none());
+        }
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn put_empty_value_is_consistent_delete() {
+        // bughunt #11: put(k, &[]) grava tombstone (vlen = u32::MAX) no log,
+        // mas antes mantinha `k -> []` no mapa em memória → get() devolvia
+        // Some([]) em sessão e None após reopen (last-wins inconsistente).
+        // put com valor vazio == delete, nos DOIS pontos de leitura.
+        let p = tmp_path("fz_emptyval.db");
+        {
+            let mut s = FileStorage::open(&p).unwrap();
+            s.put(b"k", b"v").unwrap();
+            s.put(b"k", b"").unwrap();
+            assert!(s.get(b"k").unwrap().is_none(), "em sessão deveria sumir");
+            s.put(b"k2", b"").unwrap(); // chave nunca existente também some
+            assert!(s.get(b"k2").unwrap().is_none());
+        }
+        {
+            let mut s = FileStorage::open(&p).unwrap();
+            assert!(s.get(b"k").unwrap().is_none(), "após reopen deveria sumir");
+            assert!(s.get(b"k2").unwrap().is_none());
+        }
+        let _ = std::fs::remove_file(&p);
     }
 
     // ── Fault-injection: recovery determinístico (maturation P2) ─────────────

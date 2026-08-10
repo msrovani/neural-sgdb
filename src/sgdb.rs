@@ -229,6 +229,9 @@ impl Sgdb {
         let k = k.max(1);
         let cand = (k * 4).max(k);
         let hits = self.engine.bq_top_k_f32(query, cand);
+        // Distância Hamming máxima de um vetor indexado (normaliza o fallback
+        // p/ escala 0..1 do contrato de `Hit.dist` — bughunt #11).
+        let ham_max = (self.engine.bq.words_per_vec.max(1) * 64) as f32;
         let mut out: Vec<(u32, Hit)> = Vec::new();
         for (id, ham) in hits {
             let Some(sk) = self.engine.storage_key_of(id).map(String::from) else {
@@ -238,9 +241,9 @@ impl Sgdb {
             let (score, dist) = match self.engine.get_by_storage_key(&sk) {
                 Ok(Some(doc)) => match Self::fp32_dist_u32(query, &doc.payload) {
                     Some(d) => (d, d as f32 / 10_000.0),
-                    None => (ham, ham as f32),
+                    None => (ham, (ham as f32 / ham_max).min(1.0)),
                 },
-                _ => (ham, ham as f32),
+                _ => (ham, (ham as f32 / ham_max).min(1.0)),
             };
             // L2 companion text (direct storage key; only the 1st occurrence
             // of the /L4/ prefix — a key containing "/L4/" is not corrupted)

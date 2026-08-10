@@ -75,17 +75,23 @@ pub fn encode_record(key: &[u8], val: &[u8]) -> Vec<u8> {
 /// `entries` em ordem lexicográfica de chave (BTreeMap); a própria chave
 /// `sys/tickv_ckpt` NÃO entra no hash.
 pub fn encode_ckpt(append_off: u64, entries: &[(String, u64)]) -> Vec<u8> {
-    let mut body = Vec::with_capacity(24 + entries.len() * 16);
+    // Filtra ANTES de contar (bughunt #11): o campo `n` deve refletir o número
+    // de entradas REALMENTE gravadas. Antes, o skip (chave >65535 ou
+    // sys/tickv_ckpt) acontecia no loop mas `n` já estava escrito com
+    // entries.len() — um decodificador que lê n entradas desalinhava.
+    let writable: Vec<(String, u64)> = entries
+        .iter()
+        .filter(|(k, _)| k.as_bytes().len() <= 65535 && k.as_bytes() != CKPT_KEY.as_bytes())
+        .cloned()
+        .collect();
+    let mut body = Vec::with_capacity(24 + writable.len() * 16);
     body.extend_from_slice(b"TKCK");
     body.extend_from_slice(&append_off.to_le_bytes());
-    let h = fnv1a64_entries(entries);
+    let h = fnv1a64_entries(&writable);
     body.extend_from_slice(&h.to_le_bytes());
-    body.extend_from_slice(&(entries.len() as u32).to_le_bytes());
-    for (k, off) in entries {
+    body.extend_from_slice(&(writable.len() as u32).to_le_bytes());
+    for (k, off) in &writable {
         let kb = k.as_bytes();
-        if kb.len() > 65535 || kb == CKPT_KEY.as_bytes() {
-            continue;
-        }
         body.extend_from_slice(&(kb.len() as u16).to_le_bytes());
         body.extend_from_slice(kb);
         body.extend_from_slice(&off.to_le_bytes());
@@ -148,11 +154,13 @@ pub fn scan_volume(data: &[u8]) -> ScanResult {
     let mut out = ScanResult::default();
     let size = data.len() as u64;
     let mut off = 0u64;
+    let mut eof = false;
     while off + HEADER as u64 <= size {
         let hdr = &data[off as usize..off as usize + HEADER];
         if !hdr_shaped(hdr) {
             if hdr.iter().all(|&b| b == 0 || b == 0xFF) {
-                break; // EOF (região apagada)
+                eof = true; // EOF (região apagada)
+                break;
             }
             out.corrupt += 1;
             off = (off + 512) & !511;
@@ -196,6 +204,12 @@ pub fn scan_volume(data: &[u8]) -> ScanResult {
             out.corrupt += 1;
         }
         off += total;
+    }
+    // Cauda "rasgada" de 1..15 bytes (header parcial < HEADER, ex: crash no
+    // meio do write) ficava invisível — truncated=false (bughunt #11). Uma
+    // região pré-zeroada de EOF (eof=true) NÃO é truncamento: termina limpa.
+    if !eof && off < size {
+        out.truncated = true;
     }
     out
 }
@@ -249,8 +263,15 @@ impl crate::storage::Storage for TickvFile {
             return Err(crate::storage::SgdbError::Storage("tickv limits"));
         }
         self.append(key, val)?;
-        self.map
-            .insert(String::from_utf8_lossy(key).into_owned(), val.to_vec());
+        // Valor vazio == tombstone no volume (vlen=0, idêntico ao delete) — o
+        // mapa deve espelhar o mesmo (bughunt #11): put(k, &[]) não pode
+        // devolver Some([]) em sessão e None após reopen.
+        if val.is_empty() {
+            self.map.remove(&String::from_utf8_lossy(key).into_owned());
+        } else {
+            self.map
+                .insert(String::from_utf8_lossy(key).into_owned(), val.to_vec());
+        }
         Ok(())
     }
     fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, crate::storage::SgdbError> {
@@ -338,6 +359,64 @@ mod tests {
     }
 
     #[test]
+    fn scan_partial_tail_flagged_truncated() {
+        // bughunt #11: cauda "rasgada" de 1..15 bytes (header < 16B) era
+        // silenciosamente ignorada (truncated = false) — mesma assimetria do
+        // FileStorage, que marca truncation nesse caso. Deve ser flagged.
+        let mut data = encode_record(b"k1", b"v1");
+        data.extend_from_slice(b"\x00"); // 1-byte torn tail
+        let scan = scan_volume(&data);
+        assert!(scan.truncated, "cauda parcial < 16B deveria marcar truncated");
+        assert_eq!(scan.map.get("k1").map(|v| v.as_slice()), Some(&b"v1"[..]));
+        // 15 bytes de lixo não-tickv → corrupt + cauda parcial (não é EOF)
+        let mut data2 = encode_record(b"k2", b"v2");
+        data2.extend_from_slice(&[0xAAu8; 15]); // 15B não-checável como header
+        let scan2 = scan_volume(&data2);
+        assert!(scan2.truncated, "cauda parcial de 15B deveria marcar truncated");
+        // os 15B nunca são lidos como header (faltam 1B p/ HEADER) → corrupt 0
+        assert_eq!(scan2.corrupt, 0);
+    }
+
+    #[test]
+    fn scan_trailing_zero_region_is_clean_eof() {
+        // Região pré-zeroada do volume (convenção de EOF do TickvLite) NÃO é
+        // cauda truncada — o scan deve parar limpo, sem flag truncated.
+        let mut data = encode_record(b"k1", b"v1");
+        data.extend_from_slice(&[0u8; 512]);
+        let scan = scan_volume(&data);
+        assert!(!scan.truncated);
+        assert_eq!(scan.corrupt, 0);
+        assert_eq!(scan.map.get("k1").map(|v| v.as_slice()), Some(&b"v1"[..]));
+    }
+
+    #[test]
+    fn encode_ckpt_count_matches_written_entries() {
+        // bughunt #11: entradas puladas no corpo (sys/tickv_ckpt, chave >
+        // 65535) antes inflavam o campo `n` — um decodificador OS que lê n
+        // entradas desalinhava no primeiro skip. `n` = entradas realmente
+        // gravadas, e o hash cobre exatamente essas.
+        let entries = vec![
+            (String::from("a"), 512u64),
+            (String::from(CKPT_KEY), 1024u64), // deve ser pulada
+            (String::from("b"), 1536u64),
+        ];
+        let body = encode_ckpt(0, &entries);
+        assert_eq!(&body[0..4], b"TKCK");
+        // header: TKCK(4) + append_off(8) + fnv(8) + n(4) = 24B → n em [20..24]
+        let n = u32::from_le_bytes([body[20], body[21], body[22], body[23]]) as usize;
+        assert_eq!(n, 2, "campo n deve contar apenas entradas gravadas");
+        // entradas contíguas após o header de 24B: a, b
+        let mut off = 24usize;
+        for want in ["a", "b"] {
+            let klen = u16::from_le_bytes([body[off], body[off + 1]]) as usize;
+            off += 2;
+            assert_eq!(&body[off..off + klen], want.as_bytes());
+            off += klen + 8;
+        }
+        assert_eq!(off, body.len());
+    }
+
+    #[test]
     fn scan_torn_tail_truncated() {
         let mut data = Vec::new();
         data.extend_from_slice(&encode_record(b"k1", b"v1"));
@@ -389,6 +468,29 @@ mod tests {
     fn fnv1a64_known_vector() {
         // Vetor FNV-1a 64 conhecido: fnv1a64("a") = 0xaf63dc4c8601ec8c
         assert_eq!(fnv1a64(b"a"), 0xaf63_dc4c_8601_ec8c);
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn tickvfile_put_empty_is_delete_consistent() {
+        // bughunt #11: put(k, &[]) grava tombstone vlen=0 no volume (idêntico
+        // ao delete) mas antes mantinha `k -> []` no mapa — get() Some([]) em
+        // sessão, None após reopen. Empty == delete, nos dois pontos.
+        let dir = std::env::temp_dir().join("neural_sgdb_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("tickv_emptyval.db");
+        let _ = std::fs::remove_file(&path);
+        {
+            let mut s = TickvFile::open(&path).unwrap();
+            s.put(b"k", b"v").unwrap();
+            s.put(b"k", b"").unwrap();
+            assert!(s.get(b"k").unwrap().is_none(), "em sessão deveria sumir");
+        }
+        {
+            let mut s = TickvFile::open(&path).unwrap();
+            assert!(s.get(b"k").unwrap().is_none(), "após reopen deveria sumir");
+        }
+        let _ = std::fs::remove_file(&path);
     }
 
     #[cfg(feature = "file-storage")]

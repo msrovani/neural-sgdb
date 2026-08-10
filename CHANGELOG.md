@@ -6,6 +6,33 @@ All notable changes to this project. Format based on
 
 ## [Unreleased]
 
+### Fixed (bughunt #11)
+- **FileStorage oversized write = silent tail data loss**: `put` with a value
+  > `MAX_VLEN` (or key > `MAX_KLEN`) was accepted, but `open()` recovery
+  rejects it and **truncates the file** — every record written after it was
+  silently destroyed. `append` now bounds-checks before writing (parity with
+  `TickvFile`); oversized puts fail with `Err`.
+- **`put(k, &[])` inconsistent with reopen** (both `FileStorage` and
+  `TickvFile`): empty value writes a tombstone on disk (vlen `u32::MAX` /
+  `0`) but kept `k → []` in the in-memory map — `get(k)` returned `Some([])`
+  in-session and `None` after reopen. Empty value now behaves as delete at
+  both read points.
+- **`BqFlatIndex::insert_1024` broke the flat-index invariant**: it appended
+  16 words unconditionally even when `words_per_vec` was already another
+  value — `top_k` then read out-of-bounds (panic) or returned wrong results
+  when mixed with narrower `insert_f32`/`insert`. It now truncates/pads to
+  the established width (like `insert`).
+- **`scan_volume` hid torn tails**: a partial header of 1..15 bytes at EOF
+  was silently ignored (`truncated = false`), unlike `FileStorage` recovery.
+  A clean pre-zeroed EOF region is still treated as clean EOF (not truncation).
+- **`encode_ckpt` count mismatch**: entries skipped in the body (key > 65535
+  or `sys/tickv_ckpt`) still inflated the `n` field — an OS decoder reading
+  `n` entries would desync. `n` now counts only the entries actually written
+  (hash already covered only those).
+- **`Hit.dist` scale contract**: the hamming fallback in `recall` returned a
+  raw distance in `0..64` while `Hit.dist` documents `1−cos` on `0..1`; it is
+  now normalized by `words_per_vec × 64`.
+
 ### Planned (v0.3+)
 - CRDT per-layer merge policy (roadmap): LWW for config/state, multi-value
   register for episodic, causal merge via VectorClock (`docs/api.md`)

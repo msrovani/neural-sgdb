@@ -74,8 +74,20 @@ impl BqFlatIndex {
         if self.words_per_vec == 0 {
             self.words_per_vec = 16;
         }
+        let w = self.words_per_vec;
         self.ids.push(id);
-        self.flat.extend_from_slice(bits);
+        // Respeita a largura corrente (bughunt #11): anexar 16 words
+        // incondicionalmente com words_per_vec != 16 quebrava a invariante
+        // flat.len() == ids.len()*words_per_vec → top_k com slice fora de
+        // bounds (panic) ou resultados errados. Trunca/pad a `w` como o insert.
+        if w <= 16 {
+            self.flat.extend_from_slice(&bits[..w]);
+        } else {
+            self.flat.extend_from_slice(bits);
+            for _ in 16..w {
+                self.flat.push(0);
+            }
+        }
     }
 
     pub fn clear(&mut self) {
@@ -272,6 +284,39 @@ mod tests {
         assert_eq!(hits.len(), 4);
         let ids: Vec<u64> = hits.iter().map(|h| h.0).collect();
         assert_eq!(ids, vec![1, 2, 5, 9], "tie-break por id falhou: {ids:?}");
+    }
+
+    #[test]
+    fn insert_1024_respects_established_width() {
+        // bughunt #11: insert_1024 anexava 16 words INCONDICIONALMENTE, mesmo
+        // com words_per_vec já estabelecido em outro valor — quebrava a
+        // invariante flat.len() == ids.len()*words_per_vec → top_k com slice
+        // fora de bounds (panic) ou resultados errados. Deve respeitar a
+        // largura corrente (truncar/pad), como insert/insert_f32.
+        // f32 curto primeiro (w=1), depois insert_1024 (deve truncar a 1 word)
+        let mut idx = BqFlatIndex::new();
+        idx.insert_f32(1, &[1.0, -1.0, 1.0, -1.0]);
+        idx.insert_1024(2, &[0u64; 16]);
+        assert_eq!(idx.flat.len(), idx.ids.len() * idx.words_per_vec);
+        let hits = idx.top_k(&[0], 10);
+        assert_eq!(hits.len(), 2);
+        // insert_1024 primeiro (w=16), f32 curto depois (deve pad a 16)
+        let mut idx2 = BqFlatIndex::new();
+        idx2.insert_1024(1, &[0u64; 16]);
+        idx2.insert_f32(2, &[1.0, -1.0]);
+        assert_eq!(idx2.flat.len(), idx2.ids.len() * idx2.words_per_vec);
+        let hits2 = idx2.top_k(&[0u64; 16], 10);
+        assert_eq!(hits2.len(), 2);
+        // insert wide (w=17) antes, insert_1024 depois (deve pad a 17)
+        let mut idx3 = BqFlatIndex::new();
+        let mut wide = vec![0u64; 17];
+        wide[0] = 1;
+        idx3.insert(1, wide);
+        idx3.insert_1024(2, &[0u64; 16]);
+        assert_eq!(idx3.flat.len(), idx3.ids.len() * idx3.words_per_vec);
+        let hits3 = idx3.top_k(&[1u64 << 0], 10);
+        assert_eq!(hits3.len(), 2);
+        assert_eq!(hits3[0], (1, 0)); // wide com word0=1 → dist 0
     }
 
     #[test]
