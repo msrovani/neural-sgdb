@@ -87,6 +87,23 @@ fn main() {
     let avg = t0.elapsed() / 100;
     println!("BQ top-5    {VECS} vec x {DIM} dims : {avg:?} avg/query (kernel={})", path_name());
 
+    // ── Before/after: bounded heap (k=5) vs full sort (k=N) ──────────────
+    // Maturation P3: top_k usa bounded max-heap (O(N·D/64 + N log k)) em vez
+    // de full sort (O(N·D/64 + N log N)). Mede os dois caminhos no mesmo index.
+    let t_heap = Instant::now();
+    for _ in 0..100 {
+        let r = bq.top_k_f32(&query, 5);
+        assert!(!r.is_empty());
+    }
+    let heap_avg = t_heap.elapsed() / 100;
+    let t_full = Instant::now();
+    for _ in 0..100 {
+        let r = bq.top_k_f32(&query, VECS); // k >= len → full sort path
+        assert_eq!(r.len(), VECS);
+    }
+    let full_avg = t_full.elapsed() / 100;
+    println!("BQ top-k    heap(k=5)={heap_avg:?} vs full-sort(k=N)={full_avg:?} — bounded heap evita o O(N log N) do ranking");
+
     // ── Recall BQ vs FP32: recall@5 ────────────────────────────────────────
     // Baseline HONESTO: cosseno FP32 real sobre os vetores f32 originais
     // (não hamming sobre os mesmos bits quantizados — aquilo é tautológico).
