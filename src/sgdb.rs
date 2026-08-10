@@ -42,6 +42,17 @@ impl Sgdb {
         self.engine.art.len
     }
 
+    /// Rebuild controlado dos índices derivados (ART/BQ) a partir do storage
+    /// (maturation P4c). Storage = fonte da verdade; índices = estado derivado.
+    /// Útil após escrita externa no backend ou para reconciliação pós-crash.
+    /// Propaga erro de scan — nunca deixa índices "meio reconstruídos" sem
+    /// reportar.
+    pub fn rebuild_indices(&mut self) -> Result<usize, SgdbError> {
+        let n = self.engine.rebuild_indices_from_storage()?;
+        crate::sgdb_log!("Sgdb rebuild: {n} docs reindexados (ART/BQ)");
+        Ok(n)
+    }
+
     /// Pós-turno: L1 working (user) + L2 episódico curto (assistant).
     pub fn remember_exchange(&mut self, user: &str, response: &str) -> Result<(), SgdbError> {
         let u = MemoryDoc::new(
@@ -467,5 +478,43 @@ mod tests {
         assert!(keys[0].ends_with("/a"), "esperava /a primeiro: {keys:?}");
         assert!(keys[1].ends_with("/m"), "esperava /m segundo: {keys:?}");
         assert!(keys[2].ends_with("/z"), "esperava /z terceiro: {keys:?}");
+    }
+
+    // ── Index rebuild: storage = verdade, índices = derivado (maturation P4c) ─
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn rebuild_from_storage_consistency() {
+        // write → close → reopen → rebuild → recall: índices reconstruídos do
+        // storage devem reproduzir o mesmo recall da sessão original
+        let dir = std::env::temp_dir().join("neural_sgdb_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("rebuild.db");
+        let _ = std::fs::remove_file(&path);
+        // sessão 1: escreve
+        {
+            let mut db = Sgdb::open(crate::storage::FileStorage::open(&path).unwrap()).unwrap();
+            db.remember_exchange("oi", "ola").unwrap();
+            db.remember_fact("fato a", 1).unwrap();
+            db.remember_semantic("e1", "clima bom", &[1.0, -1.0, 1.0, -1.0]).unwrap();
+            db.checkpoint().unwrap();
+            let expected = db.recall(&[1.0, -1.0, 1.0, -1.0], 5).unwrap();
+            assert_eq!(expected.len(), 1);
+            // drop(db) → "close"
+        }
+        // sessão 2: reopen + rebuild explícito + recall
+        {
+            let mut db = Sgdb::open(crate::storage::FileStorage::open(&path).unwrap()).unwrap();
+            // open já rebuilda; rebuild explícito deve ser idempotente
+            let n = db.rebuild_indices().unwrap();
+            assert!(n >= 1, "rebuild não reindexou nada");
+            let after = db.recall(&[1.0, -1.0, 1.0, -1.0], 5).unwrap();
+            assert_eq!(after.len(), 1, "recall pós-rebuild vazio");
+            assert_eq!(after[0].text, "clima bom");
+            // ART reconstruído: fatos e exchanges acessíveis por scan_prefix
+            assert!(db.scan_prefix("md/L1/").unwrap().len() >= 1);
+            assert!(db.scan_prefix("md/L3/").unwrap().len() >= 1);
+        }
+        let _ = std::fs::remove_file(&path);
     }
 }
