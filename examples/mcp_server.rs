@@ -17,7 +17,11 @@
 
 use std::io::{self, BufRead, Write};
 
-use neural_sgdb::{FileStorage, Sgdb};
+use neural_sgdb::Sgdb;
+#[cfg(feature = "file-storage")]
+use neural_sgdb::FileStorage;
+#[cfg(not(feature = "file-storage"))]
+use neural_sgdb::InMemory;
 use serde_json::{json, Value};
 
 /// Contador monotônico para chaves de `remember` (fix #10: mesma chave ms
@@ -68,6 +72,10 @@ fn error_response(id: &Value, code: i64, message: &str) -> Value {
 
 fn main() {
     let db_path = std::env::var("NEURAL_SGDB_DB").unwrap_or_else(|_| "sgdb_memory.db".into());
+
+    // Backend concreto por feature: `FileStorage` (persistente) ou `InMemory`
+    // (demo volátil) — `Sgdb::open(impl Storage)` aceita ambos sem boxing.
+    #[cfg(feature = "file-storage")]
     let storage = match FileStorage::open(&db_path) {
         Ok(s) => s,
         Err(e) => {
@@ -75,6 +83,13 @@ fn main() {
             std::process::exit(1);
         }
     };
+
+    #[cfg(not(feature = "file-storage"))]
+    let storage = {
+        eprintln!("[neural-sgdb] file-storage desativada — usando InMemory (volátil)");
+        InMemory::new()
+    };
+
     let mut db = match Sgdb::open(storage) {
         Ok(d) => d,
         Err(e) => {

@@ -291,6 +291,7 @@ impl<'a> MemoryDocView<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec; // no_std test builds: `vec!` não está no prelude
 
     #[test]
     fn roundtrip_doc() {

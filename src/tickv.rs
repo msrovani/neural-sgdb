@@ -279,6 +279,7 @@ impl crate::storage::Storage for TickvFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "file-storage")]
     use crate::storage::{InMemory, Storage};
 
     #[test]
@@ -357,6 +358,7 @@ mod tests {
         assert_eq!(fnv1a64(b"a"), 0xaf63_dc4c_8601_ec8c);
     }
 
+    #[cfg(feature = "file-storage")]
     #[test]
     fn tickvfile_roundtrip() {
         let dir = std::env::temp_dir().join("neural_sgdb_test");
@@ -381,6 +383,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    #[cfg(feature = "file-storage")]
     #[test]
     fn tickvfile_bytes_match_os_format() {
         // O arquivo gravado pelo TickvFile deve ser um stream TKLV 512-alinhado:
@@ -403,6 +406,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    #[cfg(feature = "file-storage")]
     #[test]
     fn sgdb_end_to_end_on_tickv() {
         // Sgdb inteiro sobre backend TKLV (paridade com InMemory/FileStorage)
@@ -425,6 +429,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    #[cfg(feature = "file-storage")]
     #[test]
     fn parity_inmemory_vs_tickv() {
         let dir = std::env::temp_dir().join("neural_sgdb_test");
