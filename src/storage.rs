@@ -93,8 +93,11 @@ pub fn crc32(data: &[u8]) -> u32 {
 
 /// Append-log em arquivo (feature `file-storage`): registros
 /// `[klen u32][vlen u32][crc u32][key][val]`, tombstone = vlen `u32::MAX`.
-/// Ao abrir, valida CRC de cada registro e trunca cauda corrompida (crash) —
-/// registros anteriores intactos.
+/// Recovery determinístico: records válidos são aplicados em ordem (last-wins
+/// por key); uma cauda truncada OU corrompida (CRC falho, klen/vlen fora dos
+/// limites, header malformado) é **truncada** no open — registros anteriores
+/// intactos. NUNCA aceita corrupção no meio do stream: o primeiro record
+/// inválido encerra a leitura (e o arquivo é truncado aí).
 #[cfg(feature = "file-storage")]
 pub struct FileStorage {
     path: std::path::PathBuf,
@@ -103,6 +106,22 @@ pub struct FileStorage {
 
 #[cfg(feature = "file-storage")]
 const TOMBSTONE: u32 = u32::MAX;
+
+/// Limites de sanidade do parser (paridade com TKLV: klen ≤ 4KiB, vlen ≤ 1MiB).
+#[cfg(feature = "file-storage")]
+const MAX_KLEN: usize = 4096;
+#[cfg(feature = "file-storage")]
+const MAX_VLEN: usize = 1024 * 1024;
+
+/// Parse seguro de u32 LE: retorna `None` se o slice é curto — nunca panics
+/// em dados externos (maturation P2: parsing safety).
+#[cfg(feature = "file-storage")]
+fn le32(b: &[u8]) -> Option<u32> {
+    if b.len() < 4 {
+        return None;
+    }
+    Some(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+}
 
 #[cfg(feature = "file-storage")]
 impl FileStorage {
@@ -113,14 +132,44 @@ impl FileStorage {
             let data = std::fs::read(&path)?;
             let mut off = 0usize;
             let mut valid_end = 0usize;
+            // Recovery determinístico: para no PRIMEIRO record inválido.
+            // (cauda truncada, CRC falho, limites estourados ou header
+            // malformado = a partir daqui o stream é não-confiável)
             while off + 12 <= data.len() {
-                let klen = u32::from_le_bytes(data[off..off + 4].try_into().unwrap()) as usize;
-                let vlen = u32::from_le_bytes(data[off + 4..off + 8].try_into().unwrap());
-                let crc = u32::from_le_bytes(data[off + 8..off + 12].try_into().unwrap());
-                let consumed = if vlen == TOMBSTONE { 0 } else { vlen as usize };
-                let end = off + 12 + klen + consumed;
+                let (Some(klen), Some(vlen), Some(crc)) = (
+                    le32(&data[off..off + 4]),
+                    le32(&data[off + 4..off + 8]),
+                    le32(&data[off + 8..off + 12]),
+                ) else {
+                    break; // header malformado (nunca deve ocorrer — guard acima)
+                };
+                let klen = klen as usize;
+                if klen > MAX_KLEN {
+                    break; // klen fora do limite — não confiar em lengths externos
+                }
+                // TOMBSTONE PRIMEIRO: vlen = u32::MAX é um delete válido, não um
+                // length absurdo — checar antes do bound de vlen (senão o
+                // tombstone é tratado como corrupção e a chave ressuscita)
+                if vlen == TOMBSTONE {
+                    map.remove(&data[off + 12..off + 12 + klen]);
+                    let end = off + 12 + klen;
+                    off = end;
+                    valid_end = end;
+                    continue;
+                }
+                let vlen = vlen as usize;
+                if vlen > MAX_VLEN {
+                    break; // vlen fora do limite — cauda corrompida
+                }
+                let end = match off.checked_add(12).and_then(|e| e.checked_add(klen)) {
+                    Some(e) => match e.checked_add(vlen) {
+                        Some(e) => e,
+                        None => break, // overflow aritmético — cauda corrompida
+                    },
+                    None => break,
+                };
                 if end > data.len() {
-                    break; // cauda cortada (crash)
+                    break; // cauda cortada (crash) — truncar aqui
                 }
                 let key = &data[off + 12..off + 12 + klen];
                 let val = &data[off + 12 + klen..end];
@@ -129,17 +178,13 @@ impl FileStorage {
                 kv.extend_from_slice(key);
                 kv.extend_from_slice(val);
                 if crc32(&kv) != crc {
-                    break; // corrompido
+                    break; // record corrompido no meio — encerra leitura
                 }
-                if vlen == TOMBSTONE {
-                    map.remove(key);
-                } else {
-                    map.insert(key.to_vec(), val.to_vec());
-                }
+                map.insert(key.to_vec(), val.to_vec());
                 off = end;
                 valid_end = end;
             }
-            // Trunca cauda inválida
+            // Trunca cauda inválida (crash/corrupção) — determinístico
             if valid_end < data.len() {
                 use std::io::{Seek, SeekFrom};
                 let mut f = std::fs::OpenOptions::new()
@@ -287,8 +332,7 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("del.db");
         let _ = std::fs::remove_file(&path);
-        {
-            let mut s = FileStorage::open(&path).unwrap();
+        {            let mut s = FileStorage::open(&path).unwrap();
             s.put(b"x", b"1").unwrap();
             s.delete(b"x").unwrap();
         }
@@ -297,5 +341,161 @@ mod tests {
             assert!(s.get(b"x").unwrap().is_none());
         }
         let _ = std::fs::remove_file(&path);
+    }
+
+    // ── Fault-injection: recovery determinístico (maturation P2) ─────────────
+    // Helper: escreve bytes crus no arquivo (simula crash/corrupção)
+    #[cfg(feature = "file-storage")]
+    fn write_raw(path: &std::path::Path, bytes: &[u8]) {
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    #[cfg(feature = "file-storage")]
+    fn tmp_path(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join("neural_sgdb_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let p = dir.join(name);
+        let _ = std::fs::remove_file(&p);
+        p
+    }
+
+    #[cfg(feature = "file-storage")]
+    fn rec(key: &[u8], val: &[u8]) -> Vec<u8> {
+        // réplica do formato append do FileStorage (header + key‖val + CRC)
+        let mut kv = Vec::new();
+        kv.extend_from_slice(key);
+        kv.extend_from_slice(val);
+        let mut buf = Vec::with_capacity(12 + key.len() + val.len());
+        buf.extend_from_slice(&(key.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&(val.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&crc32(&kv).to_le_bytes());
+        buf.extend_from_slice(key);
+        buf.extend_from_slice(val);
+        buf
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn recovery_empty_file() {
+        let p = tmp_path("fz_empty.db");
+        write_raw(&p, b"");
+        let s = FileStorage::open(&p).unwrap();
+        assert!(s.map.is_empty());
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn recovery_truncated_tail() {
+        let p = tmp_path("fz_trunc.db");
+        let mut data = rec(b"a", b"1");
+        data.extend_from_slice(&rec(b"b", b"2"));
+        data.truncate(data.len() - 5); // cauda cortada no meio do 2º record
+        write_raw(&p, &data);
+        let mut s = FileStorage::open(&p).unwrap();
+        // 1º record íntegro sobrevive; cauda truncada descartada (e truncada no open)
+        assert_eq!(s.get(b"a").unwrap(), Some(b"1".to_vec()));
+        assert!(s.get(b"b").unwrap().is_none());
+        // open truncou o arquivo (cauda removida)
+        let raw = std::fs::read(&p).unwrap();
+        assert_eq!(raw.len(), rec(b"a", b"1").len());
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn recovery_corrupt_mid_stream() {
+        let p = tmp_path("fz_corrupt.db");
+        let mut data = rec(b"a", b"1");
+        data.extend_from_slice(&rec(b"b", b"2")); // corrompe o CRC do 2º
+        let blen = data.len();
+        data[rec(b"a", b"1").len() + 8] ^= 0xFF; // vira CRC do record b
+        write_raw(&p, &data);
+        let mut s = FileStorage::open(&p).unwrap();
+        assert_eq!(s.get(b"a").unwrap(), Some(b"1".to_vec()));
+        assert!(s.get(b"b").unwrap().is_none()); // CRC falho → para aí
+        assert!(std::fs::metadata(&p).unwrap().len() < blen as u64); // truncado
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn recovery_invalid_lengths() {
+        let p = tmp_path("fz_badlen.db");
+        // klen absurdo (0xFFFFFFFF) → fora dos limites → para/trunca
+        let mut data = rec(b"a", b"1");
+        data.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0, 0, 0, 0, 0]);
+        write_raw(&p, &data);
+        let mut s = FileStorage::open(&p).unwrap();
+        assert_eq!(s.get(b"a").unwrap(), Some(b"1".to_vec()));
+        assert!(s.map.len() == 1);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn recovery_malformed_header() {
+        let p = tmp_path("fz_malformed.db");
+        let mut data = rec(b"a", b"1");
+        data.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF, 0xDE, 0xAD, 0xBE, 0xEF]);
+        write_raw(&p, &data);
+        let mut s = FileStorage::open(&p).unwrap();
+        assert_eq!(s.get(b"a").unwrap(), Some(b"1".to_vec()));
+        assert!(s.map.len() == 1);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn recovery_duplicate_keys_last_wins() {
+        let p = tmp_path("fz_dup.db");
+        let mut data = rec(b"k", b"v1");
+        data.extend_from_slice(&rec(b"k", b"v2")); // overwrite → last-wins
+        write_raw(&p, &data);
+        let mut s = FileStorage::open(&p).unwrap();
+        assert_eq!(s.get(b"k").unwrap(), Some(b"v2".to_vec()));
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn recovery_tombstone_removes() {
+        let p = tmp_path("fz_tomb.db");
+        let mut data = rec(b"x", b"1");
+        // tombstone: vlen = u32::MAX, val vazio
+        let mut kv = Vec::new();
+        kv.extend_from_slice(b"x");
+        let mut t = Vec::new();
+        t.extend_from_slice(&1u32.to_le_bytes()); // klen
+        t.extend_from_slice(&TOMBSTONE.to_le_bytes()); // vlen = tombstone
+        t.extend_from_slice(&crc32(&kv).to_le_bytes());
+        t.extend_from_slice(b"x");
+        data.extend_from_slice(&t);
+        write_raw(&p, &data);
+        let mut s = FileStorage::open(&p).unwrap();
+        assert!(s.get(b"x").unwrap().is_none()); // removido pelo tombstone
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn recovery_partial_final_record() {
+        let p = tmp_path("fz_partial.db");
+        let mut data = rec(b"a", b"1");
+        // header diz vlen=100 mas só há 3 bytes → cauda parcial
+        let mut kv = Vec::new();
+        kv.extend_from_slice(b"p");
+        let mut part = Vec::new();
+        part.extend_from_slice(&1u32.to_le_bytes());
+        part.extend_from_slice(&100u32.to_le_bytes());
+        part.extend_from_slice(&crc32(&kv).to_le_bytes());
+        part.extend_from_slice(b"p");
+        part.extend_from_slice(b"xy"); // menos que os 100 prometidos
+        data.extend_from_slice(&part);
+        write_raw(&p, &data);
+        let mut s = FileStorage::open(&p).unwrap();
+        assert_eq!(s.get(b"a").unwrap(), Some(b"1".to_vec()));
+        assert!(s.get(b"p").unwrap().is_none()); // record parcial descartado
+        let _ = std::fs::remove_file(&p);
     }
 }
