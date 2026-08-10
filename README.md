@@ -36,18 +36,25 @@ filesystem, no external runtime.
 
 ## Status
 
-**v0.1 extracted** ✅ — the portable core lives in this repo as the
+**v0.3 maturation** ✅ — the portable core lives in this repo as the
 `neural-sgdb` crate, dual-mode (`no_std` + `std`, zero dependencies):
 
-- `cargo test` on host: **30 tests + doc-test passing**
+- `cargo test` on host: **66 tests + doc-test passing** (44+1 with no
+  default features, 75+1 with `p2p`)
 - `cargo check --no-default-features --target x86_64-unknown-none`: **clean**
 - Ported: ART (Node4/16/48/256 + SSE), MemoryDoc L0–L7 (NMD1 format
   byte-identical to the parent OS), BQ + Hamming SIMD (AVX-512/AVX2/scalar),
   instance-based engine
 - New: `Storage` trait + `InMemory` + `FileStorage` (CRC32 append-log,
-  crash-safe) + `TickvFile` (TKLV byte-exact OS format) + `Sgdb` facade
+  crash-safe, **explicit durability levels** + fsync + **atomic compaction**)
+  + `TickvFile` (TKLV byte-exact OS format) + `Sgdb` facade
   (`remember_exchange`, `remember_semantic`, `recall`, `rag_context`,
-  `remember_fact`, `scan_prefix`, `checkpoint`)
+  `remember_fact`, `scan_prefix`, `checkpoint`, `rebuild_indices`,
+  `get_state`/`set_state`/`supersede`, `node_id`)
+- Maturation v0.3: **bounded top-k** (BQ heap, no full sort), deterministic
+  retrieval + tie-break, hardened recovery (fault-injection tested),
+  parsing safety (no unwrap on external data), `MemoryState` lifecycle model,
+  adversarial fuzz tests, independent code review applied
 - Full API contract in [`docs/api.md`](docs/api.md)
 
 The reference implementation runs on bare-metal in the parent OS

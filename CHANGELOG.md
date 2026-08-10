@@ -6,11 +6,66 @@ All notable changes to this project. Format based on
 
 ## [Unreleased]
 
-### Planned (v0.2+)
-- CRDT per-layer merge policy design (roadmap v0.2): LWW for config/state,
-  multi-value register for episodic, causal merge via VectorClock
-  (`docs/api.md`)
+### Planned (v0.3+)
+- CRDT per-layer merge policy (roadmap): LWW for config/state, multi-value
+  register for episodic, causal merge via VectorClock (`docs/api.md`)
 - `TickvFile` GC/compaction + TKCK checkpoint in the backend
+- L6 Associative/Metacognitive + Memory Graph (Doc 01/03)
+
+## [0.3.0] — 2026-08-10
+
+### Added (maturation sprint)
+- **VectorClock semantics**: semantic `PartialEq` (map node→counter, order-
+  independent), `happens_before` (causal), `concurrent` (excludes equality),
+  `merge` (element-wise max + saturation), `counter_of`; 8 tests
+- **CRDT conflict preservation**: `MergeVerdict` (SelfPacket/Stale/Duplicate/
+  Applied/Conflict), `conflicts` (concurrent versions never LWW-discarded),
+  `own_writes` (concurrency base — peer causal successor converges), self-packet
+  ignored; `MemoryVersion`/`MemoryDelta`/`MemorySnapshot` abstractions; tests
+- **Deterministic retrieval**: recall dedupes by storage key (best score) +
+  tie-break by key — same DB+query+k ⇒ same ordered results; tests
+- **Bounded BQ top-k**: max-heap (O(N·D/64 + N log k)) instead of full sort;
+  k==0/k>=len/empty handled; deterministic (dist,id); bench heap(k=5)=320µs vs
+  full-sort(k=N)=592µs; 6 tests
+- **Durability semantics**: `Durability` (Buffered/Flushed/Durable),
+  `Storage::durability()` + `sync_durable()` (fsync real no FileStorage,
+  read+write handle p/ Windows); InMemory = Buffered; test
+- **FileStorage compaction**: `compact()` — live set rewritten to temp +
+  atomic rename; removes tombstones/obsolete; crash-safe; empty value = TOMBSTONE
+  (aligned com append); 3 tests
+- **Index rebuild público**: `Sgdb::rebuild_indices()` + `open_with_node_id`/
+  `node_id()`; teste write→close→reopen→rebuild→recall
+- **MemoryState model**: Active/Superseded/Archived/Invalidated — NÃO serializado
+  no NMD1 (contrato byte-idêntico com o OS intacto); side-table `sys/state/`
+  via Storage cru; `Sgdb::get_state/set_state/supersede`; `MemoryLayer::from_u8`
+  = ponto único de validação; 2 testes
+- **Adversarial tests**: fuzz determinístico LCG para MemoryDoc decode/view,
+  TKLV scan_volume, CRDT apply_remote_version — nunca panics em malformed input
+
+### Fixed
+- **Baseline**: `cargo test --no-default-features` quebrava (30 erros) —
+  imports alloc nos testes, gates `#[cfg(feature="file-storage")]`, exemplo
+  mcp_server com backend por feature
+- **FileStorage recovery**: bounds sanitizados (klen≤4KiB/vlen≤1MiB, checked_add),
+  le32() sem unwrap, truncação determinística da cauda; CRÍTICO tombstone
+  (vlen=u32::MAX) era tratado como length absurdo e chave deletada RESSUSCITAVA;
+  HIGH tombstone truncado panicava (slice sem bounds); tombstone agora com CRC
+- **CRDT**: has_other_state usava local_version (adotado de peers) — sucessor
+  causal do mesmo peer virava Conflict para sempre; fix own_writes
+- **Parsing safety**: rd_u32/rd_u64/le32 checados (sem `try_into().unwrap()`)
+  em MemoryDoc decode/view, tickv scan, CRDT recv
+- **compact**: valor vazio gravava vlen=0 vs append TOMBSTONE — mesma chave
+  mudaria de significado pós-compactação
+- **set_state(Active)**: deletava sys/state/ incondicionalmente (log crescia);
+  só deleta se existir
+- **recall**: overwrite em L4 re-inseria no BQ — mesma memória voltava 2x;
+  dedupe por storage key + tie-break determinístico
+
+### Changed
+- Top-k BQ: full sort → bounded heap (resultado idêntico, mais rápido)
+- `Sgdb::open` propaga erro de rebuild (P1); `recovered_records()` expõe contagem
+- Bench honesto: baseline recall@5 agora é cosseno FP32 real (dados sintéticos
+  pseudo-aleatórios → 0%, documentando o trade-off do sign-BQ em ruído)
 
 ## [0.2.0] — 2026-08-10
 
