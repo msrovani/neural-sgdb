@@ -1,0 +1,55 @@
+{
+  "metadata": {
+    "version": "1.0.0",
+    "last_run": "2026-08-10T02:59:59.893Z",
+    "root": "C:\\DEV\\neural-sgdb",
+    "include_patterns": [
+      "src/**/*.rs",
+      "examples/**/*.rs",
+      "Cargo.toml"
+    ],
+    "exclude_patterns": [
+      "docs/**",
+      "*.md"
+    ],
+    "exceptions": []
+  },
+  "file_hashes": {
+    "Cargo.toml": "6ffe052eca546542f3ac8640f783d2a5",
+    "examples/bench.rs": "e70f08de693166855eb4f0a373df7421",
+    "examples/mcp_server.rs": "a5af472e2286cdb886262f6a19faf641",
+    "src/art.rs": "62f4c61d901e79c36dd31b2ca9bd31c2",
+    "src/bq.rs": "18baf75c115be5d222d79fed28824398",
+    "src/crdt.rs": "d91d25fdb1b019bb3297061ec481ae57",
+    "src/engine.rs": "b4df9e2c31990fa7a35b3787b2d771ab",
+    "src/hamming_dispatch.rs": "afee69a70126d5c906c3ece0b40774d5",
+    "src/lib.rs": "05a9a125114a77275ea9f0987562960b",
+    "src/memory_doc.rs": "31717580b782fc087c471fce42f70a94",
+    "src/sgdb.rs": "9b54cfdf756645a5b0c08dd73772b6f6",
+    "src/storage.rs": "48423112e090f16bfdb022415a10da2d",
+    "src/tickv.rs": "14cb98fdbc75484d4f71a4a31c822a63",
+    "target/package/neural-sgdb-0.1.0/Cargo.toml": "76511584649ae4598e1b367988e1b05d",
+    "target/package/neural-sgdb-0.1.0/examples/bench.rs": "e70f08de693166855eb4f0a373df7421",
+    "target/package/neural-sgdb-0.1.0/examples/mcp_server.rs": "a5af472e2286cdb886262f6a19faf641",
+    "target/package/neural-sgdb-0.1.0/src/art.rs": "62f4c61d901e79c36dd31b2ca9bd31c2",
+    "target/package/neural-sgdb-0.1.0/src/bq.rs": "18baf75c115be5d222d79fed28824398",
+    "target/package/neural-sgdb-0.1.0/src/crdt.rs": "d91d25fdb1b019bb3297061ec481ae57",
+    "target/package/neural-sgdb-0.1.0/src/engine.rs": "b4df9e2c31990fa7a35b3787b2d771ab",
+    "target/package/neural-sgdb-0.1.0/src/hamming_dispatch.rs": "afee69a70126d5c906c3ece0b40774d5",
+    "target/package/neural-sgdb-0.1.0/src/lib.rs": "05a9a125114a77275ea9f0987562960b",
+    "target/package/neural-sgdb-0.1.0/src/memory_doc.rs": "31717580b782fc087c471fce42f70a94",
+    "target/package/neural-sgdb-0.1.0/src/sgdb.rs": "9b54cfdf756645a5b0c08dd73772b6f6",
+    "target/package/neural-sgdb-0.1.0/src/storage.rs": "48423112e090f16bfdb022415a10da2d",
+    "target/package/neural-sgdb-0.1.0/src/tickv.rs": "14cb98fdbc75484d4f71a4a31c822a63"
+  },
+  "folder_hashes": {
+    ".": "19e3128c2fd3baddfa001b7d46dffedb",
+    "examples": "6aa1d0b0379936e1e57964925bd3a9d9",
+    "src": "462b2cf315c34d24f6714eab02452108",
+    "target": "b264b80a1f4b77cc4b813a2cf6da1e22",
+    "target/package": "b264b80a1f4b77cc4b813a2cf6da1e22",
+    "target/package/neural-sgdb-0.1.0": "b264b80a1f4b77cc4b813a2cf6da1e22",
+    "target/package/neural-sgdb-0.1.0/examples": "1c092a7d8909a0b949f32e866eb91dd9",
+    "target/package/neural-sgdb-0.1.0/src": "a84a5da92c2ab303fb26ff7242364381"
+  }
+}
