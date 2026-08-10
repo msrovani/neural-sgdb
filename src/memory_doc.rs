@@ -54,6 +54,30 @@ pub struct VectorClock {
     pub counts: [u64; 8],
 }
 
+/// Igualdade SEMÂNTICA: dois relógios são iguais sse o mapeamento
+/// (nó → contador) é idêntico — **independente da ordem de inserção nos
+/// slots**. O derive compararia slots por posição, o que faria dois relógios
+/// com a mesma causalidade (inseridos em ordens diferentes) serem "desiguais".
+impl PartialEq for VectorClock {
+    fn eq(&self, other: &Self) -> bool {
+        for i in 0..8 {
+            let n = self.nodes[i];
+            if n != 0xFF && other.counter_of(n) != self.counts[i] {
+                return false;
+            }
+        }
+        for j in 0..8 {
+            let n = other.nodes[j];
+            if n != 0xFF && self.counter_of(n) != other.counts[j] {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+impl Eq for VectorClock {}
+
 impl VectorClock {
     pub fn new() -> Self {
         Self {
@@ -72,6 +96,84 @@ impl VectorClock {
                 self.nodes[i] = node_id;
                 self.counts[i] = 1;
                 return;
+            }
+        }
+    }
+
+    /// Contador de um nó (0 se ausente) — semântica de relógio vetorial:
+    /// nó ausente = contador 0 (v0.2 design: nó ausente nunca domina).
+    pub fn counter_of(&self, node_id: u8) -> u64 {
+        for i in 0..8 {
+            if self.nodes[i] == node_id {
+                return self.counts[i];
+            }
+        }
+        0
+    }
+
+    /// Causal: `self` aconteceu-antes de `other` sse todo contador de `self`
+    /// é ≤ o correspondente em `other` E pelo menos um é estritamente <.
+    /// (Relógios vetoriais: `self ≺ other`.) Relógios iguais NÃO são
+    /// happened-before.
+    pub fn happens_before(&self, other: &Self) -> bool {
+        if self == other {
+            return false;
+        }
+        let mut strictly_less = false;
+        // cada nó de `self` deve ser ≤ em `other`
+        for i in 0..8 {
+            let sn = self.nodes[i];
+            if sn == 0xFF {
+                continue;
+            }
+            let sc = self.counts[i];
+            let oc = other.counter_of(sn);
+            if sc > oc {
+                return false;
+            }
+            if sc < oc {
+                strictly_less = true;
+            }
+        }
+        // cada nó de `other` presente e não em `self` é estritamente maior (0 < oc)
+        for j in 0..8 {
+            let on = other.nodes[j];
+            if on == 0xFF {
+                continue;
+            }
+            if self.counter_of(on) < other.counts[j] {
+                strictly_less = true;
+            }
+        }
+        strictly_less
+    }
+
+    /// Concorrente: nem `self ≺ other` nem `other ≺ self` **e não são
+    /// iguais**. Relógios iguais = estado idêntico = SEM conflito; a
+    /// concorrência é uma divergência real que deve ser preservada
+    /// (CRDT multi-value, Doc 04) — nunca resolvida por LWW cego.
+    pub fn concurrent(&self, other: &Self) -> bool {
+        self != other && !self.happens_before(other) && !other.happens_before(self)
+    }
+
+    /// Merge element-wise (max por nó, união de nós). Overflow: satura em
+    /// u64::MAX (determinístico; nunca decresce).
+    pub fn merge(&mut self, other: &Self) {
+        for j in 0..8 {
+            let on = other.nodes[j];
+            if on == 0xFF {
+                continue;
+            }
+            let oc = other.counts[j];
+            match self.nodes.iter().position(|n| *n == on) {
+                Some(slot) => self.counts[slot] = self.counts[slot].max(oc),
+                None => {
+                    // nó novo — ocupa slot livre; cheio → satura (v0.2: clock dinâmico)
+                    if let Some(free) = self.nodes.iter().position(|n| *n == 0xFF) {
+                        self.nodes[free] = on;
+                        self.counts[free] = oc;
+                    }
+                }
             }
         }
     }
@@ -345,5 +447,116 @@ mod tests {
         want.push(0xAA);
         want.push(0x00); // bitflag: sem bitvec
         assert_eq!(enc, want);
+    }
+
+    // ── VectorClock: causal ordering, concurrency, merge (P2) ──────────────
+
+    fn vc(pairs: &[(u8, u64)]) -> VectorClock {
+        let mut c = VectorClock::new();
+        for &(n, cnt) in pairs {
+            for _ in 0..cnt {
+                c.tick(n);
+            }
+        }
+        c
+    }
+
+    #[test]
+    fn vc_equal() {
+        let a = vc(&[(1, 3), (2, 1)]);
+        let b = vc(&[(2, 1), (1, 3)]); // mesma contagem, ordem de insert diferente
+        assert_eq!(a, b);
+        assert!(!a.happens_before(&b));
+        assert!(!b.happens_before(&a));
+        assert!(!a.concurrent(&b)); // iguais não são concorrentes
+        assert!(!b.concurrent(&a));
+    }
+
+    #[test]
+    fn vc_happens_before_less() {
+        let a = vc(&[(1, 2)]);
+        let b = vc(&[(1, 3)]);
+        assert!(a.happens_before(&b)); // a ≺ b (contador menor)
+        assert!(!b.happens_before(&a));
+        assert!(!a.concurrent(&b));
+
+        // nó presente em b e ausente em a → a ≺ b (0 < oc)
+        let c = vc(&[]);
+        let d = vc(&[(5, 1)]);
+        assert!(c.happens_before(&d));
+        assert!(!d.happens_before(&c));
+    }
+
+    #[test]
+    fn vc_happens_before_greater() {
+        let a = vc(&[(1, 5)]);
+        let b = vc(&[(1, 2)]);
+        assert!(b.happens_before(&a));
+        assert!(!a.happens_before(&b));
+    }
+
+    #[test]
+    fn vc_concurrent_detection() {
+        // a incrementou nó 1; b incrementou nó 2 — incomparáveis → concorrentes
+        let a = vc(&[(1, 1)]);
+        let b = vc(&[(2, 1)]);
+        assert!(!a.happens_before(&b));
+        assert!(!b.happens_before(&a));
+        assert!(a.concurrent(&b));
+        assert!(b.concurrent(&a));
+
+        // mesmo nó, contadores iguais, mas com divergência em outro nó
+        let c = vc(&[(1, 2), (3, 1)]);
+        let d = vc(&[(1, 2), (4, 1)]);
+        assert!(c.concurrent(&d));
+    }
+
+    #[test]
+    fn vc_merge_union_and_max() {
+        let mut a = vc(&[(1, 2)]);
+        let b = vc(&[(2, 3)]);
+        a.merge(&b);
+        assert_eq!(a.counter_of(1), 2);
+        assert_eq!(a.counter_of(2), 3);
+
+        // max por nó (não soma)
+        let mut c = vc(&[(1, 2)]);
+        let d = vc(&[(1, 5)]);
+        c.merge(&d);
+        assert_eq!(c.counter_of(1), 5);
+    }
+
+    #[test]
+    fn vc_merge_commutative() {
+        let a = vc(&[(1, 2), (2, 1)]);
+        let b = vc(&[(1, 1), (2, 3)]);
+        let mut ab = a.clone();
+        ab.merge(&b);
+        let mut ba = b.clone();
+        ba.merge(&a);
+        assert_eq!(ab, ba); // merge é comutativo e idempotente
+        assert_eq!(ab.counter_of(1), 2);
+        assert_eq!(ab.counter_of(2), 3);
+    }
+
+    #[test]
+    fn vc_overflow_saturates() {
+        let mut c = VectorClock::new();
+        c.nodes[0] = 1;
+        c.counts[0] = u64::MAX;
+        c.tick(1); // satura, não wrappa
+        assert_eq!(c.counts[0], u64::MAX);
+    }
+
+    #[test]
+    fn vc_encode_decode_roundtrip() {
+        let c = vc(&[(1, 3), (2, 1), (7, 9)]);
+        let mut enc = Vec::new();
+        c.encode(&mut enc);
+        let (dec, n) = VectorClock::decode(&enc).unwrap();
+        assert_eq!(n, 72);
+        assert_eq!(dec, c);
+        // decode rejeita truncado
+        assert!(VectorClock::decode(&enc[..70]).is_none());
     }
 }
