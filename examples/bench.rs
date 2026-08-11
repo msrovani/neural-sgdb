@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use neural_sgdb::art::ArtIndex;
 use neural_sgdb::bq::BqFlatIndex;
 use neural_sgdb::hamming_dispatch::{select_best_hamming_kernel, path_name};
+use neural_sgdb::storage::crc32;
 use neural_sgdb::{InMemory, Sgdb};
 
 /// P50/P99 de um conjunto de amostras (já preenchido, ordenado na cópia).
@@ -140,6 +141,19 @@ fn main() {
     println!(
         "recall@5    BQ vs FP32-cosine-exact: {:.0}% ({hit}/5 top-5 coincidem; trade-off real da quantização 1-bit)",
         recall * 100.0
+    );
+
+    // ── CRC32: throughput (custo de todo put + recovery de storage) ─────────
+    let buf: Vec<u8> = (0..1024 * 1024).map(|i| (i % 251) as u8).collect();
+    let t_crc = Instant::now();
+    let mut acc = 0u32;
+    for _ in 0..100 {
+        acc ^= crc32(&buf);
+    }
+    let per = t_crc.elapsed() / 100;
+    println!(
+        "crc32   1MiB x100       : {per:?} avg  {:.0} MiB/s (acc={acc:08x})",
+        1.0 / per.as_secs_f64()
     );
 
     // ── End-to-end Sgdb (demo do uso real) ─────────────────────────────────

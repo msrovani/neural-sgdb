@@ -34,6 +34,15 @@ All notable changes to this project. Format based on
   now normalized by `words_per_vec × 64`.
 
 ### Performance
+- **Hamming dispatch hot path**: `ensure_selected()` used a `SELECTED.swap(true)`
+  (locked RMW) on **every** `hamming()` call — it dominated short-vector scans.
+  Now `load`+`store` (benign double-select race, `set_cpu_caps` still rearms).
+  Measured: BQ top-5 (10k vec × 1024 dim) 213µs → **160µs** (~25%).
+- **CRC32 table (256)**: `const fn` table, zero-dep, no_std-safe, same bytes
+  (golden tests pin). 1 op/byte instead of 8. Plus `crc32_parts` computes
+  CRC over key‖val without concatenating (1 fewer allocation per record in
+  FileStorage append/recovery/compact). 1MiB bench is serial/bandwidth-bound
+  on this host (no change there); the win is per-record write/recovery.
 - **FileStorage append with a persistent lazy handle**: `put`/`delete` no
   longer open+close the file on every write (one `CreateFile`+`CloseHandle`
   syscall pair per op). Measured (stress 100k, release): `Storage::put` raw

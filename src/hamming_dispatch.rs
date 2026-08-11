@@ -82,7 +82,12 @@ pub fn select_best_hamming_kernel() {
 }
 
 fn ensure_selected() {
-    if !SELECTED.swap(true, Ordering::Relaxed) {
+    // load+store em vez de swap(true): o swap é um RMW com `lock` no x86 —
+    // medido dominando hamming() de vetores curtos (loop de N vetores no
+    // top_k). Corrida benigna: dois selects concorrentes dão o mesmo resultado
+    // (idempotente), e `set_cpu_caps` rearms SELECTED para reavaliar.
+    if !SELECTED.load(Ordering::Relaxed) {
+        SELECTED.store(true, Ordering::Relaxed);
         select_best_hamming_kernel();
     }
 }

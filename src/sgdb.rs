@@ -227,7 +227,7 @@ impl Sgdb {
             return Ok(Vec::new());
         }
         let k = k.max(1);
-        let cand = (k * 4).max(k);
+        let cand = k * 4; // k>=1 ⇒ k*4 ≥ k, o .max(k) era redundante
         let hits = self.engine.bq_top_k_f32(query, cand);
         // Distância Hamming máxima de um vetor indexado (normaliza o fallback
         // p/ escala 0..1 do contrato de `Hit.dist` — bughunt #11).

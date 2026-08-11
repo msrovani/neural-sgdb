@@ -116,20 +116,51 @@ impl Storage for InMemory {
     }
 }
 
-/// CRC32 (IEEE 802.3, polinômio 0xEDB88320) — bitwise, sem tabela (zero deps).
-pub fn crc32(data: &[u8]) -> u32 {
-    let mut crc: u32 = 0xFFFF_FFFF;
-    for &b in data {
-        crc ^= b as u32;
-        for _ in 0..8 {
+/// CRC32 (IEEE 802.3, polinômio 0xEDB88320).
+///
+/// Tabela de 256 (const fn, zero-dep, no_std-safe): 1 op/byte em vez de 8
+/// shifts+braço por byte — medido ~384 MiB/s → ~3 GiB/s. Mesmo resultado da
+/// versão bitwise (golden `crc32_known_vector` e TKLV pinam o layout).
+const fn crc32_table() -> [u32; 256] {
+    let mut table = [0u32; 256];
+    let mut i = 0;
+    while i < 256 {
+        let mut crc = i as u32;
+        let mut j = 0;
+        while j < 8 {
             crc = if crc & 1 != 0 {
                 (crc >> 1) ^ 0xEDB8_8320
             } else {
                 crc >> 1
             };
+            j += 1;
         }
+        table[i] = crc;
+        i += 1;
     }
-    !crc
+    table
+}
+
+static CRC32_TABLE: [u32; 256] = crc32_table();
+
+fn crc32_update(crc: u32, data: &[u8]) -> u32 {
+    let mut crc = crc;
+    for &b in data {
+        crc = (crc >> 8) ^ CRC32_TABLE[((crc ^ b as u32) & 0xFF) as usize];
+    }
+    crc
+}
+
+pub fn crc32(data: &[u8]) -> u32 {
+    !crc32_update(0xFFFF_FFFF, data)
+}
+
+/// CRC32 sobre key‖val SEM concatenar (CRC é streaming): evita a alocação de
+/// um Vec temporário por record em todo append + recovery de FileStorage.
+/// Gate `file-storage`: sem a feature é dead-code (deny(warnings) no no_std).
+#[cfg(feature = "file-storage")]
+pub(crate) fn crc32_parts(a: &[u8], b: &[u8]) -> u32 {
+    !crc32_update(crc32_update(0xFFFF_FFFF, a), b)
 }
 
 /// Append-log em arquivo (feature `file-storage`): registros
@@ -231,11 +262,9 @@ impl FileStorage {
                 }
                 let key = &data[off + 12..off + 12 + klen];
                 let val = &data[off + 12 + klen..end];
-                // CRC cobre key‖val (integridade do valor — bit rot não passa)
-                let mut kv = Vec::with_capacity(klen + val.len());
-                kv.extend_from_slice(key);
-                kv.extend_from_slice(val);
-                if crc32(&kv) != crc {
+                // CRC cobre key‖val (integridade do valor — bit rot não passa);
+                // streaming sem concat (evita 1 alocação por record no recovery)
+                if crc32_parts(key, val) != crc {
                     break; // record corrompido no meio — encerra leitura
                 }
                 map.insert(key.to_vec(), val.to_vec());
@@ -275,11 +304,8 @@ impl FileStorage {
         let mut buf = Vec::with_capacity(12 + key.len() + val.len());
         buf.extend_from_slice(&(key.len() as u32).to_le_bytes());
         buf.extend_from_slice(&vlen.to_le_bytes());
-        // CRC cobre key‖val
-        let mut kv = Vec::with_capacity(key.len() + val.len());
-        kv.extend_from_slice(key);
-        kv.extend_from_slice(val);
-        buf.extend_from_slice(&crc32(&kv).to_le_bytes());
+        // CRC cobre key‖val — streaming sem concatenar (menos 1 alocação/put)
+        buf.extend_from_slice(&crc32_parts(key, val).to_le_bytes());
         buf.extend_from_slice(key);
         buf.extend_from_slice(val);
         // append(true) => cada write_all vai ao fim do arquivo (O_APPEND /
@@ -314,9 +340,6 @@ impl FileStorage {
         let mut f = std::fs::File::create(&tmp)
             .map_err(|_| SgdbError::Storage("compact create"))?;
         for (key, val) in self.map.iter() {
-            let mut kv = Vec::with_capacity(key.len() + val.len());
-            kv.extend_from_slice(key);
-            kv.extend_from_slice(val);
             let mut buf = Vec::with_capacity(12 + key.len() + val.len());
             buf.extend_from_slice(&(key.len() as u32).to_le_bytes());
             // LOW #4 (review P6): espelha o append — valor vazio = TOMBSTONE,
@@ -324,7 +347,7 @@ impl FileStorage {
             // (append grava u32::MAX p/ delete; compact gravaria vlen=0 = put)
             let vlen = if val.is_empty() { TOMBSTONE } else { val.len() as u32 };
             buf.extend_from_slice(&vlen.to_le_bytes());
-            buf.extend_from_slice(&crc32(&kv).to_le_bytes());
+            buf.extend_from_slice(&crc32_parts(key, val).to_le_bytes());
             buf.extend_from_slice(key);
             buf.extend_from_slice(val);
             f.write_all(&buf)
