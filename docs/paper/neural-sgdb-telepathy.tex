@@ -47,9 +47,9 @@ preserved conflicts at read time using recency, importance and temporal
 validity. We report measured performance (an order-of-magnitude write
 throughput improvement via a persistent lazy storage handle, microsecond
 recall, ~$3\times$ faster volume mounting under churn), a reproducible
-two-instance peer-synchronization convergence demo, and the honest costs of the
-model: eventual consistency, absence of global ordering, and deferred conflict
-resolution.
+two-instance peer-synchronization convergence demo (agent-to-agent memory
+replication), and the honest costs of the model: eventual consistency, absence
+of global ordering, and deferred conflict resolution.
 \end{abstract}
 
 \begin{center}
@@ -89,7 +89,13 @@ evidence around it:
         checkpoint fast-mount, atomic compaction, and in-place tombstone
         invalidation.
   \item A conflict-preserving CRDT synchronization protocol (peer-to-peer
-        memory exchange)
+        memory exchange)\footnote{\emph{Terminology.} We use
+        \emph{peer-to-peer memory synchronization} throughout; the same
+        mechanism is also described---equivalently, in our view---as
+        \emph{memory exchange}, \emph{gossip-style memory dissemination},
+        \emph{causal memory propagation}, \emph{synchronized memory transfer},
+        or \emph{agent-to-agent memory replication}. We treat these as
+        synonyms; readers may use whichever they prefer.}
         with delta sending, and a principled arbitration model in which an AI
         at the root of the process resolves preserved conflicts at read time.
   \item Measured results: $\sim 38\times$ faster writes from a single storage
@@ -208,13 +214,15 @@ set. The merge is a multi-value register with explicit verdicts:
 self-packets ignored, stale/duplicate versions rejected (no regression), new
 versions adopted when no conflicting local state exists, and \emph{concurrent}
 versions preserved in the conflict set. Delta sending
-(\S\ref{sec:sync}) ships only versions a peer has not seen.
+(\S\ref{sec:sync}) ships only versions a peer has not seen---gossip-style
+dissemination of the causal state rather than the full history.
 
-Exchanging versions is the causal trigger; transferring documents is a
-diff-pull: a peer that learns another advanced replicates the missing docs
-(\texttt{get} $\to$ \texttt{put}). Two instances converge with no central
-server. Because resolution writes are themselves causal CRDT writes,
-arbitration outcomes propagate to every peer.
+Exchanging versions is the causal trigger; transferring documents (memory
+transfer) is a diff-pull: a peer that learns another advanced replicates the
+missing docs (\texttt{get} $\to$ \texttt{put}). Two instances converge with no
+central server. Because resolution writes are themselves causal CRDT writes,
+arbitration outcomes propagate to every peer via the same dissemination
+mechanism.
 
 \subsection{Arbitration by an AI at the root}
 \label{sec:arbitration}
