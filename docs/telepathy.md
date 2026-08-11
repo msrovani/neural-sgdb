@@ -218,3 +218,5 @@ cargo run --release --example mcp_server
 Implementation: `src/crdt.rs`, `examples/p2p_telepathy.rs`, `Sgdb::put` in
 `src/sgdb.rs`. Related: `recall_weighted`, `recall_at`, `sys/validity/`
 (§3.3/§4), delta sync (#10).
+
+Português: [`telepathy-pt.md`](telepathy-pt.md).

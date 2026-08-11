@@ -98,10 +98,11 @@ memories between two `Sgdb` instances via CRDT version sync + doc pull
 (two instances converge with no central server). The crate doc
 (`cargo doc --open`) is a runnable tour of the whole API.
 
-**How the memory sync really works** — [docs/telepathy.md](docs/telepathy.md):
-the CRDT model, the two-instance convergence flow, the honest cost (eventual
-consistency, no global order, conflict preservation) and how an AI at the root
-of the process arbitrates the preserved conflicts.
+**How the memory sync really works** — [docs/telepathy.md](docs/telepathy.md)
+(EN) / [docs/telepathy-pt.md](docs/telepathy-pt.md) (PT-BR): the CRDT model,
+the two-instance convergence flow, the honest cost (eventual consistency, no
+global order, conflict preservation) and how an AI at the root of the process
+arbitrates the preserved conflicts.
 
 ## MCP (AI agents)
 
