@@ -130,6 +130,30 @@ cargo check --no-default-features --target x86_64-unknown-none   # no_std gate
 - **Features** (Cargo.toml): `std`, `file-storage`, `simd-runtime`, `p2p`
   (opt-in). Default = `["std","file-storage","simd-runtime"]`. no_std gate:
   `cargo check --no-default-features --target x86_64-unknown-none`.
+- **BQ recall-time extras (2026)**: `MihIndex` (multi-index hashing sobre os
+  bitvecs existentes — candidatos sub-lineares, `candidates()`/`top_k` com
+  probes); `quantize_f32_centered`/`top_k_f32_centered` (query re-centrada pela
+  média — bitvecs armazenados intactos); `recall()` usa auto-oversample por
+  dimensionalidade (1 word→16, 2-4→8, senão 4); `recall_weighted` =
+  `w_sem·dist + w_rec·recência(/ts/hex) + w_imp·importância(camada)`.
+- **Lexical dual-path** (`src/lexical.rs`): índice invertido BM25-style sobre
+  textos L2/L3 (alloc-only, no_std). `recall_lexical`/`recall_hybrid` no Sgdb.
+  **`f32::ln` não existe no core bare-metal** → `ln_f32` (ponteiro: expoente
+  IEEE + série no mantissa, precisão ~1e-5 — suficiente p/ ranking). Custo
+  ~6µs/put (L2/L3 tokenizados no `index_doc`).
+- **TickvFile** (`src/tickv.rs`): `put`/`delete` agora **invalidam o record
+  antigo in-place** (`magic[3]='V'→0`, TKL\0) antes do append (parity OS) —
+  `scan_volume` pula sem CRC. `compact()` reescreve live set + ckpt.
+- **Validade temporal** (`sys/validity/`, engine/sgdb): `set_validity`/
+  `invalidate`/`validity_at`/`recall_at` — **invalidar-não-deletar** (Zep/
+  Graphiti); side-table 16B `from|until u64le`, NMD1 intacto.
+- **CRDT delta** (`src/crdt.rs`): `record_change` acumula `pending` deltas;
+  `sync` envia só o não-visto pelo peer via `send_delta` (trait default cai p/
+  `send_crdt`); `pending_deltas()` mede. Wire = protocol-interno (OK mudar).
+- **ART** (`src/art.rs`): `scan_prefix_stats` expõe nós visitados (pruning de
+  range — só desce em filhos que casam o prefixo). `MCP` (example): resources
+  `memory://{layer}/{key}`, `nextCursor` paginação opaca, annotations
+  `readOnlyHint`/`destructiveHint`/`idempotentHint`.
 - **Format contracts**: NMD1/TKLV byte-identical to the OS — golden tests
   (`golden_nmd1_bytes`, `golden_record_bytes`, `fnv1a64_known_vector`) pin the
   layout; change them in the same commit as any format change.

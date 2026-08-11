@@ -6,6 +6,8 @@ All notable changes to this project. Format based on
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-08-10
+
 ### Added (pesquisa de ponta 2026 — 10 itens, cada um com teste de medição)
 - **#1 `MihIndex`** (`bq.rs`) — Multi-Index Hashing (Norouzi) sobre os bitvecs
   existentes: candidatos ∝ N/2^(bits/bloco) em vez de O(N), match exato sempre
