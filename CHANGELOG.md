@@ -6,6 +6,8 @@ All notable changes to this project. Format based on
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-08-10
+
 ### Fixed (bughunt #11)
 - **FileStorage oversized write = silent tail data loss**: `put` with a value
   > `MAX_VLEN` (or key > `MAX_KLEN`) was accepted, but `open()` recovery

@@ -87,26 +87,46 @@ cargo check --no-default-features --target x86_64-unknown-none   # no_std gate
   on `notifications/initialized` (Claude Code sends tools/list first), echo the
   id verbatim, `-32601` for unknown methods (modern-client fallback). The
   `demo_embed` embedding is a trigram hash — NOT a real semantic model.
-- **TickvFile** (`src/tickv.rs`): does not write checkpoints (v0.1) — the OS
-  mounts by full scan; GC/compaction is v0.2. 512-aligned records, tombstone
-  `vlen=0` or `TKL\0`. **`scan_volume` MUST skip in-place tombstones
-  (`hdr[3]==0`) before CRC** — otherwise OS-written deletes resurrect (bughunt
-  #1 CRÍTICO, fixed).
+- **TickvFile** (`src/tickv.rs`): 512-aligned records, tombstone `vlen=0` or
+  `TKL\0`. **`scan_volume` MUST skip in-place tombstones (`hdr[3]==0`) before
+  CRC** — otherwise OS-written deletes resurrect (bughunt #1 CRÍTICO, fixed),
+  **and skip the `sys/tickv_ckpt` record** (checkpoint = metadata, never a
+  live key). `checkpoint()` writes the TKCK record as the LAST record;
+  `open()` fast-mounts via `try_mount_from_ckpt` (FNV-1a index check, per-entry
+  CRC + `TKL V` stale check, ckpt-must-be-last) with full `scan_volume`
+  fallback; `compact()` rewrites live set + ckpt + atomic rename. Fast-mount
+  only wins under churn (tombstones) — all-live is parity.
 - **CRDT** (`src/crdt.rs`): rate-limit uses `Option<u64>` (the 0 sentinel fails
   on first sync at now=0); `UdpTransport` is an unauthenticated demo — use a
   signed transport in production. `set_cpu_caps` must rearm `SELECTED`
   (bughunt #9).
 - **Storage CRC** (`src/storage.rs`): FileStorage CRC covers **key‖val**, not
-  just the key — bit rot in values must be detected (bughunt #2).
-- **Recall sort** (`src/sgdb.rs`): sort by the raw u32 score (FP32 0..10000 vs
-  ham 0..64 share the OS ordering space); `sk.replacen("/L4/", "/L2/", 1)` for
-  the companion-text lookup — a key containing `/L4/` must not be corrupted
-  (bughunt #3/#6).
+  just the key — bit rot in values must be detected (bughunt #2). Append uses
+  a **persistent lazy handle** (perf ~38x): `compact()` must drop it BEFORE the
+  atomic rename and reopen lazy, or writes after rename hit the old inode/file
+  object (data loss). Bounds-check oversized keys/vals at write time (recovery
+  would truncate the file otherwise).
+- **Recall** (`src/sgdb.rs`): sort by the raw u32 score (FP32 0..10000 vs ham
+  0..64 share the OS ordering space); `sk.replacen("/L4/", "/L2/", 1)` for the
+  companion-text lookup — a key containing `/L4/` must not be corrupted
+  (bughunt #3/#6). Use `recall_oversampled(query, k, oversample)` when the
+  coarse BQ filter collides (low dims): raise the candidate pool, don't lower
+  `k`. `Hit.dist` fallback hamming is normalized to 0..1 (bughunt #11).
 - **clamp** (`src/sgdb.rs`): truncate at a char boundary — `&s[..max]` panics
   mid multi-byte char (bughunt #7).
+- **ART** (`src/art.rs`): `delete` now reclaims nodes (no leaf tombstone) —
+  `delete_rec` returns `Option<Box<Node>>` (None = empty subtree) and shrinks
+  256→48→16→4 when `n` drops. Match on `*node` (Box doesn't auto-deref in
+  patterns); rebuild the box instead of returning the moved `node`.
+- **Hamming dispatch** (`src/hamming_dispatch.rs`): `ensure_selected` uses
+  `load`+`store`, NOT `SELECTED.swap(true)` (locked RMW on every `hamming` was
+  the hot-path bottleneck); benign double-select race, `set_cpu_caps` still
+  rearms (bughunt #9).
 - **Bench baseline** (`examples/bench.rs`): recall@k must compare against true
   FP32 cosine over the original f32 vectors, never hamming over the same
-  quantized bits (tautological, bughunt #4).
+  quantized bits (tautological, bughunt #4), and must use **correlated cluster
+  data** — pure noise measures a meaningless 0%. Sign-BQ separates the cluster,
+  not the exact member (dense clusters → hamming ties → id tie-break wins).
 - **Features** (Cargo.toml): `std`, `file-storage`, `simd-runtime`, `p2p`
   (opt-in). Default = `["std","file-storage","simd-runtime"]`. no_std gate:
   `cargo check --no-default-features --target x86_64-unknown-none`.
