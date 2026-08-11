@@ -14,6 +14,7 @@
 \usepackage{microtype}
 \usepackage{tikz}
 \usetikzlibrary{positioning,arrows.meta,calc,plotmarks}
+\emergencystretch=2em
 
 \newcommand{\neural}{{\sf neural-sgdb}}
 
@@ -194,6 +195,7 @@ the CRDT itself).
 
 \begin{figure*}[t]
 \centering
+\resizebox{\textwidth}{!}{%
 \begin{tikzpicture}[
   box/.style={draw, rounded corners=2pt, inner sep=5pt, align=center, font=\small},
   arr/.style={-{Stealth}, thick},
@@ -210,7 +212,8 @@ the CRDT itself).
 \draw[arr] (layers) -- (recall);
 \draw[arr] (stor) -- (sync);
 \draw[arr] (idx) -- (recall);
-\end{tikzpicture}
+\end{tikzpicture}%
+}
 \caption{Architecture of \neural{}. The \texttt{Sgdb} facade exposes
 \emph{memories, not data}: documents with a layer, a vector clock and a
 validity window. Derived indexes (ART, BQ, lexical) and pluggable storage are
@@ -260,7 +263,7 @@ contextual retrieval~\cite{contextual}, merged with semantic hits in
 wall-clock timestamp embedded in the key), importance (from the layer), and
 semantic distance.
 
-\begin{figure}[t]
+\begin{figure*}[t]
 \centering
 \begin{tikzpicture}[
   box/.style={draw, rounded corners=2pt, inner sep=4pt, align=center, font=\small},
@@ -285,7 +288,7 @@ Hamming filter (SIMD-dispatched, optionally accelerated by multi-index hashing)
 retrieves an oversampled candidate pool; full-precision cosine rescore re-ranks
 it. All stages are format-neutral---stored bit-vectors never change.}
 \label{fig:recall}
-\end{figure}
+\end{figure*}
 
 \subsection{Storage}
 \label{sec:storage}
@@ -319,7 +322,7 @@ central server. Because resolution writes are themselves causal CRDT writes,
 arbitration outcomes propagate to every peer via the same dissemination
 mechanism.
 
-\begin{figure}[t]
+\begin{figure*}[t]
 \centering
 \begin{tikzpicture}[
   box/.style={draw, rounded corners=2pt, inner sep=4pt, align=center, font=\small},
@@ -338,7 +341,7 @@ deltas) are the causal trigger; the pull phase replicates only the documents a
 peer is missing. The merge preserves concurrent writes (multi-value) instead of
 discarding them.}
 \label{fig:sync}
-\end{figure}
+\end{figure*}
 
 \subsection{Arbitration by an AI at the root}
 \label{sec:arbitration}
@@ -359,7 +362,7 @@ This contrasts with the traditional resolve-at-write model, where a central
 server silently destroys the losing version. Here arbitration runs on complete
 data, at any time, and the verdict is CRDT state that converges across peers.
 
-\begin{figure}[t]
+\begin{figure*}[t]
 \centering
 \begin{tikzpicture}[
   box/.style={draw, rounded corners=2pt, inner sep=4pt, align=center, font=\small},
@@ -384,7 +387,7 @@ context and a recency/importance/behavior signal, then materializes the verdict
 as a validity window---an invalidation that is itself a new causal write and
 propagates to every peer.}
 \label{fig:arbitration}
-\end{figure}
+\end{figure*}
 
 \section{Design Rationale}
 \label{sec:rationale}
@@ -441,7 +444,7 @@ reduced raw \texttt{put} latency from $185\,\mu$s to $4.8\,\mu$s
 $22\,\mu$s ($\sim 19\times$). A crash-invariant test verifies that writes after
 atomic compaction target the new file (never a stale inode/file object).
 
-\begin{figure}[t]
+\begin{figure*}[t]
 \centering
 \begin{tikzpicture}[
   bar/.style={fill=gray!30, draw},
@@ -466,7 +469,7 @@ raw \texttt{put} $185\to4.8\,\mu$s ($\sim 38\times$) and end-to-end semantic
 writes $422\to22\,\mu$s ($\sim 19\times$). Bars are to the same scale; values
 annotated.}
 \label{fig:writes}
-\end{figure}
+\end{figure*}
 
 \subsection{Recall}
 \label{sec:eval-recall}
@@ -481,7 +484,7 @@ known property that sign-BQ separates the \emph{cluster} but not the
 16-dimension embeddings, low-dimensional bit collision drops exact@1 to
 $\sim 42\%$; raising the candidate pool via oversampling restores it.
 
-\begin{figure}[t]
+\begin{figure*}[t]
 \centering
 \begin{tikzpicture}[lb/.style={font=\scriptsize},plot/.style={-{Stealth}}]
 \draw[->] (0,0) -- (0,3.0) node[above,lb] {recall@5 (\%)};
@@ -500,7 +503,7 @@ the exact member; enlarging the candidate pool raises recall
 ($22\%$ at $1\times$ to $35\%$ at $16\times$), and the FP32 rescore then
 re-ranks the candidates.}
 \label{fig:oversample}
-\end{figure}
+\end{figure*}
 
 \subsection{Fast-mount under churn}
 \label{sec:eval-mount}
@@ -510,7 +513,7 @@ $14.8\,\mathrm{ms}$ vs.\ $43.2\,\mathrm{ms}$ for a full scan
 ($\sim 2.9\times$). On an all-live volume both read the same bytes and are at
 parity; the win is not re-processing tombstones/dead records.
 
-\begin{figure}[t]
+\begin{figure*}[t]
 \centering
 \begin{tikzpicture}[bar/.style={fill=gray!30,draw},bar2/.style={fill=black!70,draw},lb/.style={font=\scriptsize}]
 \draw[->] (0,0) -- (0,2.7) node[above,lb] {ms};
@@ -524,7 +527,7 @@ parity; the win is not re-processing tombstones/dead records.
 full scan $43.2\,\mathrm{ms}$ vs.\ TKCK fast-mount $14.8\,\mathrm{ms}$
 ($\sim 2.9\times$). The checkpoint index skips tombstones/dead records.}
 \label{fig:mount}
-\end{figure}
+\end{figure*}
 
 \subsection{Peer Synchronization Convergence}
 \label{sec:eval-sync}
@@ -616,9 +619,6 @@ surfaces in \texttt{recall\_at}, while its history remains auditably intact.
 \section{Reproducibility}
 \label{sec:repro}
 
-\section{Reproducibility}
-\label{sec:repro}
-
 Source, tests and harnesses are public:
 \url{https://github.com/msrovani/neural-sgdb}. Key commands:
 \texttt{cargo test} (unit), \texttt{cargo test --features p2p},
@@ -699,6 +699,7 @@ The two-instance synchronization experiment
 (\texttt{cargo run --release --example p2p\_telepathy --features p2p}) prints
 the following trace; concurrent writes are reported as preserved conflicts.
 
+{\scriptsize
 \begin{verbatim}
 [A] lembra m1  (versão A = 1)
 [B] lembra m2  (versão B = 1)
@@ -711,6 +712,7 @@ CRDT sync: node=1 v=1 CONFLITO preservado (concorrente)
 [✓] A conhece 6 docs, B conhece 6 docs
 [B] recall da memória de A: ["eu sou a instancia A..."]
 \end{verbatim}
+}
 
 Both instances converge to the same memory set (three memories $\times$ L2
 text + L4 embedding = six documents) and cross-recall each other's memories
