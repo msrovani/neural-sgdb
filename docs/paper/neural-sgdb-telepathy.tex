@@ -12,6 +12,8 @@
 \usepackage{graphicx}
 \usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
 \usepackage{microtype}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,calc,plotmarks}
 
 \newcommand{\neural}{{\sf neural-sgdb}}
 
@@ -109,6 +111,45 @@ global ordering, and no automatic conflict resolution. These are the honest
 costs of the peer-to-peer model, and we argue they are acceptable---and in some
 respects preferable---for agent memory.
 
+\begin{figure*}[t]
+\centering
+\begin{tikzpicture}[
+  agent/.style={draw, rectangle, rounded corners=2pt, inner sep=5pt, align=center, font=\small},
+  srv/.style={draw, rectangle, rounded corners=2pt, inner sep=6pt, align=center, font=\small, fill=gray!12},
+  arrow/.style={-{Stealth}, thick},
+  note/.style={font=\scriptsize, text width=5.6cm, align=center},
+]
+% --- traditional panel ---
+\node[font=\small\bfseries] (t1) at (0,4.7) {(a) Traditional SGDB: central server};
+\node[srv] (srv) at (0,2.6) {Server\\single source of truth};
+\node[agent] (a1) at (-2.9,0.3) {agent 1};
+\node[agent] (a2) at (0,0.3) {agent 2};
+\node[agent] (a3) at (2.9,0.3) {agent 3};
+\draw[arrow] (a1) -- (srv) node[midway,left,font=\scriptsize] {R/W};
+\draw[arrow] (a2) -- (srv) node[midway,right,font=\scriptsize] {R/W};
+\draw[arrow] (a3) -- (srv);
+\node[note] (n1) at (0,-1.2) {resolves at \emph{write}; the loser is silently destroyed\\offline impossible $\cdot$ single point of failure};
+% --- neural panel ---
+\begin{scope}[xshift=7.6cm]
+\node[font=\small\bfseries] (t2) at (0,4.7) {(b) neural-sgdb: peer memory};
+\node[agent] (b1) at (-2.9,2.2) {agent 1\\(own memory)};
+\node[agent] (b2) at (0,2.2) {agent 2\\(own memory)};
+\node[agent] (b3) at (2.9,2.2) {agent 3\\(own memory)};
+\draw[arrow] (b1) -- (b2) node[midway,above,font=\scriptsize] {CRDT sync};
+\draw[arrow] (b2) -- (b3) node[midway,above,font=\scriptsize] {CRDT sync};
+\draw[arrow] (b3) -- (b1) node[midway,above,font=\scriptsize] {CRDT sync};
+\node[note] (n2) at (0,-0.4) {each agent owns its memory; exchanges versions and\\pulls missing docs $\cdot$ offline-first $\cdot$ no central server};
+\node[note, font=\scriptsize] (n3) at (0,-1.5) {resolves at \emph{read}; concurrent writes preserved, arbitrated by the root AI};
+\end{scope}
+\end{tikzpicture}
+\caption{Two memory architectures. (a) Traditional: agents read/write a
+central server; the server resolves conflicts at write time and silently
+destroys the loser; agents are unusable offline. (b) \neural{}: each agent owns
+a local memory, peers synchronize causally through a conflict-preserving CRDT,
+and concurrent versions survive until an arbiter resolves them at read time.}
+\label{fig:comparison}
+\end{figure*}
+
 \section{Related Work}
 \label{sec:related}
 
@@ -151,6 +192,33 @@ the CRDT itself).
 \section{System Design}
 \label{sec:design}
 
+\begin{figure*}[t]
+\centering
+\begin{tikzpicture}[
+  box/.style={draw, rounded corners=2pt, inner sep=5pt, align=center, font=\small},
+  arr/.style={-{Stealth}, thick},
+]
+\node[box] (api) {Sgdb facade\\ \texttt{remember*}$\cdot$\texttt{recall*}$\cdot$\texttt{rag}\textunderscore context$\cdot$\texttt{scan}};
+\node[box, below=7mm of api] (layers) {Memory layers $L_0$--$L_7$\\ NMD1 $\cdot$ vector clock $\cdot$ validity ($\texttt{sys/validity/}$)};
+\node[box, left=11mm of layers] (idx) {Indexes\\ ART $\cdot$ BQ (SIMD) $\cdot$ lexical};
+\node[box, right=11mm of layers] (stor) {Storage\\ InMemory $\cdot$ FileStorage $\cdot$ TickvFile\\ (fast-mount $\cdot$ compact)};
+\node[box, below=10mm of layers] (recall) {Recall\\ BQ$\to$FP32 $\cdot$ oversample $\cdot$ MIH $\cdot$ hybrid};
+\node[box, below=7mm of stor] (sync) {CRDT sync\\ versions $\cdot$ conflicts $\cdot$ delta};
+\draw[arr] (api) -- (layers);
+\draw[arr] (layers) -- (idx);
+\draw[arr] (layers) -- (stor);
+\draw[arr] (layers) -- (recall);
+\draw[arr] (stor) -- (sync);
+\draw[arr] (idx) -- (recall);
+\end{tikzpicture}
+\caption{Architecture of \neural{}. The \texttt{Sgdb} facade exposes
+\emph{memories, not data}: documents with a layer, a vector clock and a
+validity window. Derived indexes (ART, BQ, lexical) and pluggable storage are
+seams; peer synchronization rides on the storage layer. All components compile
+to \texttt{no\_std} (only \texttt{alloc}) with zero external dependencies.}
+\label{fig:arch}
+\end{figure*}
+
 \subsection{Memory model and format}
 \label{sec:model}
 
@@ -192,6 +260,33 @@ contextual retrieval~\cite{contextual}, merged with semantic hits in
 wall-clock timestamp embedded in the key), importance (from the layer), and
 semantic distance.
 
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  box/.style={draw, rounded corners=2pt, inner sep=4pt, align=center, font=\small},
+  arr/.style={-{Stealth}, thick},
+]
+\node[box] (q) {query $q$ ($\mathbb{R}^D$)};
+\node[box, right=7mm of q] (qk) {quantize\\ (SIMD sign)};
+\node[box, right=7mm of qk] (bq) {BQ top-$k{\cdot}s$\\ (Hamming, AVX)};
+\node[box, above=7mm of bq] (mih) {MIH\\ (block probes)};
+\node[box, right=7mm of bq] (fp) {FP32 rescore\\ $1-\cos$};
+\node[box, right=7mm of fp] (out) {top-$k$ ranked};
+\draw[arr] (q) -- (qk);
+\draw[arr] (qk) -- (bq);
+\draw[arr] (mih) -- (bq);
+\draw[arr] (bq) -- (fp);
+\draw[arr] (fp) -- (out);
+\node[font=\scriptsize, below=2mm of bq] {oversample $s$ by dimensionality};
+\node[font=\scriptsize, below=2mm of fp] {optional lexical merge (\texttt{recall\_hybrid})};
+\end{tikzpicture}
+\caption{Coarse-to-fine recall (Eq.~\ref{eq:recall}). A coarse binary-quantized
+Hamming filter (SIMD-dispatched, optionally accelerated by multi-index hashing)
+retrieves an oversampled candidate pool; full-precision cosine rescore re-ranks
+it. All stages are format-neutral---stored bit-vectors never change.}
+\label{fig:recall}
+\end{figure}
+
 \subsection{Storage}
 \label{sec:storage}
 
@@ -224,6 +319,27 @@ central server. Because resolution writes are themselves causal CRDT writes,
 arbitration outcomes propagate to every peer via the same dissemination
 mechanism.
 
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  box/.style={draw, rounded corners=2pt, inner sep=4pt, align=center, font=\small},
+  arr/.style={-{Stealth}, thick},
+  tline/.style={font=\scriptsize},
+]
+\node[box] (a) {node A\\ \texttt{Sgdb} + CRDT};
+\node[box, right=42mm of a] (b) {node B\\ \texttt{Sgdb} + CRDT};
+\draw[arr] (a) -- node[tline, above] {1. version (A:3) $+$ deltas} (b);
+\draw[arr] (b) -- node[tline, below] {2. version (B:2)} (a);
+\draw[arr, dashed] (a) -- node[tline, above, pos=0.25] {3. pull missing docs} (b);
+\node[font=\scriptsize, below=10mm of a, text width=6cm, align=center] {versions = causal trigger;\\ diff-pull (\texttt{get}$\to$\texttt{put}) = payload};
+\end{tikzpicture}
+\caption{Peer-to-peer memory exchange between two instances. Versions (and
+deltas) are the causal trigger; the pull phase replicates only the documents a
+peer is missing. The merge preserves concurrent writes (multi-value) instead of
+discarding them.}
+\label{fig:sync}
+\end{figure}
+
 \subsection{Arbitration by an AI at the root}
 \label{sec:arbitration}
 
@@ -242,6 +358,69 @@ to a human/agent; and \emph{propagate} the resolution as a new causal write.
 This contrasts with the traditional resolve-at-write model, where a central
 server silently destroys the losing version. Here arbitration runs on complete
 data, at any time, and the verdict is CRDT state that converges across peers.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  box/.style={draw, rounded corners=2pt, inner sep=4pt, align=center, font=\small},
+  layer/.style={draw, rounded corners=2pt, inner sep=4pt, align=center, font=\small, fill=gray!10},
+  arr/.style={-{Stealth}, thick},
+]
+\node[layer] (l4) {L4 semantic --- preserved conflict\\ ``dark mode'' (A, v1) $\times$ ``light mode'' (B, v1)};
+\node[layer, below=6mm of l4] (l2) {L2 episodic --- causal context\\ ``dim the screen, my eyes hurt'' (ts newer)};
+\node[box, right=14mm of l4] (sig) {signals\\ recency $\cdot$ importance $\cdot$ behavior};
+\node[box, below=8mm of l2] (root) {Root AI (arbiter)};
+\node[layer, below=7mm of root] (val) {$\texttt{sys/validity/}$ --- ``light mode'' invalidated\\ (invalidate-not-delete)};
+\node[layer, below=6mm of val] (prop) {propagate --- new causal write to all peers};
+\draw[arr] (l4) -- (root);
+\draw[arr] (l2) -- (root);
+\draw[arr] (sig) -- (root);
+\draw[arr] (root) -- (val);
+\draw[arr] (val) -- (prop);
+\end{tikzpicture}
+\caption{Layered arbitration of a preserved conflict (\S\ref{sec:arbitration}).
+The root AI combines the two concurrent L4 versions with the causal L2
+context and a recency/importance/behavior signal, then materializes the verdict
+as a validity window---an invalidation that is itself a new causal write and
+propagates to every peer.}
+\label{fig:arbitration}
+\end{figure}
+
+\section{Design Rationale}
+\label{sec:rationale}
+
+Four constraints shape the system, and each has a concrete consequence:
+
+\begin{itemize}
+  \item \textbf{Zero external dependencies.} The substrate is meant to run
+        inside an operating system and to be audited line by line. Every
+        algorithm---ART, BQ/Hamming, CRC32, FNV, BM25, CRDT---is implemented
+        in-crate. This is a deliberate cost: no reuse of mature libraries, in
+        exchange for portability and a small trusted-computing base.
+  \item \textbf{Dual \texttt{no\_std} + \texttt{std}.} The core is
+        \texttt{no\_std} (only \texttt{alloc}); storage backends and the UDP
+        demo transport are \texttt{std}-gated features. The same code runs on
+        bare metal and on the host, enforced by a CI gate
+        (\texttt{cargo check --no-default-features --target
+        x86\_64-unknown-none}).
+  \item \textbf{Byte-identical formats.} NMD1 (documents) and TKLV/TKCK
+        (storage) are contracts shared with the parent OS: golden byte tests
+        pin the layout, and a volume written by either side mounts on the
+        other. Format changes therefore require synchronized change on both
+        sides---new capabilities are introduced as new opt-in encodings or
+        side indices, never by mutating existing bytes.
+  \item \textbf{Seams, not globals.} There is no global engine: the clock is a
+        \texttt{now: u64} parameter, SIMD capability is injected via
+        \texttt{cpu\_caps()}/\texttt{set\_cpu\_caps()}, and storage is the
+        four-method \texttt{Storage} trait. This keeps the substrate testable
+        and embeddable in a kernel.
+\end{itemize}
+
+We also deliberately chose an append-log with checkpoints over an
+LSM~\cite{rocksdb}: at this scale (thousands to millions of small memories on a
+single device), write/read amplification from compaction is pure cost, while a
+CRC-protected append-log with an atomic compact and a TKCK fast-mount gives
+power-loss safety with a fraction of the machinery.
 
 \section{Evaluation}
 \label{sec:eval}
@@ -262,6 +441,33 @@ reduced raw \texttt{put} latency from $185\,\mu$s to $4.8\,\mu$s
 $22\,\mu$s ($\sim 19\times$). A crash-invariant test verifies that writes after
 atomic compaction target the new file (never a stale inode/file object).
 
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  bar/.style={fill=gray!30, draw},
+  bar2/.style={fill=black!70, draw},
+  lb/.style={font=\scriptsize},
+]
+\draw[->] (0,0) -- (0,2.6) node[above,lb] {$\mu$s};
+\draw[->] (0,0) -- (6.6,0);
+% raw put: 185 -> 4.8
+\draw[bar] (0.4,0) rectangle (1.6,0.42); \node[lb, above] at (1.0,0.42) {185};
+\draw[bar2] (2.0,0) rectangle (3.2,0.06); \node[lb, above] at (2.6,0.06) {4.8};
+\node[lb, below] at (1.0,-0.25) {put (raw)};
+% remember_semantic: 422 -> 22
+\draw[bar] (3.9,0) rectangle (5.1,0.9); \node[lb, above] at (4.5,0.9) {422};
+\draw[bar2] (5.5,0) rectangle (6.7,0.09); \node[lb, above] at (6.1,0.09) {22};
+\node[lb, below] at (4.5,-0.25) {semantic};
+\node[lb, at={(1.0,2.7)}] {before (per-write open/close)};
+\node[lb, at={(2.6,2.7)}] {after (lazy handle)};
+\end{tikzpicture}
+\caption{Write latency before and after the persistent lazy append handle:
+raw \texttt{put} $185\to4.8\,\mu$s ($\sim 38\times$) and end-to-end semantic
+writes $422\to22\,\mu$s ($\sim 19\times$). Bars are to the same scale; values
+annotated.}
+\label{fig:writes}
+\end{figure}
+
 \subsection{Recall}
 \label{sec:eval-recall}
 
@@ -275,6 +481,27 @@ known property that sign-BQ separates the \emph{cluster} but not the
 16-dimension embeddings, low-dimensional bit collision drops exact@1 to
 $\sim 42\%$; raising the candidate pool via oversampling restores it.
 
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[lb/.style={font=\scriptsize},plot/.style={-{Stealth}}]
+\draw[->] (0,0) -- (0,3.0) node[above,lb] {recall@5 (\%)};
+\draw[->] (0,0) -- (5.4,0) node[right,lb] {oversample $s$};
+\foreach \x/\y/\lab in {1/0.66/22,2/0.66/22,4/0.72/24,8/0.9/30,16/1.05/35}{
+  \fill (\x,0) circle (1pt);
+  \fill (\x,\y) circle (1.5pt);
+  \node[lb, above] at (\x,\y) {\lab};
+  \node[lb, below] at (\x,0) {\x};
+}
+\draw[black, thick] (1,0.66) -- (2,0.66) -- (4,0.72) -- (8,0.9) -- (16,1.05);
+\end{tikzpicture}
+\caption{Coarse BQ candidate recall@5 vs.\ oversample on a correlated
+1024-dimension cluster corpus. The coarse filter separates the cluster but not
+the exact member; enlarging the candidate pool raises recall
+($22\%$ at $1\times$ to $35\%$ at $16\times$), and the FP32 rescore then
+re-ranks the candidates.}
+\label{fig:oversample}
+\end{figure}
+
 \subsection{Fast-mount under churn}
 \label{sec:eval-mount}
 
@@ -282,6 +509,22 @@ On a churned volume (35\,000 records, 5\,000 live), checkpoint fast-mount took
 $14.8\,\mathrm{ms}$ vs.\ $43.2\,\mathrm{ms}$ for a full scan
 ($\sim 2.9\times$). On an all-live volume both read the same bytes and are at
 parity; the win is not re-processing tombstones/dead records.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[bar/.style={fill=gray!30,draw},bar2/.style={fill=black!70,draw},lb/.style={font=\scriptsize}]
+\draw[->] (0,0) -- (0,2.7) node[above,lb] {ms};
+\draw[->] (0,0) -- (5.2,0);
+\draw[bar] (0.5,0) rectangle (2.0,2.45); \node[lb, above] at (1.25,2.45) {43.2};
+\draw[bar2] (2.6,0) rectangle (4.1,0.84); \node[lb, above] at (3.35,0.84) {14.8};
+\node[lb, below] at (1.25,-0.25) {full scan (stale ckpt)};
+\node[lb, below] at (3.35,-0.25) {fast-mount (TKCK)};
+\end{tikzpicture}
+\caption{Volume mount on a churned store (35\,000 records, 5\,000 live):
+full scan $43.2\,\mathrm{ms}$ vs.\ TKCK fast-mount $14.8\,\mathrm{ms}$
+($\sim 2.9\times$). The checkpoint index skips tombstones/dead records.}
+\label{fig:mount}
+\end{figure}
 
 \subsection{Peer Synchronization Convergence}
 \label{sec:eval-sync}
@@ -320,6 +563,58 @@ The demo transport is unauthenticated (production requires a signed transport);
 the system is single-threaded by design; ARM SIMD (NEON) and multi-codebook
 quantization are future work; the MCP embedding is a demo trigram hash, not a
 real semantic model.
+
+\subsection{Threats to validity}
+\label{sec:validity}
+
+\paragraph{Measurement.}
+All numbers come from the project's benchmark harness on a single consumer
+laptop (AVX2, no AVX-512), not a controlled experimental protocol. Relative
+comparisons (before/after) are robust; absolute figures may not transfer.
+\paragraph{Embeddings.}
+Synthetic embeddings (LCG, trigram hash, cluster+noise) approximate, but do
+not reproduce, production model embeddings; the BQ trade-off curve may shift
+with real distributions.
+\paragraph{Networking.}
+The convergence experiment runs over an in-memory transport; real networks
+(ordering, loss, latency) are not exercised.
+\paragraph{Concurrency.}
+The substrate is single-threaded by design; no multi-threaded throughput or
+consistency results are reported.
+
+\section{A Case Study: an Agent Memory Lifecycle}
+\label{sec:casestudy}
+
+We sketch one complete agent scenario to tie the pieces together.
+
+\textbf{Turn.} The agent answers a user query; \texttt{remember\_exchange}
+stores the exchange in $L_1$/$L_2$ (RAM), and \texttt{remember\_semantic}
+indexes the summary in $L_4$ with a caller-supplied embedding.
+
+\textbf{Recall.} On the next query, the embedding is run through the
+coarse-to-fine pipeline (Eq.~\ref{eq:recall}): auto-oversampling widens the BQ
+pool, \texttt{recall\_weighted} re-ranks by recency (from the \texttt{ts} key),
+importance (layer) and semantic distance.
+
+\textbf{Consolidation (future).} A background pass distills episodic $L_2$ into
+a semantic $L_4$ fact, written as a new causal document---the substrate
+"dreams" without dropping the episode.
+
+\textbf{Transfer.} A second instance of the agent meets the first; the
+peer-synchronization protocol (\S\ref{sec:sync}) exchanges versions and pulls
+missing memories. Both converge; neither needed a server.
+
+\textbf{Arbitration.} The two instances had concurrently recorded different
+preferences; the conflict is preserved. The root AI (Fig.~\ref{fig:arbitration})
+combines the L4 conflict with the L2 causal context and a newer timestamp,
+and invalidates the stale value via \texttt{sys/validity/}---an
+invalidate-not-delete that propagates to every peer.
+
+\textbf{Forgetting.} A stale fact whose validity window has passed no longer
+surfaces in \texttt{recall\_at}, while its history remains auditably intact.
+
+\section{Reproducibility}
+\label{sec:repro}
 
 \section{Reproducibility}
 \label{sec:repro}
@@ -395,5 +690,32 @@ ARTful Indexing for Main-Memory Databases,'' \emph{DaMoN}, 2013.
 Architectures for Language Agents,'' \emph{TMLR}, 2024.
 
 \end{thebibliography}
+
+\appendix
+\section{Peer-synchronization experiment trace}
+\label{app:trace}
+
+The two-instance synchronization experiment
+(\texttt{cargo run --release --example p2p\_telepathy --features p2p}) prints
+the following trace; concurrent writes are reported as preserved conflicts.
+
+\begin{verbatim}
+[A] lembra m1  (versão A = 1)
+[B] lembra m2  (versão B = 1)
+CRDT sync: node=2 v=1 CONFLITO preservado (concorrente)
+CRDT sync: node=1 v=1 CONFLITO preservado (concorrente)
+[↔] ronda 1: A→B 2 doc(s), B→A 2 doc(s)
+[↔] ronda 2: A→B 0 doc(s)
+[B] lembra m3  (versão B = 2)
+[↔] ronda 3: A→B 0 doc(s), B→A 2 doc(s)
+[✓] A conhece 6 docs, B conhece 6 docs
+[B] recall da memória de A: ["eu sou a instancia A..."]
+\end{verbatim}
+
+Both instances converge to the same memory set (three memories $\times$ L2
+text + L4 embedding = six documents) and cross-recall each other's memories
+semantically. Round 2 is idempotent. The resolution of a later conflict (a new
+causal write, e.g.\ a validity invalidation) propagates through the same
+mechanism.
 
 \end{document}
