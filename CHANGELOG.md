@@ -6,6 +6,19 @@ All notable changes to this project. Format based on
 
 ## [Unreleased]
 
+### Interface for use (study / AI-assisted IDEs)
+- `MihIndex` and `LexicalIndex` now re-exported at the crate root; new
+  read-only `Sgdb::bq()` accessor (feeds `MihIndex::build`).
+- Crate doc is a runnable **quick tour** (doctest) covering remember/recall/
+  weighted/lexical/validity/MIH — `cargo doc --open`.
+- README refreshed to v0.5 (92 tests, recall variants, checkpoint/GC storage,
+  MCP resources/pagination, honest bench numbers).
+- `docs/api.md` "Target public API" extended with the v0.5 surface
+  (`recall_oversampled`/`recall_weighted`/`recall_lexical`/`recall_hybrid`,
+  validity window, `MihIndex`/`LexicalIndex`).
+- Doctest exposed a real bug in `MihIndex::build` (blocks > vector width
+  panicked on `vec[lo..hi]`) — fixed with a bounds guard + `break`.
+
 ## [0.5.0] — 2026-08-10
 
 ### Added (pesquisa de ponta 2026 — 10 itens, cada um com teste de medição)

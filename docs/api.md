@@ -72,9 +72,33 @@ impl Sgdb {
     pub fn remember_semantic(&mut self, key: &str, text: &str, emb: &[f32]) -> Result<(), SgdbError>;
 
     /// L4 recall: coarse BQ top-k -> FP32 rescore -> fine top-k.
+    /// Auto-oversample by dimensionality (1 word→16, 2-4→8, else 4).
     pub fn recall(&mut self, query: &[f32], k: usize) -> Result<Vec<Hit>, SgdbError>;
 
-    /// RAG: recall + text fetch + formatted string ready for the prompt.
+    /// Explicit candidate pool: `oversample·k` Hamming candidates before rescore
+    /// (raise the pool when low-dim BQ collides; don't lower `k`).
+    pub fn recall_oversampled(&mut self, query: &[f32], k: usize, oversample: usize)
+        -> Result<Vec<Hit>, SgdbError>;
+
+    /// Weighted scoring: `w_sem·dist + w_rec·recency(/ts/<hex>) + w_imp·importance(layer)`.
+    pub fn recall_weighted(&mut self, query: &[f32], k: usize, w_sem: f32, w_rec: f32,
+        w_imp: f32, now: u64) -> Result<Vec<Hit>, SgdbError>;
+
+    /// Lexical BM25 path over L2/L3 texts (dual-path, complements BQ).
+    pub fn recall_lexical(&mut self, query_text: &str, k: usize) -> Result<Vec<Hit>, SgdbError>;
+    pub fn recall_hybrid(&mut self, query_emb: &[f32], query_text: &str, k: usize)
+        -> Result<Vec<Hit>, SgdbError>;
+
+    /// Temporal validity window (`sys/validity/`): invalidate-not-delete.
+    pub fn set_validity(&mut self, key: &str, from: u64, until: u64) -> Result<(), SgdbError>;
+    pub fn validity_at(&mut self, key: &str, now: u64) -> Result<bool, SgdbError>;
+    pub fn invalidate(&mut self, key: &str, now: u64) -> Result<(), SgdbError>;
+    pub fn recall_at(&mut self, query: &[f32], k: usize, now: u64) -> Result<Vec<Hit>, SgdbError>;
+
+    /// Read-only access to the BQ index (e.g. `MihIndex::build(&db.bq(), 4)`).
+    pub fn bq(&self) -> &BqFlatIndex;
+
+    // ---- RAG: recall + text fetch + formatted string ready for the prompt. ----
     pub fn rag_context(&mut self, query: &[f32], k: usize) -> Result<String, SgdbError>;
 
     // ---- facts (L3, ART by timestamp) ----
@@ -88,6 +112,21 @@ impl Sgdb {
     pub fn prune_working_ram(&mut self) -> Result<usize, SgdbError>;
     pub fn backend(&self) -> &'static str;
     pub fn ready(&self) -> bool;
+}
+
+// ---- recall-time index extras ----
+pub struct MihIndex { /* multi-index hashing over existing bitvecs */ }
+impl MihIndex {
+    pub fn build(src: &BqFlatIndex, blocks: usize) -> Self;
+    pub fn candidates(&self, query: &[u64], probes: usize) -> Vec<usize>;
+    pub fn top_k(&self, src: &BqFlatIndex, query: &[u64], k: usize, probes: usize) -> Vec<(u64, u32)>;
+    pub fn top_k_f32(&self, src: &BqFlatIndex, query: &[f32], k: usize, probes: usize) -> Vec<(u64, u32)>;
+}
+pub struct LexicalIndex { /* inverted BM25 over L2/L3 texts (no_std, alloc-only) */ }
+impl LexicalIndex {
+    pub fn add(&mut self, key: &str, text: &str);
+    pub fn remove(&mut self, key: &str);
+    pub fn search(&self, query: &str, k: usize) -> Vec<(String, f32)>;
 }
 
 pub struct Hit {

@@ -36,25 +36,25 @@ filesystem, no external runtime.
 
 ## Status
 
-**v0.3 maturation** ✅ — the portable core lives in this repo as the
-`neural-sgdb` crate, dual-mode (`no_std` + `std`, zero dependencies):
+**v0.5** ✅ — dual-mode (`no_std` + `std`, zero dependencies):
 
-- `cargo test` on host: **66 tests + doc-test passing** (44+1 with no
-  default features, 75+1 with `p2p`)
+- `cargo test` on host: **92 tests + doc-test** (102 + doc-test with `p2p`)
 - `cargo check --no-default-features --target x86_64-unknown-none`: **clean**
-- Ported: ART (Node4/16/48/256 + SSE), MemoryDoc L0–L7 (NMD1 format
-  byte-identical to the parent OS), BQ + Hamming SIMD (AVX-512/AVX2/scalar),
-  instance-based engine
-- New: `Storage` trait + `InMemory` + `FileStorage` (CRC32 append-log,
-  crash-safe, **explicit durability levels** + fsync + **atomic compaction**)
-  + `TickvFile` (TKLV byte-exact OS format) + `Sgdb` facade
-  (`remember_exchange`, `remember_semantic`, `recall`, `rag_context`,
-  `remember_fact`, `scan_prefix`, `checkpoint`, `rebuild_indices`,
-  `get_state`/`set_state`/`supersede`, `node_id`)
-- Maturation v0.3: **bounded top-k** (BQ heap, no full sort), deterministic
-  retrieval + tie-break, hardened recovery (fault-injection tested),
-  parsing safety (no unwrap on external data), `MemoryState` lifecycle model,
-  adversarial fuzz tests, independent code review applied
+- **Recall stack**: BQ coarse → FP32 rescore, SIMD hamming (AVX-512/AVX2/
+  scalar), auto-oversample by dimensionality, `recall_oversampled`,
+  `recall_weighted` (recency·importance·semantic), `recall_lexical` +
+  `recall_hybrid` (BM25 dual-path), `MihIndex` (multi-index hashing,
+  sub-linear candidates)
+- **Storage**: `Storage` trait + `InMemory` + `FileStorage` (CRC32 append-log,
+  persistent lazy handle ~38x, durability levels, atomic compaction) +
+  `TickvFile` (byte-exact TKLV **with TKCK checkpoint fast-mount + GC/compact**
+  + in-place `TKL\0` invalidation)
+- **Memory semantics**: 8 layers L0–L7, `MemoryState` lifecycle, temporal
+  validity window (`sys/validity/` — invalidate-not-delete), CRDT sync with
+  conflict preservation + delta sending (`p2p`), vector clock
+- **Interfaces**: MCP server with `memory://{layer}/{key}` resources +
+  `nextCursor` pagination + tool annotations; `cargo run --release
+  --example stress` (100k-op stress) and `--example bench`
 - Full API contract in [`docs/api.md`](docs/api.md)
 
 The reference implementation runs on bare-metal in the parent OS
@@ -68,21 +68,41 @@ use neural_sgdb::{Sgdb, FileStorage};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut db = Sgdb::open(FileStorage::open("agent_memory.db")?)?;
 
+    // L1 + L2 (RAM; persiste com checkpoint)
     db.remember_exchange("how's the weather?", "sunny, 24 degrees")?;
+    db.checkpoint()?;
+
+    // L4 semântico — embeddings fornecidos pelo caller
+    let emb = vec![1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0];
     db.remember_semantic("turn:1", "sunny weather in sao paulo", &emb)?;
 
-    let hits = db.recall(&query_emb, 5)?;
-    let ctx = db.rag_context(&query_emb, 3)?;
+    // recall: BQ + FP32 rescore, auto-oversample; variantes ponderada/híbrida
+    let hits = db.recall(&emb, 5)?;
+    let recent = db.recall_weighted(&emb, 3, 1.0, 1.0, 0.5, 1000)?;
+    let lex = db.recall_lexical("sunny weather", 3)?;
+
+    // L3 fato temporal + janela de validade (invalidar-não-deletar)
+    db.remember_fact("user prefers dark mode", 42)?;
+    db.set_validity("md/L3/ts/000000000000002a", 0, 1000)?;
+
+    let ctx = db.rag_context(&emb, 3)?;
     println!("{ctx}");
     Ok(())
 }
 ```
 
+More: `cargo run --release --example bench` (benchmarks), `--example stress`
+(100k-op stress), `--example mcp_server` (MCP). The crate doc (`cargo doc
+--open`) is a runnable tour of the whole API.
+
 ## MCP (AI agents)
 
 `cargo run --release --example mcp_server` exposes `remember` / `recall` /
-`rag_context` as MCP tools (JSON-RPC 2.0 over stdio, `2025-11-25` handshake) —
-connectable to Claude Code, Cursor and OpenCode:
+`rag_context` as MCP tools (JSON-RPC 2.0 over stdio, `2025-11-25` handshake),
+memories as **resources** (`memory://{layer}/{key}`), recall with opaque
+`nextCursor` pagination, and tool annotations (`readOnlyHint`/
+`destructiveHint`/`idempotentHint`) — connectable to Claude Code, Cursor and
+OpenCode:
 
 ```bash
 # Claude Code
@@ -95,8 +115,10 @@ semantic recall, provide your own embeddings via `remember_semantic` / `recall`.
 ## Benchmarks
 
 `cargo run --release --example bench` — local environment numbers (AVX2):
-ART get P50≈200ns, ART insert P50≈800ns, BQ top-5 ≈310µs over 10k×1024 dims,
-recall@5 BQ vs FP32-exact = 100% (measured 1-bit quantization trade-off).
+ART insert P50≈800ns / get P50≈200ns, BQ top-5 ≈160–175µs over 10k×1024 dims,
+CRC32 ≈2.6ms/1MiB, TickvFile fast-mount ≈2–3x under churn, recall@5 BQ coarse
+22%→35% as oversample 1×→16× (sign-BQ separates the cluster, not the exact
+member — the FP32 rescore re-ranks the candidates).
 
 ## Docs
 

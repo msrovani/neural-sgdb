@@ -15,15 +15,35 @@
 //! - Pluggable storage via `Storage` trait (shipped: `InMemory`, `FileStorage`)
 //! - `MemoryDoc` (NMD1) format byte-identical to the parent OS (interop)
 //!
-//! ## Example
+//! ## Quick tour (doctest)
 //!
 //! ```
-//! use neural_sgdb::{Sgdb, InMemory};
+//! use neural_sgdb::{Sgdb, InMemory, MihIndex, MemoryLayer};
 //!
 //! let mut db = Sgdb::open(InMemory::new())?;
+//!
+//! // L1 + L2 (RAM → checkpoint para storage)
 //! db.remember_exchange("qual o clima?", "sol, 24 graus")?;
-//! let facts = db.scan_prefix("md/L1/")?;
-//! assert!(facts.len() >= 1);
+//! db.checkpoint()?;
+//!
+//! // L4 semântico (BQ + FP32 rescore); você fornece os embeddings
+//! let emb = [1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0];
+//! db.remember_semantic("turno:1", "clima ensolarado em sao paulo", &emb)?;
+//!
+//! // recall: auto-oversample por dimensionalidade; híbrido lexical opcional
+//! let hits = db.recall(&emb, 3)?;
+//! let recent = db.recall_weighted(&emb, 3, 1.0, 1.0, 0.5, 1000)?;
+//! let lex = db.recall_lexical("ensolarado sao paulo", 3)?;
+//! assert_eq!(hits.len(), 1);
+//! assert!(!recent.is_empty() && !lex.is_empty());
+//!
+//! // L3 fato temporal + janela de validade (invalidar-não-deletar)
+//! db.remember_fact("user prefere dark mode", 42)?;
+//! db.set_validity("md/L3/ts/000000000000002a", 0, 1000)?;
+//!
+//! // índices diretos (estudo/avançado)
+//! let bq = db.bq();                  // acesso ao índice BQ (somente leitura)
+//! let mih = MihIndex::build(bq, 4);  // multi-index hashing p/ busca sub-linear
 //! # Ok::<(), neural_sgdb::SgdbError>(())
 //! ```
 
@@ -62,11 +82,14 @@ mod engine;
 mod sgdb;
 
 pub use art::ArtIndex;
-pub use bq::{hamming, hamming_path, quantize_f32, BqFlatIndex};
+pub use bq::{
+    hamming, hamming_path, quantize_f32, quantize_f32_centered, BqFlatIndex, MihIndex,
+};
 pub use hamming_dispatch::{
     cpu_caps, cpu_has_avx2, cpu_has_avx512, path_name as hamming_kernel_name,
     select_best_hamming_kernel, CpuCaps,
 };
+pub use lexical::LexicalIndex;
 pub use memory_doc::{MemoryDoc, MemoryDocView, MemoryLayer, MemoryState, VectorClock};
 pub use sgdb::{Hit, Sgdb};
 pub use storage::{InMemory, Storage, SgdbError};

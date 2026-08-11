@@ -6,7 +6,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::bq::quantize_f32;
+use crate::bq::{quantize_f32, BqFlatIndex};
 use crate::engine::AiosDatabaseEngine;
 use crate::memory_doc::{MemoryDoc, MemoryLayer, MemoryState};
 use crate::storage::{Storage, SgdbError};
@@ -498,6 +498,12 @@ impl Sgdb {
 
     pub fn bq_len(&self) -> usize {
         self.engine.bq_len()
+    }
+
+    /// Acesso somente-leitura ao índice BQ (para `MihIndex::build`, estudo ou
+    /// instrumentação). O índice é derivado do storage — não mutar.
+    pub fn bq(&self) -> &BqFlatIndex {
+        &self.engine.bq
     }
 
     pub fn ram_len(&self) -> usize {

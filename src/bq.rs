@@ -96,7 +96,10 @@ impl MihIndex {
             let start = i * w;
             let vec = &src.flat[start..start + w];
             for j in 0..blocks {
-                let lo = j * block_words;
+                let lo = (j * block_words).min(w);
+                if lo >= w {
+                    break; // blocos além da largura do vetor (w < blocks)
+                }
                 let hi = ((j + 1) * block_words).min(w);
                 let key = hash_words(&vec[lo..hi]);
                 buckets[j].entry(key).or_default().push(i);
