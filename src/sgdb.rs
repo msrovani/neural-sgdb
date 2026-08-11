@@ -473,6 +473,13 @@ impl Sgdb {
         self.engine.get(layer, key)
     }
 
+    /// Importa/restaura um `MemoryDoc` completo (replicação p2p, restore,
+    /// migração). Indexa nos índices derivados (ART/BQ/lexical) como qualquer
+    /// `remember_*` — útil para o pull de memórias do peer no sync.
+    pub fn put(&mut self, doc: MemoryDoc) -> Result<u64, SgdbError> {
+        self.engine.put(doc)
+    }
+
     /// Lookup ART por prefixo de storage key (ex: "md/L1/").
     pub fn scan_prefix(&mut self, prefix: &str) -> Result<Vec<(String, u64)>, SgdbError> {
         Ok(self.engine.art.scan_prefix(prefix))

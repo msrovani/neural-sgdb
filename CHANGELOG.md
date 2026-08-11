@@ -6,6 +6,14 @@ All notable changes to this project. Format based on
 
 ## [Unreleased]
 
+### Telepathy (p2p memory exchange demo)
+- **`examples/p2p_telepathy.rs`** — two `Sgdb` instances exchange memories via
+  CRDT version sync + diff pull (`Sgdb::get` → `Sgdb::put`): A and B converge
+  with no central server. `required-features = ["p2p"]`. Demo shows concurrent
+  writes being preserved (`CONFLITO` verdict), never LWW-discarded.
+- **`Sgdb::put(doc)`** — public restore/import primitive (indexes any
+  `MemoryDoc`), the replication hook for the pull side.
+
 ### Interface for use (study / AI-assisted IDEs)
 - `MihIndex` and `LexicalIndex` now re-exported at the crate root; new
   read-only `Sgdb::bq()` accessor (feeds `MihIndex::build`).

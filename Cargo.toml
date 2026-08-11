@@ -15,3 +15,7 @@ p2p = ["std"]
 
 [dev-dependencies]
 serde_json = "1"
+
+[[example]]
+name = "p2p_telepathy"
+required-features = ["p2p"]

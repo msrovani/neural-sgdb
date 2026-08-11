@@ -92,8 +92,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 More: `cargo run --release --example bench` (benchmarks), `--example stress`
-(100k-op stress), `--example mcp_server` (MCP). The crate doc (`cargo doc
---open`) is a runnable tour of the whole API.
+(100k-op stress), `--example mcp_server` (MCP), and **telepathy** —
+`cargo run --release --example p2p_telepathy --features p2p` exchanges
+memories between two `Sgdb` instances via CRDT version sync + doc pull
+(two instances converge with no central server). The crate doc
+(`cargo doc --open`) is a runnable tour of the whole API.
 
 ## MCP (AI agents)
 
