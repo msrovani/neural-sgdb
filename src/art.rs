@@ -11,7 +11,6 @@ enum Node {
     Leaf {
         key: Vec<u8>,
         value: u64,
-        dead: bool,
     },
     Inner4 {
         prefix: Vec<u8>,
@@ -109,7 +108,6 @@ impl ArtIndex {
             self.root = Some(Box::new(Node::Leaf {
                 key: kb.to_vec(),
                 value,
-                dead: false,
             }));
             self.len = 1;
             return;
@@ -119,10 +117,11 @@ impl ArtIndex {
     }
 
     pub fn delete(&mut self, key: &str) -> bool {
-        let Some(root) = self.root.as_mut() else {
-            return false;
-        };
-        delete_rec(root, key.as_bytes(), 0, &mut self.len)
+        let before = self.len;
+        if let Some(root) = self.root.take() {
+            self.root = delete_rec(root, key.as_bytes(), 0, &mut self.len);
+        }
+        self.len < before
     }
 
     pub fn get(&self, key: &str) -> Option<u64> {
@@ -131,8 +130,8 @@ impl ArtIndex {
         let mut depth = 0usize;
         loop {
             match node.as_ref() {
-                Node::Leaf { key: lk, value, dead } => {
-                    return if !*dead && lk.as_slice() == kb {
+                Node::Leaf { key: lk, value } => {
+                    return if lk.as_slice() == kb {
                         Some(*value)
                     } else {
                         None
@@ -234,106 +233,252 @@ fn common_prefix(a: &[u8], b: &[u8]) -> usize {
     a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count()
 }
 
-fn delete_rec(node: &mut Node, key: &[u8], depth: usize, len: &mut usize) -> bool {
-    match node {
-        Node::Leaf {
-            key: lk,
-            dead,
-            ..
-        } => {
-            if !*dead && lk.as_slice() == key {
-                *dead = true;
+/// Remove `key` da subárvore, **reclamando memória** (sem tombstone): retorna
+/// `None` se a subárvore ficou vazia (folha removida / nó sem filhos), senão o
+/// nó (possivelmente **encolhido**: 256→48, 48→16, 16→4 quando o `n` cai).
+/// `len` é decrementado exatamente uma vez quando uma folha viva é removida.
+fn delete_rec(
+    node: Box<Node>,
+    key: &[u8],
+    depth: usize,
+    len: &mut usize,
+) -> Option<Box<Node>> {
+    match *node {
+        Node::Leaf { key: lk, value: v } => {
+            if lk.as_slice() == key {
                 *len = len.saturating_sub(1);
-                return true;
+                None // folha removida — pai desocupa o slot
+            } else {
+                Some(Box::new(Node::Leaf { key: lk, value: v }))
             }
-            false
         }
         Node::Inner4 {
             prefix,
-            keys,
-            children,
-            n,
+            mut keys,
+            mut children,
+            mut n,
         } => {
-            if !key[depth.min(key.len())..].starts_with(prefix) {
-                return false;
+            if !key[depth.min(key.len())..].starts_with(&prefix) || depth + prefix.len() >= key.len()
+            {
+                return Some(Box::new(Node::Inner4 {
+                    prefix,
+                    keys,
+                    children,
+                    n,
+                }));
             }
-            let d2 = depth + prefix.len();
-            if d2 >= key.len() {
-                return false;
-            }
-            let b = key[d2];
-            for i in 0..*n as usize {
+            let b = key[depth + prefix.len()];
+            for i in 0..n as usize {
                 if keys[i] == b {
-                    if let Some(ref mut c) = children[i] {
-                        return delete_rec(c, key, d2 + 1, len);
+                    if let Some(child) = children[i].take() {
+                        match delete_rec(child, key, depth + prefix.len() + 1, len) {
+                            Some(c2) => children[i] = Some(c2),
+                            None => {
+                                // desocupa o slot i e compacta o resto à esquerda
+                                for j in i..(n as usize - 1) {
+                                    keys[j] = keys[j + 1];
+                                    children[j] = children[j + 1].take();
+                                }
+                                children[n as usize - 1] = None;
+                                n -= 1;
+                            }
+                        }
                     }
+                    if n == 0 {
+                        return None; // Inner4 sem filhos → remove do pai
+                    }
+                    return Some(Box::new(Node::Inner4 {
+                        prefix,
+                        keys,
+                        children,
+                        n,
+                    }));
                 }
             }
-            false
+            Some(Box::new(Node::Inner4 {
+                prefix,
+                keys,
+                children,
+                n,
+            }))
         }
         Node::Inner16 {
             prefix,
-            keys,
-            children,
-            n,
+            mut keys,
+            mut children,
+            mut n,
         } => {
-            if !key[depth.min(key.len())..].starts_with(prefix) {
-                return false;
+            if !key[depth.min(key.len())..].starts_with(&prefix) || depth + prefix.len() >= key.len()
+            {
+                return Some(Box::new(Node::Inner16 {
+                    prefix,
+                    keys,
+                    children,
+                    n,
+                }));
             }
-            let d2 = depth + prefix.len();
-            if d2 >= key.len() {
-                return false;
-            }
-            let b = key[d2];
-            for i in 0..*n as usize {
+            let b = key[depth + prefix.len()];
+            for i in 0..n as usize {
                 if keys[i] == b {
-                    if let Some(ref mut c) = children[i] {
-                        return delete_rec(c, key, d2 + 1, len);
+                    if let Some(child) = children[i].take() {
+                        match delete_rec(child, key, depth + prefix.len() + 1, len) {
+                            Some(c2) => children[i] = Some(c2),
+                            None => {
+                                for j in i..(n as usize - 1) {
+                                    keys[j] = keys[j + 1];
+                                    children[j] = children[j + 1].take();
+                                }
+                                children[n as usize - 1] = None;
+                                n -= 1;
+                            }
+                        }
                     }
+                    if n == 0 {
+                        return None;
+                    }
+                    // shrink: n <= 4 → Inner4
+                    if n <= 4 {
+                        let mut k4 = [0u8; 4];
+                        let mut c4: [Option<Box<Node>>; 4] = [None, None, None, None];
+                        for i in 0..n as usize {
+                            k4[i] = keys[i];
+                            c4[i] = children[i].take();
+                        }
+                        return Some(Box::new(Node::Inner4 {
+                            prefix,
+                            keys: k4,
+                            children: c4,
+                            n,
+                        }));
+                    }
+                    return Some(Box::new(Node::Inner16 {
+                        prefix,
+                        keys,
+                        children,
+                        n,
+                    }));
                 }
             }
-            false
+            Some(Box::new(Node::Inner16 {
+                prefix,
+                keys,
+                children,
+                n,
+            }))
         }
         Node::Inner48 {
             prefix,
-            keys,
-            children,
-            ..
+            mut keys,
+            mut children,
+            mut n,
         } => {
-            if !key[depth.min(key.len())..].starts_with(prefix) {
-                return false;
+            if !key[depth.min(key.len())..].starts_with(&prefix) || depth + prefix.len() >= key.len()
+            {
+                return Some(Box::new(Node::Inner48 {
+                    prefix,
+                    keys,
+                    children,
+                    n,
+                }));
             }
-            let d2 = depth + prefix.len();
-            if d2 >= key.len() {
-                return false;
-            }
-            let b = key[d2] as usize;
+            let b = key[depth + prefix.len()] as usize;
             let idx = keys[b];
-            if idx == 0 {
-                return false;
+            if idx != 0 {
+                if let Some(child) = children[idx as usize - 1].take() {
+                    match delete_rec(child, key, depth + prefix.len() + 1, len) {
+                        Some(c2) => children[idx as usize - 1] = Some(c2),
+                        None => {
+                            // move o ÚLTIMO filho para o buraco e renumera
+                            let last = n as usize - 1;
+                            if idx as usize - 1 != last {
+                                children[idx as usize - 1] = children[last].take();
+                                if let Some(lb) = keys.iter().position(|&k| k == last as u8 + 1) {
+                                    keys[lb] = idx;
+                                }
+                            }
+                            keys[b] = 0;
+                            children[last] = None;
+                            n -= 1;
+                        }
+                    }
+                }
             }
-            if let Some(ref mut c) = children[idx as usize - 1] {
-                return delete_rec(c, key, d2 + 1, len);
+            if n == 0 {
+                return None;
             }
-            false
+            // shrink: n <= 16 → Inner16 (reconstrói keys em ordem de byte)
+            if n <= 16 {
+                let mut k16 = [0u8; 16];
+                let mut c16: [Option<Box<Node>>; 16] = empty16();
+                let mut m = 0usize;
+                for (byte, &idx) in keys.iter().enumerate() {
+                    if idx != 0 {
+                        k16[m] = byte as u8;
+                        c16[m] = children[idx as usize - 1].take();
+                        m += 1;
+                    }
+                }
+                return Some(Box::new(Node::Inner16 {
+                    prefix,
+                    keys: k16,
+                    children: c16,
+                    n: m as u8,
+                }));
+            }
+            Some(Box::new(Node::Inner48 {
+                prefix,
+                keys,
+                children,
+                n,
+            }))
         }
         Node::Inner256 {
             prefix,
-            children,
-            ..
+            mut children,
+            mut n,
         } => {
-            if !key[depth.min(key.len())..].starts_with(prefix) {
-                return false;
+            if !key[depth.min(key.len())..].starts_with(&prefix) || depth + prefix.len() >= key.len()
+            {
+                return Some(Box::new(Node::Inner256 {
+                    prefix,
+                    children,
+                    n,
+                }));
             }
-            let d2 = depth + prefix.len();
-            if d2 >= key.len() {
-                return false;
+            let b = key[depth + prefix.len()] as usize;
+            if let Some(child) = children[b].take() {
+                match delete_rec(child, key, depth + prefix.len() + 1, len) {
+                    Some(c2) => children[b] = Some(c2),
+                    None => n = n.saturating_sub(1),
+                }
             }
-            let b = key[d2] as usize;
-            if let Some(ref mut c) = children[b] {
-                return delete_rec(c, key, d2 + 1, len);
+            if n == 0 {
+                return None;
             }
-            false
+            // shrink: n <= 48 → Inner48
+            if n <= 48 {
+                let mut k48 = [0u8; 256];
+                let mut c48: [Option<Box<Node>>; 48] = empty48();
+                let mut m = 0usize;
+                for (byte, c) in children.iter_mut().enumerate() {
+                    if let Some(ch) = c.take() {
+                        k48[byte] = m as u8 + 1;
+                        c48[m] = Some(ch);
+                        m += 1;
+                    }
+                }
+                return Some(Box::new(Node::Inner48 {
+                    prefix,
+                    keys: k48,
+                    children: c48,
+                    n: m as u8,
+                }));
+            }
+            Some(Box::new(Node::Inner256 {
+                prefix,
+                children,
+                n,
+            }))
         }
     }
 }
@@ -343,21 +488,11 @@ fn insert_rec(node: Box<Node>, key: &[u8], depth: usize, value: u64, len: &mut u
         Node::Leaf {
             key: ref lk,
             value: old_v,
-            dead,
         } => {
             if lk.as_slice() == key {
                 return Box::new(Node::Leaf {
                     key: key.to_vec(),
                     value,
-                    dead: false,
-                });
-            }
-            if dead {
-                *len += 1;
-                return Box::new(Node::Leaf {
-                    key: key.to_vec(),
-                    value,
-                    dead: false,
                 });
             }
             let cp = common_prefix(&lk[depth.min(lk.len())..], &key[depth.min(key.len())..]);
@@ -368,12 +503,10 @@ fn insert_rec(node: Box<Node>, key: &[u8], depth: usize, value: u64, len: &mut u
             let leaf1 = Box::new(Node::Leaf {
                 key: lk.clone(),
                 value: old_v,
-                dead: false,
             });
             let leaf2 = Box::new(Node::Leaf {
                 key: key.to_vec(),
                 value,
-                dead: false,
             });
             *len += 1;
             let mut keys = [0u8; 4];
@@ -423,8 +556,7 @@ fn insert_rec(node: Box<Node>, key: &[u8], depth: usize, value: u64, len: &mut u
                     children[n as usize] = Some(Box::new(Node::Leaf {
                         key: key.to_vec(),
                         value,
-                        dead: false,
-                    }));
+                        }));
                     n += 1;
                     *len += 1;
                     return Box::new(Node::Inner4 {
@@ -445,7 +577,6 @@ fn insert_rec(node: Box<Node>, key: &[u8], depth: usize, value: u64, len: &mut u
                 c16[4] = Some(Box::new(Node::Leaf {
                     key: key.to_vec(),
                     value,
-                    dead: false,
                 }));
                 *len += 1;
                 Box::new(Node::Inner16 {
@@ -480,8 +611,7 @@ fn insert_rec(node: Box<Node>, key: &[u8], depth: usize, value: u64, len: &mut u
                     let leaf = Box::new(Node::Leaf {
                         key: key.to_vec(),
                         value,
-                        dead: false,
-                    });
+                        });
                     let mut pk = [0u8; 4];
                     let mut pc: [Option<Box<Node>>; 4] = [None, None, None, None];
                     pk[0] = nb;
@@ -532,8 +662,7 @@ fn insert_rec(node: Box<Node>, key: &[u8], depth: usize, value: u64, len: &mut u
                     children[n as usize] = Some(Box::new(Node::Leaf {
                         key: key.to_vec(),
                         value,
-                        dead: false,
-                    }));
+                        }));
                     n += 1;
                     *len += 1;
                     return Box::new(Node::Inner16 {
@@ -554,7 +683,6 @@ fn insert_rec(node: Box<Node>, key: &[u8], depth: usize, value: u64, len: &mut u
                 c48[16] = Some(Box::new(Node::Leaf {
                     key: key.to_vec(),
                     value,
-                    dead: false,
                 }));
                 *len += 1;
                 Box::new(Node::Inner48 {
@@ -589,8 +717,7 @@ fn insert_rec(node: Box<Node>, key: &[u8], depth: usize, value: u64, len: &mut u
                     let leaf = Box::new(Node::Leaf {
                         key: key.to_vec(),
                         value,
-                        dead: false,
-                    });
+                        });
                     let mut pk = [0u8; 4];
                     let mut pc: [Option<Box<Node>>; 4] = [None, None, None, None];
                     pk[0] = nb;
@@ -640,8 +767,7 @@ fn insert_rec(node: Box<Node>, key: &[u8], depth: usize, value: u64, len: &mut u
                     children[n as usize] = Some(Box::new(Node::Leaf {
                         key: key.to_vec(),
                         value,
-                        dead: false,
-                    }));
+                        }));
                     n += 1;
                     *len += 1;
                     return Box::new(Node::Inner48 {
@@ -662,7 +788,6 @@ fn insert_rec(node: Box<Node>, key: &[u8], depth: usize, value: u64, len: &mut u
                 c256[b] = Some(Box::new(Node::Leaf {
                     key: key.to_vec(),
                     value,
-                    dead: false,
                 }));
                 *len += 1;
                 Box::new(Node::Inner256 {
@@ -696,8 +821,7 @@ fn insert_rec(node: Box<Node>, key: &[u8], depth: usize, value: u64, len: &mut u
                     let leaf = Box::new(Node::Leaf {
                         key: key.to_vec(),
                         value,
-                        dead: false,
-                    });
+                        });
                     let mut pk = [0u8; 4];
                     let mut pc: [Option<Box<Node>>; 4] = [None, None, None, None];
                     pk[0] = nb;
@@ -735,8 +859,7 @@ fn insert_rec(node: Box<Node>, key: &[u8], depth: usize, value: u64, len: &mut u
                     children[b] = Some(Box::new(Node::Leaf {
                         key: key.to_vec(),
                         value,
-                        dead: false,
-                    }));
+                        }));
                     n = n.saturating_add(1);
                     *len += 1;
                 }
@@ -769,8 +892,7 @@ fn insert_rec(node: Box<Node>, key: &[u8], depth: usize, value: u64, len: &mut u
                     let leaf = Box::new(Node::Leaf {
                         key: key.to_vec(),
                         value,
-                        dead: false,
-                    });
+                        });
                     let mut pk = [0u8; 4];
                     let mut pc: [Option<Box<Node>>; 4] = [None, None, None, None];
                     pk[0] = nb;
@@ -792,8 +914,8 @@ fn insert_rec(node: Box<Node>, key: &[u8], depth: usize, value: u64, len: &mut u
 
 fn collect_prefix(node: &Node, prefix: &[u8], out: &mut Vec<(String, u64)>) {
     match node {
-        Node::Leaf { key, value, dead } => {
-            if !*dead && key.starts_with(prefix) {
+        Node::Leaf { key, value } => {
+            if key.starts_with(prefix) {
                 if let Ok(s) = core::str::from_utf8(key) {
                     out.push((String::from(s), *value));
                 }
@@ -853,6 +975,72 @@ mod tests {
         assert!(art.delete("md/L1/b"));
         assert!(art.get("md/L1/b").is_none());
         assert_eq!(art.len, 2);
+    }
+
+    #[test]
+    fn art_shrink_after_delete_reclaims_nodes() {
+        // delete agora REMOVE nós (sem tombstone) e encolhe 256→48→16→4.
+        // Força Inner256 com 200 chaves, deleta quase tudo, verifica integridade.
+        let mut art = ArtIndex::new();
+        for i in 0..200 {
+            art.insert(&alloc::format!("k{i:03}"), i as u64);
+        }
+        assert_eq!(art.len, 200);
+        for i in 0..199 {
+            assert!(art.delete(&alloc::format!("k{i:03}")), "delete {i} falhou");
+        }
+        assert_eq!(art.len, 1);
+        assert_eq!(art.get("k199"), Some(199));
+        assert!(art.get("k000").is_none());
+        // re-insere após shrink — integridade mantida
+        art.insert("k000", 0);
+        assert_eq!(art.len, 2);
+        assert_eq!(art.get("k000"), Some(0));
+        assert_eq!(art.scan_prefix("k").len(), 2);
+        // deleta tudo → árvore vazia (root None, len 0)
+        assert!(art.delete("k000"));
+        assert!(art.delete("k199"));
+        assert_eq!(art.len, 0);
+        assert!(art.scan_prefix("k").is_empty());
+        // re-insere do zero após esvaziar
+        art.insert("novo", 42);
+        assert_eq!(art.get("novo"), Some(42));
+        assert_eq!(art.len, 1);
+    }
+
+    #[test]
+    fn art_churn_100k_ops_stays_consistent() {
+        // insert/delete alternados em 5k chaves × 20 rounds = 100k ops —
+        // shrink/remoção de slots não pode corromper a estrutura.
+        let mut art = ArtIndex::new();
+        for round in 0..20 {
+            for i in 0..5000 {
+                let k = alloc::format!("ch/{i:05}");
+                if round % 2 == 0 {
+                    art.insert(&k, i as u64);
+                } else {
+                    let _ = art.delete(&k);
+                }
+            }
+        }
+        // round 19 (ímpar) deletou tudo → len 0 e scan vazio
+        assert_eq!(art.len, 0);
+        assert!(art.scan_prefix("ch/").is_empty());
+        // consistência total: insert de novo e verifica scan == len
+        for i in 0..100 {
+            art.insert(&alloc::format!("ch/{i:05}"), i as u64);
+        }
+        assert_eq!(art.len, 100);
+        assert_eq!(art.scan_prefix("ch/").len(), 100);
+        for i in 0..100 {
+            assert_eq!(art.get(&alloc::format!("ch/{i:05}")), Some(i as u64));
+        }
+        // deleta metade e verifica
+        for i in (0..100).step_by(2) {
+            assert!(art.delete(&alloc::format!("ch/{i:05}")));
+        }
+        assert_eq!(art.len, 50);
+        assert_eq!(art.scan_prefix("ch/").len(), 50);
     }
 
     #[test]

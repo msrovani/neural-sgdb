@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-none
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo test (default)
+        run: cargo test
+
+      - name: cargo test (p2p)
+        run: cargo test --features p2p
+
+      - name: no_std gate (x86_64-unknown-none)
+        run: cargo check --no-default-features --target x86_64-unknown-none
+
+      - name: build examples
+        run: cargo build --release --examples
+
+      - name: stress (reduced N for CI)
+        run: |
+          STRESS_N=20000 STRESS_REOPEN=5000 STRESS_DEL=10000 STRESS_SIMD=2000 \
+            cargo run --release --example stress
+
+      - name: bench (smoke, reduced)
+        run: cargo run --release --example bench

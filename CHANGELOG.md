@@ -25,6 +25,10 @@ All notable changes to this project. Format based on
 - **`scan_volume` hid torn tails**: a partial header of 1..15 bytes at EOF
   was silently ignored (`truncated = false`), unlike `FileStorage` recovery.
   A clean pre-zeroed EOF region is still treated as clean EOF (not truncation).
+- **`scan_volume` indexed the checkpoint record as memory**: `sys/tickv_ckpt`
+  was surfaced as a live key (`vlen != 0`) in the backend map. Now skipped
+  (parity with the OS `recover()`); exposed when `TickvFile` began writing
+  checkpoints.
 - **`encode_ckpt` count mismatch**: entries skipped in the body (key > 65535
   or `sys/tickv_ckpt`) still inflated the `n` field — an OS decoder reading
   `n` entries would desync. `n` now counts only the entries actually written
@@ -51,6 +55,24 @@ All notable changes to this project. Format based on
   live): fast-mount 14.8ms vs full-scan 43.2ms (**~2.9x**); in an all-live
   volume both read the same bytes so it's parity — the win is not re-processing
   tombstones/dead records. Torn ckpt degrades to the previous-mount semantics.
+- **`TickvFile::compact()`** (GC, roadmap v0.2, OS `maybe_gc` parity): rewrites
+  the live set as fresh TKLV records + a final TKCK checkpoint, atomic rename.
+  Removes tombstones/obsolete versions and leaves the volume fast-mountable.
+- **ART shrink on delete** (Leis paper / artful parity): `delete` now removes
+  leaves and shrinks nodes 256→48→16→4 when `n` drops below threshold instead
+  of leaving dead leaves — memory is reclaimed under churn. `delete_rec` now
+  returns `Option<Box<Node>>` (None = empty subtree); the `dead` leaf tombstone
+  is gone. Tests: 200-key→1-key shrink, 100k-op churn, re-insert after empty.
+- **Fault-injection for fast-mount**: deterministic fuzz (in-memory) truncating
+  at every offset + corrupting every byte of a valid TKCK volume → never
+  panics and falls back to full scan; plus file-level torn/corrupt ckpt tests.
+- **CI (GitHub Actions)**: test (default + `p2p`), `no_std` gate
+  (`x86_64-unknown-none`), examples build, stress and bench smoke on every push.
+- **Honest BQ benchmark**: bench recall@5 now uses correlated cluster data
+  (not pure noise, which measured a meaningless 0%) and reports the oversample
+  curve — 22% (1×) → 35% (16×) on dense 1024-dim clusters, documenting that
+  sign-BQ separates the cluster but not the exact member (FP32 rescore then
+  re-ranks the candidates).
 
 ### Performance
 - **Hamming dispatch hot path**: `ensure_selected()` used a `SELECTED.swap(true)`

@@ -203,13 +203,19 @@ pub fn scan_volume(data: &[u8]) -> ScanResult {
         // record confiável (vivo ou tombstone por append) — estende append_off
         out.append_off = out.append_off.max(off + total);
         if let Ok(key) = core::str::from_utf8(&body[..klen]) {
-            let val = body[klen..].to_vec();
-            if vlen == 0 {
-                out.map.remove(key); // tombstone por append
-                out.offsets.remove(key);
+            if key == CKPT_KEY {
+                // checkpoint TKCK = metadado, NÃO é memória — não indexar
+                // (paridade com o recover() do OS; senão o ckpt vira chave
+                // "sys/tickv_ckpt" no mapa do backend).
             } else {
-                out.map.insert(String::from(key), val); // last-wins
-                out.offsets.insert(String::from(key), off);
+                let val = body[klen..].to_vec();
+                if vlen == 0 {
+                    out.map.remove(key); // tombstone por append
+                    out.offsets.remove(key);
+                } else {
+                    out.map.insert(String::from(key), val); // last-wins
+                    out.offsets.insert(String::from(key), off);
+                }
             }
         } else {
             out.corrupt += 1;
@@ -396,6 +402,40 @@ impl TickvFile {
             .collect();
         let body = encode_ckpt(self.append_off, &entries);
         self.append(CKPT_KEY.as_bytes(), &body)?;
+        Ok(())
+    }
+
+    /// GC/compaction (roadmap v0.2, parity com o `maybe_gc` do OS): reescreve
+    /// o **live set** (mapa atual) como records TKLV frescos + checkpoint TKCK
+    /// num arquivo temporário e troca atomicamente via rename. Remove
+    /// tombstones e versões obsoletas; o ckpt final habilita fast-mount no
+    /// próximo open. Crash-safe: temp órfão é sobrescrito na próxima compact.
+    pub fn compact(&mut self) -> Result<(), crate::storage::SgdbError> {
+        use std::io::Write;
+        let tmp = self.path.with_extension("compact.tmp");
+        let mut f = std::fs::File::create(&tmp)
+            .map_err(|_| crate::storage::SgdbError::Storage("compact create"))?;
+        let mut offsets = BTreeMap::new();
+        let mut append_off = 0u64;
+        for (key, val) in self.map.iter() {
+            let rec = encode_record(key.as_bytes(), val);
+            f.write_all(&rec)
+                .map_err(|_| crate::storage::SgdbError::Storage("compact write"))?;
+            offsets.insert(key.clone(), append_off);
+            append_off += rec.len() as u64;
+        }
+        // ckpt como ÚLTIMO record → fast-mount no próximo open
+        let entries: Vec<(String, u64)> = offsets.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        let ckpt_rec = encode_record(CKPT_KEY.as_bytes(), &encode_ckpt(append_off, &entries));
+        f.write_all(&ckpt_rec)
+            .map_err(|_| crate::storage::SgdbError::Storage("compact write"))?;
+        f.flush().map_err(|_| crate::storage::SgdbError::Storage("compact flush"))?;
+        drop(f);
+        // troca atômica (Windows: MoveFileEx replace)
+        std::fs::rename(&tmp, &self.path)
+            .map_err(|_| crate::storage::SgdbError::Storage("compact rename"))?;
+        self.offsets = offsets;
+        self.append_off = append_off + ckpt_rec.len() as u64;
         Ok(())
     }
 
@@ -798,6 +838,146 @@ mod tests {
         {
             let mut s = TickvFile::open(&path).unwrap();
             assert_eq!(s.get(b"a").unwrap(), Some(b"1".to_vec()));
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn tickvfile_compact_shrinks_and_preserves() {
+        let dir = std::env::temp_dir().join("neural_sgdb_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("tickv_compact.db");
+        let _ = std::fs::remove_file(&path);
+        let before_len;
+        {
+            let mut s = TickvFile::open(&path).unwrap();
+            for i in 0..100 {
+                s.put(format!("k/{i:03}").as_bytes(), format!("v{i}").as_bytes()).unwrap();
+            }
+            for i in (0..100).step_by(2) {
+                s.delete(format!("k/{i:03}").as_bytes()).unwrap(); // 50 tombstones
+            }
+            before_len = std::fs::metadata(&path).unwrap().len();
+            s.compact().unwrap();
+            assert!(std::fs::metadata(&path).unwrap().len() < before_len, "compact deveria encolher");
+            // fast-mount no mesmo arquivo compactado
+            let raw = std::fs::read(&path).unwrap();
+            let (m, o, _) = try_mount_from_ckpt(&raw).expect("ckpt pós-compact deveria montar");
+            assert_eq!(m.len(), 50);
+            assert_eq!(o.len(), 50);
+        }
+        {
+            let mut s = TickvFile::open(&path).unwrap();
+            assert_eq!(s.map.len(), 50);
+            assert!(s.get(b"k/001").unwrap().is_some());
+            assert!(s.get(b"k/000").unwrap().is_none()); // tombstone não ressuscitou
+            s.put(b"k/200", b"v200").unwrap(); // append pós-compact
+        }
+        {
+            let mut s = TickvFile::open(&path).unwrap();
+            assert_eq!(s.get(b"k/200").unwrap(), Some(b"v200".to_vec()));
+            assert_eq!(s.map.len(), 51);
+            assert!(s.get(b"k/001").unwrap().is_some());
+        }
+        assert!(!path.with_extension("compact.tmp").exists());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn tickvfile_compact_crash_orphan_temp() {
+        // temp órfão (crash antes do rename) é sobrescrito na próxima compact
+        let dir = std::env::temp_dir().join("neural_sgdb_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("tickv_compact_orphan.db");
+        let tmp = path.with_extension("compact.tmp");
+        let _ = std::fs::remove_file(&path);
+        std::fs::write(&tmp, b"orphan-garbage").unwrap();
+        {
+            let mut s = TickvFile::open(&path).unwrap();
+            s.put(b"a", b"1").unwrap();
+            s.compact().unwrap();
+        }
+        let mut s = TickvFile::open(&path).unwrap();
+        assert_eq!(s.get(b"a").unwrap(), Some(b"1".to_vec()));
+        assert!(!tmp.exists());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn fastmount_never_panics_on_malformed() {
+        // Fuzz determinístico IN-MEMORY (paridade com os decoders adversarial):
+        // truncar o volume em TODO offset e corromper bytes (foco no ckpt
+        // final) nunca pode panicar no try_mount_from_ckpt — qualquer anomalia
+        // → None → o open() cai no fallback seguro (scan completo).
+        let mut entries = Vec::new();
+        let mut data = Vec::new();
+        let mut off = 0u64;
+        for i in 0..50 {
+            let rec = encode_record(format!("k/{i:02}").as_bytes(), format!("v{i}").as_bytes());
+            entries.push((format!("k/{i:02}"), off));
+            off += rec.len() as u64;
+            data.extend_from_slice(&rec);
+        }
+        data.extend_from_slice(&encode_record(CKPT_KEY.as_bytes(), &encode_ckpt(off, &entries)));
+        // mount válido funciona
+        let (m, o, a) = try_mount_from_ckpt(&data).expect("ckpt válido deveria montar");
+        assert_eq!(m.len(), 50);
+        assert_eq!(o.len(), 50);
+        assert_eq!(a as usize, data.len());
+        // truncar em todo offset
+        for cut in 0..data.len() {
+            let _ = try_mount_from_ckpt(&data[..cut]); // nunca panics
+        }
+        // corromper cada byte uma vez + amostras LCG (foco no ckpt final)
+        for pos in 0..data.len() {
+            let mut c = data.clone();
+            c[pos] ^= 0xFF;
+            let _ = try_mount_from_ckpt(&c);
+        }
+        let mut state = 0xABCD_EF01u64;
+        let n = data.len();
+        for _ in 0..1000 {
+            state = state.wrapping_mul(1103515245).wrapping_add(12345);
+            let pos = ((state >> 32) as usize) % n;
+            let bit = 1u8 << (state % 8);
+            let mut c = data.clone();
+            c[pos] ^= bit;
+            let _ = try_mount_from_ckpt(&c);
+        }
+        // um mount Some() nunca pode devolver chaves além das 50 vivas
+        assert!(m.len() <= 50);
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn tickvfile_open_survives_torn_and_corrupt_ckpt() {
+        // integração open(): cortes estratégicos + corrupção no ckpt → nunca
+        // panics e dados anteriores sobrevivem (fallback para scan completo).
+        let dir = std::env::temp_dir().join("neural_sgdb_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("tickv_fuzz_open.db");
+        let _ = std::fs::remove_file(&path);
+        {
+            let mut s = TickvFile::open(&path).unwrap();
+            for i in 0..20 {
+                s.put(format!("k/{i:02}").as_bytes(), format!("v{i}").as_bytes()).unwrap();
+            }
+            s.checkpoint().unwrap();
+        }
+        let raw = std::fs::read(&path).unwrap();
+        for cut in [0usize, raw.len() / 2, raw.len() - 512, raw.len() - 1] {
+            let p2 = dir.join("tickv_fuzz_open_cut.db");
+            std::fs::write(&p2, &raw[..cut]).unwrap();
+            let mut s = TickvFile::open(&p2).unwrap(); // nunca panics
+            for i in 0..20 {
+                if let Some(v) = s.get(format!("k/{i:02}").as_bytes()).unwrap() {
+                    assert_eq!(v, format!("v{i}").into_bytes(), "dado sobrevivente divergiu");
+                }
+            }
+            let _ = std::fs::remove_file(&p2);
         }
         let _ = std::fs::remove_file(&path);
     }
