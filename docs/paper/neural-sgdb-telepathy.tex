@@ -2,7 +2,8 @@
 % Compile with pdfLaTeX:  pdflatex neural-sgdb-telepathy.tex  (x2 for refs)
 % arXiv submission: upload the LaTeX source (this file + the .bbl is not
 % needed; thebibliography is inline). Standard article class, no exotic deps.
-% Authors: replace the placeholder \author with the real list before submit.
+% Note: the demo/tool name p2p_telepathy is a code identifier; the paper uses
+% scientific language ("peer-to-peer memory synchronization") throughout.
 \documentclass[11pt,twocolumn]{article}
 
 \usepackage[letterpaper,margin=0.95in]{geometry}
@@ -17,7 +18,7 @@
 \title{Memories, not Packets: A Zero-Dependency \texttt{no\_std} Memory
 Substrate for AI Agents with Conflict-Preserving Peer Synchronization}
 
-\author{M.~Srovani\thanks{Project: \url{https://github.com/msrovani/neural-sgdb}}
+\author{Marcelo Scapin Rovani\thanks{Project: \url{https://github.com/msrovani/neural-sgdb}}
 \\ \texttt{neural-os-core} community extraction (MIT OR Apache-2.0)}
 
 \date{\today}
@@ -46,7 +47,7 @@ preserved conflicts at read time using recency, importance and temporal
 validity. We report measured performance (an order-of-magnitude write
 throughput improvement via a persistent lazy storage handle, microsecond
 recall, ~$3\times$ faster volume mounting under churn), a reproducible
-two-instance ``telepathy'' convergence demo, and the honest costs of the
+two-instance peer-synchronization convergence demo, and the honest costs of the
 model: eventual consistency, absence of global ordering, and deferred conflict
 resolution.
 \end{abstract}
@@ -87,7 +88,8 @@ evidence around it:
   \item A storage layer (CRC append-log and a byte-exact log codec) with
         checkpoint fast-mount, atomic compaction, and in-place tombstone
         invalidation.
-  \item A conflict-preserving CRDT synchronization protocol (``telepathy'')
+  \item A conflict-preserving CRDT synchronization protocol (peer-to-peer
+        memory exchange)
         with delta sending, and a principled arbitration model in which an AI
         at the root of the process resolves preserved conflicts at read time.
   \item Measured results: $\sim 38\times$ faster writes from a single storage
@@ -196,7 +198,7 @@ stale check) with a full-scan fallback, and in-place tombstone invalidation
 header-detectable. A single measured optimization, a persistent lazy append
 handle, reduced write latency by $\sim 38\times$ (Section~\ref{sec:eval}).
 
-\subsection{Synchronization (``telepathy'')}
+\subsection{Peer-to-Peer Memory Synchronization}
 \label{sec:sync}
 
 Each node pairs an \texttt{Sgdb} instance with a \texttt{CrdtMemorySync}
@@ -273,10 +275,10 @@ $14.8\,\mathrm{ms}$ vs.\ $43.2\,\mathrm{ms}$ for a full scan
 ($\sim 2.9\times$). On an all-live volume both read the same bytes and are at
 parity; the win is not re-processing tombstones/dead records.
 
-\subsection{Telepathy convergence}
-\label{sec:eval-telepathy}
-
-The \texttt{p2p\_telepathy} experiment runs two \texttt{Sgdb} instances over an
+\subsection{Peer Synchronization Convergence}
+\label{sec:eval-sync}
+The two-instance synchronization experiment (the \texttt{p2p\_telepathy}
+example) runs two \texttt{Sgdb} instances over an
 in-memory transport: A writes $m_1$, B writes $m_2$; one synchronization round
 replicates two documents in each direction and logs both concurrent writes as
 preserved conflicts; a second round is idempotent; a reply $m_3$ propagates
@@ -320,7 +322,8 @@ Source, tests and harnesses are public:
 \texttt{cargo check --no-default-features --target x86\_64-unknown-none}
 (\texttt{no\_std} gate), \texttt{cargo run --release --example bench},
 \texttt{cargo run --release --example stress}, and \texttt{cargo run --release
---example p2p\_telepathy --features p2p} (the telepathy experiment).
+--example p2p\_telepathy --features p2p} (two-instance synchronization
+experiment).
 
 \section{Future Work}
 \label{sec:future}
