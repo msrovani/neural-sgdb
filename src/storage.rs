@@ -793,6 +793,59 @@ mod tests {
 
     #[cfg(feature = "file-storage")]
     #[test]
+    fn compact_then_append_persists() {
+        // Invariante de durabilidade do handle persistente (perf): após o
+        // rename do compact, o put deve escrever no NOVO arquivo — nunca no
+        // inode/objeto antigo (Unix: inode órfão; Windows: objeto trocado),
+        // senão o registro pós-compactação se perde silenciosamente.
+        let p = tmp_path("fz_compact_append.db");
+        {
+            let mut s = FileStorage::open(&p).unwrap();
+            s.put(b"a", b"1").unwrap();
+            s.put(b"b", b"2").unwrap();
+            s.compact().unwrap();
+            s.put(b"c", b"3").unwrap(); // escrita crítica pós-rename
+            assert_eq!(s.get(b"c").unwrap(), Some(b"3".to_vec()));
+        }
+        {
+            let mut s = FileStorage::open(&p).unwrap();
+            assert_eq!(s.get(b"a").unwrap(), Some(b"1".to_vec()));
+            assert_eq!(s.get(b"b").unwrap(), Some(b"2".to_vec()));
+            assert_eq!(s.get(b"c").unwrap(), Some(b"3".to_vec()));
+        }
+        // arquivo == exatamente 3 records (sem cauda duplicada/stale)
+        let raw = std::fs::read(&p).unwrap();
+        assert_eq!(raw.len(), rec(b"a", b"1").len() * 3, "append pós-compact deve estar no novo arquivo");
+        assert!(!p.with_extension("compact.tmp").exists());
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn lazy_handle_opens_on_first_put() {
+        // Handle de append é LAZY: open() sem criar/abrir o arquivo (sem
+        // syscall extra no open/close stress); o primeiro put materializa e
+        // escreve. Durability "Flushed" preservada (write_all + flush por put).
+        let p = tmp_path("fz_lazy.db");
+        {
+            let s = FileStorage::open(&p).unwrap();
+            assert!(!p.exists(), "open lazy não deve criar o arquivo");
+        }
+        {
+            let mut s = FileStorage::open(&p).unwrap();
+            s.put(b"k", b"v").unwrap();
+            assert!(p.exists(), "primeiro put deve criar o arquivo");
+            assert_eq!(s.get(b"k").unwrap(), Some(b"v".to_vec()));
+        }
+        {
+            let mut s = FileStorage::open(&p).unwrap();
+            assert_eq!(s.get(b"k").unwrap(), Some(b"v".to_vec()));
+        }
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
     fn compact_recovery_after_crash_temp() {
         // Temp órfão (crash antes do rename) é sobrescrito na próxima compact
         let p = tmp_path("fz_crashcompact.db");
