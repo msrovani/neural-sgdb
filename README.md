@@ -133,6 +133,8 @@ member — the FP32 rescore re-ranks the candidates).
 
 - **API contract** — [`docs/api.md`](docs/api.md) (Storage trait, seams,
   migration map, format versioning, feature matrix, CRDT policy)
+- **arXiv preprint draft** — [`docs/paper/neural-sgdb-telepathy.tex`](docs/paper/neural-sgdb-telepathy.tex)
+  (LaTeX, two-column article, compiles with pdfLaTeX; upload the source to arXiv)
 - **Architecture v0.2 (design)** — [`docs/architecture/`](docs/architecture/)
   — Memory Model (01), Lifecycle (02), Retrieval (03), Distributed (04),
   Storage (05), Cognitive API (06) — formalizes the *cognitive memory system*

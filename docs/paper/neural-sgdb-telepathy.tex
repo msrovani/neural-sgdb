@@ -1,0 +1,388 @@
+% neural-sgdb — arXiv preprint draft.
+% Compile with pdfLaTeX:  pdflatex neural-sgdb-telepathy.tex  (x2 for refs)
+% arXiv submission: upload the LaTeX source (this file + the .bbl is not
+% needed; thebibliography is inline). Standard article class, no exotic deps.
+% Authors: replace the placeholder \author with the real list before submit.
+\documentclass[11pt,twocolumn]{article}
+
+\usepackage[letterpaper,margin=0.95in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
+\usepackage{microtype}
+
+\newcommand{\neural}{{\sf neural-sgdb}}
+
+\title{Memories, not Packets: A Zero-Dependency \texttt{no\_std} Memory
+Substrate for AI Agents with Conflict-Preserving Peer Synchronization}
+
+\author{M.~Srovani\thanks{Project: \url{https://github.com/msrovani/neural-sgdb}}
+\\ \texttt{neural-os-core} community extraction (MIT OR Apache-2.0)}
+
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+AI agents operate with ephemeral context windows: memory is lost between
+turns, across instances, and after crashes. We present \neural{}, a persistent,
+transferable memory database for AI agents extracted from a bare-metal
+operating system, designed under strict constraints: \emph{zero external
+dependencies}, dual \texttt{no\_std} + \texttt{std} operation, and
+byte-identical on-disk formats shared with the parent OS. The system stores
+\emph{memories}---documents with a cognitive layer ($L_0$--$L_7$), a vector
+clock and an identity---rather than opaque data. Semantic recall combines
+binary quantization (BQ) as a coarse candidate filter with FP32 cosine
+rescore, SIMD Hamming dispatch (AVX-512/AVX2/scalar), a multi-index-hashing
+(MIH) accelerator, and an optional lexical BM25-style dual path. Storage is an
+append-log with per-record CRC, atomic compaction, and a byte-exact log format
+(TKLV/TKCK) with checkpoint fast-mount. Peers synchronize memories through a
+conflict-preserving CRDT: concurrent writes are \emph{preserved}, never
+last-writer-wins-discarded, and an AI at the root of the process arbitrates the
+preserved conflicts at read time using recency, importance and temporal
+validity. We report measured performance (an order-of-magnitude write
+throughput improvement via a persistent lazy storage handle, microsecond
+recall, ~$3\times$ faster volume mounting under churn), a reproducible
+two-instance ``telepathy'' convergence demo, and the honest costs of the
+model: eventual consistency, absence of global ordering, and deferred conflict
+resolution.
+\end{abstract}
+
+\begin{center}
+\textbf{Keywords:} AI-agent memory; CRDT; conflict-free replicated data types;
+binary quantization; approximate nearest neighbor; \texttt{no\_std}; adaptive
+radix tree; cognitive architectures
+\end{center}
+
+\section{Introduction}
+\label{sec:intro}
+
+State-of-the-art AI agents are bounded by a context window: reasoning state,
+tool results and conversation are ephemeral and do not survive the session.
+Recent systems address this with external memory---agentic file stores,
+retrieval-augmented generation over long-term stores, and hierarchical
+cognitive memories~\cite{memgpt,letta,mem0,graphiti,contextual}. Most of these
+assume a central database, a network stack, and a dependency-rich runtime.
+
+We take a different premise, inherited from a bare-metal operating system that
+boots with AI: memory should be a first-class substrate that lives on the
+device, survives power loss, transfers between instances, and does not require
+a server. This leads to a design space rarely explored together: \emph{zero
+dependencies}, \emph{\texttt{no\_std} + \texttt{std} dual mode}, \emph{format
+stability across an OS boundary}, and \emph{peer-to-peer memory exchange with
+conflict preservation}.
+
+The contribution of this paper is the \neural{} system and the empirical
+evidence around it:
+\begin{enumerate}
+  \item A memory model with 8 cognitive layers, a length-prefixed binary
+        document format (NMD1) byte-identical to the parent OS, and a vector
+        clock with semantic equality.
+  \item A recall stack combining BQ coarse filtering, FP32 rescore, SIMD
+        Hamming dispatch, auto-oversampling by dimensionality, MIH
+        acceleration, and an optional lexical dual path---all format-neutral.
+  \item A storage layer (CRC append-log and a byte-exact log codec) with
+        checkpoint fast-mount, atomic compaction, and in-place tombstone
+        invalidation.
+  \item A conflict-preserving CRDT synchronization protocol (``telepathy'')
+        with delta sending, and a principled arbitration model in which an AI
+        at the root of the process resolves preserved conflicts at read time.
+  \item Measured results: $\sim 38\times$ faster writes from a single storage
+        optimization, microsecond recall, $\sim 2.9\times$ faster volume
+        mounting under churn, and a reproducible two-instance convergence
+        experiment.
+\end{enumerate}
+
+We are explicit about what we do \emph{not} claim: no linearizability, no
+global ordering, and no automatic conflict resolution. These are the honest
+costs of the peer-to-peer model, and we argue they are acceptable---and in some
+respects preferable---for agent memory.
+
+\section{Related Work}
+\label{sec:related}
+
+\paragraph{Agent memory.}
+MemGPT/Letta~\cite{memgpt,letta} formalize hierarchical memory (working vs.\
+archival) with paging and background consolidation; Mem0~\cite{mem0} adds
+multi-signal retrieval and distillation; Zep/Graphiti~\cite{graphiti} store
+temporal knowledge graphs with validity windows and provenance; Anthropic's
+contextual retrieval~\cite{contextual} demonstrates large retrieval-failure
+reductions by prepending chunk context and adding a lexical (BM25) path and a
+reranker. We share the memory-as-substrate view and adopt the lexical dual
+path and validity-window patterns, but keep zero dependencies and peer-to-peer
+sync.
+
+\paragraph{Approximate nearest neighbor.}
+Sign-based binary quantization is a compact candidate generator in
+production ANN systems~\cite{qdrantbq}; Qdrant reports high recall with
+$2$--$4\times$ oversampling followed by full-precision rescore. Multi-index
+hashing~\cite{mih} turns exact Hamming search over binary codes into a
+sub-linear candidate search. ScaNN~\cite{scann} and Weaviate~\cite{weaviate}
+explore anisotropic and multi-codebook quantization. We adopt oversampling and
+MIH; multi-codebook quantization is future work that would require a new
+opt-in encoding (our stored bit-vectors are a format contract).
+
+\paragraph{Log-structured storage.}
+Append-only logs with per-record checksums, checkpointing and
+compaction~\cite{bitcask,sqlitewal} are the right family for a single-process
+substrate; LSM compaction amplification~\cite{rocksdb} is unnecessary at this
+scale. Our TKLV/TKCK codec follows this family and is byte-identical to the
+parent OS.
+
+\paragraph{Conflict-free replicated data types.}
+CRDTs~\cite{shapiro} give eventual convergence under commutativity. Delta
+state CRDTs~\cite{delta} shrink sync payloads; dotted version
+vectors~\cite{dvv} compress causal metadata. Our protocol is a version-counter
+CRDT with explicit conflict preservation (a multi-value register), delta
+sending, and a caller-supplied clock seam (wall-clock time is never assumed by
+the CRDT itself).
+
+\section{System Design}
+\label{sec:design}
+
+\subsection{Memory model and format}
+\label{sec:model}
+
+A memory document carries a layer $L \in \{L_0,\dots,L_7\}$ (sensory, working,
+episodic short/long, semantic, procedural, reserved, identity), a key, a
+vector clock, a payload, and an optional packed binary embedding. The NMD1
+encoding is length-prefixed and byte-identical to the parent OS; golden byte
+tests pin the layout. A zero-copy view allows payload access without full
+deserialization.
+
+Layers $L_0$/$L_1$ live in RAM and flush to storage at an explicit
+checkpoint; $L_2$--$L_7$ persist immediately. Semantic memories ($L_4$/$L_5$)
+store the caller-supplied embedding payload and a 1-bit quantized bit-vector
+$\operatorname{sign}(x)>0$; the textual companion lives in $L_2$.
+
+\subsection{Recall}
+\label{sec:recall}
+
+Recall follows a Qdrant-style coarse-to-fine pipeline:
+\begin{equation}
+\textit{recall}(q,k) = \operatorname{top}_k\!\big(
+  \operatorname{rescore}_{\mathrm{FP32}}\big(
+    \operatorname{top}_{k\cdot s}(\mathrm{BQ}(q))\big)\big),
+\label{eq:recall}
+\end{equation}
+where the Hamming distance uses SIMD dispatch
+($\mathsf{AVX\text{-}512} > \mathsf{AVX2} > \mathsf{scalar}$, selected at
+runtime via \texttt{cpu\_caps()}) and the oversampling factor $s$ is chosen
+automatically by dimensionality (1 word $\to 16$, 2--4 words $\to 8$, else
+$4$) because 1-bit BQ degrades below $\sim$768 dimensions. A bounded
+max-heap keeps top-$k$ ranking $O(N\cdot D/64 + N\log k)$.
+
+Two accelerators are format-neutral: \emph{MIH} partitions each stored
+bit-vector into blocks, indexes block hashes, and probes the query blocks to
+recover sub-linear candidate sets~\cite{mih}; and a \emph{lexical} BM25-style
+inverted index over $L_2$/$L_3$ texts implements the dual-path pattern of
+contextual retrieval~\cite{contextual}, merged with semantic hits in
+\texttt{recall\_hybrid}. Ranking may be weighted by recency (from a
+wall-clock timestamp embedded in the key), importance (from the layer), and
+semantic distance.
+
+\subsection{Storage}
+\label{sec:storage}
+
+Backends implement a four-method \texttt{Storage} trait. \texttt{FileStorage}
+is a CRC-protected append-log with atomic compaction; \texttt{TickvFile} is
+the byte-exact TKLV codec of the parent OS, with a TKCK checkpoint record
+enabling \emph{fast-mount} (header-only scan, FNV index verification, per-entry
+stale check) with a full-scan fallback, and in-place tombstone invalidation
+($\texttt{magic}[3]{=}0$) before overwrite---making dead space
+header-detectable. A single measured optimization, a persistent lazy append
+handle, reduced write latency by $\sim 38\times$ (Section~\ref{sec:eval}).
+
+\subsection{Synchronization (``telepathy'')}
+\label{sec:sync}
+
+Each node pairs an \texttt{Sgdb} instance with a \texttt{CrdtMemorySync}
+holding its own version counter, a count of independent local writes
+(\texttt{own\_writes}), the versions known of peers, and a preserved conflict
+set. The merge is a multi-value register with explicit verdicts:
+self-packets ignored, stale/duplicate versions rejected (no regression), new
+versions adopted when no conflicting local state exists, and \emph{concurrent}
+versions preserved in the conflict set. Delta sending
+(\S\ref{sec:sync}) ships only versions a peer has not seen.
+
+Exchanging versions is the causal trigger; transferring documents is a
+diff-pull: a peer that learns another advanced replicates the missing docs
+(\texttt{get} $\to$ \texttt{put}). Two instances converge with no central
+server. Because resolution writes are themselves causal CRDT writes,
+arbitration outcomes propagate to every peer.
+
+\subsection{Arbitration by an AI at the root}
+\label{sec:arbitration}
+
+Because concurrent writes are preserved rather than resolved, the system
+defers semantic decisions to the layer that has the full context: an AI at the
+root of the process (in the parent OS, running from boot). Arbitration is a
+five-step pipeline: \emph{harvest} the preserved conflict set (complete
+information is guaranteed---no update was destroyed); \emph{contextualize}
+along the causal chain using episodic memories; \emph{weigh} recency (wall
+clock in the key), importance (layer) and behavioral consistency; \emph{decide}
+via one of four policies---deterministic recency-first ranking at read time,
+temporal validity invalidation (invalidate-not-delete), semantic fusion
+(write a unified document and \texttt{supersede} the originals), or escalation
+to a human/agent; and \emph{propagate} the resolution as a new causal write.
+
+This contrasts with the traditional resolve-at-write model, where a central
+server silently destroys the losing version. Here arbitration runs on complete
+data, at any time, and the verdict is CRDT state that converges across peers.
+
+\section{Evaluation}
+\label{sec:eval}
+
+All measurements are from the project's benchmark/stress harnesses on a
+consumer laptop (AVX2; no AVX-512). The test suite is $92{+}1$ unit/doc tests
+(default features) and $102{+}1$ with the \texttt{p2p} feature; the
+\texttt{no\_std} gate
+(\texttt{cargo check --no-default-features --target x86\_64-unknown-none})
+is clean.
+
+\subsection{Storage write path}
+\label{sec:eval-storage}
+
+Replacing a per-write file open/close with a persistent lazy append handle
+reduced raw \texttt{put} latency from $185\,\mu$s to $4.8\,\mu$s
+($\sim 38\times$), and end-to-end semantic writes from $422\,\mu$s to
+$22\,\mu$s ($\sim 19\times$). A crash-invariant test verifies that writes after
+atomic compaction target the new file (never a stale inode/file object).
+
+\subsection{Recall}
+\label{sec:eval-recall}
+
+BQ top-5 over 10\,000 vectors $\times$ 1024 dimensions dropped from
+$213\,\mu$s to $160\,\mu$s/query after removing a locked atomic RMW from the
+per-call Hamming dispatch ($\sim 25\%$). On a correlated-cluster corpus, the
+coarse BQ filter alone recovers $22\%$ of the exact FP32 top-5 at
+oversample $1\times$, rising to $35\%$ at $16\times$---consistent with the
+known property that sign-BQ separates the \emph{cluster} but not the
+\emph{exact member}; the FP32 rescore then re-ranks the candidates. With
+16-dimension embeddings, low-dimensional bit collision drops exact@1 to
+$\sim 42\%$; raising the candidate pool via oversampling restores it.
+
+\subsection{Fast-mount under churn}
+\label{sec:eval-mount}
+
+On a churned volume (35\,000 records, 5\,000 live), checkpoint fast-mount took
+$14.8\,\mathrm{ms}$ vs.\ $43.2\,\mathrm{ms}$ for a full scan
+($\sim 2.9\times$). On an all-live volume both read the same bytes and are at
+parity; the win is not re-processing tombstones/dead records.
+
+\subsection{Telepathy convergence}
+\label{sec:eval-telepathy}
+
+The \texttt{p2p\_telepathy} experiment runs two \texttt{Sgdb} instances over an
+in-memory transport: A writes $m_1$, B writes $m_2$; one synchronization round
+replicates two documents in each direction and logs both concurrent writes as
+preserved conflicts; a second round is idempotent; a reply $m_3$ propagates
+back in a third round. Both instances converge to identical memory sets and
+cross-recall each other's memories semantically. Convergence is idempotent and
+requires no central coordinator.
+
+\section{Discussion and Limitations}
+\label{sec:discussion}
+
+\paragraph{Eventual consistency.}
+Peers diverge during the window between a write and a synchronization round.
+Convergence is guaranteed (the merge is commutative, associative, idempotent,
+and monotonic) but not time-bounded. For agent memory this is a feature---an
+agent's memory is local and survives disconnection---but applications requiring
+linearizable reads must add their own coordination.
+
+\paragraph{No global ordering.}
+There is no global sequence; the CRDT provides causal order only, and
+wall-clock time must be supplied by the caller. ``Latest'' queries therefore
+require a caller clock (as in our weighted ranking).
+
+\paragraph{Deferred conflict resolution.}
+Conflicts are preserved, not resolved, by design. Resolving them requires a
+policy in the consuming layer; we provide primitives (weighted ranking,
+validity windows, supersede) and an arbitration model, but the semantic
+judgment is not automated by the substrate.
+
+\paragraph{Other limitations.}
+The demo transport is unauthenticated (production requires a signed transport);
+the system is single-threaded by design; ARM SIMD (NEON) and multi-codebook
+quantization are future work; the MCP embedding is a demo trigram hash, not a
+real semantic model.
+
+\section{Reproducibility}
+\label{sec:repro}
+
+Source, tests and harnesses are public:
+\url{https://github.com/msrovani/neural-sgdb}. Key commands:
+\texttt{cargo test} (unit), \texttt{cargo test --features p2p},
+\texttt{cargo check --no-default-features --target x86\_64-unknown-none}
+(\texttt{no\_std} gate), \texttt{cargo run --release --example bench},
+\texttt{cargo run --release --example stress}, and \texttt{cargo run --release
+--example p2p\_telepathy --features p2p} (the telepathy experiment).
+
+\section{Future Work}
+\label{sec:future}
+
+Planned directions include background consolidation (``dreaming'') that
+distills episodic memories into semantic facts as new causal writes;
+arbitration over validity windows in the sync layer; a signed/authenticated
+transport; NEON SIMD; and multi-codebook quantization as an opt-in encoding
+that preserves existing stored vectors.
+
+\begin{thebibliography}{99}
+
+\bibitem{memgpt} C.~Packer, V.~Fang, S.~Patil, K.~Lin, S.~Wooders, J.~Gonzalez.
+``MemGPT: Towards LLMs as Operating Systems,'' \emph{arXiv:2310.08560}, 2023.
+
+\bibitem{letta} Letta project. ``Letta: Stateful agents framework.''
+\url{https://docs.letta.com}.
+
+\bibitem{mem0} Mem0 project. ``The memory layer for personalized AI.''
+\url{https://mem0.ai}.
+
+\bibitem{graphiti} Zep/Graphiti. ``Zep: Temporal Knowledge Graph Architecture
+for Agent Memory,'' \emph{arXiv:2501.13956}, 2025.
+
+\bibitem{contextual} Anthropic. ``Introducing Contextual Retrieval,'' 2024.
+\url{https://www.anthropic.com/news/contextual-retrieval}.
+
+\bibitem{qdrantbq} Qdrant. ``Binary Quantization.'' \url{https://qdrant.tech}.
+
+\bibitem{mih} M.~Norouzi, A.~Punjani, D.~Fleet. ``Fast Exact Search in Hamming
+Space with Multi-Index Hashing,'' \emph{IEEE TPAMI} 36(6), 2014.
+
+\bibitem{scann} R.~Guo et al. ``Accelerating Large-Scale Inference with
+Anisotropic Vector Quantization,'' \emph{ICML}, 2020.
+
+\bibitem{weaviate} Weaviate. ``Vector index: HFresh/SPFresh and dynamic
+\emph{ef}.'', \url{https://weaviate.io}.
+
+\bibitem{bitcask} Basho. ``Bitcask: A Log-Structured Hash Table for Fast
+Key/Value Data,'' 2010.
+
+\bibitem{sqlitewal} SQLite. ``Write-Ahead Logging.''
+\url{https://sqlite.org/wal.html}.
+
+\bibitem{rocksdb} RocksDB. ``Overview of Architecture.''
+\url{https://github.com/facebook/rocksdb}.
+
+\bibitem{shapiro} M.~Shapiro et al. ``A Comprehensive Study of Convergent and
+Commutative Replicated Data Types,'' \emph{RR-7506, INRIA}, 2011.
+
+\bibitem{delta} C.~Almeida, A.~Shoker, C.~Baquero. ``Delta State Replicated
+Data Types,'' \emph{arXiv:1603.01529}, 2016.
+
+\bibitem{dvv} N.~Pregui\c{c}a et al. ``Dotted Version Vectors: Efficient
+Causality Tracking for Distributed Systems,'' \emph{OPODIS}, 2010.
+
+\bibitem{art} V.~Leis, A.~Kemper, T.~Neumann. ``The Adaptive Radix Tree:
+ARTful Indexing for Main-Memory Databases,'' \emph{DaMoN}, 2013.
+
+\bibitem{coala} S.~Sumers, T.~Yao, K.~Narasimhan, T.~Griffiths. ``Cognitive
+Architectures for Language Agents,'' \emph{TMLR}, 2024.
+
+\end{thebibliography}
+
+\end{document}
