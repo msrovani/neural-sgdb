@@ -9,6 +9,7 @@ use alloc::vec::Vec;
 
 use crate::art::ArtIndex;
 use crate::bq::BqFlatIndex;
+use crate::lexical::LexicalIndex;
 use crate::memory_doc::{MemoryDoc, MemoryDocView, MemoryLayer, MemoryState};
 use crate::storage::{Storage, SgdbError};
 
@@ -25,6 +26,16 @@ fn state_key(sk: &str) -> Vec<u8> {
     k
 }
 
+/// Namespace lateral de validade temporal (`sys/validity/<storage_key>` →
+/// 16B: `from u64le | until u64le`). #9 (padrão Zep/Graphiti): **invalidar-não-
+/// deletar** — o doc permanece (histórico/NMD1 intacto), só marca a janela.
+fn validity_key(sk: &str) -> Vec<u8> {
+    let mut k = Vec::with_capacity(13 + sk.len());
+    k.extend_from_slice(b"sys/validity/");
+    k.extend_from_slice(sk.as_bytes());
+    k
+}
+
 fn is_ram_layer(layer: MemoryLayer) -> bool {
     matches!(layer, MemoryLayer::L0Sensory | MemoryLayer::L1Working)
 }
@@ -32,6 +43,8 @@ fn is_ram_layer(layer: MemoryLayer) -> bool {
 pub struct AiosDatabaseEngine {
     pub art: ArtIndex,
     pub bq: BqFlatIndex,
+    /// Índice lexical contextual (#7): textos L2/L3 → termos BM25-style.
+    pub lexical: LexicalIndex,
     /// node_id local para vector clock
     pub node_id: u8,
     pub puts: u64,
@@ -50,6 +63,7 @@ impl AiosDatabaseEngine {
         AiosDatabaseEngine {
             art: ArtIndex::new(),
             bq: BqFlatIndex::new(),
+            lexical: LexicalIndex::new(),
             node_id,
             puts: 0,
             gets: 0,
@@ -102,6 +116,15 @@ impl AiosDatabaseEngine {
 
     fn index_doc(&mut self, id: u64, doc: &MemoryDoc, sk: &str) {
         self.id_to_sk.insert(id, String::from(sk));
+        // path lexical (#7): textos L2/L3 alimentam o índice BM25-style
+        match doc.layer {
+            MemoryLayer::L2EpisodicShort | MemoryLayer::L3EpisodicLong => {
+                if let Ok(text) = core::str::from_utf8(&doc.payload) {
+                    self.lexical.add(sk, text);
+                }
+            }
+            _ => {}
+        }
         match doc.layer {
             MemoryLayer::L0Sensory
             | MemoryLayer::L1Working
@@ -143,6 +166,7 @@ impl AiosDatabaseEngine {
     pub fn rebuild_indices_from_storage(&mut self) -> Result<usize, SgdbError> {
         self.art.clear();
         self.bq.clear();
+        self.lexical = LexicalIndex::new();
         self.id_to_sk.clear();
         // Reindex RAM L0/L1 first (logical ids fresh)
         let mut n = 0usize;
@@ -259,6 +283,46 @@ impl AiosDatabaseEngine {
             self.storage.put(&k, &[st as u8])?;
         }
         Ok(())
+    }
+
+    /// Janela de validade de um doc (#9): `from ≤ now < until`. `until <= from`
+    /// remove a marcação (validade infinita = default). Side-table
+    /// `sys/validity/` via Storage cru — NMD1 intacto.
+    pub fn set_validity(&mut self, sk: &str, from: u64, until: u64) -> Result<(), SgdbError> {
+        let k = validity_key(sk);
+        if until <= from {
+            self.storage.delete(&k)?;
+        } else {
+            let mut v = Vec::with_capacity(16);
+            v.extend_from_slice(&from.to_le_bytes());
+            v.extend_from_slice(&until.to_le_bytes());
+            self.storage.put(&k, &v)?;
+        }
+        Ok(())
+    }
+
+    /// `true` se o doc está válido em `now`. Sem marcação = sempre válido.
+    pub fn validity_at(&mut self, sk: &str, now: u64) -> bool {
+        match self.storage.get(&validity_key(sk)) {
+            Ok(Some(b)) if b.len() == 16 => {
+                let from = u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]);
+                let until =
+                    u64::from_le_bytes([b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]]);
+                from <= now && now < until
+            }
+            _ => true,
+        }
+    }
+
+    /// Invalida em `now` (preserva o `from` original, seta `until = now`).
+    pub fn invalidate(&mut self, sk: &str, now: u64) -> Result<(), SgdbError> {
+        let from = match self.storage.get(&validity_key(sk)) {
+            Ok(Some(b)) if b.len() == 16 => u64::from_le_bytes([
+                b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+            ]),
+            _ => 0,
+        };
+        self.set_validity(sk, from, now)
     }
 }
 

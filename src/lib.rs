@@ -50,6 +50,7 @@ macro_rules! sgdb_log {
 pub mod art;
 pub mod bq;
 pub mod hamming_dispatch;
+pub mod lexical;
 pub mod memory_doc;
 pub mod storage;
 pub mod tickv;

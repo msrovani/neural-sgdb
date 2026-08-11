@@ -60,6 +60,33 @@ fn demo_embed(text: &str) -> Vec<f32> {
     v
 }
 
+/// #8 — parse do URI de resource `memory://{layer}/{key}` (ex: memory://L2/ts/0000).
+fn parse_resource_uri(uri: &str) -> Option<(neural_sgdb::MemoryLayer, String)> {
+    let rest = uri.strip_prefix("memory://")?;
+    let (layer, key) = rest.split_once('/')?;
+    let layer = match layer {
+        "L0" => neural_sgdb::MemoryLayer::L0Sensory,
+        "L1" => neural_sgdb::MemoryLayer::L1Working,
+        "L2" => neural_sgdb::MemoryLayer::L2EpisodicShort,
+        "L3" => neural_sgdb::MemoryLayer::L3EpisodicLong,
+        "L4" => neural_sgdb::MemoryLayer::L4Semantic,
+        "L5" => neural_sgdb::MemoryLayer::L5Procedural,
+        "L6" => neural_sgdb::MemoryLayer::L6Reserved,
+        "L7" => neural_sgdb::MemoryLayer::L7Identity,
+        _ => return None,
+    };
+    Some((layer, String::from(key)))
+}
+
+/// #8 — paginação com cursor opaco (offset). Retorna (página, nextCursor).
+fn paginate<T: Clone>(items: &[T], cursor: Option<&str>, size: usize) -> (Vec<T>, Option<String>) {
+    let off = cursor.and_then(|c| c.parse::<usize>().ok()).unwrap_or(0).min(items.len());
+    let end = (off + size).min(items.len());
+    let page = items[off..end].to_vec();
+    let next = if end < items.len() { Some((end as u32).to_string()) } else { None };
+    (page, next)
+}
+
 fn send(msg: &Value) {
     let mut out = io::stdout().lock();
     let _ = writeln!(out, "{}", serde_json::to_string(msg).unwrap());
@@ -143,22 +170,64 @@ fn main() {
                      "description":"Armazena uma memoria de texto no banco neural-sgdb.",
                      "inputSchema":{"type":"object",
                        "properties":{"text":{"type":"string","description":"Conteudo a lembrar"}},
-                       "required":["text"]}},
+                       "required":["text"]},
+                     "annotations":{"destructiveHint":true,"idempotentHint":true}},
                     {"name":"recall",
                      "description":"Busca semantica sobre memorias armazenadas. Retorna as top-k mais similares.",
                      "inputSchema":{"type":"object",
                        "properties":{
                          "query":{"type":"string","description":"Texto de busca"},
-                         "k":{"type":"integer","minimum":1,"maximum":20,"default":5}},
-                       "required":["query"]}},
+                         "k":{"type":"integer","minimum":1,"maximum":20,"default":5},
+                         "cursor":{"type":"string","description":"Cursor de paginacao (opaco, de um resultado anterior)"},
+                         "pageSize":{"type":"integer","minimum":1,"maximum":20,"default":5}},
+                       "required":["query"]},
+                     "annotations":{"readOnlyHint":true}},
                     {"name":"rag_context",
                      "description":"Busca memorias e monta contexto formatado pronto para prompt RAG.",
                      "inputSchema":{"type":"object",
                        "properties":{
                          "query":{"type":"string","description":"Texto de busca"},
                          "k":{"type":"integer","minimum":1,"maximum":10,"default":3}},
-                       "required":["query"]}}
+                       "required":["query"]},
+                     "annotations":{"readOnlyHint":true}}
                 ]}}));
+            }
+            "resources/list" => {
+                // #8: expõe as memórias como resources `memory://{layer}/{key}`
+                // com paginação por cursor opaco (offset).
+                let cursor = msg["params"]["cursor"].as_str();
+                let size = msg["params"]["pageSize"].as_u64().unwrap_or(20).max(1) as usize;
+                let mut all: Vec<Value> = Vec::new();
+                for layer in ["L1", "L2", "L3", "L4", "L5", "L7"] {
+                    if let Ok(items) = db.scan_prefix(&format!("md/{layer}/")) {
+                        for (k, _) in items {
+                            let key = k.trim_start_matches(&format!("md/{layer}/"));
+                            all.push(json!({"uri": format!("memory://{layer}/{key}"),
+                                            "name": key, "mimeType":"text/plain"}));
+                        }
+                    }
+                }
+                let (page, next) = paginate(&all, cursor, size);
+                let mut result = json!({"resources": page});
+                if let Some(n) = next {
+                    result["nextCursor"] = json!(n);
+                }
+                send(&json!({"jsonrpc":"2.0","id":id,"result":result}));
+            }
+            "resources/read" => {
+                let uri = msg["params"]["uri"].as_str().unwrap_or("");
+                match parse_resource_uri(uri) {
+                    Some((layer, key)) => match db.get(layer, &key) {
+                        Ok(Some(doc)) => {
+                            let text = String::from_utf8_lossy(&doc.payload).into_owned();
+                            send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "contents":[{"uri":uri,"mimeType":"text/plain","text":text}]}}));
+                        }
+                        Ok(None) => send(&error_response(&id, -32002, "recurso nao encontrado")),
+                        Err(e) => send(&error_response(&id, -32603, &format!("erro interno: {e}"))),
+                    },
+                    None => send(&error_response(&id, -32602, "URI de recurso invalido")),
+                }
             }
             "tools/call" => {
                 let name = msg["params"]["name"].as_str().unwrap_or("");
@@ -197,20 +266,23 @@ fn main() {
                             continue;
                         }
                         let emb = demo_embed(query);
-                        match db.recall(&emb, k) {
-                            Ok(hits) => {
-                                let text = if hits.is_empty() {
-                                    "nenhuma memoria similar encontrada".into()
-                                } else {
-                                    hits.iter().map(|h| format!("- {} (d={:.3})", h.text, h.dist))
-                                        .collect::<Vec<_>>().join("\n")
-                                };
-                                send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                    "content":[{"type":"text","text":text}],"isError":false}}));
-                            }
-                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
+                        let all = db.recall(&emb, 100).unwrap_or_default();
+                        // paginação por cursor (offset) + pageSize
+                        let size = args["pageSize"].as_u64().unwrap_or(k as u64).max(1) as usize;
+                        let (page, next) = paginate(&all, args["cursor"].as_str(), size);
+                        let text = if page.is_empty() {
+                            "nenhuma memoria similar encontrada".into()
+                        } else {
+                            page.iter().map(|h| format!("- {} (d={:.3})", h.text, h.dist))
+                                .collect::<Vec<_>>().join("\n")
+                        };
+                        let mut result = json!({
+                            "content":[{"type":"text","text":text}],"isError":false
+                        });
+                        if let Some(n) = next {
+                            result["nextCursor"] = json!(n);
                         }
+                        send(&json!({"jsonrpc":"2.0","id":id,"result":result}));
                     }
                     "rag_context" => {
                         let query = args["query"].as_str().unwrap_or("");
@@ -244,4 +316,36 @@ fn main() {
     }
     // EOF no stdin = shutdown
     eprintln!("[neural-sgdb] stdin fechado — encerrando");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_resource_uri_ok_and_bad() {
+        let (l, k) = parse_resource_uri("memory://L4/doc%2Fum").unwrap();
+        assert_eq!(l, neural_sgdb::MemoryLayer::L4Semantic);
+        assert_eq!(k, "doc%2Fum");
+        assert!(parse_resource_uri("memory://").is_none());
+        assert!(parse_resource_uri("http://L4/x").is_none());
+        assert!(parse_resource_uri("memory://L9/x").is_none());
+    }
+
+    #[test]
+    fn paginate_pages_and_cursor() {
+        let items: Vec<u32> = (0..10).collect();
+        let (p1, c1) = paginate(&items, None, 4);
+        assert_eq!(p1, vec![0, 1, 2, 3]);
+        assert_eq!(c1.as_deref(), Some("4"));
+        let (p2, c2) = paginate(&items, c1.as_deref(), 4);
+        assert_eq!(p2, vec![4, 5, 6, 7]);
+        assert_eq!(c2.as_deref(), Some("8"));
+        let (p3, c3) = paginate(&items, c2.as_deref(), 4);
+        assert_eq!(p3, vec![8, 9]);
+        assert_eq!(c3, None, "última página não tem nextCursor");
+        // cursor inválido → volta ao início
+        let (p, _) = paginate(&items, Some("xyz"), 2);
+        assert_eq!(p, vec![0, 1]);
+    }
 }

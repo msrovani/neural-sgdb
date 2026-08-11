@@ -222,8 +222,17 @@ impl Sgdb {
     /// Recall L4: BQ top-k, depois rescore FP32 nos candidatos (padrão Qdrant).
     /// Sort pelo score bruto u32 (paridade com o OS: fp32 ∈ 0..10000 vs ham ∈
     /// 0..64 convivem no mesmo espaço de ordenação — layers.rs:108-118).
+    /// Oversample é AUTO por dimensionalidade: BQ degrada com poucos words
+    /// (#5, Qdrant: abaixo de ~768 dims o 1-bit colide) — poucos words ⇒
+    /// pool maior. Para controle explícito use `recall_oversampled`.
     pub fn recall(&mut self, query: &[f32], k: usize) -> Result<Vec<Hit>, SgdbError> {
-        self.recall_oversampled(query, k, 4)
+        let words = self.engine.bq.words_per_vec;
+        let ov = match words {
+            0 | 1 => 16,
+            2..=4 => 8,
+            _ => 4,
+        };
+        self.recall_oversampled(query, k, ov)
     }
 
     /// Recall com **oversampling** configurável (pesquisa upstream Qdrant/BQ):
@@ -297,6 +306,107 @@ impl Sgdb {
         let mut ranked: Vec<(u32, Hit)> = best.into_values().collect();
         ranked.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.key.cmp(&b.1.key)));
         Ok(ranked.into_iter().take(k).map(|(_, h)| h).collect())
+    }
+
+    /// Recall com **scoring ponderado** (#3, padrão Mem0/MemGPT):
+    /// `score = w_sem·dist + w_rec·recency_penalty + w_imp·importance_penalty`
+    /// (menor = melhor). Recency vem do timestamp no storage key (`/ts/<hex>`);
+    /// importance da camada (`md/LX/`). Busca um pool maior (`k·16`) para que
+    /// recência/importância possam puxar candidatos fora do top-k semântico.
+    pub fn recall_weighted(
+        &mut self,
+        query: &[f32],
+        k: usize,
+        w_sem: f32,
+        w_rec: f32,
+        w_imp: f32,
+        now: u64,
+    ) -> Result<Vec<Hit>, SgdbError> {
+        let pool = self.recall_oversampled(query, k.max(1).saturating_mul(16), 1)?;
+        let mut scored: Vec<(f64, Hit)> = Vec::with_capacity(pool.len());
+        for h in pool {
+            let rec = match ts_from_key(&h.key) {
+                Some(t) => (now.saturating_sub(t) as f64 / 1000.0).clamp(0.0, 1.0),
+                None => 0.5, // sem timestamp: neutro
+            };
+            let s = w_sem as f64 * h.dist as f64
+                + w_rec as f64 * rec
+                + w_imp as f64 * layer_importance(&h.key);
+            scored.push((s, h));
+        }
+        scored.sort_by(|a, b| {
+            a.0.partial_cmp(&b.0)
+                .unwrap_or(core::cmp::Ordering::Equal)
+                .then_with(|| a.1.key.cmp(&b.1.key))
+        });
+        Ok(scored.into_iter().take(k).map(|(_, h)| h).collect())
+    }
+
+    /// Janela de validade (#9, Zep/Graphiti pattern): `from ≤ now < until`.
+    /// `key` = storage key canônica (`md/Lx/...`). Side-table `sys/validity/`;
+    /// o doc NUNCA é deletado — só marcado.
+    pub fn set_validity(&mut self, key: &str, from: u64, until: u64) -> Result<(), SgdbError> {
+        let sk = self.resolve_storage_key(key);
+        self.engine.set_validity(&sk, from, until)
+    }
+
+    pub fn validity_at(&mut self, key: &str, now: u64) -> Result<bool, SgdbError> {
+        let sk = self.resolve_storage_key(key);
+        Ok(self.engine.validity_at(&sk, now))
+    }
+
+    pub fn invalidate(&mut self, key: &str, now: u64) -> Result<(), SgdbError> {
+        let sk = self.resolve_storage_key(key);
+        self.engine.invalidate(&sk, now)
+    }
+
+    /// Recall **lexical contextual** (#7, BM25-style sobre o índice invertido
+    /// dos textos L2/L3): recupera casamentos de termos que o BQ perde.
+    /// `dist` = 1 − score normalizado (0 = melhor hit lexical).
+    pub fn recall_lexical(&mut self, query_text: &str, k: usize) -> Result<Vec<Hit>, SgdbError> {
+        let scored = self.engine.lexical.search(query_text, k.max(1));
+        let max = scored.first().map(|(_, s)| *s).unwrap_or(0.0).max(1e-6);
+        let mut out = Vec::with_capacity(scored.len());
+        for (sk, score) in scored {
+            if let Ok(Some(doc)) = self.engine.get_by_storage_key(&sk) {
+                out.push(Hit {
+                    key: sk,
+                    text: String::from_utf8_lossy(&doc.payload).into_owned(),
+                    dist: (1.0 - score / max).clamp(0.0, 1.0),
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Recall **híbrido** semântico + lexical (Anthropic dual-path): semantic
+    /// primeiro, depois os lexicais não duplicados — até `k`.
+    pub fn recall_hybrid(
+        &mut self,
+        query_emb: &[f32],
+        query_text: &str,
+        k: usize,
+    ) -> Result<Vec<Hit>, SgdbError> {
+        let mut out = self.recall(query_emb, k)?;
+        let mut seen: alloc::collections::BTreeSet<String> =
+            out.iter().map(|h| h.key.clone()).collect();
+        for h in self.recall_lexical(query_text, k.max(1).saturating_mul(4))? {
+            if seen.insert(h.key.clone()) {
+                out.push(h);
+            }
+        }
+        out.truncate(k.max(1));
+        Ok(out)
+    }
+
+    /// Recall que filtra memórias **invalidadas** em `now` (default:
+    /// `recall` ignora validade). Recall-time only — não toca nos bitvecs.
+    pub fn recall_at(&mut self, query: &[f32], k: usize, now: u64) -> Result<Vec<Hit>, SgdbError> {
+        let hits = self.recall(query, k)?;
+        Ok(hits
+            .into_iter()
+            .filter(|h| self.engine.validity_at(&h.key, now))
+            .collect())
     }
 
     /// Conveniência RAG com oversample explícito.
@@ -392,6 +502,39 @@ impl Sgdb {
 
     pub fn ram_len(&self) -> usize {
         self.engine.ram_l0l1_len()
+    }
+}
+
+/// Extrai o timestamp de um storage key `…/ts/<hex>` (facts L3 e semantic
+/// timestamped de `remember_exchange_full`). `None` se a chave não é `ts/`.
+fn ts_from_key(key: &str) -> Option<u64> {
+    let hex = if let Some(p) = key.find("/ts/") {
+        &key[p + 4..]
+    } else if let Some(rest) = key.strip_prefix("ts/") {
+        rest
+    } else {
+        return None;
+    };
+    let hex = hex.split('/').next()?;
+    u64::from_str_radix(hex, 16).ok()
+}
+
+/// Penalty de importância por camada (0 = mais importante): L4/L7 alta,
+/// L5/L3 média, L1/L2 baixa. Chaves fora de `md/LX/` → neutro (0.5).
+fn layer_importance(key: &str) -> f64 {
+    let b = key.as_bytes();
+    let Some(i) = b.windows(4).position(|w| w == b"/L") else {
+        return 0.5;
+    };
+    if i + 3 >= b.len() {
+        return 0.5;
+    }
+    match b[i + 3].wrapping_sub(b'0') {
+        4 | 7 => 0.0,
+        5 => 0.2,
+        3 => 0.6,
+        2 => 0.8,
+        _ => 1.0,
     }
 }
 
@@ -576,22 +719,33 @@ mod tests {
         }
         let mut exact_small = 0usize;
         let mut exact_large = 0usize;
+        let mut exact_auto = 0usize;
         for i in (0..2000).step_by(7) {
             let v = emb16(i as u64);
-            if db.recall(&v, 1).unwrap().first().map(|h| h.dist == 0.0).unwrap_or(false) {
+            if db.recall_oversampled(&v, 1, 4).unwrap().first().map(|h| h.dist == 0.0).unwrap_or(false) {
                 exact_small += 1;
             }
             if db.recall_oversampled(&v, 1, 64).unwrap().first().map(|h| h.dist == 0.0).unwrap_or(false) {
                 exact_large += 1;
             }
+            // #5 auto-oversample: 16-dim = 1 word ⇒ ov=16 automático no recall()
+            if db.recall(&v, 1).unwrap().first().map(|h| h.dist == 0.0).unwrap_or(false) {
+                exact_auto += 1;
+            }
         }
-        // oversample=4 (recall) é lossy em dims baixas; oversample=64 recupera
-        // (grupos de colisão são ~1-2 docs em 2^16 padrões → 64 cobre todos)
+        // oversample=4 é lossy em dims baixas; oversample=64 recupera; o
+        // recall() com auto-oversample (ov=16 em 1 word) também deve recuperar
         assert!(
             exact_large > exact_small,
             "oversample deveria melhorar exact: small={exact_small} large={exact_large}"
         );
         assert_eq!(exact_large, 286, "com 64x o match exato deve sempre vencer");
+        // auto-oversample (1 word → ov=16) recupera ~tudo; só 1 query tem um
+        // grupo de colisão bit-idêntico >16 (patológico, 2000 docs / 2^16)
+        assert!(
+            exact_auto >= 280 && exact_auto > exact_small,
+            "auto-oversample deveria recuperar quase tudo: small={exact_small} auto={exact_auto}"
+        );
     }
 
     #[test]
@@ -677,6 +831,111 @@ mod tests {
             );
         }
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn recall_weighted_prefers_recent_and_important() {
+        use crate::memory_doc::MemoryDoc;
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let emb = vec![1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0];
+        // duas memórias com MESMO embedding (empate semântico), timestamps
+        // diferentes — keys ts/<hex> (padrão remember_exchange_full)
+        let old = MemoryDoc::sortable_ts_key(100);
+        let new = MemoryDoc::sortable_ts_key(900);
+        db.remember_semantic(&old, "memoria antiga", &emb).unwrap();
+        db.remember_semantic(&new, "memoria recente", &emb).unwrap();
+
+        // w_rec alto: a recente (ts=900, mais perto de now=950) vem primeiro
+        let r = db.recall_weighted(&emb, 2, 0.0, 1.0, 0.0, 950).unwrap();
+        assert_eq!(r.len(), 2);
+        assert!(r[0].text == "memoria recente", "recência deveria puxar a recente: {}", r[0].text);
+
+        // w_rec = 0: empate semântico → tie-break por key (antiga primeiro)
+        let r0 = db.recall_weighted(&emb, 2, 1.0, 0.0, 0.0, 950).unwrap();
+        assert!(r0[0].text == "memoria antiga", "sem recência: key menor primeiro: {}", r0[0].text);
+
+        // importância: L4 (semântica, penalty 0.0) deve vencer L5 (procedural,
+        // penalty 0.2) com o MESMO embedding sob w_imp alto
+        let mut l5 = MemoryDoc::new(crate::memory_doc::MemoryLayer::L5Procedural, "proc/1", vec![1, 2, 3, 4]);
+        l5.bitvec = Some(crate::bq::quantize_f32(&emb));
+        db.engine.put(l5).unwrap();
+        let ri = db.recall_weighted(&emb, 1, 0.0, 0.0, 1.0, 0).unwrap();
+        assert!(
+            !ri[0].key.contains("proc/1"),
+            "L4 (semântica) deveria vencer L5 por importância: {}",
+            ri[0].key
+        );
+        // sem w_imp, os três empatam semanticamente → L5 pode aparecer no top
+        let r0 = db.recall_weighted(&emb, 3, 1.0, 0.0, 0.0, 950).unwrap();
+        assert!(r0.iter().any(|h| h.key.contains("proc/1")));
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn fact_validity_invalidate_not_delete() {
+        let dir = std::env::temp_dir().join("neural_sgdb_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("sgdb_validity.db");
+        let _ = std::fs::remove_file(&path);
+        let key = "md/L3/ts/0000000000000064";
+        {
+            let mut db = Sgdb::open(crate::storage::FileStorage::open(&path).unwrap()).unwrap();
+            db.remember_fact("fato antigo superado", 100).unwrap();
+            // default: sempre válido
+            assert!(db.validity_at(key, 50).unwrap());
+            // janela explícita
+            db.set_validity(key, 0, 1000).unwrap();
+            assert!(db.validity_at(key, 500).unwrap());
+            assert!(!db.validity_at(key, 1500).unwrap());
+            // invalidar-não-deletar: doc permanece no storage
+            db.invalidate(key, 600).unwrap();
+            assert!(!db.validity_at(key, 600).unwrap());
+            assert!(db.scan_prefix("md/L3/").unwrap().len() >= 1);
+
+            // recall_at filtra inválidos; recall não
+            let emb = [1.0, -1.0, 1.0, -1.0];
+            db.remember_semantic("d1", "doc um", &emb).unwrap();
+            db.remember_semantic("d2", "doc dois", &emb).unwrap();
+            db.invalidate("md/L4/d1", 500).unwrap();
+            let all = db.recall(&emb, 10).unwrap();
+            let at = db.recall_at(&emb, 10, 600).unwrap();
+            assert!(all.iter().any(|h| h.key.ends_with("/d1")));
+            assert!(!at.iter().any(|h| h.key.ends_with("/d1")), "recall_at deveria filtrar o inválido");
+            assert!(at.iter().any(|h| h.key.ends_with("/d2")));
+        }
+        // persistência no reopen
+        {
+            let mut db = Sgdb::open(crate::storage::FileStorage::open(&path).unwrap()).unwrap();
+            assert!(!db.validity_at(key, 700).unwrap(), "validade deveria persistir");
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn lexical_recall_finds_exact_term_semantic_misses() {
+        // #7: termo raro que o BQ (16-dim, 1 word) perde por colisão de bits é
+        // recuperado pelo path lexical BM25-style.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let mut emb = |seed: u64| -> Vec<f32> {
+            let mut s = seed.wrapping_mul(1103515245).wrapping_add(12345);
+            let mut v = Vec::with_capacity(16);
+            for _ in 0..16 {
+                s = s.wrapping_mul(1103515245).wrapping_add(12345);
+                v.push(((s >> 32) as i32 % 200) as f32 / 100.0 - 1.0);
+            }
+            v
+        };
+        db.remember_semantic("doc/quicksort", "algoritmo de ordenacao quicksort", &emb(1)).unwrap();
+        db.remember_semantic("doc/bebida", "quicksort e o nome de uma bebida", &emb(2)).unwrap();
+        // o termo "ordenacao" existe só em doc/quicksort → lexical top-1 é ele
+        let hits = db.recall_lexical("ordenacao", 1).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].key.ends_with("doc/quicksort"), "lexical deveria achar quicksort: {}", hits[0].key);
+        // híbrido: semântico + lexical, sem duplicar
+        let hy = db.recall_hybrid(&emb(1), "ordenacao", 10).unwrap();
+        let keys: Vec<&str> = hy.iter().map(|h| h.key.as_str()).collect();
+        assert!(keys.contains(&"md/L2/doc/quicksort") || keys.contains(&"md/L4/doc/quicksort"));
+        assert_eq!(hy.len(), hy.iter().map(|h| &h.key).collect::<alloc::collections::BTreeSet<_>>().len(), "híbrido não deve duplicar chaves");
     }
 
     #[test]

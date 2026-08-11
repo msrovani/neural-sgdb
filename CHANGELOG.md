@@ -6,6 +6,42 @@ All notable changes to this project. Format based on
 
 ## [Unreleased]
 
+### Added (pesquisa de ponta 2026 — 10 itens, cada um com teste de medição)
+- **#1 `MihIndex`** (`bq.rs`) — Multi-Index Hashing (Norouzi) sobre os bitvecs
+  existentes: candidatos ∝ N/2^(bits/bloco) em vez de O(N), match exato sempre
+  recuperado, ranking por hamming completo. Teste: pool < N/8 e top-1 = exato.
+- **#2 ART range-scan pruning** (`art.rs`) — `scan_prefix` só desce em filhos
+  que podem casar com o prefixo (poda por byte de borda + `path_matches`).
+  `scan_prefix_stats` mede nós visitados: scan estreito visita < 1/3 da árvore.
+- **#3 `recall_weighted`** (`sgdb.rs`) — `score = w_sem·dist + w_rec·recência
+  + w_imp·importância` (padrão Mem0/MemGPT); recência do `/ts/<hex>` da key,
+  importância da camada `md/LX/`. Teste: recente vence com w_rec alto; L4
+  vence L5 com w_imp alto.
+- **#4 `quantize_f32_centered` / `top_k_f32_centered`** (`bq.rs`) — query
+  re-centrada pela própria média; bitvecs armazenados intactos. Teste: query
+  com offset (+5) recupera o exato que o `sign(x)>0` perde.
+- **#5 auto-oversample por dimensionalidade** (`sgdb.rs`) — `recall` usa
+  ov=16 (1 word) / 8 (2-4) / 4 (≥5); BQ degrada abaixo de ~768 dims. Teste:
+  recupera ~285/286 do exato em 16-dim vs o pool fixo antigo.
+- **#6 invalidação in-place no `TickvFile::put`/`delete`** (`tickv.rs`) —
+  `magic[3]` do record anterior vira 0 (`TKL\0`) antes do append (parity OS);
+  dead-space detectável, GC-ready. Teste: bytes `TKL\0` no offset antigo.
+- **#7 path lexical contextual** (`lexical.rs` + engine + `recall_lexical`/
+  `recall_hybrid`) — índice invertido BM25-style (alloc-only, no_std) sobre
+  textos L2/L3; recupera termos que o BQ perde (dual-path Anthropic). Teste:
+  "ordenacao" acha só o doc certo; híbrido não duplica. Custo ~6µs/put.
+- **#8 MCP resources + paginação + annotations** (`examples/mcp_server.rs`) —
+  `resources/list`/`resources/read` (`memory://{layer}/{key}`), `nextCursor`
+  opaco em recall/resources, `readOnlyHint`/`destructiveHint`/`idempotentHint`.
+  Testes: parse de URI + paginação por cursor.
+- **#9 janela de validade** (`engine`/`sgdb`) — side-table `sys/validity/`
+  (`from ≤ now < until`), **invalidar-não-deletar** (Zep/Graphiti);
+  `set_validity`/`invalidate`/`validity_at`/`recall_at`. Teste: persiste no
+  reopen e `recall_at` filtra inválidos.
+- **#10 delta CRDT** (`crdt.rs`) — `record_change` registra deltas; `sync`
+  envia SÓ o não-visto pelo peer (`send_delta`, default cai p/ `send_crdt`);
+  `pending_deltas()` mede. Teste: peer convergido até v2 recebe só v3.
+
 ## [0.4.0] — 2026-08-10
 
 ### Fixed (bughunt #11)

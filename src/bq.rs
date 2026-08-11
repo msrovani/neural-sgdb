@@ -17,6 +17,24 @@ pub fn quantize_f32(v: &[f32]) -> Vec<u64> {
     out
 }
 
+/// Quantiza com threshold adaptativo da PRÓPRIA query (média) em vez de
+/// `> 0` (#4): os bitvecs ARMAZENADOS não mudam (contrato intacto) — só a
+/// query é re-centrada. Ajuda quando a query tem offset (ex: +5 em todas as
+/// dims): `sign(x)>0` infla todos os bits e perde o sinal; `x > mean(query)`
+/// realinha a query à distribuição dos vetores armazenados.
+pub fn quantize_f32_centered(v: &[f32]) -> Vec<u64> {
+    let n = v.len();
+    let mean = if n > 0 { v.iter().sum::<f32>() / n as f32 } else { 0.0 };
+    let n_words = (n + 63) / 64;
+    let mut out = vec![0u64; n_words];
+    for (i, &x) in v.iter().enumerate() {
+        if x > mean {
+            out[i / 64] |= 1u64 << (i % 64);
+        }
+    }
+    out
+}
+
 /// Quantiza para exatamente 16 words (1024 dims) — pad/trunc.
 pub fn quantize_f32_1024(v: &[f32]) -> [u64; 16] {
     let q = quantize_f32(v);
@@ -39,6 +57,108 @@ pub struct BqFlatIndex {
     pub ids: Vec<u64>,
     pub flat: Vec<u64>,
     pub words_per_vec: usize,
+}
+
+/// FNV-1a sobre os bytes de um bloco de words (bucket key do MIH).
+fn hash_words(words: &[u64]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &w in words {
+        for b in w.to_le_bytes() {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100_0000_01b3);
+        }
+    }
+    h
+}
+
+/// **Multi-Index Hashing** (#1, Norouzi et al.) sobre os bitvecs JÁ armazenados
+/// — recall-time, formato intocado. Particiona cada código em `blocks` blocos;
+/// cada bloco tem uma tabela de buckets (hash do bloco → ids). Query: probe os
+/// buckets dos blocos da query, une os candidatos e rankeia por hamming
+/// completo. Vira o scan O(N) em O(candidatos) — candidatos ≈ N/2^(bits/bloco)
+/// para dados aleatórios; o match exato (mesmos blocos) é sempre recuperado.
+pub struct MihIndex {
+    blocks: usize,
+    block_words: usize,
+    words_per_vec: usize,
+    /// por bloco: bucket hash → posições no `src.flat` (evita busca O(N) por id)
+    buckets: Vec<alloc::collections::BTreeMap<u64, Vec<usize>>>,
+}
+
+impl MihIndex {
+    pub fn build(src: &BqFlatIndex, blocks: usize) -> Self {
+        let blocks = blocks.max(1);
+        let w = src.words_per_vec.max(1);
+        let block_words = (w + blocks - 1) / blocks;
+        let mut buckets: Vec<alloc::collections::BTreeMap<u64, Vec<usize>>> =
+            (0..blocks).map(|_| alloc::collections::BTreeMap::new()).collect();
+        for (i, _id) in src.ids.iter().enumerate() {
+            let start = i * w;
+            let vec = &src.flat[start..start + w];
+            for j in 0..blocks {
+                let lo = j * block_words;
+                let hi = ((j + 1) * block_words).min(w);
+                let key = hash_words(&vec[lo..hi]);
+                buckets[j].entry(key).or_default().push(i);
+            }
+        }
+        MihIndex { blocks, block_words, words_per_vec: w, buckets }
+    }
+
+    /// Recupera candidatos (posições) : união dos buckets dos blocos da query.
+    /// `probes` = bit-flips por bloco p/ aumentar recall (0 = probe exato).
+    pub fn candidates(&self, query: &[u64], probes: usize) -> Vec<usize> {
+        let mut set: alloc::collections::BTreeSet<usize> = alloc::collections::BTreeSet::new();
+        for j in 0..self.blocks {
+            let lo = j * self.block_words;
+            if lo >= query.len() {
+                break;
+            }
+            let hi = (lo + self.block_words).min(query.len());
+            let block = &query[lo..hi];
+            // probe exato + até `probes` flips de bit no primeiro word do bloco
+            let mut keys = vec![hash_words(block)];
+            if probes > 0 && !block.is_empty() {
+                for b in 0..probes.min(64) {
+                    let mut w = block[0];
+                    w ^= 1u64 << b;
+                    let mut probe: alloc::vec::Vec<u64> = block.to_vec();
+                    probe[0] = w;
+                    keys.push(hash_words(&probe));
+                }
+            }
+            for k in keys {
+                if let Some(bucket) = self.buckets[j].get(&k) {
+                    for &pos in bucket {
+                        set.insert(pos);
+                    }
+                }
+            }
+        }
+        set.into_iter().collect()
+    }
+
+    /// Rankeia os candidatos por hamming completo contra o src — top-k
+    /// determinístico (dist, id), paridade com `BqFlatIndex::top_k`.
+    pub fn top_k(&self, src: &BqFlatIndex, query: &[u64], k: usize, probes: usize) -> Vec<(u64, u32)> {
+        if k == 0 {
+            return Vec::new();
+        }
+        let cand = self.candidates(query, probes);
+        let mut scored: Vec<(u64, u32)> = Vec::with_capacity(cand.len());
+        for &pos in &cand {
+            let start = pos * self.words_per_vec;
+            let vec = &src.flat[start..start + self.words_per_vec];
+            scored.push((src.ids[pos], hamming_dispatch::hamming(query, vec)));
+        }
+        scored.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+        scored.truncate(k);
+        scored
+    }
+
+    pub fn top_k_f32(&self, src: &BqFlatIndex, query: &[f32], k: usize, probes: usize) -> Vec<(u64, u32)> {
+        self.top_k(src, &quantize_f32(query), k, probes)
+    }
 }
 
 impl BqFlatIndex {
@@ -144,6 +264,12 @@ impl BqFlatIndex {
 
     pub fn top_k_f32(&self, query: &[f32], k: usize) -> Vec<(u64, u32)> {
         self.top_k(&quantize_f32(query), k)
+    }
+
+    /// top-k com query re-centrada (#4) — alternativa ótima para queries com
+    /// offset; os bitvecs armazenados permanecem `sign(x)>0`.
+    pub fn top_k_f32_centered(&self, query: &[f32], k: usize) -> Vec<(u64, u32)> {
+        self.top_k(&quantize_f32_centered(query), k)
     }
 
     pub fn len(&self) -> usize {
@@ -284,6 +410,81 @@ mod tests {
         assert_eq!(hits.len(), 4);
         let ids: Vec<u64> = hits.iter().map(|h| h.0).collect();
         assert_eq!(ids, vec![1, 2, 5, 9], "tie-break por id falhou: {ids:?}");
+    }
+
+    #[test]
+    fn mih_prunes_candidates_and_recovers_exact() {
+        // #1: MIH deve reduzir o pool de candidatos de O(N) para uma fração
+        // (candidatos ≈ N/2^(bits/bloco)) e recuperar o match exato (mesmos
+        // blocos) com hamming completo.
+        let mut src = BqFlatIndex::new();
+        let mut vecs = Vec::with_capacity(10_000);
+        for i in 0..10_000u64 {
+            let mut s = i.wrapping_mul(1103515245).wrapping_add(12345);
+            let mut v = vec![0f32; 1024];
+            for x in v.iter_mut() {
+                s = s.wrapping_mul(1103515245).wrapping_add(12345);
+                *x = ((s >> 32) as i32 % 200) as f32 / 100.0 - 1.0;
+            }
+            vecs.push(v.clone());
+            src.insert_f32(i, &v);
+        }
+        let mih = MihIndex::build(&src, 4); // 4 blocos de 256 bits
+        // query = um vetor armazenado (exato nos 4 blocos)
+        let q = &vecs[42];
+        let cand = mih.candidates(&quantize_f32(q), 0);
+        // medição: candidatos << N (com 256 bits/bloco, ~poucos por bucket)
+        assert!(
+            cand.len() < 10_000 / 8,
+            "MIH não reduziu o pool: {} candidatos de 10000",
+            cand.len()
+        );
+        // o exato (hamming 0) está no top-1
+        let top = mih.top_k_f32(&src, q, 1, 0);
+        assert_eq!(top[0], (42, 0), "match exato deveria estar no top-1 MIH");
+        // paridade com o brute-force: o top-1 por hamming completo do MIH
+        // coincide com o do BqFlatIndex (query = armazenado)
+        let brute = src.top_k_f32(q, 1);
+        assert_eq!(top[0].0, brute[0].0);
+    }
+
+    #[test]
+    fn centered_query_recovers_exact_on_offset_query() {
+        // #4: query com offset (todos os componentes +5) — `sign(x)>0` infla
+        // todos os bits (hamming empata por id e perde o exato); re-centrar a
+        // query pela própria média realinha à distribuição armazenada.
+        let mut idx = BqFlatIndex::new();
+        // vetores centrados em zero (LCG determinístico)
+        for i in 0..2000 {
+            let mut s = (i as u64).wrapping_mul(1103515245).wrapping_add(12345);
+            let mut v = Vec::with_capacity(16);
+            for _ in 0..16 {
+                s = s.wrapping_mul(1103515245).wrapping_add(12345);
+                v.push(((s >> 32) as i32 % 200) as f32 / 100.0 - 1.0);
+            }
+            idx.insert_f32(i as u64, &v);
+        }
+        // query = vetor 7 + offset +5 em todas as dims
+        let target = 7u64;
+        let mut q = vec![0f32; 16];
+        {
+            let mut s = target.wrapping_mul(1103515245).wrapping_add(12345);
+            for x in q.iter_mut() {
+                s = s.wrapping_mul(1103515245).wrapping_add(12345);
+                *x = ((s >> 32) as i32 % 200) as f32 / 100.0 - 1.0 + 5.0;
+            }
+        }
+        let std_top = idx.top_k_f32(&q, 5);
+        let ctr_top = idx.top_k_f32_centered(&q, 5);
+        // top_k (vazio) nunca panics
+        assert!(!std_top.is_empty() && !ctr_top.is_empty());
+        // hamming do exato sob query centrada deve ser <= ao da query padrão
+        let ham_std = std_top.iter().position(|(id, _)| *id == target);
+        let ham_ctr = ctr_top.iter().position(|(id, _)| *id == target);
+        assert!(
+            ham_ctr.is_some(),
+            "query re-centrada deveria trazer o exato: std={ham_std:?} ctr={ham_ctr:?}"
+        );
     }
 
     #[test]

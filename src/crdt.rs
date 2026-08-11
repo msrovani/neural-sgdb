@@ -75,6 +75,14 @@ pub enum MergeVerdict {
 pub trait Transport {
     fn send_crdt(&mut self, node_id: u8, version: u64) -> Result<(), SgdbError>;
     fn recv_crdt(&mut self) -> Vec<(u8, u64)>;
+
+    /// #10 (δ-CRDT): envia um DELTA (versão + payload opcional). Default cai
+    /// para `send_crdt` (payload ignorado) — transportes que não suportam
+    /// deltas continuam funcionando com a semântica antiga.
+    fn send_delta(&mut self, node_id: u8, version: u64, payload: &[u8]) -> Result<(), SgdbError> {
+        let _ = payload;
+        self.send_crdt(node_id, version)
+    }
 }
 
 /// Agente CRDT de sincronização de versões de memória.
@@ -100,6 +108,9 @@ pub struct CrdtMemorySync {
     /// Versões concorrentes preservadas (memória que LWW cego apagaria).
     /// Expostas para a camada superior resolver (multi-value, Doc 04 §2).
     pub conflicts: Vec<MemoryVersion>,
+    /// #10: deltas locais ainda NÃO entregues (versões desde o último sync).
+    /// Sync envia só o que cada peer ainda não viu (δ-CRDT).
+    pending: Vec<u64>,
     /// Último `now` em que sync foi executado (rate-limit); `None` = nunca.
     last_sync_at: Option<u64>,
     /// true quando ao menos um sync real aconteceu.
@@ -114,6 +125,7 @@ impl CrdtMemorySync {
             own_writes: 0,
             node_versions: Vec::new(),
             conflicts: Vec::new(),
+            pending: Vec::new(),
             last_sync_at: None,
             active: false,
         }
@@ -130,11 +142,17 @@ impl CrdtMemorySync {
         self.own_writes
     }
 
-    /// Marca uma mutação no banco local — incrementa a versão.
-    /// Chamar após cada escrita (remember_*, put, checkpoint).
+    /// Marca uma mutação no banco local — incrementa a versão e registra o
+    /// delta (#10). Chamar após cada escrita (remember_*, put, checkpoint).
     pub fn record_change(&mut self) {
         self.local_version = self.local_version.saturating_add(1);
         self.own_writes = self.own_writes.saturating_add(1);
+        self.pending.push(self.local_version);
+    }
+
+    /// Deltas locais ainda não entregues (diagnóstico/medição, #10).
+    pub fn pending_deltas(&self) -> usize {
+        self.pending.len()
     }
 
     /// Aplica uma versão recebida com veredicto explícito. Núcleo do merge.
@@ -208,7 +226,8 @@ impl CrdtMemorySync {
             }
         }
 
-        // (2) TX — rate-limit
+        // (2) TX — rate-limit + δ-CRDT: envia SÓ os deltas que cada peer ainda
+        // não viu (versão conhecida < delta), nunca a história completa.
         if let Some(last) = self.last_sync_at {
             if now.wrapping_sub(last) < SYNC_INTERVAL {
                 return Ok(());
@@ -216,6 +235,17 @@ impl CrdtMemorySync {
         }
         self.last_sync_at = Some(now);
         self.active = true;
+        let pending = core::mem::take(&mut self.pending);
+        for &v in &pending {
+            // precisa de delta se algum peer conhecido ainda não tem v, ou se
+            // não conhecemos peers (broadcast inicial)
+            let needs = self.node_versions.is_empty()
+                || self.node_versions.iter().any(|(_, k)| *k < v);
+            if needs {
+                transport.send_delta(self.node_id, v, &[])?;
+            }
+        }
+        // heartbeat agregado (paridade com a semântica antiga)
         transport.send_crdt(self.node_id, self.local_version)
     }
 
@@ -348,6 +378,56 @@ mod tests {
     #[test]
     fn demo_ok() {
         assert!(demo());
+    }
+
+    #[test]
+    fn delta_sync_sends_only_unseen() {
+        // #10: com o peer já convergido até v2, um sync envia SÓ os deltas
+        // > v2 (+heartbeat) — payload proporcional ao NÃO-visto, não à história.
+        #[derive(Default)]
+        struct Dt {
+            delta_calls: usize,
+            sent: Vec<(u8, u64)>,
+        }
+        impl Transport for Dt {
+            fn send_crdt(&mut self, n: u8, v: u64) -> Result<(), SgdbError> {
+                self.sent.push((n, v));
+                Ok(())
+            }
+            fn send_delta(&mut self, n: u8, v: u64, _p: &[u8]) -> Result<(), SgdbError> {
+                self.delta_calls += 1;
+                self.sent.push((n, v));
+                Ok(())
+            }
+            fn recv_crdt(&mut self) -> Vec<(u8, u64)> {
+                Vec::new()
+            }
+        }
+
+        // peer parcialmente convergido: conhece até v2
+        let mut a = CrdtMemorySync::new(1);
+        a.record_change(); // v1
+        a.record_change(); // v2
+        a.record_change(); // v3
+        a.node_versions.push((2, 2));
+        let mut t = Dt::default();
+        a.sync(0, &mut t).unwrap();
+        // medição: 3 deltas gravados, mas só v3 (não-visto pelo peer) é enviado
+        let deltas: Vec<u64> = t.sent.iter().filter(|(n, _)| *n == 1).map(|(_, v)| *v).collect();
+        assert_eq!(t.delta_calls, 1, "deveria enviar 1 delta (v3), não 3");
+        assert!(deltas.contains(&3) && !deltas.contains(&1) && !deltas.contains(&2));
+        // heartbeat agregado ainda vai (paridade)
+        assert!(t.sent.iter().any(|(_, v)| *v == 3));
+
+        // peer FRESCO (sem histórico): todos os deltas pendentes são enviados
+        let mut b = CrdtMemorySync::new(1);
+        b.record_change();
+        b.record_change();
+        let mut t2 = Dt::default();
+        b.sync(0, &mut t2).unwrap();
+        assert_eq!(t2.delta_calls, 2, "peer fresco recebe todos os deltas");
+        // após o sync, pendentes limpos
+        assert_eq!(b.pending_deltas(), 0);
     }
 
     #[test]

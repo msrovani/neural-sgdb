@@ -221,11 +221,123 @@ impl ArtIndex {
     }
 
     pub fn scan_prefix(&self, prefix: &str) -> Vec<(String, u64)> {
+        self.scan_prefix_stats(prefix).0
+    }
+
+    /// `scan_prefix` + contagem de nós visitados — diagnóstico/medição do
+    /// pruning de range (#2): um prefixo estreito deve visitar O(match+path),
+    /// não a árvore inteira.
+    pub fn scan_prefix_stats(&self, prefix: &str) -> (Vec<(String, u64)>, usize) {
         let mut out = Vec::new();
+        let mut visited = 0usize;
         if let Some(ref root) = self.root {
-            collect_prefix(root, prefix.as_bytes(), &mut out);
+            collect_prefix(root, prefix.as_bytes(), 0, &mut visited, &mut out);
         }
-        out
+        (out, visited)
+    }
+}
+
+/// true se `node_prefix` (path-compressed no nó) é consistente com o scan
+/// `prefix[depth..]` — se divergirem, NENHUMA folha abaixo pode casar (prune).
+fn path_matches(node_prefix: &[u8], prefix: &[u8], depth: usize) -> bool {
+    let sp = &prefix[depth.min(prefix.len())..];
+    let n = node_prefix.len().min(sp.len());
+    sp[..n] == node_prefix[..n]
+}
+
+/// Coleta folhas cuja chave começa com `prefix`, PODANDO subárvores cujo caminho
+/// diverge do prefixo (range-scan, #2). `depth` = bytes do prefixo já casados
+/// ao longo da descida; `visited` conta nós percorridos (diagnóstico).
+fn collect_prefix(
+    node: &Node,
+    prefix: &[u8],
+    depth: usize,
+    visited: &mut usize,
+    out: &mut Vec<(String, u64)>,
+) {
+    *visited += 1;
+    match node {
+        Node::Leaf { key, value } => {
+            if key.starts_with(prefix) {
+                if let Ok(s) = core::str::from_utf8(key) {
+                    out.push((String::from(s), *value));
+                }
+            }
+        }
+        Node::Inner4 {
+            prefix: p,
+            keys,
+            children,
+            n,
+            ..
+        } => {
+            if !path_matches(p, prefix, depth) {
+                return;
+            }
+            let d2 = depth + p.len();
+            for i in 0..*n as usize {
+                // só desce no filho cujo byte de borda segue no caminho do scan
+                if d2 >= prefix.len() || keys[i] == prefix[d2] {
+                    if let Some(ref c) = children[i] {
+                        collect_prefix(c, prefix, d2 + 1, visited, out);
+                    }
+                }
+            }
+        }
+        Node::Inner16 {
+            prefix: p,
+            keys,
+            children,
+            n,
+            ..
+        } => {
+            if !path_matches(p, prefix, depth) {
+                return;
+            }
+            let d2 = depth + p.len();
+            for i in 0..*n as usize {
+                if d2 >= prefix.len() || keys[i] == prefix[d2] {
+                    if let Some(ref c) = children[i] {
+                        collect_prefix(c, prefix, d2 + 1, visited, out);
+                    }
+                }
+            }
+        }
+        Node::Inner48 {
+            prefix: p,
+            keys,
+            children,
+            ..
+        } => {
+            if !path_matches(p, prefix, depth) {
+                return;
+            }
+            let d2 = depth + p.len();
+            for (byte, &idx) in keys.iter().enumerate() {
+                if idx != 0 && (d2 >= prefix.len() || byte as u8 == prefix[d2]) {
+                    if let Some(ref c) = children[idx as usize - 1] {
+                        collect_prefix(c, prefix, d2 + 1, visited, out);
+                    }
+                }
+            }
+        }
+        Node::Inner256 {
+            prefix: p,
+            children,
+            ..
+        } => {
+            if !path_matches(p, prefix, depth) {
+                return;
+            }
+            let d2 = depth + p.len();
+            for (byte, c) in children.iter().enumerate() {
+                if d2 >= prefix.len() || byte as u8 == prefix[d2] {
+                    if let Some(ref ch) = c {
+                        collect_prefix(ch, prefix, d2 + 1, visited, out);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -912,46 +1024,6 @@ fn insert_rec(node: Box<Node>, key: &[u8], depth: usize, value: u64, len: &mut u
     }
 }
 
-fn collect_prefix(node: &Node, prefix: &[u8], out: &mut Vec<(String, u64)>) {
-    match node {
-        Node::Leaf { key, value } => {
-            if key.starts_with(prefix) {
-                if let Ok(s) = core::str::from_utf8(key) {
-                    out.push((String::from(s), *value));
-                }
-            }
-        }
-        Node::Inner4 { children, n, .. } => {
-            for i in 0..*n as usize {
-                if let Some(ref c) = children[i] {
-                    collect_prefix(c, prefix, out);
-                }
-            }
-        }
-        Node::Inner16 { children, n, .. } => {
-            for i in 0..*n as usize {
-                if let Some(ref c) = children[i] {
-                    collect_prefix(c, prefix, out);
-                }
-            }
-        }
-        Node::Inner48 { children, n, .. } => {
-            for i in 0..*n as usize {
-                if let Some(ref c) = children[i] {
-                    collect_prefix(c, prefix, out);
-                }
-            }
-        }
-        Node::Inner256 { children, .. } => {
-            for c in children.iter() {
-                if let Some(ref ch) = c {
-                    collect_prefix(ch, prefix, out);
-                }
-            }
-        }
-    }
-}
-
 impl Default for ArtIndex {
     fn default() -> Self {
         Self::new()
@@ -1006,6 +1078,32 @@ mod tests {
         art.insert("novo", 42);
         assert_eq!(art.get("novo"), Some(42));
         assert_eq!(art.len, 1);
+    }
+
+    #[test]
+    fn art_range_pruning_visits_far_fewer_nodes() {
+        // #2: scan de um prefixo estreito deve PODAR subárvores cujo caminho
+        // diverge — visitar O(match+path), não a árvore inteira.
+        let mut art = ArtIndex::new();
+        for layer in ["md/L1/", "md/L2/", "md/L3/", "md/L4/"] {
+            for i in 0..25_000 {
+                art.insert(&format!("{layer}{i:06}"), i as u64);
+            }
+        }
+        assert_eq!(art.len, 100_000);
+        // correto: só a camada L3
+        let (l3, visited_l3) = art.scan_prefix_stats("md/L3/");
+        assert_eq!(l3.len(), 25_000);
+        assert!(l3.iter().all(|(k, _)| k.starts_with("md/L3/")));
+        // medição: 100k folhas, mas o pruning visita bem menos nós
+        let (all, visited_all) = art.scan_prefix_stats("md/");
+        assert_eq!(all.len(), 100_000);
+        assert!(visited_all >= all.len(), "scan amplo visita ao menos as folhas");
+        // o scan estreito visita uma fração pequena (path L3 + suas folhas)
+        assert!(
+            visited_l3 <= visited_all / 3,
+            "pruning fraco: visited_l3={visited_l3} de {visited_all}"
+        );
     }
 
     #[test]

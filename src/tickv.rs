@@ -439,6 +439,24 @@ impl TickvFile {
         Ok(())
     }
 
+    /// Invalida um record antigo IN-PLACE (`magic[3] = 0` → `TKL\0`, parity
+    /// com o overwrite do OS): o dead-space fica detectável por header, o
+    /// `scan_volume` pula sem CRC e a contabilidade de espaço é honesta.
+    /// #6 — o novo record (ou tombstone) é append depois.
+    fn invalidate_in_place(&mut self, off: u64) -> Result<(), crate::storage::SgdbError> {
+        use std::io::{Seek, SeekFrom, Write};
+        let mut f = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&self.path)
+            .map_err(|_| crate::storage::SgdbError::Storage("open invalidate"))?;
+        f.seek(SeekFrom::Start(off + 3))
+            .map_err(|_| crate::storage::SgdbError::Storage("seek invalidate"))?;
+        f.write_all(&[0u8])
+            .map_err(|_| crate::storage::SgdbError::Storage("write invalidate"))?;
+        f.flush().map_err(|_| crate::storage::SgdbError::Storage("flush invalidate"))
+    }
+
     /// Append de record; retorna o offset onde o record começou (para o
     /// índice de offsets / ckpt). `append_off` = offset físico corrente.
     fn append(&mut self, key: &[u8], val: &[u8]) -> Result<u64, crate::storage::SgdbError> {
@@ -467,8 +485,13 @@ impl crate::storage::Storage for TickvFile {
         if key.len() > MAX_KLEN || val.len() > MAX_VLEN {
             return Err(crate::storage::SgdbError::Storage("tickv limits"));
         }
-        let off = self.append(key, val)?;
         let ks = String::from_utf8_lossy(key).into_owned();
+        // #6: invalida o record anterior IN-PLACE (TKL\0) antes do append —
+        // o valor antigo vira dead-space detectável, nunca ressuscita
+        if let Some(&old_off) = self.offsets.get(&ks) {
+            self.invalidate_in_place(old_off)?;
+        }
+        let off = self.append(key, val)?;
         // Valor vazio == tombstone no volume (vlen=0, idêntico ao delete) — o
         // mapa deve espelhar o mesmo (bughunt #11): put(k, &[]) não pode
         // devolver Some([]) em sessão e None após reopen.
@@ -498,8 +521,12 @@ impl crate::storage::Storage for TickvFile {
         Ok(out)
     }
     fn delete(&mut self, key: &[u8]) -> Result<(), crate::storage::SgdbError> {
-        self.append(key, &[])?; // tombstone vlen=0 (paridade OS)
         let ks = String::from_utf8_lossy(key).into_owned();
+        // #6: invalida o record vigente in-place antes do tombstone por append
+        if let Some(&old_off) = self.offsets.get(&ks) {
+            self.invalidate_in_place(old_off)?;
+        }
+        self.append(key, &[])?; // tombstone vlen=0 (paridade OS)
         self.map.remove(&ks);
         self.offsets.remove(&ks);
         Ok(())
@@ -677,6 +704,45 @@ mod tests {
     fn fnv1a64_known_vector() {
         // Vetor FNV-1a 64 conhecido: fnv1a64("a") = 0xaf63dc4c8601ec8c
         assert_eq!(fnv1a64(b"a"), 0xaf63_dc4c_8601_ec8c);
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn tickvfile_put_invalidates_old_record_in_place() {
+        // #6: overwrite invalida o record anterior IN-PLACE (magic[3] 'V'→0),
+        // tornando o dead-space detectável por header (TKL\0) sem ressuscitar.
+        let dir = std::env::temp_dir().join("neural_sgdb_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("tickv_inplace.db");
+        let _ = std::fs::remove_file(&path);
+        {
+            let mut s = TickvFile::open(&path).unwrap();
+            s.put(b"k", b"v1").unwrap();
+            let old_off = *s.offsets.get("k").unwrap();
+            s.put(b"k", b"v2").unwrap();
+            // o record antigo (em old_off) foi invalidado in-place
+            let raw = std::fs::read(&path).unwrap();
+            assert_eq!(
+                &raw[old_off as usize..old_off as usize + 4],
+                b"TKL\x00",
+                "magic[3] do record antigo deveria ser 0 (TKL\\0)"
+            );
+            // delete também invalida o vigente (em 512) antes do tombstone
+            let v2_off = *s.offsets.get("k").unwrap();
+            s.delete(b"k").unwrap();
+            let raw2 = std::fs::read(&path).unwrap();
+            assert_eq!(
+                &raw2[v2_off as usize..v2_off as usize + 4],
+                b"TKL\x00",
+                "delete deveria invalidar o vigente in-place"
+            );
+        }
+        {
+            // reopen: last-wins v2 não ressuscita v1 (TKL\0 pulado pelo scan)
+            let mut s = TickvFile::open(&path).unwrap();
+            assert!(s.get(b"k").unwrap().is_none()); // deletado
+        }
+        let _ = std::fs::remove_file(&path);
     }
 
     #[cfg(feature = "file-storage")]
