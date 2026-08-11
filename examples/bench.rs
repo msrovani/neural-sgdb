@@ -14,7 +14,8 @@ use neural_sgdb::art::ArtIndex;
 use neural_sgdb::bq::BqFlatIndex;
 use neural_sgdb::hamming_dispatch::{select_best_hamming_kernel, path_name};
 use neural_sgdb::storage::crc32;
-use neural_sgdb::{InMemory, Sgdb};
+use neural_sgdb::{InMemory, Sgdb, TickvFile};
+use neural_sgdb::Storage as _;
 
 /// P50/P99 de um conjunto de amostras (já preenchido, ordenado na cópia).
 fn percentiles(mut samples: Vec<Duration>) -> (Duration, Duration) {
@@ -154,6 +155,41 @@ fn main() {
     println!(
         "crc32   1MiB x100       : {per:?} avg  {:.0} MiB/s (acc={acc:08x})",
         1.0 / per.as_secs_f64()
+    );
+
+    // ── TickvFile: open fast-mount (ckpt TKCK) vs full-scan — sob CHURN ────
+    // Cenário onde o ckpt compensa: 20k puts + 15k deletes (tombstones) →
+    // volume com 35k records, live set de 5k. O ckpt indexa só os vivos; o
+    // fast-mount não re-processa os 15k tombstones (o full-scan faz).
+    const TV_N: usize = 20_000;
+    let tv_path = std::env::temp_dir().join("neural_sgdb_bench_tickv.db");
+    let _ = std::fs::remove_file(&tv_path);
+    {
+        let mut tv = TickvFile::open(&tv_path).unwrap();
+        for i in 0..TV_N {
+            tv.put(format!("md/L2/{i:06}").as_bytes(), b"payload").unwrap();
+            if i % 4 != 0 {
+                tv.delete(format!("md/L2/{i:06}").as_bytes()).unwrap(); // 15k tombstones
+            }
+        }
+        tv.checkpoint().unwrap(); // ckpt indexa apenas os 5k vivos
+    }
+    let _ = TickvFile::open(&tv_path).unwrap(); // warm
+    let t0 = Instant::now();
+    drop(TickvFile::open(&tv_path).unwrap());
+    let fast_mount = t0.elapsed();
+    // torna o ckpt stale (append pós-ckpt) → open cai em scan completo
+    {
+        let mut tv = TickvFile::open(&tv_path).unwrap();
+        tv.put(b"stale/marker", b"1").unwrap();
+    }
+    let t0 = Instant::now();
+    drop(TickvFile::open(&tv_path).unwrap());
+    let full_scan = t0.elapsed();
+    let _ = std::fs::remove_file(&tv_path);
+    println!(
+        "tickv open (churn: 35k recs, 5k live) : fast-mount(ckpt)={fast_mount:?}  full-scan(stale)={full_scan:?}  ({:.1}x)",
+        full_scan.as_secs_f64() / fast_mount.as_secs_f64().max(1e-9)
     );
 
     // ── End-to-end Sgdb (demo do uso real) ─────────────────────────────────

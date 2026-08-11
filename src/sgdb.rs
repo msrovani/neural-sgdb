@@ -223,11 +223,26 @@ impl Sgdb {
     /// Sort pelo score bruto u32 (paridade com o OS: fp32 ∈ 0..10000 vs ham ∈
     /// 0..64 convivem no mesmo espaço de ordenação — layers.rs:108-118).
     pub fn recall(&mut self, query: &[f32], k: usize) -> Result<Vec<Hit>, SgdbError> {
+        self.recall_oversampled(query, k, 4)
+    }
+
+    /// Recall com **oversampling** configurável (pesquisa upstream Qdrant/BQ):
+    /// busca `oversample*k` candidatos Hamming no filtro grosseiro BQ e rescora
+    /// FP32 — ~0.98–0.99 de recall com 2–4x oversample (vs `k*4` fixo). Com
+    /// dims baixas (ex: 16) o filtro BQ colide em bits e o match exato escapa
+    /// do top-k pequeno; aumentar o oversample recupera sem mudar o formato.
+    /// `oversample >= 1`; `recall()` delega com oversample=4 (compatível).
+    pub fn recall_oversampled(
+        &mut self,
+        query: &[f32],
+        k: usize,
+        oversample: usize,
+    ) -> Result<Vec<Hit>, SgdbError> {
         if query.is_empty() {
             return Ok(Vec::new());
         }
         let k = k.max(1);
-        let cand = k * 4; // k>=1 ⇒ k*4 ≥ k, o .max(k) era redundante
+        let cand = k.saturating_mul(oversample.max(1));
         let hits = self.engine.bq_top_k_f32(query, cand);
         // Distância Hamming máxima de um vetor indexado (normaliza o fallback
         // p/ escala 0..1 do contrato de `Hit.dist` — bughunt #11).
@@ -282,6 +297,30 @@ impl Sgdb {
         let mut ranked: Vec<(u32, Hit)> = best.into_values().collect();
         ranked.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.key.cmp(&b.1.key)));
         Ok(ranked.into_iter().take(k).map(|(_, h)| h).collect())
+    }
+
+    /// Conveniência RAG com oversample explícito.
+    pub fn rag_context_oversampled(
+        &mut self,
+        query: &[f32],
+        k: usize,
+        oversample: usize,
+    ) -> Result<String, SgdbError> {
+        let hits = self.recall_oversampled(query, k, oversample)?;
+        if hits.is_empty() {
+            return Ok(String::new());
+        }
+        let mut out = format!("[SGDB-RAG top-{}]\n", hits.len());
+        for (i, h) in hits.iter().enumerate() {
+            if h.text.is_empty() {
+                continue;
+            }
+            out.push_str(&format!("  #{}) d={:.4} {}\n", i + 1, h.dist, clamp(&h.text, 200)));
+        }
+        if out.len() <= "[SGDB-RAG top-".len() {
+            return Ok(String::new());
+        }
+        Ok(out)
     }
 
     /// RAG context: recall + fetch payload + formato string pro prompt.
@@ -513,6 +552,46 @@ mod tests {
             assert_eq!(x.key, y.key, "ordem não determinística");
             assert_eq!(x.dist.to_bits(), y.dist.to_bits());
         }
+    }
+
+    #[test]
+    fn recall_oversample_recovers_exact_on_low_dims() {
+        // Com dims baixas (16) o filtro BQ colide em bits e o match exato pode
+        // escapar do top-k pequeno (visto no stress: exact@1 ≈ 42% com 100k
+        // docs). Oversampling maior amplia o pool de candidatos Hamming antes
+        // do rescore FP32 — recupera o exato sem mudar o formato dos bitvecs.
+        let emb16 = |seed: u64| -> Vec<f32> {
+            let mut s = seed.wrapping_mul(1103515245).wrapping_add(12345);
+            let mut v = Vec::with_capacity(16);
+            for _ in 0..16 {
+                s = s.wrapping_mul(1103515245).wrapping_add(12345);
+                v.push(((s >> 32) as i32 % 200) as f32 / 100.0 - 1.0);
+            }
+            v
+        };
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        for i in 0..2000 {
+            db.remember_semantic(&format!("d{i}"), &format!("doc {i}"), &emb16(i as u64))
+                .unwrap();
+        }
+        let mut exact_small = 0usize;
+        let mut exact_large = 0usize;
+        for i in (0..2000).step_by(7) {
+            let v = emb16(i as u64);
+            if db.recall(&v, 1).unwrap().first().map(|h| h.dist == 0.0).unwrap_or(false) {
+                exact_small += 1;
+            }
+            if db.recall_oversampled(&v, 1, 64).unwrap().first().map(|h| h.dist == 0.0).unwrap_or(false) {
+                exact_large += 1;
+            }
+        }
+        // oversample=4 (recall) é lossy em dims baixas; oversample=64 recupera
+        // (grupos de colisão são ~1-2 docs em 2^16 padrões → 64 cobre todos)
+        assert!(
+            exact_large > exact_small,
+            "oversample deveria melhorar exact: small={exact_small} large={exact_large}"
+        );
+        assert_eq!(exact_large, 286, "com 64x o match exato deve sempre vencer");
     }
 
     #[test]

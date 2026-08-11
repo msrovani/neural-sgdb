@@ -33,6 +33,25 @@ All notable changes to this project. Format based on
   raw distance in `0..64` while `Hit.dist` documents `1−cos` on `0..1`; it is
   now normalized by `words_per_vec × 64`.
 
+### Added
+- **`Sgdb::recall_oversampled(query, k, oversample)`** (upstream BQ/Qdrant): the
+  coarse Hamming filter now fetches `oversample·k` candidates before the FP32
+  rescore. With low-dim embeddings the BQ filter collides on bits and the exact
+  match escapes a small top-k (stress measured exact@1 ≈ 42% at 100k × 16-dim);
+  raising the oversample recovers it **without any format change**. `recall()`
+  delegates with oversample=4 (unchanged behavior); `rag_context_oversampled`
+  added. Test: exact match recovers at 64× on low dims.
+- **`TickvFile::checkpoint()` + fast-mount TKCK** (OS TickvLite parity, roadmap
+  v0.1 gap): `checkpoint()` writes the `sys/tickv_ckpt` record (TKCK,
+  byte-identical to the OS) as the LAST record; `open()` now tries
+  `try_mount_from_ckpt` (header-only scan, FNV-1a index verification, per-entry
+  CRC + `TKL V` stale check, ckpt-must-be-last guard) and falls back to the
+  full `scan_volume` on any anomaly (torn/stale ckpt, post-ckpt appends).
+  `ScanResult` gains `offsets` + `append_off`. Bench (churn, 35k recs / 5k
+  live): fast-mount 14.8ms vs full-scan 43.2ms (**~2.9x**); in an all-live
+  volume both read the same bytes so it's parity — the win is not re-processing
+  tombstones/dead records. Torn ckpt degrades to the previous-mount semantics.
+
 ### Performance
 - **Hamming dispatch hot path**: `ensure_selected()` used a `SELECTED.swap(true)`
   (locked RMW) on **every** `hamming()` call — it dominated short-vector scans.

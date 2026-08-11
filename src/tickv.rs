@@ -138,6 +138,12 @@ pub struct ScanResult {
     pub corrupt: u64,
     /// True se a varredura parou por cauda truncada (record fora dos limites).
     pub truncated: bool,
+    /// Offset do record vigente (last-wins) de cada chave viva — alimenta o
+    /// checkpoint TKCK e o fast-mount (paridade com o índice do OS).
+    pub offsets: BTreeMap<String, u64>,
+    /// `append_off`: fim do último record válido processado (máx off+total) —
+    /// onde os próximos appends devem começar; cauda além disso é não-válida.
+    pub append_off: u64,
 }
 
 /// Verdadeiro se o header tem forma de tickv (`TKL` + 'V' | 1 | 0).
@@ -183,6 +189,7 @@ pub fn scan_volume(data: &[u8]) -> ScanResult {
         // Tombstone in-place (`TKL\0`): o OS invalida magic[3]=0 preservando
         // klen/vlen/crc/body — pula SEM indexar e SEM checar CRC (recover).
         if hdr[3] == 0 {
+            out.append_off = out.append_off.max(off + total);
             off += total;
             continue;
         }
@@ -193,12 +200,16 @@ pub fn scan_volume(data: &[u8]) -> ScanResult {
             off = (off + 512) & !511;
             continue;
         }
+        // record confiável (vivo ou tombstone por append) — estende append_off
+        out.append_off = out.append_off.max(off + total);
         if let Ok(key) = core::str::from_utf8(&body[..klen]) {
             let val = body[klen..].to_vec();
             if vlen == 0 {
                 out.map.remove(key); // tombstone por append
+                out.offsets.remove(key);
             } else {
                 out.map.insert(String::from(key), val); // last-wins
+                out.offsets.insert(String::from(key), off);
             }
         } else {
             out.corrupt += 1;
@@ -214,34 +225,186 @@ pub fn scan_volume(data: &[u8]) -> ScanResult {
     out
 }
 
+/// Tenta montar o índice via checkpoint TKCK (fast-mount, port do
+/// `try_mount_from_ckpt` do OS). Semântica: varre SÓ headers, acha o ÚLTIMO
+/// record `sys/tickv_ckpt`, valida magic `TKCK` + FNV do índice + integridade
+/// de cada entrada (header `TKL V` não-stale, CRC, key bate) e que o ckpt é o
+/// ÚLTIMO record do volume (nada além dele, senão está stale e o mount completo
+/// é necessário). Qualquer anomalia → `None` → fallback `scan_volume`.
+#[cfg(feature = "file-storage")]
+fn try_mount_from_ckpt(data: &[u8]) -> Option<(BTreeMap<String, Vec<u8>>, BTreeMap<String, u64>, u64)> {
+    let size = data.len() as u64;
+    let mut off = 0u64;
+    let mut ckpt: Option<(u64, u64, Vec<u8>)> = None; // (off, end, body)
+    while off + HEADER as u64 <= size {
+        let hdr = &data[off as usize..off as usize + HEADER];
+        if !hdr_shaped(hdr) {
+            if hdr.iter().all(|&b| b == 0 || b == 0xFF) {
+                break; // EOF
+            }
+            off = (off + 512) & !511;
+            continue;
+        }
+        let klen = le32(&hdr[4..8]).unwrap_or(0) as usize;
+        let vlen = le32(&hdr[8..12]).unwrap_or(0) as usize;
+        if klen > MAX_KLEN || vlen > MAX_VLEN {
+            off = (off + 512) & !511;
+            continue;
+        }
+        let total = record_size(klen, vlen) as u64;
+        if off + total > size {
+            break;
+        }
+        if hdr[3] == 0 {
+            off += total;
+            continue;
+        }
+        let body = &data[off as usize + HEADER..off as usize + HEADER + klen + vlen];
+        if crc32(body) != le32(&hdr[12..16]).unwrap_or(0) {
+            off = (off + 512) & !511;
+            continue;
+        }
+        if let Ok(key) = core::str::from_utf8(&body[..klen]) {
+            if key == CKPT_KEY {
+                ckpt = Some((off, off + total, body[klen..].to_vec()));
+            }
+        }
+        off += total;
+    }
+    let (ckpt_off, ckpt_end, body) = ckpt?;
+    // o ckpt só é válido se for o ÚLTIMO record do volume (nada após além de
+    // zeros/0xFF de EOF) — senão há appends posteriores não indexados (stale)
+    if !data[ckpt_end as usize..].iter().all(|&b| b == 0 || b == 0xFF) {
+        return None;
+    }
+    if body.len() < 24 || &body[0..4] != b"TKCK" {
+        return None;
+    }
+    let stored_hash = u64::from_le_bytes(body[12..20].try_into().ok()?);
+    let n = u32::from_le_bytes(body[20..24].try_into().ok()?) as usize;
+    let mut off2 = 24usize;
+    let mut entries: Vec<(String, u64)> = Vec::with_capacity(n);
+    for _ in 0..n {
+        if off2 + 2 > body.len() {
+            return None;
+        }
+        let klen = u16::from_le_bytes(body[off2..off2 + 2].try_into().ok()?) as usize;
+        off2 += 2;
+        if off2 + klen + 8 > body.len() {
+            return None;
+        }
+        let key = core::str::from_utf8(&body[off2..off2 + klen]).ok()?;
+        let rec_off = u64::from_le_bytes(body[off2 + klen..off2 + klen + 8].try_into().ok()?);
+        off2 += klen + 8;
+        entries.push((String::from(key), rec_off));
+    }
+    // FNV-1a do índice (bit-rot/tamper no índice detectado — não só no valor)
+    if fnv1a64_entries(&entries) != stored_hash {
+        return None;
+    }
+    let mut map = BTreeMap::new();
+    let mut offsets = BTreeMap::new();
+    // append_off = fim do record do ckpt (que é o último): os próximos appends
+    // vão DEPOIS do ckpt. O `append_off` gravado no corpo é o pré-ckpt (onde o
+    // ckpt começa); recomputar por ckpt_end mantém o ckpt intacto.
+    let mut append_off = ckpt_end;
+    for (key, rec_off) in &entries {
+        let r = *rec_off as usize;
+        if r + HEADER > data.len() || rec_off >= &ckpt_off {
+            return None; // entrada aponta para além/antes do ckpt — suspeita
+        }
+        let hdr = &data[r..r + HEADER];
+        // stale check: header do record referenciado ainda `TKL V` (não-TKL\0)
+        if &hdr[0..3] != MAGIC_PREFIX || hdr[3] != b'V' {
+            return None;
+        }
+        let klen = le32(&hdr[4..8])? as usize;
+        let vlen = le32(&hdr[8..12])? as usize;
+        let total = record_size(klen, vlen) as u64;
+        if klen > MAX_KLEN || vlen > MAX_VLEN || vlen == 0 || rec_off + total > size {
+            return None;
+        }
+        let body = &data[r + HEADER..r + HEADER + klen + vlen];
+        if crc32(body) != le32(&hdr[12..16])? {
+            return None;
+        }
+        if core::str::from_utf8(&body[..klen]).ok()? != key {
+            return None;
+        }
+        map.insert(key.clone(), body[klen..].to_vec());
+        offsets.insert(key.clone(), *rec_off);
+        append_off = append_off.max(*rec_off + total);
+    }
+    Some((map, offsets, append_off))
+}
+
 /// Backend `Storage` com formato TKLV byte-exato (legível pelo OS).
 ///
-/// - `open`: lê o arquivo e reconstrói o índice com `scan_volume`.
+/// - `open`: fast-mount via checkpoint `sys/tickv_ckpt` (TKCK) com fallback
+///   para `scan_volume` (varredura completa) em qualquer anomalia.
 /// - `put`: append de record TKLV (512-alinhado, CRC sobre key‖val).
 /// - `delete`: append de record com `vlen = 0` (tombstone que o OS reconhece).
-/// - **Não escreve checkpoint** (v0.1): o OS monta por scan completo.
+/// - `checkpoint()`: grava o record `sys/tickv_ckpt` (TKCK byte-idêntico ao
+///   OS) como ÚLTIMO record — habilita fast-mount no próximo open.
 #[cfg(feature = "file-storage")]
 pub struct TickvFile {
     path: std::path::PathBuf,
     map: BTreeMap<String, Vec<u8>>,
+    offsets: BTreeMap<String, u64>,
+    append_off: u64,
 }
 
 #[cfg(feature = "file-storage")]
 impl TickvFile {
     pub fn open(path: impl AsRef<std::path::Path>) -> std::io::Result<Self> {
         let path = path.as_ref().to_path_buf();
-        let map = if path.exists() {
+        let (map, offsets, append_off) = if path.exists() {
             let data = std::fs::read(&path)?;
-            scan_volume(&data).map
+            match try_mount_from_ckpt(&data) {
+                Some(m) => m,
+                None => {
+                    let scan = scan_volume(&data);
+                    let append_off = scan.append_off;
+                    // cauda além do último record válido (zeros/torn/corrupt):
+                    // trunca p/ manter o volume limpo e appends em append_off
+                    if (data.len() as u64) > append_off {
+                        use std::io::{Seek, SeekFrom};
+                        let mut f = std::fs::OpenOptions::new()
+                            .write(true)
+                            .open(&path)?;
+                        f.seek(SeekFrom::Start(append_off))?;
+                        f.set_len(append_off)?;
+                    }
+                    (scan.map, scan.offsets, append_off)
+                }
+            }
         } else {
-            BTreeMap::new()
+            (BTreeMap::new(), BTreeMap::new(), 0)
         };
-        Ok(TickvFile { path, map })
+        Ok(TickvFile { path, map, offsets, append_off })
     }
 
-    fn append(&mut self, key: &[u8], val: &[u8]) -> Result<(), crate::storage::SgdbError> {
+    /// Grava checkpoint TKCK (`sys/tickv_ckpt`) como último record do volume.
+    /// Após chamar, o próximo `open()` monta por fast-mount em vez de varredura
+    /// completa. Um put/delete posterior torna o ckpt stale (não é mais o
+    /// último record) e o open volta ao fallback seguro.
+    pub fn checkpoint(&mut self) -> Result<(), crate::storage::SgdbError> {
+        let entries: Vec<(String, u64)> = self
+            .offsets
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
+            .collect();
+        let body = encode_ckpt(self.append_off, &entries);
+        self.append(CKPT_KEY.as_bytes(), &body)?;
+        Ok(())
+    }
+
+    /// Append de record; retorna o offset onde o record começou (para o
+    /// índice de offsets / ckpt). `append_off` = offset físico corrente.
+    fn append(&mut self, key: &[u8], val: &[u8]) -> Result<u64, crate::storage::SgdbError> {
         use std::io::Write;
         let rec = encode_record(key, val);
+        let off = self.append_off;
         let mut f = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -249,7 +412,9 @@ impl TickvFile {
             .map_err(|_| crate::storage::SgdbError::Storage("open append"))?;
         f.write_all(&rec)
             .map_err(|_| crate::storage::SgdbError::Storage("write"))?;
-        f.flush().map_err(|_| crate::storage::SgdbError::Storage("flush"))
+        f.flush().map_err(|_| crate::storage::SgdbError::Storage("flush"))?;
+        self.append_off += rec.len() as u64;
+        Ok(off)
     }
 }
 
@@ -262,15 +427,17 @@ impl crate::storage::Storage for TickvFile {
         if key.len() > MAX_KLEN || val.len() > MAX_VLEN {
             return Err(crate::storage::SgdbError::Storage("tickv limits"));
         }
-        self.append(key, val)?;
+        let off = self.append(key, val)?;
+        let ks = String::from_utf8_lossy(key).into_owned();
         // Valor vazio == tombstone no volume (vlen=0, idêntico ao delete) — o
         // mapa deve espelhar o mesmo (bughunt #11): put(k, &[]) não pode
         // devolver Some([]) em sessão e None após reopen.
         if val.is_empty() {
-            self.map.remove(&String::from_utf8_lossy(key).into_owned());
+            self.map.remove(&ks);
+            self.offsets.remove(&ks);
         } else {
-            self.map
-                .insert(String::from_utf8_lossy(key).into_owned(), val.to_vec());
+            self.offsets.insert(ks.clone(), off);
+            self.map.insert(ks, val.to_vec());
         }
         Ok(())
     }
@@ -292,7 +459,9 @@ impl crate::storage::Storage for TickvFile {
     }
     fn delete(&mut self, key: &[u8]) -> Result<(), crate::storage::SgdbError> {
         self.append(key, &[])?; // tombstone vlen=0 (paridade OS)
-        self.map.remove(&String::from_utf8_lossy(key).into_owned());
+        let ks = String::from_utf8_lossy(key).into_owned();
+        self.map.remove(&ks);
+        self.offsets.remove(&ks);
         Ok(())
     }
 }
@@ -538,6 +707,98 @@ mod tests {
         assert_eq!(scan.corrupt, 0);
         assert_eq!(scan.map.get("a").map(|v| v.as_slice()), Some(&b"1"[..]));
         assert_eq!(scan.map.get("b").map(|v| v.as_slice()), Some(&b"22"[..]));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn tickvfile_checkpoint_fast_mount_roundtrip() {
+        // checkpoint() grava TKCK como ÚLTIMO record → open() monta por
+        // fast-mount (sem varredura completa) e preserva mapa+offsets.
+        let dir = std::env::temp_dir().join("neural_sgdb_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("tickv_ckpt.db");
+        let _ = std::fs::remove_file(&path);
+        {
+            let mut s = TickvFile::open(&path).unwrap();
+            for i in 0..100 {
+                s.put(format!("k/{i:03}").as_bytes(), format!("v{i}").as_bytes()).unwrap();
+            }
+            s.delete(b"k/000").unwrap();
+            s.checkpoint().unwrap();
+            let raw = std::fs::read(&path).unwrap();
+            assert_eq!(raw.len() % 512, 0);
+            // o ckpt é o último record → o fast-mount DEVE funcionar (Some)
+            let (m, o, a) = try_mount_from_ckpt(&raw).expect("ckpt deveria permitir fast-mount");
+            assert_eq!(o.len(), 99);
+            assert_eq!(m.len(), 99);
+            assert_eq!(a as usize, raw.len());
+        }
+        {
+            let mut s = TickvFile::open(&path).unwrap();
+            // fast-mount: offsets preenchidos e append_off = tamanho do arquivo
+            assert_eq!(s.offsets.len(), 99);
+            assert!(s.get(b"k/001").unwrap().is_some());
+            assert!(s.get(b"k/000").unwrap().is_none()); // tombstone
+            // append pós-fast-mount não corrompe nada
+            s.put(b"k/999", b"v999").unwrap();
+            s.checkpoint().unwrap();
+        }
+        {
+            let mut s = TickvFile::open(&path).unwrap();
+            assert_eq!(s.get(b"k/999").unwrap(), Some(b"v999".to_vec()));
+            assert!(s.get(b"k/001").unwrap().is_some());
+            assert_eq!(s.map.len(), 100);
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn tickvfile_ckpt_stale_falls_back_to_full_scan() {
+        // records gravados DEPOIS do ckpt tornam o ckpt stale (não é o último
+        // record) → open() cai no scan completo e NÃO perde os appends novos.
+        let dir = std::env::temp_dir().join("neural_sgdb_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("tickv_stale.db");
+        let _ = std::fs::remove_file(&path);
+        {
+            let mut s = TickvFile::open(&path).unwrap();
+            s.put(b"a", b"1").unwrap();
+            s.checkpoint().unwrap();
+            s.put(b"b", b"2").unwrap(); // apaga o "ckpt é último" — stale
+        }
+        {
+            let mut s = TickvFile::open(&path).unwrap();
+            assert_eq!(s.get(b"a").unwrap(), Some(b"1".to_vec()));
+            assert_eq!(s.get(b"b").unwrap(), Some(b"2".to_vec()));
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn tickvfile_torn_ckpt_falls_back_to_full_scan() {
+        // ckpt corrompido (CRC/torn) → fast-mount falha → scan completo, dados
+        // anteriores intactos (mesma semântica de crash-atomicidade do OS).
+        let dir = std::env::temp_dir().join("neural_sgdb_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("tickv_torn.db");
+        let _ = std::fs::remove_file(&path);
+        {
+            let mut s = TickvFile::open(&path).unwrap();
+            s.put(b"a", b"1").unwrap();
+            s.checkpoint().unwrap();
+        }
+        // corrompe o corpo do ckpt (último record)
+        let mut raw = std::fs::read(&path).unwrap();
+        let n = raw.len();
+        raw[n - 10] ^= 0xFF;
+        std::fs::write(&path, &raw).unwrap();
+        {
+            let mut s = TickvFile::open(&path).unwrap();
+            assert_eq!(s.get(b"a").unwrap(), Some(b"1".to_vec()));
+        }
         let _ = std::fs::remove_file(&path);
     }
 
