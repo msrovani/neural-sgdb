@@ -33,6 +33,16 @@ All notable changes to this project. Format based on
   raw distance in `0..64` while `Hit.dist` documents `1−cos` on `0..1`; it is
   now normalized by `words_per_vec × 64`.
 
+### Performance
+- **FileStorage append with a persistent lazy handle**: `put`/`delete` no
+  longer open+close the file on every write (one `CreateFile`+`CloseHandle`
+  syscall pair per op). Measured (stress 100k, release): `Storage::put` raw
+  185µs → **4.8µs** (~38x), `remember_semantic` 422µs → **22µs** (~19x),
+  `remember_exchange` 201µs → 8.4µs (~24x). The handle opens on first append
+  and is closed before `compact()`'s atomic rename (reopened lazily) — writes
+  after compaction always target the new file. `open()` stays O(file) without
+  extra syscalls (no regression on open/close stress).
+
 ### Planned (v0.3+)
 - CRDT per-layer merge policy (roadmap): LWW for config/state, multi-value
   register for episodic, causal merge via VectorClock (`docs/api.md`)

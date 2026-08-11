@@ -143,6 +143,11 @@ pub fn crc32(data: &[u8]) -> u32 {
 pub struct FileStorage {
     path: std::path::PathBuf,
     map: BTreeMap<Vec<u8>, Vec<u8>>,
+    /// Handle de append persistente e LAZY (perf): evita abrir+fechar o
+    /// arquivo em CADA put — medido ~422µs/op vs ~8µs InMemory antes. Abre no
+    /// primeiro `append`; `None` antes do primeiro put e durante `compact()`
+    /// (fechado antes do rename — não apontar para inode/objeto antigo).
+    file: Option<std::fs::File>,
 }
 
 #[cfg(feature = "file-storage")]
@@ -247,7 +252,10 @@ impl FileStorage {
                 f.set_len(valid_end as u64)?;
             }
         }
-        Ok(FileStorage { path, map })
+        // Handle de append é LAZY (abre no primeiro append): manter o open()
+        // sem custo extra de syscall — open/close estressado não paga um
+        // CreateFile que não usará (medido 404µs→585µs com open eager).
+        Ok(FileStorage { path, map, file: None })
     }
 
     fn append(&mut self, key: &[u8], val: &[u8]) -> Result<(), SgdbError> {
@@ -274,11 +282,18 @@ impl FileStorage {
         buf.extend_from_slice(&crc32(&kv).to_le_bytes());
         buf.extend_from_slice(key);
         buf.extend_from_slice(val);
-        let mut f = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
-            .map_err(|_| SgdbError::Storage("open append"))?;
+        // append(true) => cada write_all vai ao fim do arquivo (O_APPEND /
+        // FILE_APPEND_DATA); flush em File é no-op (dados já no OS).
+        if self.file.is_none() {
+            self.file = Some(
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&self.path)
+                    .map_err(|_| SgdbError::Storage("open append"))?,
+            );
+        }
+        let f = self.file.as_mut().unwrap();
         f.write_all(&buf)
             .map_err(|_| SgdbError::Storage("write"))?;
         f.flush().map_err(|_| SgdbError::Storage("flush"))
@@ -317,6 +332,11 @@ impl FileStorage {
         }
         f.flush().map_err(|_| SgdbError::Storage("compact flush"))?;
         drop(f);
+        // Fecha o handle persistente ANTES do rename: com um handle aberto,
+        // escrever no inode/objeto antigo pós-rename seria perda de dados
+        // (Unix: inode órfão; Windows: objeto trocado). Reabre LAZY no próximo
+        // append (agora no novo arquivo).
+        self.file = None;
         // troca atômica: rename sobre o original (Windows: MoveFileEx replace)
         std::fs::rename(&tmp, &self.path)
             .map_err(|_| SgdbError::Storage("compact rename"))
