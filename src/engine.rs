@@ -50,6 +50,37 @@ fn meta_key(sk: &str) -> Vec<u8> {
     k
 }
 
+/// Índice reverso do DAG causal (`sys/version/<version_id>` → `[sklen u16 +
+/// storage key | MemoryMeta da PRÓPRIA versão]`, v0.7 Phase 3). Permite
+/// resolver um parent causal (version_id) de volta à meta DAQUELE VERSÃO
+/// (não à meta corrente da chave — essencial para lineage em overwrites de
+/// mesma chave) — base de `Sgdb::lineage` e do `explain`. Deriva da meta
+/// (escrito em `persist_meta`/`ensure_meta`, reconstruído no rebuild) —
+/// nunca fonte de verdade, sempre derivado.
+fn version_key(vid: &str) -> Vec<u8> {
+    let mut k = Vec::with_capacity(12 + vid.len());
+    k.extend_from_slice(b"sys/version/");
+    k.extend_from_slice(vid.as_bytes());
+    k
+}
+
+fn encode_version_entry(sk: &str, m: &MemoryMeta) -> Vec<u8> {
+    let mut out = Vec::with_capacity(4 + sk.len() + m.encode().len());
+    out.extend_from_slice(&(sk.len() as u16).to_le_bytes());
+    out.extend_from_slice(sk.as_bytes());
+    out.extend_from_slice(&m.encode());
+    out
+}
+
+fn decode_version_entry(data: &[u8]) -> Option<(String, MemoryMeta)> {
+    let sklen = u16::from_le_bytes(data.get(0..2)?.try_into().ok()?) as usize;
+    let sk: String = core::str::from_utf8(data.get(2..2usize.checked_add(sklen)?)?)
+        .ok()?
+        .into();
+    let m = MemoryMeta::decode(data.get(2usize.checked_add(sklen)?..)?).ok()?;
+    Some((sk, m))
+}
+
 fn is_ram_layer(layer: MemoryLayer) -> bool {
     matches!(layer, MemoryLayer::L0Sensory | MemoryLayer::L1Working)
 }
@@ -135,25 +166,55 @@ impl AiosDatabaseEngine {
             self.storage.put(sk.as_bytes(), &blob)?;
         }
 
-        self.persist_meta(&sk, &doc)?;
+        self.persist_meta(&sk, &doc, tick_local)?;
         self.index_doc(id, &doc, &sk);
         self.puts += 1;
         Ok(id)
     }
 
-    /// Escreve/lê `sys/meta/<sk>`. Regra de identidade (v0.6):
-    /// - `(None, None)` — criação: gera memory_id determinístico.
+    /// Escreve/lê `sys/meta/<sk>`. Regra de identidade:
+    /// - `(None, None)` — criação: gera memory_id determinístico (slot).
     /// - `(None, Some(d))` — replicado: identidade do remetente viaja.
     /// - `(Some(e), _)` — overwrite: identidade LOCAL vence (memory_id é
     ///   estável por chave); confidence/importance/parents vêm do doc se
     ///   presentes, senão do existente.
-    fn persist_meta(&mut self, sk: &str, doc: &MemoryDoc) -> Result<(), SgdbError> {
+    /// - `bump_version` (put local, Phase 3): cada escrita local que muda o
+    ///   slot avança `version_id` e registra a versão anterior em
+    ///   `parent_ids` — o DAG causal. Import/replicação NÃO bumpa (a versão
+    ///   é do criador e viaja na meta).
+    fn persist_meta(
+        &mut self,
+        sk: &str,
+        doc: &MemoryDoc,
+        bump_version: bool,
+    ) -> Result<(), SgdbError> {
         let existing = match self.storage.get(&meta_key(sk)) {
             Ok(Some(b)) => MemoryMeta::decode(&b).ok(),
             _ => None,
         };
         let tick = doc.clock.counter_of(self.node_id);
         let mut m = match (existing, doc.meta.clone()) {
+            (Some(e), d) if bump_version => {
+                let mut mm = e;
+                let new_vid = generate_memory_id(self.node_id, tick, doc.layer, &doc.key);
+                if new_vid != mm.version_id {
+                    // a versão anterior vira parent (linhagem causal)
+                    if !mm.parent_ids.contains(&mm.version_id) {
+                        mm.parent_ids.push(mm.version_id.clone());
+                    }
+                    mm.version_id = new_vid;
+                }
+                if let Some(dd) = d {
+                    mm.confidence = dd.confidence;
+                    mm.importance = dd.importance;
+                    for p in dd.parent_ids {
+                        if !mm.parent_ids.contains(&p) {
+                            mm.parent_ids.push(p);
+                        }
+                    }
+                }
+                mm
+            }
             (Some(e), Some(d)) => {
                 let mut mm = e;
                 mm.confidence = d.confidence;
@@ -167,18 +228,26 @@ impl AiosDatabaseEngine {
             }
             (Some(e), None) => e,
             (None, Some(d)) => d,
-            (None, None) => MemoryMeta {
-                memory_id: generate_memory_id(self.node_id, tick, doc.layer, &doc.key),
-                source: self.node_id,
-                confidence: 1.0,
-                importance: doc.layer.default_importance(),
-                created_tick: tick,
-                parent_ids: Vec::new(),
-                clock_overflow: Vec::new(),
-            },
+            (None, None) => {
+                let mid = generate_memory_id(self.node_id, tick, doc.layer, &doc.key);
+                MemoryMeta {
+                    memory_id: mid.clone(),
+                    version_id: mid, // 1ª versão do slot: versão == slot
+                    source: self.node_id,
+                    confidence: 1.0,
+                    importance: doc.layer.default_importance(),
+                    created_tick: tick,
+                    parent_ids: Vec::new(),
+                    clock_overflow: Vec::new(),
+                }
+            }
         };
         // overflow do relógio dinâmico persiste com a meta (o NMD1 não guarda)
         m.clock_overflow = doc.clock.overflow.clone();
+        // índice reverso: version_id → (chave + meta da PRÓPRIA versão)
+        let vid = m.version_id.clone();
+        self.storage
+            .put(&version_key(&vid), &encode_version_entry(sk, &m))?;
         self.storage.put(&meta_key(sk), &m.encode())
     }
 
@@ -199,6 +268,20 @@ impl AiosDatabaseEngine {
         Ok(self.read_meta(sk))
     }
 
+    /// Resolve um `version_id` à (storage key, meta DAQUELA VERSÃO) — DAG
+    /// causal, base de `Sgdb::lineage`. Derivado de `sys/version/` (escrito
+    /// no persist_meta, reconstruído no rebuild). `None` = versão não
+    /// indexada (ex: antepassado cujo índice não sobreviveu a rebuild).
+    pub fn version_record(
+        &mut self,
+        vid: &str,
+    ) -> Result<Option<(String, MemoryMeta)>, SgdbError> {
+        match self.storage.get(&version_key(vid))? {
+            Some(b) => Ok(decode_version_entry(&b)),
+            None => Ok(None),
+        }
+    }
+
     /// Garante meta para `sk` (migração de registros pré-v0.6: cria
     /// identidade determinística a partir do doc). Err se o doc não existe.
     pub fn ensure_meta(&mut self, sk: &str) -> Result<MemoryMeta, SgdbError> {
@@ -213,8 +296,10 @@ impl AiosDatabaseEngine {
             .get_by_storage_key(sk)?
             .ok_or(SgdbError::Invalid("no memory at key"))?;
         let tick = doc.clock.counter_of(self.node_id);
+        let mid = generate_memory_id(self.node_id, tick, doc.layer, &doc.key);
         let m = MemoryMeta {
-            memory_id: generate_memory_id(self.node_id, tick, doc.layer, &doc.key),
+            memory_id: mid.clone(),
+            version_id: mid, // migração: 1ª versão = slot
             source: self.node_id,
             confidence: 1.0,
             importance: doc.layer.default_importance(),
@@ -222,6 +307,9 @@ impl AiosDatabaseEngine {
             parent_ids: Vec::new(),
             clock_overflow: doc.clock.overflow.clone(),
         };
+        // índice reverso também é derivado na migração (DAG consultável)
+        self.storage
+            .put(&version_key(&m.version_id), &encode_version_entry(sk, &m))?;
         self.write_meta(sk, &m)?;
         Ok(m)
     }
@@ -337,13 +425,18 @@ impl AiosDatabaseEngine {
         // watermark também cobre o overflow (metas `sys/meta/`): um contador
         // próprio além do 8º nó não sobrevive no NMD1, mas persiste na meta
         let meta_keys = self.storage.scan_prefix(b"sys/meta/")?;
-        for (_mk, bytes) in meta_keys {
+        for (mk, bytes) in meta_keys {
             if let Ok(m) = MemoryMeta::decode(&bytes) {
                 for &(n, c) in &m.clock_overflow {
                     if n == self.node_id && c > self.own_clock_watermark {
                         self.own_clock_watermark = c;
                     }
                 }
+                // re-escrita idempotente do índice reverso (derivado da meta;
+                // reconstruível — storage = fonte da verdade)
+                let sk = String::from_utf8_lossy(&mk[9..]).into_owned(); // strip sys/meta/
+                self.storage
+                    .put(&version_key(&m.version_id), &encode_version_entry(&sk, &m))?;
             }
         }
         Ok(n)
@@ -530,6 +623,12 @@ impl AiosDatabaseEngine {
         // side-tables da memória morrem com ela (estado + validade + meta)
         self.storage.delete(&state_key(sk))?;
         self.storage.delete(&validity_key(sk))?;
+        // índice reverso da versão morre com a memória (DAG causal)
+        if let Ok(Some(b)) = self.storage.get(&meta_key(sk)) {
+            if let Ok(m) = MemoryMeta::decode(&b) {
+                self.storage.delete(&version_key(&m.version_id))?;
+            }
+        }
         self.storage.delete(&meta_key(sk))?;
         self.art.delete(sk);
         self.lexical.remove(sk);
@@ -592,8 +691,10 @@ fn meta_for_import(doc: &MemoryDoc) -> MemoryMeta {
             author = n;
         }
     }
+    let mid = generate_memory_id(author, maxc, doc.layer, &doc.key);
     MemoryMeta {
-        memory_id: generate_memory_id(author, maxc, doc.layer, &doc.key),
+        memory_id: mid.clone(),
+        version_id: mid, // import sem meta: a versão do autor == slot
         source: author,
         confidence: 1.0,
         importance: doc.layer.default_importance(),

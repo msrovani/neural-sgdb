@@ -6,6 +6,28 @@ All notable changes to this project. Format based on
 
 ## [Unreleased]
 
+### v0.7 — Causal DAG (per-version identity) (Phase 3)
+- **Identidade POR VERSÃO** (`MemoryMeta.version_id`, wire **MDM1 v2** com
+  decode retrocompatível de v1 — migração explícita: version_id = memory_id):
+  `memory_id` continua sendo a identidade estável do SLOT (layer,key);
+  `version_id` identifica a VERSÃO corrente do DAG causal. Cada put local que
+  muda o slot avança `version_id` e registra a versão anterior em
+  `parent_ids` (linhagem causal).
+- **Índice reverso `sys/version/<version_id>`** → (storage key + meta DA
+  PRÓPRIA versão) — base de lineage consultável; derivado (escrito no
+  persist_meta/ensure_meta, reconstruído no rebuild, removido no delete).
+- **`Sgdb::version_of(key)`** e **`Sgdb::lineage(key) -> Vec<LineageEntry>`**
+  — caminha o DAG para trás (parent mais recente, guarda de ciclos);
+  `LineageEntry` expõe version_id/memory_id/storage_key/source/created_tick/
+  parents (ramos de merge exploráveis pelo caller). `supersede` agora linka a
+  VERSÃO corrente (não só o slot); `HitProvenance` ganhou `version_id`.
+- Testes (+6 lib): overwrite cria versão nova com slot estável, lineage em
+  mesma chave (multi-version), lineage cruzando chaves via supersede,
+  version_id viaja na replicação e muda em overwrite local do receptor,
+  persistência cross-reopen (índice reconstruído), MDM1 v1→v2 migration +
+  fuzz truncado. Matriz: default **126+1**, p2p **149+1**, no-default-
+  features **86+1**, `x86_64-unknown-none` ok.
+
 ### v0.6 — Memory identity + provenance + dynamic VectorClock + delta replication + layer-aware merge policy (Phase 1–5)
 - **`MemoryRecord`** (`memory_doc.rs`) — memória como UNIDADE de replicação:
   doc NMD1 + estado lógico + janela de validade + meta, serializados juntos

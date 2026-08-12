@@ -227,8 +227,11 @@ Binary layouts are contracts — documented by byte offsets in the source
   until the OS publishes its TickvLite reader as a crate.
 
 **Format changelog:** initial public release v0.1 — NMD1 and TKLV/TKCK as
-extracted from the OS (ADR-0063). Any layout change MUST bump a version marker
-and update the golden tests in the same commit.
+extracted from the OS (ADR-0063). v0.7 — **MDM1 v1 → v2** (side-table meta
+codec): adds `version_id` (per-version identity, Phase 3); v1 records decode
+with `version_id = memory_id` (explicit migration, never silent). NMD1 and
+TKLV/TKCK unchanged. Any layout change MUST bump a version marker and update
+the golden tests in the same commit.
 
 ## Feature matrix (P2)
 
@@ -271,6 +274,21 @@ and record merge (`Sgdb::merge_remote` — Applied/Stale/Duplicate/Conflict/
 Rejected). **Concurrent same-key memories are never silently overwritten** —
 `merge_remote` returns `Conflict`, preserves the local value and leaves the
 resolution to the cognitive layer (roadmap Phase 14/15).
+
+## Causal DAG (v0.7 — Phase 3)
+
+- **`MemoryMeta.version_id`** — per-version identity, distinct from
+  `memory_id` (stable slot identity). Every local overwrite of a slot
+  advances `version_id` and records the previous version in `parent_ids`
+  (lineage). Replicated docs keep the creator's version.
+- **`sys/version/<version_id>`** reverse index → (storage key + the version's
+  OWN meta), so a parent resolves to the version it actually was, not the
+  slot's current meta. Derived state: written on persist, rebuilt on
+  `rebuild_indices`, removed on delete.
+- **`Sgdb::version_of(key)` / `Sgdb::lineage(key)`** — current version id and
+  the causal chain (version_id, memory_id, key, source, created_tick,
+  parents per entry; cycle-guarded). `supersede` links the current version;
+  `HitProvenance.version_id` exposes it in recall.
 
 ## Replication primitives (v0.6)
 

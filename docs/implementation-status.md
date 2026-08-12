@@ -46,7 +46,7 @@ index-rebuild, docs) are **staged but uncommitted** — the git identity
 | Full memory replication | PARTIAL→**improved (v0.6)** — `MemoryRecord` (doc+state+validity+meta) travels as one unit; `MemoryDelta`/`MemorySnapshot` carry records with bounds-checked codecs; example pulls via export+merge_remote | `src/memory_doc.rs`, `src/engine.rs`, `examples/p2p_telepathy.rs` | anti-entropy protocol (v0.8) |
 | Conflict preservation | PARTIAL→**improved (v0.6)** — per-layer `MergePolicy` table (L2/L3 multi-value, L4 causal-LWW-with-history, L5/L7 controlled, L0/L1 local-only → `Rejected`); `Sgdb::merge_remote` never LWW-overwrites concurrent same-key memories | `MergePolicy`, `MergeVerdict` in crdt.rs; `merge_remote` in sgdb.rs | per-layer conflict model + resolution API |
 | Dynamic VectorClock | **IMPLEMENTED (v0.6)** — 8-node fast path + overflow registry (bounded), dynamic `set_counter`, overflow-aware compare/merge; NMD1 stays 72B | `VectorClock` in `src/memory_doc.rs` + tests | causal DAG on top |
-| Causal DAG | DESIGN — no memory_id / parent_ids in code | `docs/architecture/01` | memory lineage |
+| Causal DAG | PARTIAL→**implemented core (v0.7)** — per-version identity (`MemoryMeta.version_id`, MDM1 v2, v1-decodable), `sys/version/` reverse index, `Sgdb::version_of`/`lineage`, `supersede` links versions; merge-branch exploration via `parent_ids` | `src/memory_doc.rs`, `src/engine.rs`, `src/sgdb.rs` | full DAG queries (children/descendants) |
 | Provenance | PARTIAL→**implemented core (v0.6)** — `MemoryMeta` (source, confidence, importance, created_tick, parents) in `sys/meta/`; exposed in `Hit.provenance`; pre-v0.6 records lazily migrated | `src/memory_doc.rs`, `src/engine.rs`, `src/sgdb.rs` | provenance-aware recall modes (active vs historical) |
 | L6 associations | DESIGN — no `associate`/`related_to` API | `docs/architecture/01` §5, `06-cognitive-api.md` | relation index on ART |
 | Lifecycle engine | PARTIAL — primitives only (state, validity, supersede); no tick/decay/consolidation | engine/sgdb + `docs/architecture/02` | `MemoryLifecycle::tick(db, now)` |
@@ -153,9 +153,11 @@ explain, supersede) or provenance/state fields in responses.
 
 - VectorClock is **dynamic** (v0.6) with a bounded overflow registry (248
   extra nodes); the 256-node u8 space is the hard limit. Per-version
-  identity (causal DAG) is still Phase 3; today memory_id identifies the
-  (layer+key) slot and is stable across overwrites (`supersede` seeds the
-  lineage via `parent_ids`).
+  identity (causal DAG) is **implemented (v0.7)**: `version_id` + `lineage`
+  walk (parents resolve via the `sys/version/` index); `memory_id` still
+  identifies the (layer+key) slot and is stable across overwrites. DAG
+  queries (children/descendants) and per-layer conflict-resolution on top of
+  it remain future work.
 - CRDT is version sync + record transfer, not full anti-entropy: versions
   and records travel only along direct edges (no relay through
   intermediates); no durable replication state (identity/clock reset on
@@ -206,9 +208,15 @@ explain, supersede) or provenance/state fields in responses.
 Missing per roadmap §29–31: three-node and partition/rejoin tests; property
 tests (merge commutativity/associativity/idempotence) exist only partially.
 
-## 7.5 v0.6 delivered (this session)
+## 7.5 v0.6 + v0.7 (M1) delivered (this session)
 
-The whole block ships in the **v0.6.x** line (no version jump):
+**v0.7 — M1 (Phase 3):** per-version identity (`version_id`), MDM1 v2
+(v1-decodable), `sys/version/` reverse index (key + the version's own meta),
+`Sgdb::version_of`/`lineage`, `supersede` links current versions,
+`HitProvenance.version_id`. Next in v0.7: anti-entropy (M1b), durable
+replication metadata.
+
+**v0.6 —** the whole block ships in the **v0.6.x** line (no version jump):
 
 **Block 1 (P0-1..P0-4, P0-9 partial):** dynamic VectorClock, memory_id,
 provenance side-table + Hit exposure, format decision (NMD1 stays v1

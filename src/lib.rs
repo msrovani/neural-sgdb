@@ -91,8 +91,8 @@ pub use hamming_dispatch::{
 };
 pub use lexical::LexicalIndex;
 pub use memory_doc::{
-    generate_memory_id, MemoryDoc, MemoryDocView, MemoryLayer, MemoryMeta, MemoryRecord,
-    MemoryState, VectorClock,
+    generate_memory_id, LineageEntry, MemoryDoc, MemoryDocView, MemoryLayer, MemoryMeta,
+    MemoryRecord, MemoryState, VectorClock,
 };
 pub use sgdb::{Hit, HitProvenance, Sgdb};
 pub use storage::{InMemory, Storage, SgdbError};

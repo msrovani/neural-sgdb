@@ -279,16 +279,29 @@ impl VectorClock {
 /// byte-idêntico com o OS) — persiste em side-table `sys/meta/` e viaja com
 /// o doc na replicação (`Sgdb::put(doc)` preserva `doc.meta`).
 ///
-/// Wire "MDM1" v1: `magic | ver u8 | id u16len+bytes | source u8 |
+/// Wire "MDM1" v2 (v0.7 — Phase 3): campos v1 + `version_id` (identidade
+/// POR VERSÃO, distinta de `memory_id`, que identifica o SLOT (layer,key)).
+/// `decode` aceita v1 (version_id = memory_id — migração explícita, nunca
+/// reinterpreta bytes silenciosamente) e v2. Nunca panics em entrada
+/// malformada/truncada — retorna Err.
+///
+/// Layout v1: `magic | ver u8 | id u16len+bytes | source u8 |
 /// confidence f32le | importance f32le | created u64le | nparents u16le +
 /// (len u16le + bytes)* | noverflow u16le + (node u8 + count u64le)*`.
-/// `decode` nunca panics em entrada malformada/truncada — retorna Err.
+/// Layout v2: idem + `vid u16len + bytes` no fim.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MemoryMeta {
-    /// Identidade estável da memória (32 hex chars). Gerada UMA vez na
-    /// criação (`generate_memory_id`), independente de node_id e estável
-    /// através de overwrites e replicação — NUNCA re-derivada.
+    /// Identidade estável do SLOT (32 hex chars). Gerada UMA vez na criação
+    /// (`generate_memory_id`), independente de node_id e estável através de
+    /// overwrites e replicação — NUNCA re-derivada. `memory_id` identifica a
+    /// memória; `version_id` identifica a VERSÃO corrente do DAG causal.
     pub memory_id: String,
+    /// Identidade POR VERSÃO (Phase 3, v0.7): cada escrita local que muda o
+    /// conteúdo cria uma versão nova (`generate_memory_id` no tick da
+    /// escrita) e registra a versão anterior em `parent_ids` (DAG causal).
+    /// Igual a `memory_id` na primeira versão do slot. Persistido e
+    /// replicado junto com a meta (wire MDM1 v2).
+    pub version_id: String,
     /// Nó criador (origem — "quem criou").
     pub source: u8,
     /// Confiança [0..1] na informação.
@@ -297,14 +310,28 @@ pub struct MemoryMeta {
     pub importance: f32,
     /// Tick de criação (contador do relógio local do criador).
     pub created_tick: u64,
-    /// Pais causais (memory_ids) — lineage/supersessão (DAG causal, Phase 3).
+    /// Pais causais (VERSION ids) — lineage/supersessão/derivação (DAG
+    /// causal, Phase 3).
     pub parent_ids: Vec<String>,
     /// Overflow do VectorClock (>8 nós) — o NMD1 guarda só 72B fixos.
     pub clock_overflow: Vec<(u8, u64)>,
 }
 
+/// Um elo da linhagem causal (Phase 3, v0.7): a versão corrente e seus
+/// parents (version_ids) resolvidos de volta à storage key. `Sgdb::lineage`
+/// caminha a cadeia (parent mais recente) com guarda de ciclos.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LineageEntry {
+    pub version_id: String,
+    pub memory_id: String,
+    pub storage_key: String,
+    pub source: u8,
+    pub created_tick: u64,
+    pub parent_ids: Vec<String>,
+}
+
 const META_MAGIC: &[u8; 4] = b"MDM1";
-const META_VERSION: u8 = 1;
+const META_VERSION: u8 = 2;
 
 impl MemoryMeta {
     pub fn encode(&self) -> Vec<u8> {
@@ -327,6 +354,8 @@ impl MemoryMeta {
             out.push(n);
             out.extend_from_slice(&c.to_le_bytes());
         }
+        out.extend_from_slice(&(self.version_id.len() as u16).to_le_bytes());
+        out.extend_from_slice(self.version_id.as_bytes());
         out
     }
 
@@ -334,7 +363,8 @@ impl MemoryMeta {
         if data.len() < 5 || &data[0..4] != META_MAGIC {
             return Err("bad meta magic");
         }
-        if data[4] != META_VERSION {
+        let ver = data[4];
+        if ver != 1 && ver != 2 {
             return Err("bad meta version");
         }
         let mut off = 5;
@@ -343,7 +373,7 @@ impl MemoryMeta {
         if off + id_len > data.len() {
             return Err("trunc id");
         }
-        let memory_id =
+        let memory_id: String =
             core::str::from_utf8(&data[off..off + id_len]).map_err(|_| "utf8 id")?.into();
         off += id_len;
         let source = *data.get(off).ok_or("trunc source")?;
@@ -376,8 +406,21 @@ impl MemoryMeta {
             off += 8;
             clock_overflow.push((n, c));
         }
+        // v2: identidade por versão; v1: migração explícita (versão = slot)
+        let version_id = if ver == 2 {
+            let vid_len = rd_u16(data, off).ok_or("trunc vidlen")? as usize;
+            off += 2;
+            if off + vid_len > data.len() {
+                return Err("trunc vid");
+            }
+            let vid = core::str::from_utf8(&data[off..off + vid_len]).map_err(|_| "utf8 vid")?;
+            String::from(vid)
+        } else {
+            memory_id.clone()
+        };
         Ok(MemoryMeta {
             memory_id,
+            version_id,
             source,
             confidence,
             importance,
@@ -1079,6 +1122,7 @@ mod tests {
     fn sample_meta() -> MemoryMeta {
         MemoryMeta {
             memory_id: String::from("aabbccddeeff00112233445566778899"),
+            version_id: String::from("00112233445566778899aabbccddeeff"),
             source: 7,
             confidence: 0.9,
             importance: 0.6,
@@ -1102,6 +1146,40 @@ mod tests {
         };
         let dec2 = MemoryMeta::decode(&m2.encode()).unwrap();
         assert_eq!(dec2, m2);
+    }
+
+    #[test]
+    fn meta_v2_roundtrip_preserves_version_id() {
+        let m = sample_meta();
+        assert_ne!(m.version_id, m.memory_id);
+        let dec = MemoryMeta::decode(&m.encode()).unwrap();
+        assert_eq!(dec, m);
+        assert_eq!(dec.version_id, m.version_id);
+    }
+
+    #[test]
+    fn meta_v1_decodes_with_slot_version_migration() {
+        // v1 (pré-Phase 3): sem version_id — migração EXPLÍCITA p/ version_id
+        // = memory_id (a 1ª versão de um slot é o próprio slot). O v1 não
+        // é reinterpretado silenciosamente: o decode conhece os dois layouts.
+        let mut enc = sample_meta().encode();
+        // remove o campo v2 (vidlen u16 + vid) e marca ver=1
+        let vid = sample_meta().version_id;
+        let cut = enc.len() - 2 - vid.len();
+        enc.truncate(cut);
+        enc[4] = 1;
+        let dec = MemoryMeta::decode(&enc).unwrap();
+        assert_eq!(dec.version_id, dec.memory_id);
+        assert_eq!(dec.version_id, "aabbccddeeff00112233445566778899");
+        // versão desconhecida → Err
+        let mut bad = sample_meta().encode();
+        bad[4] = 3;
+        assert!(MemoryMeta::decode(&bad).is_err());
+        // truncado no vid → Err, nunca panic
+        let full = sample_meta().encode();
+        for cut in 0..full.len() {
+            let _ = MemoryMeta::decode(&full[..cut]);
+        }
     }
 
     #[test]

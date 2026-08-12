@@ -8,14 +8,19 @@ use alloc::vec::Vec;
 
 use crate::bq::{quantize_f32, BqFlatIndex};
 use crate::engine::AiosDatabaseEngine;
-use crate::memory_doc::{MemoryDoc, MemoryLayer, MemoryMeta, MemoryRecord, MemoryState};
+use crate::memory_doc::{
+    LineageEntry, MemoryDoc, MemoryLayer, MemoryMeta, MemoryRecord, MemoryState,
+};
 use crate::storage::{Storage, SgdbError};
 
 /// Proveniência de um hit (v0.6 — Phase 9 parcial): epistemologia exposta ao
 /// caller — memórias com estados diferentes NÃO se parecem iguais no recall.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HitProvenance {
+    /// Identidade do SLOT (estável através de overwrites).
     pub memory_id: String,
+    /// Identidade da VERSÃO corrente (Phase 3 — DAG causal).
+    pub version_id: String,
     pub layer: MemoryLayer,
     pub state: MemoryState,
     pub source: u8,
@@ -85,17 +90,18 @@ impl Sgdb {
 
     /// Conveniência cognitiva: marca `old` como `Superseded` (histórico
     /// preservado, sem `delete` físico) — a cadeia causal sobrevive para CRDT
-    /// (Doc 04 §3). v0.6: registra a lineage em `new.parent_ids` (DAG causal
-    /// começa aqui — Phase 3 incrementa).
+    /// (Doc 04 §3). Phase 3 (v0.7): registra a VERSÃO corrente de `old` em
+    /// `new.parent_ids` (DAG causal — `version_id`, não só o slot).
     pub fn supersede(&mut self, old: &str, new: &str) -> Result<(), SgdbError> {
         let old_sk = self.resolve_storage_key(old);
         let new_sk = self.resolve_storage_key(new);
         self.engine.set_state(&old_sk, MemoryState::Superseded)?;
         self.engine.set_state(&new_sk, MemoryState::Active)?;
-        if let Some(old_id) = self.engine.meta(&old_sk)?.map(|m| m.memory_id) {
+        if let Some(old_meta) = self.engine.meta(&old_sk)? {
             if let Some(mut nm) = self.engine.meta(&new_sk)? {
-                if !nm.parent_ids.contains(&old_id) {
-                    nm.parent_ids.push(old_id);
+                let parent = old_meta.version_id;
+                if !nm.parent_ids.contains(&parent) {
+                    nm.parent_ids.push(parent);
                 }
                 self.engine.write_meta(&new_sk, &nm)?;
             }
@@ -108,6 +114,50 @@ impl Sgdb {
     pub fn memory_id(&mut self, key: &str) -> Result<Option<String>, SgdbError> {
         let sk = self.resolve_storage_key(key);
         Ok(self.engine.meta(&sk)?.map(|m| m.memory_id))
+    }
+
+    /// Identidade da VERSÃO corrente (Phase 3): muda a cada overwrite local;
+    /// `None` = sem doc/meta.
+    pub fn version_of(&mut self, key: &str) -> Result<Option<String>, SgdbError> {
+        let sk = self.resolve_storage_key(key);
+        Ok(self.engine.meta(&sk)?.map(|m| m.version_id))
+    }
+
+    /// Linhagem causal (Phase 3 — DAG): do doc em `key` para trás, seguindo
+    /// o parent mais recente de cada versão. Cada elo expõe version_id,
+    /// memory_id (slot), storage key, origem, tick de criação e parents —
+    /// quem quiser explorar ramos (merge com 2 parents) caminha por
+    /// `parent_ids`. Guarda de ciclos: nunca loopa. Determinística.
+    pub fn lineage(&mut self, key: &str) -> Result<Vec<LineageEntry>, SgdbError> {
+        use alloc::collections::BTreeSet;
+        let sk = self.resolve_storage_key(key);
+        let mut out: Vec<LineageEntry> = Vec::new();
+        let mut visited: BTreeSet<String> = BTreeSet::new();
+        let mut cur = self.engine.meta(&sk)?.map(|m| (m, sk.clone()));
+        while let Some((m, ck)) = cur {
+            if !visited.insert(m.version_id.clone()) {
+                break; // ciclo (não deveria existir; nunca loopa)
+            }
+            out.push(LineageEntry {
+                version_id: m.version_id.clone(),
+                memory_id: m.memory_id.clone(),
+                storage_key: ck.clone(),
+                source: m.source,
+                created_tick: m.created_tick,
+                parent_ids: m.parent_ids.clone(),
+            });
+            cur = match m.parent_ids.last() {
+                // o índice guarda a meta DA PRÓPRIA versão — para overwrites
+                // de mesma chave, a meta corrente da chave é a mais nova
+                // (resolver só a chave looparia de volta).
+                Some(parent) => match self.engine.version_record(parent)? {
+                    Some((pk, pm)) => Some((pm, pk)),
+                    None => break,
+                },
+                None => None,
+            };
+        }
+        Ok(out)
     }
 
     /// Metadados completos (memory_id, source, confidence, importance,
@@ -352,6 +402,7 @@ impl Sgdb {
                     // de ativas no resultado.
                     let prov = doc.meta.as_ref().map(|m| HitProvenance {
                         memory_id: m.memory_id.clone(),
+                        version_id: m.version_id.clone(),
                         layer: doc.layer,
                         state: self.engine.get_state(&sk),
                         source: m.source,
@@ -470,6 +521,7 @@ impl Sgdb {
             if let Ok(Some(doc)) = self.engine.get_by_storage_key(&sk) {
                 let provenance = doc.meta.as_ref().map(|m| HitProvenance {
                     memory_id: m.memory_id.clone(),
+                    version_id: m.version_id.clone(),
                     layer: doc.layer,
                     state: self.engine.get_state(&sk),
                     source: m.source,
@@ -1531,6 +1583,103 @@ mod tests {
         assert_eq!(m.source, 3, "autor derivado do relógio");
         assert_eq!(m.created_tick, 1);
         assert_ne!(m.source, 5, "não reivindica autoria local");
+    }
+
+    // ── Phase 3: identidade POR VERSÃO + DAG causal (v0.7) ────────────────
+
+    #[test]
+    fn version_identity_and_lineage() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("k", "v1", &[1.0, -1.0, 1.0, -1.0])
+            .unwrap();
+        let slot = db.memory_id("md/L4/k").unwrap().unwrap();
+        let v1 = db.version_of("md/L4/k").unwrap().unwrap();
+        assert_eq!(v1, slot, "1ª versão do slot == slot");
+        // overwrite → versão NOVA, slot estável, parent = versão anterior
+        db.remember_semantic("k", "v2", &[1.0, -1.0, 1.0, -1.0])
+            .unwrap();
+        let v2 = db.version_of("md/L4/k").unwrap().unwrap();
+        assert_ne!(v2, v1, "overwrite deve criar versão nova");
+        assert_eq!(db.memory_id("md/L4/k").unwrap().unwrap(), slot);
+        let m = db.meta("md/L4/k").unwrap().unwrap();
+        assert_eq!(m.parent_ids, vec![v1.clone()]);
+        // lineage: [v2 (k), v1 (k)]
+        let lin = db.lineage("md/L4/k").unwrap();
+        assert_eq!(lin.len(), 2);
+        assert_eq!(lin[0].version_id, v2);
+        assert_eq!(lin[1].version_id, v1);
+        assert_eq!(lin[1].storage_key, "md/L4/k");
+        // chave sem doc → lineage vazia
+        assert!(db.lineage("md/L4/nao-existe").unwrap().is_empty());
+    }
+
+    #[test]
+    fn lineage_across_supersede_keys() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("k1", "velho", &[1.0, -1.0, 1.0, -1.0])
+            .unwrap();
+        db.remember_semantic("k2", "novo", &[1.0, -1.0, 1.0, -1.0])
+            .unwrap();
+        let v_k1 = db.version_of("md/L4/k1").unwrap().unwrap();
+        db.supersede("md/L4/k1", "md/L4/k2").unwrap();
+        let v_k2 = db.version_of("md/L4/k2").unwrap().unwrap();
+        // lineage cruza CHAVES via o índice reverso sys/version/
+        let lin = db.lineage("md/L4/k2").unwrap();
+        assert_eq!(lin.len(), 2);
+        assert_eq!(lin[0].version_id, v_k2);
+        assert_eq!(lin[0].storage_key, "md/L4/k2");
+        assert_eq!(lin[1].version_id, v_k1);
+        assert_eq!(lin[1].storage_key, "md/L4/k1");
+        // histórico preservado (invalidar-não-deletar)
+        assert_eq!(db.get_state("md/L4/k1").unwrap(), MemoryState::Superseded);
+        assert!(db.get(MemoryLayer::L4Semantic, "k1").unwrap().is_some());
+    }
+
+    #[test]
+    fn version_id_travels_with_replication() {
+        let mut a = Sgdb::open_with_node_id(1, InMemory::new()).unwrap();
+        let mut b = Sgdb::open_with_node_id(2, InMemory::new()).unwrap();
+        a.remember_semantic("k", "doc", &[1.0, -1.0, 1.0, -1.0])
+            .unwrap();
+        let v = a.version_of("md/L4/k").unwrap().unwrap();
+        let rec = a.export_record("md/L4/k").unwrap().unwrap();
+        b.import_record(rec).unwrap();
+        // a VERSÃO do criador viaja (identidade por versão)
+        assert_eq!(b.version_of("md/L4/k").unwrap().unwrap(), v);
+        // overwrite LOCAL no receptor → versão NOVA com linhagem preservada
+        b.remember_semantic("k", "edit local", &[1.0, -1.0, 1.0, -1.0])
+            .unwrap();
+        let v2 = b.version_of("md/L4/k").unwrap().unwrap();
+        assert_ne!(v2, v);
+        assert!(b.meta("md/L4/k").unwrap().unwrap().parent_ids.contains(&v));
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn version_identity_persists_across_reopen() {
+        let dir = std::env::temp_dir().join("neural_sgdb_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("sgdb_version.db");
+        let _ = std::fs::remove_file(&path);
+        let (slot, v2);
+        {
+            let mut db = Sgdb::open(crate::storage::FileStorage::open(&path).unwrap()).unwrap();
+            db.remember_semantic("k", "v1", &[1.0, -1.0, 1.0, -1.0])
+                .unwrap();
+            slot = db.memory_id("md/L4/k").unwrap().unwrap();
+            db.remember_semantic("k", "v2", &[1.0, -1.0, 1.0, -1.0])
+                .unwrap();
+            v2 = db.version_of("md/L4/k").unwrap().unwrap();
+            db.checkpoint().unwrap();
+        }
+        {
+            let mut db = Sgdb::open(crate::storage::FileStorage::open(&path).unwrap()).unwrap();
+            assert_eq!(db.memory_id("md/L4/k").unwrap().unwrap(), slot);
+            assert_eq!(db.version_of("md/L4/k").unwrap().unwrap(), v2);
+            // índice reverso reconstruído no rebuild → lineage pós-reopen
+            assert_eq!(db.lineage("md/L4/k").unwrap().len(), 2);
+        }
+        let _ = std::fs::remove_file(&path);
     }
 
     // ── P0-6: merge de record remoto sob política da camada ───────────────
