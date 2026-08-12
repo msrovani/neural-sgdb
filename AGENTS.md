@@ -208,6 +208,21 @@ cargo check --no-default-features --target x86_64-unknown-none   # no_std gate
   `merge_remote`; use `split_at_mut` para pares (i,j) (borrow checker não vê
   `i != j`). Cenários: triângulo, partition/rejoin preservando concorrentes,
   duplicata/atraso idempotente, nó novo alcançando tudo.
+- **Anti-entropy v0.7** (`crdt.rs`/`engine.rs`): o pull direcionado precisa
+  do clock **pré-ronda** do destino — medir a faixa faltante com o
+  `known_clock()` corrente (já atualizado pelos anúncios da própria ronda)
+  "esconde" a lacuna e nada é puxado (bug real: `applied=0` no mesh).
+  `pull_delta` puxa `known+1..=v` por nó (anúncio anuncia o MÁXIMO; peer
+  tardio precisa da série inteira).
+- **Um write lógico = uma versão causal** (v0.7): `remember_semantic` grava
+  L4+L2 com puts separados e cada put ticka o relógio do doc — sem
+  `put_companion` (mesmo contador, sem tick), o contador por-put diverge da
+  versão do CRDT e `keys_for_clock(node, v)` perde o companion. Mudar o
+  número de docs por write lógico exige revisar esse acoplamento.
+- **Estado CRDT durável (P0-11)**: `CrdtState::decode` usa `Result` — `?`
+  sobre `Option` (`.get()`) não compila nessa assinatura (`ok_or` antes);
+  truncamento em `bytes.len()` não é truncamento. `restore` recusa node_id
+  alheio.
 - **`MemoryRecord::decode`**: cuidado com flags — cada flag (vflag/metaflag)
   avança `off` mesmo no ramo 0 (bug real: metaflag=0 não avançava e o NMD1
   começava no byte errado).

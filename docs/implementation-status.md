@@ -43,7 +43,7 @@ index-rebuild, docs) are **staged but uncommitted** — the git identity
 | BQ retrieval | IMPLEMENTED — bounded top-k heap, MIH, FP32 rerank, oversample | `src/bq.rs`, `src/sgdb.rs`; bench above | incremental scalability only (benchmark-driven) |
 | Persistence | IMPLEMENTED — Storage trait, FileStorage (CRC append-log), TickvFile, recovery, compaction | `src/storage.rs`, `src/tickv.rs` | durable cognitive lifecycle |
 | CRDT version sync | IMPLEMENTED (v0.6) — `missing_after(peer)` + delta/snapshot abstractions; version 0 ignored; `local_version` = own writes only | `src/crdt.rs` | causal distributed memory |
-| Full memory replication | PARTIAL→**improved (v0.6)** — `MemoryRecord` (doc+state+validity+meta) travels as one unit; `MemoryDelta`/`MemorySnapshot` carry records with bounds-checked codecs; example pulls via export+merge_remote | `src/memory_doc.rs`, `src/engine.rs`, `examples/p2p_telepathy.rs` | anti-entropy protocol (v0.8) |
+| Full memory replication | PARTIAL→**anti-entropy (v0.7)** — `MemoryRecord` (doc+state+validity+meta) travels as one unit; clock announcement + directed pull of the missing causal range; relay through intermediates; durable `CrdtState` | `src/memory_doc.rs`, `src/engine.rs`, `src/crdt.rs` | overlay routing/trust (v0.8+) |
 | Conflict preservation | PARTIAL→**improved (v0.6)** — per-layer `MergePolicy` table (L2/L3 multi-value, L4 causal-LWW-with-history, L5/L7 controlled, L0/L1 local-only → `Rejected`); `Sgdb::merge_remote` never LWW-overwrites concurrent same-key memories | `MergePolicy`, `MergeVerdict` in crdt.rs; `merge_remote` in sgdb.rs | per-layer conflict model + resolution API |
 | Dynamic VectorClock | **IMPLEMENTED (v0.6)** — 8-node fast path + overflow registry (bounded), dynamic `set_counter`, overflow-aware compare/merge; NMD1 stays 72B | `VectorClock` in `src/memory_doc.rs` + tests | causal DAG on top |
 | Causal DAG | PARTIAL→**implemented core (v0.7)** — per-version identity (`MemoryMeta.version_id`, MDM1 v2, v1-decodable), `sys/version/` reverse index, `Sgdb::version_of`/`lineage`, `supersede` links versions; merge-branch exploration via `parent_ids` | `src/memory_doc.rs`, `src/engine.rs`, `src/sgdb.rs` | full DAG queries (children/descendants) |
@@ -112,12 +112,26 @@ peer's version as its own); delta-queue (`pending`, `send_delta`);
 `SignedEnvelope` (payload + node_id + opaque auth) as the authentication
 seam; `Transport` trait; `UdpTransport` **explicitly unauthenticated demo**.
 
-Honest gap (roadmap §3): this is still **version sync + document transfer**,
-not a full anti-entropy protocol — versions and records propagate only along
-direct edges in the mesh harness (no relay through intermediates), and
-replication state is not yet durable (identity/clock reset on restart). The
-protocol abstractions (`MemoryDelta`, `missing_after`) are in place; the
-anti-entropy cycle is the v0.8 milestone.
+IMPLEMENTED (v0.7): a real **anti-entropy cycle** — each round announces
+the full known clock (`CrdtMemorySync::announce`/`known_clock`: own +
+relayed versions), every node pulls only the **missing causal range**
+(`known+1..=v` per node) resolved through the derived `(node, counter) →
+keys` index (`Sgdb::keys_for_clock`); versions and records cross
+intermediate nodes (relay/gossip tested A→C→B with no direct A↔B edge);
+duplicate/stale/out-of-order delivery idempotent; **durable replication
+state** `CrdtState` (node_id + counters + known versions, wire "CRDT"
+bounds-checked) via `state()`/`restore()` + `Sgdb::read_side_bytes`/
+`write_side_bytes` — a restarted node does not regress its clock.
+
+One logical write = one causal version: `remember_semantic` writes its L2
+text companion under the same counter as L4 (`put_companion`), so the CRDT
+version and the per-doc clock never diverge (previously each put ticked and
+the directed pull lost docs).
+
+Remaining gap (roadmap §3): pull is still edge-directed (each round
+reconciles every announced version along the edge); there is no overlay
+routing/partial-mesh spanning — that is acceptable for v0.7 and is the
+v0.8 relay/anti-entropy refinement along with peer trust (§23).
 
 ### 3.5 Indexes (`src/art.rs`, `src/hamming_dispatch.rs`) — IMPLEMENTED
 
@@ -158,10 +172,11 @@ explain, supersede) or provenance/state fields in responses.
   identifies the (layer+key) slot and is stable across overwrites. DAG
   queries (children/descendants) and per-layer conflict-resolution on top of
   it remain future work.
-- CRDT is version sync + record transfer, not full anti-entropy: versions
-  and records travel only along direct edges (no relay through
-  intermediates); no durable replication state (identity/clock reset on
-  restart is acceptable today only because the demo is ephemeral).
+- Anti-entropy (v0.7) relays versions and records through intermediate
+  nodes and persists replication state (`CrdtState`); the remaining
+  limitation is that reconciliation is edge-directed (no overlay routing),
+  and replication state durability is opt-in (`sys/crdt/…` side-table) —
+  the p2p demo stays ephemeral.
 - Layer policy is explicit and enforced at the version and record level
   (v0.6), but there is no **resolution** API yet — conflicts are detected
   and preserved, a higher layer decides (roadmap Phase 14/15, v0.9).
@@ -202,19 +217,25 @@ explain, supersede) or provenance/state fields in responses.
 | Tickv | `tickv.rs` (byte-exact codec, GC, crash) |
 | Sgdb API / lifecycle | `sgdb.rs` (delete, supersede, validity, rebuild, reopen) |
 | CRDT | `crdt.rs` (self/stale/newer/concurrent/duplicate, envelope malformed-input) |
+| CRDT anti-entropy / durability | `crdt.rs` (3-node triangle, partition/rejoin, relay through intermediate node, version-range pull, `CrdtState` roundtrip + restart-no-regression, idempotence) |
 | p2p / telepathy | `examples/p2p_telepathy.rs` (two-node convergence) |
 | Stress / bench | `examples/stress.rs`, `examples/bench.rs` |
 
-Missing per roadmap §29–31: three-node and partition/rejoin tests; property
-tests (merge commutativity/associativity/idempotence) exist only partially.
+Roadmap §29–31 status: three-node + partition/rejoin + relay + restart
+tests are in place (v0.7); property tests (merge commutativity/
+associativity/idempotence) cover the VectorClock merge; remaining: a full
+property suite over the mesh convergence (multiple random topologies) and
+A↔B↔C concurrent-write scenarios at scale.
 
 ## 7.5 v0.6 + v0.7 (M1) delivered (this session)
 
-**v0.7 — M1 (Phase 3):** per-version identity (`version_id`), MDM1 v2
+**v0.7 — M1 (Phase 3 + 6):** per-version identity (`version_id`), MDM1 v2
 (v1-decodable), `sys/version/` reverse index (key + the version's own meta),
 `Sgdb::version_of`/`lineage`, `supersede` links current versions,
-`HitProvenance.version_id`. Next in v0.7: anti-entropy (M1b), durable
-replication metadata.
+`HitProvenance.version_id`; **anti-entropy** — clock announce/gossip,
+directed pull of the missing causal range (`keys_for_clock`), relay through
+intermediate nodes, durable `CrdtState` (`state`/`restore` + `sys/crdt/…`
+side-table), one-logical-write = one causal version (`put_companion`).
 
 **v0.6 —** the whole block ships in the **v0.6.x** line (no version jump):
 
@@ -228,13 +249,14 @@ carries state + validity + meta; `export_record`/`import_record`/`merge_remote`;
 layer-aware `MergePolicy` table + `MergeVerdict::Rejected`; 3-node triangle
 convergence, partition/rejoin preserving concurrent writes, duplicate/stale/
 out-of-order idempotence, fresh-node catch-up, merge-associativity property.
-Contradictions #1–#3 are resolved (see §6).
-Pending: P0-8 (lifecycle tick), P0-10 (L6 relations), plus anti-entropy
-protocol (relay of versions/docs through intermediate nodes) as v0.8.
+Contradictions #1–#3 are resolved (see §6); anti-entropy + durable
+replication state (P0-7/P0-11) are done in v0.7.
+Pending: P0-8 (lifecycle tick), P0-9b (active/historical recall), P0-10
+(L6 relations) — the v0.8 milestone.
 
-## 8. First concrete tasks (Phase 1 onward — v0.6.x/v0.8)
+## 8. First concrete tasks (Phase 1 onward — v0.8)
 
-> P0-1..P0-7 are **done (v0.6)** — see §7.5. Remaining backlog:
+> P0-1..P0-7 + P0-11 are **done (v0.6/v0.7)** — see §7.5. Remaining backlog:
 
 1. **P0-8 (lifecycle): deterministic `MemoryLifecycle::tick(db, now)`**
    driving the existing state/validity primitives (L1→L2 commit,
@@ -245,17 +267,12 @@ protocol (relay of versions/docs through intermediate nodes) as v0.8.
 3. **P0-10 (L6 foundation): relation side-index on ART** —
    `associate(a, rel, b)` + `related_to`/`contradicts`/`causes`/`supports`,
    memory-native, no inference.
-4. **P0-11 (durable replication metadata):** persist CRDT clock/identity
-   so a restarted node does not regress its clock (Phase 22).
-5. **Anti-entropy (v0.8):** relay of versions and records through
-   intermediate nodes (today versions/docs propagate only along direct
-   edges; a full anti-entropy cycle with clock exchange is the next
-   milestone — roadmap Phase 6).
 
 Suggested versioning (respecting §37, per maintainer decision): P0-1..P0-7
 land together in the **v0.6.x** line (identity + provenance + dynamic clock
-foundation + delta replication + layer-aware CRDT); P0-8..P0-10 land in
-**v0.8** (lifecycle + L6). Nothing below ships without tests and doc updates.
+foundation + delta replication + layer-aware CRDT); anti-entropy +
+per-version identity in **v0.7**; P0-8..P0-10 land in **v0.8** (lifecycle +
+L6). Nothing below ships without tests and doc updates.
 
 ## 9. How this document is maintained
 

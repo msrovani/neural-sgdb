@@ -6,6 +6,34 @@ All notable changes to this project. Format based on
 
 ## [Unreleased]
 
+### v0.7 — Causal DAG + anti-entropy (Phase 3/6)
+- **Anti-entropy de verdade (P0-7, Phase 6)** — o mesh não faz mais
+  diff/pull doc-a-doc: cada ronda **anuncia o clock completo** (próprio +
+  relayado — `CrdtMemorySync::announce`) e cada nó puxa SÓ a **faixa causal
+  faltante** do peer (`known+1..=v` por nó), localizada pelo novo índice
+  `(node, counter) → storage keys` (`AiosDatabaseEngine::clock_index`,
+  `keys_for_clock`; derivado, reconstruído no rebuild, removido no delete).
+  Versões e docs atravessam nós intermediários (gossip/relay); entrega
+  duplicada/atrasada/fora-de-ordem é idempotente.
+- **Estado de replicação DURÁVEL (P0-11)** — `CrdtState` (node_id +
+  contadores + versões conhecidas, wire "CRDT" bounds-checked) com
+  `state()`/`restore()`; restore recusa identidade alheia (nunca adota
+  node_id de outro nó); persistível via escape hatch `Sgdb::read_side_bytes`/
+  `write_side_bytes` (`sys/…`). Um nó reiniciado não regride o relógio nem
+  re-anuncia versões antigas como novas.
+- **Um write lógico = uma versão causal** — `remember_semantic` grava o
+  companion de texto L2 sob o MESMO contador do L4 (`put_companion`): antes,
+  cada put tickava o relógio e o contador do doc divergia da versão do CRDT
+  (o pull direcionado perdia docs). `CrdtMemorySync::node_id()`/`known_clock`
+  públicos.
+- Testes (+5 p2p, +4 default/+5 no_std pelas novas APIs no core):
+  `crdt_state_roundtrip_and_restore` (truncamento em todo ponto, restore
+  recusa node_id alheio), `restart_preserves_clock_no_regression`,
+  `versions_relay_through_intermediate_node` (gossip A→C→B sem aresta
+  A→B), `directed_pull_fetches_full_version_range` (peer entra depois de 3
+  escritas e puxa 1..=v). Matriz: default **126+1**, p2p **153+1**,
+  no-default-features **86+1**, `x86_64-unknown-none` ok.
+
 ### v0.7 — Causal DAG (per-version identity) (Phase 3)
 - **Identidade POR VERSÃO** (`MemoryMeta.version_id`, wire **MDM1 v2** com
   decode retrocompatível de v1 — migração explícita: version_id = memory_id):

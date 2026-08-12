@@ -100,6 +100,11 @@ pub struct AiosDatabaseEngine {
     pub ram_puts: u64,
     /// id lógico → storage_key (recall BQ → doc).
     id_to_sk: BTreeMap<u64, String>,
+    /// (nó, contador do relógio) → storage keys: o vínculo versão CRDT ↔ doc
+    /// (a versão N de um nó corresponde aos docs com counter_of(nó) == N).
+    /// Base do pull DIRECIONADO por versões faltantes (anti-entropy, P0-7).
+    /// Derivado (index_doc/rebuild) — storage = fonte da verdade.
+    clock_index: BTreeMap<(u8, u64), Vec<String>>,
     /// Watermark do contador próprio (node_id): máximo contador deste nó em
     /// docs + overflow de metas. Garante `created_tick`/memory_id monotônicos
     /// através de restarts (o NMD1 72B perde o overflow >8 nós).
@@ -119,6 +124,7 @@ impl AiosDatabaseEngine {
             ram_l0l1: BTreeMap::new(),
             ram_puts: 0,
             id_to_sk: BTreeMap::new(),
+            clock_index: BTreeMap::new(),
             own_clock_watermark: 0,
             storage,
         }
@@ -136,6 +142,18 @@ impl AiosDatabaseEngine {
     /// Put de AUTORIA local (tick do relógio próprio + watermark).
     pub fn put(&mut self, doc: MemoryDoc) -> Result<u64, SgdbError> {
         self.put_inner(doc, true)
+    }
+
+    /// Escreve um doc COMPANION do mesmo write lógico SEM tickar o relógio:
+    /// reutiliza o contador próprio atual (watermark). Um `remember_semantic`
+    /// grava L4+L2 sob a MESMA versão causal — um write lógico = uma versão
+    /// (anti-entropy v0.7: `keys_for_clock(node, v)` retorna todos os docs da
+    /// memória; sem isso o contador por-put e a versão do CRDT divergem e o
+    /// pull direcionado perde docs).
+    pub fn put_companion(&mut self, mut doc: MemoryDoc) -> Result<u64, SgdbError> {
+        doc.clock
+            .set_counter(self.node_id, self.own_clock_watermark);
+        self.put_inner(doc, false)
     }
 
     /// Importação de REPLICAÇÃO (P0-5): `tick_local = false` NÃO incrementa o
@@ -333,6 +351,13 @@ impl AiosDatabaseEngine {
 
     fn index_doc(&mut self, id: u64, doc: &MemoryDoc, sk: &str) {
         self.id_to_sk.insert(id, String::from(sk));
+        // vínculo versão CRDT ↔ doc: para cada (nó, contador) do relógio
+        for (n, c) in doc.clock.entries() {
+            let e = self.clock_index.entry((n, c)).or_default();
+            if !e.iter().any(|k| k == sk) {
+                e.push(String::from(sk));
+            }
+        }
         // path lexical (#7): textos L2/L3 alimentam o índice BM25-style
         match doc.layer {
             MemoryLayer::L2EpisodicShort | MemoryLayer::L3EpisodicLong => {
@@ -385,6 +410,7 @@ impl AiosDatabaseEngine {
         self.bq.clear();
         self.lexical = LexicalIndex::new();
         self.id_to_sk.clear();
+        self.clock_index.clear();
         // watermark reconstruído do storage (docs = fonte da verdade)
         self.own_clock_watermark = 0;
         // Reindex RAM L0/L1 first (logical ids fresh)
@@ -516,6 +542,28 @@ impl AiosDatabaseEngine {
         self.id_to_sk.get(&id).map(|s| s.as_str())
     }
 
+    /// Storage keys cujo relógio tem `counter_of(node) == counter` — o
+    /// vínculo versão CRDT ↔ docs (anti-entropy, P0-7): quando um peer pede
+    /// a versão `counter` do nó `node`, estas são as memórias daquele write.
+    /// Derivado do índice `clock_index` (reconstruível).
+    pub fn keys_for_clock(&self, node: u8, counter: u64) -> Vec<String> {
+        self.clock_index
+            .get(&(node, counter))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Acesso cru a uma side-table (escape hatch para metadados de
+    /// replicação/host, ex: `sys/crdt/` do CRDT durável — P0-11). NÃO é
+    /// uma API pública de leitura de memória.
+    pub fn read_side_bytes(&mut self, key: &str) -> Result<Option<Vec<u8>>, SgdbError> {
+        self.storage.get(key.as_bytes())
+    }
+
+    pub fn write_side_bytes(&mut self, key: &str, bytes: &[u8]) -> Result<(), SgdbError> {
+        self.storage.put(key.as_bytes(), bytes)
+    }
+
     pub fn ram_l0l1_len(&self) -> usize {
         self.ram_l0l1.len()
     }
@@ -641,6 +689,21 @@ impl AiosDatabaseEngine {
             .collect();
         for id in dead {
             self.id_to_sk.remove(&id);
+        }
+        // e o vínculo (nó, contador) → sk morre com o doc (anti-entropy)
+        let dead_clock: Vec<(u8, u64)> = self
+            .clock_index
+            .iter()
+            .filter(|(_, keys)| keys.iter().any(|k| k == sk))
+            .map(|((n, c), _)| (*n, *c))
+            .collect();
+        for key in dead_clock {
+            if let Some(v) = self.clock_index.get_mut(&key) {
+                v.retain(|k| k != sk);
+                if v.is_empty() {
+                    self.clock_index.remove(&key);
+                }
+            }
         }
         Ok(existed)
     }

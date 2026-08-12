@@ -375,6 +375,74 @@ pub struct CrdtMemorySync {
     pub active: bool,
 }
 
+/// Estado durável do CRDT (P0-11, v0.7): o mínimo que um nó reiniciado
+/// precisa para não regredir — node_id (identidade estável), contadores
+/// locais e as versões conhecidas de outros nós. Wire "CRDT" v1:
+/// `magic | ver u8 | node_id u8 | local u64le | own u64le | n u16le +
+/// (node u8 + version u64le)*`. `decode` nunca panics (bounds-checked).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CrdtState {
+    pub node_id: u8,
+    pub local_version: u64,
+    pub own_writes: u64,
+    pub node_versions: Vec<(u8, u64)>,
+}
+
+const CRDT_MAGIC: &[u8; 4] = b"CRDT";
+const CRDT_VERSION: u8 = 1;
+
+impl CrdtState {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(16 + self.node_versions.len() * 9);
+        out.extend_from_slice(CRDT_MAGIC);
+        out.push(CRDT_VERSION);
+        out.push(self.node_id);
+        out.extend_from_slice(&self.local_version.to_le_bytes());
+        out.extend_from_slice(&self.own_writes.to_le_bytes());
+        out.extend_from_slice(&(self.node_versions.len() as u16).to_le_bytes());
+        for &(n, v) in &self.node_versions {
+            out.push(n);
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        out
+    }
+
+    pub fn decode(data: &[u8]) -> Result<Self, &'static str> {
+        if data.len() < 15 || &data[0..4] != CRDT_MAGIC {
+            return Err("bad crdt magic");
+        }
+        if data[4] != CRDT_VERSION {
+            return Err("bad crdt version");
+        }
+        let node_id = data[5];
+        let local_version = u64::from_le_bytes(
+            data.get(6..14).ok_or("trunc crdt local")?.try_into().map_err(|_| "crdt local")?,
+        );
+        let own_writes = u64::from_le_bytes(
+            data.get(14..22).ok_or("trunc crdt own")?.try_into().map_err(|_| "crdt own")?,
+        );
+        let mut off = 22;
+        let n = rd_u16(data, off).ok_or("trunc crdt n")? as usize;
+        off += 2;
+        let mut node_versions = Vec::with_capacity(n.min(4096));
+        for _ in 0..n {
+            let node = *data.get(off).ok_or("trunc crdt node")?;
+            off += 1;
+            let end = off.checked_add(8).ok_or("crdt off")?;
+            let b = data.get(off..end).ok_or("trunc crdt v")?;
+            let v = u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]);
+            off += 8;
+            node_versions.push((node, v));
+        }
+        Ok(CrdtState {
+            node_id,
+            local_version,
+            own_writes,
+            node_versions,
+        })
+    }
+}
+
 impl CrdtMemorySync {
     pub const fn new(node_id: u8) -> Self {
         Self {
@@ -387,6 +455,51 @@ impl CrdtMemorySync {
             last_sync_at: None,
             active: false,
         }
+    }
+
+    /// node_id local (identidade estável, nunca confundida com memory_id).
+    pub fn node_id(&self) -> u8 {
+        self.node_id
+    }
+
+    /// Clock completo conhecido (próprio + relayado) — anti-entropy de
+    /// estado (P0-7): cada ronda anuncia o que SABE, não só as escritas
+    /// próprias, para que versões atravessem nós intermediários (gossip).
+    /// Ordem determinística: próprio primeiro, depois node_versions.
+    pub fn announce(&self) -> Vec<(u8, u64)> {
+        let mut out = Vec::with_capacity(self.node_versions.len() + 1);
+        out.push((self.node_id, self.local_version));
+        out.extend(self.node_versions.iter().copied());
+        out
+    }
+
+    /// O que um peer deve informar como "o que eu conheço" num pedido de
+    /// delta (`missing_after` espera o clock do peer).
+    pub fn known_clock(&self) -> Vec<(u8, u64)> {
+        self.announce()
+    }
+
+    /// Estado durável (P0-11): serializa node_id + contadores + versões
+    /// conhecidas — um nó reiniciado restaura com `restore` e não regride.
+    pub fn state(&self) -> CrdtState {
+        CrdtState {
+            node_id: self.node_id,
+            local_version: self.local_version,
+            own_writes: self.own_writes,
+            node_versions: self.node_versions.clone(),
+        }
+    }
+
+    /// Restaura estado durável. Retorna `false` (e NÃO altera nada) se o
+    /// estado pertence a outro node_id — nunca adota identidade alheia.
+    pub fn restore(&mut self, s: CrdtState) -> bool {
+        if s.node_id != self.node_id {
+            return false;
+        }
+        self.local_version = s.local_version;
+        self.own_writes = s.own_writes;
+        self.node_versions = s.node_versions;
+        true
     }
 
     /// Versão local atual.
@@ -1161,31 +1274,43 @@ mod tests {
             n
         }
 
-        /// Uma ronda de telepatia no mesh. `dup` injeta cada pacote 2x
-        /// (teste de duplicata). Retorna docs aplicados no pull.
-        fn round(&mut self, now: u64, dup: bool) -> Result<usize, SgdbError> {
+        /// Uma ronda de ANTI-ENTROPY no mesh. `dup` injeta cada anúncio 2x
+        /// (teste de duplicata). Retorna records aplicados no pull.
+        ///
+        /// 1. Cada nó ANUNCIA o clock completo (próprio + relayado) — as
+        ///    versões atravessam nós intermediários (gossip, P0-7).
+        /// 2. Cada nó aplica os anúncios recebidos (veredicto por versão).
+        /// 3. Pull DIRECIONADO: cada versão que `src` conhece é reconciliada
+        ///    em `dst` via `merge_remote` (idempotente — Duplicate quando
+        ///    nada mudou; Applied quando o doc é novo OU o side-metadata
+        ///    avançou).
+        fn round(&mut self, _now: u64, dup: bool) -> Result<usize, SgdbError> {
             let n = self.nodes.len();
-            let mut outboxes: Vec<Vec<(u8, u64)>> = vec![Vec::new(); n];
-            // TX
+            // clocks PRÉ-RONDA: o que cada nó sabia ANTES desta ronda. O pull
+            // mede a faixa faltante contra isso — se medisse contra o clock
+            // já atualizado (passo 2), a lacuna "sumiria" e nada seria puxado.
+            let pre_clocks: Vec<Vec<(u8, u64)>> =
+                (0..n).map(|i| self.nodes[i].crdt.known_clock()).collect();
+            // 1) anúncios
+            let mut outboxes: Vec<Vec<(u8, u64)>> = Vec::with_capacity(n);
             for i in 0..n {
-                let mut t = FanOut(&mut outboxes[i]);
-                self.nodes[i].crdt.sync(now, &mut t)?;
+                outboxes.push(self.nodes[i].crdt.announce());
             }
-            // RX
+            // 2) entrega por arestas + merge de versões
             for j in 0..n {
-                let mut recv = Vec::new();
                 for i in 0..n {
-                    if i != j && self.edges[i][j] {
-                        recv.extend(outboxes[i].iter().copied());
+                    if i == j || !self.edges[i][j] {
+                        continue;
+                    }
+                    for &(node, v) in &outboxes[i] {
                         if dup {
-                            recv.extend(outboxes[i].iter().copied());
+                            let _ = self.nodes[j].crdt.apply_remote_version(node, v);
                         }
+                        let _ = self.nodes[j].crdt.apply_remote_version(node, v);
                     }
                 }
-                let mut t = FanIn(recv);
-                self.nodes[j].crdt.sync(now, &mut t)?;
             }
-            // pull de records ao longo das arestas (i→j: src = nodes[i], dst = nodes[j])
+            // 3) pull/reconciliação por versão
             let mut applied = 0;
             for i in 0..n {
                 for j in 0..n {
@@ -1194,10 +1319,10 @@ mod tests {
                     }
                     if i < j {
                         let (l, r) = self.nodes.split_at_mut(j);
-                        applied += pull_missing(&mut l[i].db, &mut r[0].db)?;
+                        applied += pull_delta(&mut l[i], &mut r[0], &pre_clocks[j])?;
                     } else {
                         let (l, r) = self.nodes.split_at_mut(i);
-                        applied += pull_missing(&mut r[0].db, &mut l[j].db)?;
+                        applied += pull_delta(&mut r[0], &mut l[j], &pre_clocks[j])?;
                     }
                 }
             }
@@ -1213,55 +1338,54 @@ mod tests {
         }
     }
 
-    /// Transporte de saída: acumula TX (RX vazio).
-    struct FanOut<'a>(&'a mut Vec<(u8, u64)>);
-    impl Transport for FanOut<'_> {
-        fn send_crdt(&mut self, n: u8, v: u64) -> Result<(), SgdbError> {
-            self.0.push((n, v));
-            Ok(())
-        }
-        fn send_delta(&mut self, n: u8, v: u64, _p: &[u8]) -> Result<(), SgdbError> {
-            self.0.push((n, v));
-            Ok(())
-        }
-        fn recv_crdt(&mut self) -> Vec<(u8, u64)> {
-            Vec::new()
-        }
-    }
-
-    /// Transporte de entrada: entrega pacotes recebidos (TX descartado — o
-    /// TX da fase RX é rate-limited pela mesma `now` da fase TX).
-    struct FanIn(Vec<(u8, u64)>);
-    impl Transport for FanIn {
-        fn send_crdt(&mut self, _n: u8, _v: u64) -> Result<(), SgdbError> {
-            Ok(())
-        }
-        fn recv_crdt(&mut self) -> Vec<(u8, u64)> {
-            core::mem::take(&mut self.0)
-        }
-    }
-
-    /// Pull/diff: exporta cada record de `src` e `merge_remote` em `dst` — o
-    /// merge decide Applied/Stale/Duplicate/Conflict (idempotente).
-    fn pull_missing(src: &mut Sgdb, dst: &mut Sgdb) -> Result<usize, SgdbError> {
-        let mut n = 0;
-        for layer in [
-            MemoryLayer::L2EpisodicShort,
-            MemoryLayer::L3EpisodicLong,
-            MemoryLayer::L4Semantic,
-            MemoryLayer::L5Procedural,
-            MemoryLayer::L7Identity,
-        ] {
-            let prefix = format!("md/{}/", layer.as_str());
-            for (sk, _) in src.scan_prefix(&prefix)? {
-                if let Ok(Some(rec)) = src.export_record(&sk) {
-                    if dst.merge_remote(rec)? == MergeVerdict::Applied {
-                        n += 1;
+    /// Anti-entropy: para cada versão que `src` conhece (anúncio), reconcilia
+    /// em `dst` SOMENTE a faixa causal faltante — `known(dst)+1..=v` por nó
+    /// (o anúncio anuncia o MÁXIMO; um peer que entra depois precisa de toda
+    /// a série). Os records vêm do `clock_index` (vínculo versão ↔ docs) +
+    /// o companion de texto L2/L4. `merge_remote` é idempotente (Duplicate
+    /// quando nada mudou) — rondas repetidas não reescrevem.
+    ///
+    /// `dst_pre` = o clock que `dst` conhecia ANTES da ronda (parâmetro: o
+    /// `known_clock()` corrente já reflete os anúncios aplicados no passo 2).
+    fn pull_delta(
+        src: &mut MeshNode,
+        dst: &mut MeshNode,
+        dst_pre: &[(u8, u64)],
+    ) -> Result<usize, SgdbError> {
+        let src_clock = src.crdt.announce();
+        let mut applied = 0;
+        for &(node, v) in &src_clock {
+            // nunca puxa a própria versão nem heartbeats vazios
+            if node == dst.crdt.node_id() || v == 0 {
+                continue;
+            }
+            let known = dst_pre
+                .iter()
+                .find(|(n, _)| *n == node)
+                .map(|(_, k)| *k)
+                .unwrap_or(0);
+            if v <= known {
+                continue;
+            }
+            for c in (known + 1)..=v {
+                for sk in src.db.keys_for_clock(node, c) {
+                    if let Ok(Some(rec)) = src.db.export_record(&sk) {
+                        if dst.db.merge_remote(rec)? == MergeVerdict::Applied {
+                            applied += 1;
+                        }
+                    }
+                    let companion = sk.replacen("/L4/", "/L2/", 1);
+                    if companion != sk {
+                        if let Ok(Some(rec)) = src.db.export_record(&companion) {
+                            if dst.db.merge_remote(rec)? == MergeVerdict::Applied {
+                                applied += 1;
+                            }
+                        }
                     }
                 }
             }
         }
-        Ok(n)
+        Ok(applied)
     }
 
     fn emb16(seed: u64) -> Vec<f32> {
@@ -1392,5 +1516,116 @@ mod tests {
         assert_eq!(m.doc_count(0), 4);
         assert_eq!(m.doc_count(1), 4);
         assert_eq!(m.nodes[2].crdt.node_versions, vec![(1, 1), (2, 1)]);
+    }
+
+    #[test]
+    fn crdt_state_roundtrip_and_restore() {
+        // serialização durável (P0-11): encode/decode preserva tudo
+        let mut a = CrdtMemorySync::new(7);
+        a.record_change();
+        a.record_change(); // v2 local
+        assert_eq!(
+            a.apply_remote_version(3, 5),
+            MergeVerdict::Conflict,
+            "7 tem estado próprio → versão alheia nova = conflito preservado"
+        );
+        let s = a.state();
+        let bytes = s.encode();
+        assert_eq!(&bytes[0..4], b"CRDT");
+        let dec = CrdtState::decode(&bytes).unwrap();
+        assert_eq!(dec, s);
+        // restore em nó NOVO com o mesmo node_id recupera o clock (sem regressão)
+        let mut b = CrdtMemorySync::new(7);
+        assert!(b.restore(dec.clone()));
+        assert_eq!(b.local_version(), 2);
+        assert_eq!(b.own_writes, 2);
+        assert_eq!(b.node_versions, vec![(3, 5)]);
+        // identidade é inviolável: estado de outro nó é RECUSADO
+        let mut c = CrdtMemorySync::new(9);
+        assert!(!c.restore(dec));
+        assert_eq!(c.local_version(), 0, "nada deve ser adotado");
+        // decode malformado/truncado nunca panics
+        for n in [0usize, 1, 4, 14, 15, 16, 21, 22, 23, bytes.len() - 1] {
+            let mut t = bytes.clone();
+            t.truncate(n);
+            assert!(CrdtState::decode(&t).is_err(), "truncado em {n} deveria errar");
+        }
+        assert!(CrdtState::decode(b"XXXX").is_err());
+        assert!(CrdtState::decode(&[]).is_err());
+    }
+
+    #[test]
+    fn restart_preserves_clock_no_regression() {
+        // A e B convergem; A "reinicia" (Sgdb novo + crdt novo) e restaura o
+        // estado durável via side-table `sys/crdt/` — o relógio não regride,
+        // versões não são re-anunciadas como novas e docs não re-puxam.
+        let mut m = Mesh::new(&[1, 2]);
+        m.connect(0, 1);
+        m.remember(0, "m1", "memoria um", &emb16(1));
+        m.remember(0, "m2", "memoria dois", &emb16(2));
+        m.converge(4).unwrap();
+        assert_eq!(m.doc_count(1), 4, "B deveria ter as 2 memórias");
+        // persiste o estado do CRDT de A na side-table (escape hatch)
+        let st = m.nodes[0].crdt.state().encode();
+        m.nodes[0].db.write_side_bytes("sys/crdt/node1", &st).unwrap();
+        // restart de A: Sgdb NOVO (mesmo backend InMemory? não — InMemory novo
+        // perde docs; o teste do REINÍCIO é sobre o relógio do CRDT, então o
+        // db novo é vazio e o crdt restaura o clock: versões antigas voltam
+        // como Duplicate/Stale, nunca como Applied novo)
+        let mut fresh = CrdtMemorySync::new(1);
+        let restored = CrdtState::decode(&m.nodes[0].db.read_side_bytes("sys/crdt/node1").unwrap().unwrap()).unwrap();
+        assert!(fresh.restore(restored));
+        assert_eq!(fresh.local_version(), 2, "clock do A preservado pós-restart");
+        // o RECEPTOR (B) que já conhecia (1,2) trata a reentrega pós-restart
+        // como Duplicate e a versão atrasada (1,1) como Stale — nada regride
+        let mut b_clock = CrdtMemorySync::new(2);
+        assert_eq!(b_clock.apply_remote_version(1, 2), MergeVerdict::Applied);
+        assert_eq!(b_clock.apply_remote_version(1, 2), MergeVerdict::Duplicate);
+        assert_eq!(b_clock.apply_remote_version(1, 1), MergeVerdict::Stale);
+        assert_eq!(b_clock.apply_remote_version(3, 0), MergeVerdict::Duplicate); // heartbeat
+        // anúncio pós-restart reflete o clock restaurado (o relay não re-infla)
+        assert_eq!(fresh.announce().first(), Some(&(1, 2)));
+    }
+
+    #[test]
+    fn versions_relay_through_intermediate_node() {
+        // gossip (P0-7): A escreve; C (relay) repassa versão + docs a B, que
+        // NUNCA fala com A. Anti-entropy atravessa nós intermediários.
+        let mut m = Mesh::new(&[1, 2, 3]);
+        m.connect(0, 2); // A↔C
+        m.connect(1, 2); // B↔C — A e B NUNCA conectados
+        m.remember(0, "relay1", "memoria do A", &emb16(7));
+        m.converge(3).unwrap();
+        // C aprendeu e repassou: B tem a versão de A e os docs
+        assert_eq!(m.nodes[2].crdt.node_versions, vec![(1, 1)]);
+        assert_eq!(m.nodes[1].crdt.node_versions, vec![(1, 1)]);
+        assert_eq!(m.doc_count(1), 2, "B recebeu os docs via relay");
+        assert_eq!(m.l2_text(1, "relay1"), "memoria do A");
+        // B escreve também; A alcança através de C
+        m.remember(1, "relay2", "memoria do B", &emb16(8));
+        m.converge(3).unwrap();
+        assert_eq!(m.doc_count(0), 4, "A alcançou a memória de B via C");
+        assert_eq!(m.l2_text(0, "relay2"), "memoria do B");
+        // estado estacionário: rondas extras não aplicam nada
+        assert_eq!(m.converge(3).unwrap(), 0);
+    }
+
+    #[test]
+    fn directed_pull_fetches_full_version_range() {
+        // um peer que entra DEPOIS de várias escritas precisa de TODA a faixa
+        // causal 1..=v do autor, não só a última versão anunciada
+        let mut m = Mesh::new(&[1, 2]);
+        m.connect(0, 1);
+        m.remember(0, "v1", "primeira", &emb16(1));
+        m.remember(0, "v2", "segunda", &emb16(2));
+        m.remember(0, "v3", "terceira", &emb16(3));
+        // B NÃO participou de nenhuma ronda — entra agora (clock zerado)
+        m.round(0, false).unwrap();
+        assert_eq!(m.doc_count(1), 6, "B deveria puxar as 3 memórias (L4+L2)");
+        assert_eq!(m.nodes[1].crdt.node_versions, vec![(1, 3)]);
+        assert_eq!(m.l2_text(1, "v1"), "primeira");
+        assert_eq!(m.l2_text(1, "v3"), "terceira");
+        // idempotente: segunda ronda aplica nada
+        assert_eq!(m.round(0, false).unwrap(), 0);
     }
 }

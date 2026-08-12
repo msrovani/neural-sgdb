@@ -36,10 +36,10 @@ filesystem, no external runtime.
 
 ## Status
 
-**v0.6** ✅ — dual-mode (`no_std` + `std`, zero dependencies):
+**v0.7** ✅ — dual-mode (`no_std` + `std`, zero dependencies):
 
-- `cargo test` on host: **120 tests + doc-test** (143 + doc-test with `p2p`,
-  81 + doc-test with `--no-default-features`)
+- `cargo test` on host: **126 tests + doc-test** (153 + doc-test with `p2p`,
+  86 + doc-test with `--no-default-features`)
 - `cargo check --no-default-features --target x86_64-unknown-none`: **clean**
 - **Recall stack**: BQ coarse → FP32 rescore, SIMD hamming (AVX-512/AVX2/
   scalar), auto-oversample by dimensionality, `recall_oversampled`,
@@ -60,8 +60,10 @@ filesystem, no external runtime.
   conflict preservation + delta sending (`p2p`), **replication units**
   (`MemoryRecord` carries doc + state + validity + provenance; `export`/
   `import`/`merge_remote`), **per-layer merge policy** (L2/L3 multi-value,
-  L4 causal-LWW-with-history, L0/L1 local-only) and a **3-node
-  partition/rejoin test harness**
+  L4 causal-LWW-with-history, L0/L1 local-only), a **3-node
+  partition/rejoin test harness**, and **anti-entropy** (v0.7): clock
+  announce/gossip through relay nodes, directed pull of the missing causal
+  range (`keys_for_clock`), durable `CrdtState` for restart-safe clocks
 - **Interfaces**: MCP server with `memory://{layer}/{key}` resources +
   `nextCursor` pagination + tool annotations; `cargo run --release
   --example stress` (100k-op stress) and `--example bench`

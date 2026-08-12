@@ -296,9 +296,10 @@ impl Sgdb {
         let mut doc = MemoryDoc::new(MemoryLayer::L4Semantic, key, payload);
         doc.bitvec = Some(quantize_f32(emb));
         let _ = self.engine.put(doc)?;
-        // companion texto (para Hit.text / rag_context)
+        // companion texto (para Hit.text / rag_context): MESMO contador causal
+        // do write (put_companion, v0.7) — um write lógico = uma versão.
         let tdoc = MemoryDoc::new(MemoryLayer::L2EpisodicShort, key, text.as_bytes().to_vec());
-        let _ = self.engine.put(tdoc)?;
+        let _ = self.engine.put_companion(tdoc)?;
         Ok(())
     }
 
@@ -660,6 +661,24 @@ impl Sgdb {
     /// que viajam no record. Indexa ART/BQ/lexical como qualquer put.
     pub fn import_record(&mut self, rec: MemoryRecord) -> Result<u64, SgdbError> {
         self.engine.import_record(rec)
+    }
+
+    /// Storage keys cujo relógio tem `counter_of(node) == counter` — o
+    /// vínculo versão CRDT ↔ docs (anti-entropy, P0-7). Base do pull
+    /// DIRECIONADO por versões faltantes; derivado e reconstruível.
+    pub fn keys_for_clock(&self, node: u8, counter: u64) -> Vec<String> {
+        self.engine.keys_for_clock(node, counter)
+    }
+
+    /// Acesso cru a uma side-table (escape hatch para metadados de
+    /// replicação/host, ex: `sys/crdt/` do estado durável — P0-11). NÃO é
+    /// uma API pública de leitura de memória.
+    pub fn read_side_bytes(&mut self, key: &str) -> Result<Option<Vec<u8>>, SgdbError> {
+        self.engine.read_side_bytes(key)
+    }
+
+    pub fn write_side_bytes(&mut self, key: &str, bytes: &[u8]) -> Result<(), SgdbError> {
+        self.engine.write_side_bytes(key, bytes)
     }
 
     /// Merge de um record REMOTO sob a política da camada (P0-6). Veredicto:

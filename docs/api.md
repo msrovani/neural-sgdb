@@ -307,9 +307,27 @@ resolution to the cognitive layer (roadmap Phase 14/15).
 - Version 0 packets are ignored (a relay node's heartbeat never creates
   phantom conflicts); `local_version` counts only own writes.
 
-Honest boundary: this is **version sync + record transfer**, not a full
-anti-entropy protocol yet — versions/records propagate along direct links,
-and replication state is not durable across restarts (v0.8 milestone).
+## Anti-entropy (v0.7 — Phase 6)
+
+- **`CrdtMemorySync::announce()` / `known_clock()` / `node_id()`** — the
+  full known clock (own version + relayed peer versions) is what each node
+  publishes each round; versions and records cross intermediate nodes
+  (gossip/relay).
+- **`Sgdb::keys_for_clock(node, counter)`** — derived index `(node, counter)
+  → storage keys`: the docs of a specific causal version, the basis of the
+  directed pull. Rebuilt on `rebuild_indices`, removed on delete.
+- **Directed pull of the missing causal range** — for each announced
+  `(node, v)` the receiver pulls only `known+1..=v`, so a peer joining after
+  several writes fetches the whole series and repeated sync is idempotent.
+- **`CrdtState` (`state()` / `restore()`)** — durable replication metadata:
+  node identity, local counters, known peer versions (wire `CRDT`,
+  bounds-checked). `restore` refuses a foreign node_id. Persist via
+  `Sgdb::read_side_bytes`/`write_side_bytes` (e.g. `sys/crdt/…`) so a
+  restarted node does not regress its clock.
+- **One logical write = one causal version** — `remember_semantic` writes its
+  L2 text companion under the same counter as L4 (`put_companion`), keeping
+  the CRDT version aligned with the per-doc clock (without this the directed
+  pull loses companion docs).
 
 ## What does NOT go public
 
