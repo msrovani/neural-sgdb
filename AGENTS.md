@@ -41,8 +41,9 @@ Apache-2.0**. OS interop via byte-identical NMD1 and TKLV formats.
    updating the OS.
 6. **Seams, not globals** — clock via `now: u64`, SIMD via `cpu_caps()`/
    `set_cpu_caps()`, log via `sgdb_log!`. No global engine statics.
-7. **Verification** — `cargo test` (31+1 default, 35+1 `--features p2p`) and
-   `cargo check` (std + no_std) before committing.
+7. **Verification** — `cargo test` (120+1 default, 143+1 `--features p2p`,
+   81+1 `--no-default-features`) and `cargo check` (std + no_std) before
+   committing.
 
 ## Quick API
 
@@ -58,6 +59,7 @@ db.remember_exchange("user", "response")?;             // L1 + L2
 db.remember_semantic("k", "text", &emb)?;              // L4 BQ (emb: &[f32])
 db.remember_fact("fact", now)?;                        // L3 timestamped
 db.checkpoint()?; db.prune_working_ram()?;             // flush L0/L1 RAM
+db.delete("md/L4/k1")?;                     // deleção FÍSICA (tombstone + índices)
 
 // recall (requires caller-supplied embeddings)
 let hits: Vec<Hit> = db.recall(&query_emb, 5)?;        // coarse BQ + FP32 rescore
@@ -75,12 +77,21 @@ cargo run --release --example mcp_server   # MCP server for AI agents
 ## Running tests
 
 ```bash
-cargo test                                 # 31+1 tests (InMemory/FileStorage/TickvFile)
-cargo test --features p2p                  # 35+1 (includes CRDT sync)
+cargo test                                 # 120+1 tests (InMemory/FileStorage/TickvFile)
+cargo test --features p2p                  # 143+1 (includes CRDT sync + mesh harness)
+cargo test --no-default-features           # 81+1 (no_std core, host test harness)
 cargo check --no-default-features --target x86_64-unknown-none   # no_std gate
 ```
 
 ## Repo-specific gotchas
+
+- **no_std test matrix**: `cargo test --no-default-features` (host) é o gate de
+  TESTE no_std (compila os testes do lib sem `std`); `cargo check
+  --no-default-features --target x86_64-unknown-none` gate o lib. NÃO rode
+  `--tests`/`--all-targets` no target bare-metal: dev-deps (`serde_json` →
+  `memchr`) não compilam para ele — falha é do toolchain, não do crate.
+  Exemplos que precisam de arquivo têm `required-features = ["file-storage"]`
+  (bench, stress) — sem isso `cargo test --no-default-features` quebra.
 
 - **MCP server** (`examples/mcp_server.rs`): stdout JSON-RPC ONLY (logs →
   stderr), one message per `\n` line, `2025-11-25` handshake, do not gate tools
@@ -98,8 +109,9 @@ cargo check --no-default-features --target x86_64-unknown-none   # no_std gate
   only wins under churn (tombstones) — all-live is parity.
 - **CRDT** (`src/crdt.rs`): rate-limit uses `Option<u64>` (the 0 sentinel fails
   on first sync at now=0); `UdpTransport` is an unauthenticated demo — use a
-  signed transport in production. `set_cpu_caps` must rearm `SELECTED`
-  (bughunt #9).
+  signed transport in production (`SignedEnvelope` é o formato de envelope
+  autenticável p/ transportes assinados; o core não implementa crypto).
+  `set_cpu_caps` must rearm `SELECTED` (bughunt #9).
 - **Storage CRC** (`src/storage.rs`): FileStorage CRC covers **key‖val**, not
   just the key — bit rot in values must be detected (bughunt #2). Append uses
   a **persistent lazy handle** (perf ~38x): `compact()` must drop it BEFORE the
@@ -114,6 +126,11 @@ cargo check --no-default-features --target x86_64-unknown-none   # no_std gate
   `k`. `Hit.dist` fallback hamming is normalized to 0..1 (bughunt #11).
 - **clamp** (`src/sgdb.rs`): truncate at a char boundary — `&s[..max]` panics
   mid multi-byte char (bughunt #7).
+- **`Sgdb::delete`** (`src/sgdb.rs`/`engine.rs`): deleção FÍSICA (tombstone +
+  side-tables `sys/state|validity` + ART/lexical/id→sk). O BQ é append-only
+  flat — entradas órfãs ficam inertes: o recall pula candidatos cujo doc
+  sumiu (`Ok(None) | Err(_) => continue`), então nunca ressuscita memória
+  deletada; rebuild/compactação reclama o espaço.
 - **ART** (`src/art.rs`): `delete` now reclaims nodes (no leaf tombstone) —
   `delete_rec` returns `Option<Box<Node>>` (None = empty subtree) and shrinks
   256→48→16→4 when `n` drops. Match on `*node` (Box doesn't auto-deref in
@@ -147,9 +164,53 @@ cargo check --no-default-features --target x86_64-unknown-none   # no_std gate
 - **Validade temporal** (`sys/validity/`, engine/sgdb): `set_validity`/
   `invalidate`/`validity_at`/`recall_at` — **invalidar-não-deletar** (Zep/
   Graphiti); side-table 16B `from|until u64le`, NMD1 intacto.
+- **Identidade/proveniência (v0.6)** (`sys/meta/`, engine/sgdb): `MemoryMeta`
+  (memory_id 32-hex, source, confidence, importance, created_tick,
+  parent_ids, clock_overflow) é side-table — o NMD1 **não mudou** (decisão de
+  formato: sem version bump; `docs/api.md` §Format decision). Regra de
+  identidade: **memory_id é estável por chave** — overwrite preserva
+  memory_id/source/created; doc replicado com `meta` preserva a identidade
+  do criador; re-criação pós-delete ganha id NOVO (watermark do contador
+  próprio, reconstruído no rebuild de docs 72B + metas `sys/meta/`).
+  Registros pré-v0.6 → `meta: None` até re-put/`set_importance`.
+- **Clock dinâmico (v0.6)**: `VectorClock` = 8 nós fixos + `overflow`
+  (bounded 248). O NMD1 serializa SÓ 72B — overflow persiste em
+  `sys/meta/` e é re-fundido no `get` (`attach_meta`). `encode`/`decode` do
+  clock **não mudaram** (golden test intacto); quem mudar semântica precisa
+  cobrir fixos + overflow (eq/happens_before/merge usam `iter_nodes`).
+- **`Hit.provenance` (v0.6)**: recall* expõe `Option<HitProvenance>`
+  (memory_id/layer/state/source/confidence/importance/created/parents).
+  `set_importance`/`set_confidence`: fora de 0..1 é clampado, não-finita é
+  `SgdbError::Invalid` (variante nova — atualizar matches exaustivos).
 - **CRDT delta** (`src/crdt.rs`): `record_change` acumula `pending` deltas;
   `sync` envia só o não-visto pelo peer via `send_delta` (trait default cai p/
   `send_crdt`); `pending_deltas()` mede. Wire = protocol-interno (OK mudar).
+- **Replicação v0.6** (`memory_doc.rs`/`engine.rs`/`sgdb.rs`/`crdt.rs`):
+  `MemoryRecord` (doc NMD1 + state + validade + meta, wire `MDR1`) é a
+  UNIDADE de replicação — fecha a contradição #2 (side-tables viajam).
+  `import_record` **não ticka o relógio local** (receptor nunca vira autor)
+  e deriva identidade do AUTOR do relógio p/ docs pré-v0.6 (nunca
+  `self.node_id`). `merge_remote` (p2p): mesmo clock+payload+bitvec com
+  estado/validade iguais → Duplicate; conteúdo igual mas side-metadata novo →
+  reimporta (Applied) para propagar supersede/validade; clocks concorrentes →
+  **Conflict, nunca sobrescreve**. `MemoryDelta`/`MemorySnapshot` agora
+  carregam `Vec<MemoryRecord>` (codecs `MDLT`/`MSNP` bounds-checked) —
+  substituem os stubs `docs: Vec<Vec<u8>>` (quebra de API documentada).
+- **MergePolicy (v0.6)** (`crdt.rs`): tabela camada→política explícita
+  (L0/L1/L6 não aceitam remoto → `MergeVerdict::Rejected`).
+- **Hardening de versões (v0.6)**: `apply_remote_version` ignora `v==0`
+  (heartbeat de relay não cria conflito fantasma) e **não adota** versão de
+  peer em `local_version` (senão um nó fresh re-broadcasta versão alheia como
+  autoria). `missing_after(peer)` devolve a faixa causal faltante (watermark
+  por nó — versões são contíguas por construção).
+- **Mesh harness** (`crdt.rs` tests, feature p2p): `Mesh` com arestas
+  direcionais (partição = sem aresta), `round()` = TX→RX→pull via
+  `merge_remote`; use `split_at_mut` para pares (i,j) (borrow checker não vê
+  `i != j`). Cenários: triângulo, partition/rejoin preservando concorrentes,
+  duplicata/atraso idempotente, nó novo alcançando tudo.
+- **`MemoryRecord::decode`**: cuidado com flags — cada flag (vflag/metaflag)
+  avança `off` mesmo no ramo 0 (bug real: metaflag=0 não avançava e o NMD1
+  começava no byte errado).
 - **ART** (`src/art.rs`): `scan_prefix_stats` expõe nós visitados (pruning de
   range — só desce em filhos que casam o prefixo). `MCP` (example): resources
   `memory://{layer}/{key}`, `nextCursor` paginação opaca, annotations

@@ -112,6 +112,26 @@ impl Sgdb {
     pub fn prune_working_ram(&mut self) -> Result<usize, SgdbError>;
     pub fn backend(&self) -> &'static str;
     pub fn ready(&self) -> bool;
+
+    // ---- memory identity + provenance (v0.6) ----
+    /// Stable identity of the memory at `key` (32-hex). `None` if no doc or
+    /// pre-v0.6 record without meta yet (a re-put / `set_importance` assigns).
+    pub fn memory_id(&mut self, key: &str) -> Result<Option<String>, SgdbError>;
+    /// Full metadata: memory_id, source, confidence, importance,
+    /// created_tick, parent_ids, clock_overflow.
+    pub fn meta(&mut self, key: &str) -> Result<Option<MemoryMeta>, SgdbError>;
+    /// Importance [0..1] (normalized; out-of-range clamped, non-finite
+    /// rejected). Persistent, queryable, modifiable (Phase 1.3).
+    pub fn set_importance(&mut self, key: &str, importance: f32) -> Result<(), SgdbError>;
+    /// Confidence [0..1] (same contract as importance).
+    pub fn set_confidence(&mut self, key: &str, confidence: f32) -> Result<(), SgdbError>;
+
+    // ---- physical deletion (distinct from logical state) ----
+    /// Tombstone + removal from derived indexes (ART/lexical/id→sk) and
+    /// side-tables (`sys/state/`, `sys/validity/`, `sys/meta/`). The BQ is a
+    /// derived, append-only index: orphan candidates are skipped at recall,
+    /// never resurrected. Idempotent (second call = `false`).
+    pub fn delete(&mut self, key: &str) -> Result<bool, SgdbError>;
 }
 
 // ---- recall-time index extras ----
@@ -133,8 +153,40 @@ pub struct Hit {
     pub key: String,
     pub text: String,
     pub dist: f32,   // 1-cos distance (0 = identical)
+    /// Provenance (v0.6): `None` for pre-v0.6 records without meta yet.
+    pub provenance: Option<HitProvenance>,
 }
+
+pub struct HitProvenance {
+    pub memory_id: String,
+    pub layer: MemoryLayer,
+    pub state: MemoryState,
+    pub source: u8,
+    pub confidence: f32,
+    pub importance: f32,
+    pub created_tick: u64,
+    pub parent_ids: Vec<String>,
+}
+
+pub struct MemoryMeta { /* memory_id, source, confidence, importance,
+    created_tick, parent_ids, clock_overflow — persisted in `sys/meta/` */ }
+
+/// Deterministic memory id: FNV-1a 128 over (node_id, created_tick, layer,
+/// key) → 32 hex chars. Assigned once at creation, never re-derived.
+pub fn generate_memory_id(node_id: u8, created_tick: u64, layer: MemoryLayer,
+    key: &str) -> String;
 ```
+
+## Format decision (v0.6)
+
+**NMD1 stays v1, byte-identical with `neural-os-core`.** Identity/provenance
+metadata (`MemoryMeta`, incl. VectorClock overflow beyond 8 nodes) is NOT
+serialized into the NMD1 record; it lives in the `sys/meta/<sk>` side-table
+(the same pattern already proven by `sys/state/` and `sys/validity/`), is
+attached by the engine on `get`, and travels with the doc on replication
+(`Sgdb::put` preserves `doc.meta`). No format version bump was needed;
+migration of pre-v0.6 records is lazy (identity is assigned on next put or
+via `set_importance`/`set_confidence`).
 
 ## Injectable seams
 
@@ -187,19 +239,59 @@ and update the golden tests in the same commit.
 | `simd-runtime` | `cpu_caps()` auto-detect via `std::arch::is_x86_feature_detected!` | ✅ |
 | `p2p` | CRDT sync (`CrdtMemorySync`, `Transport`, `UdpTransport`) | ❌ opt-in |
 
-`mcp_server` and `bench` are examples (dev-dep `serde_json`), not features.
+`mcp_server` and `bench`/`stress` are examples (dev-dep `serde_json`);
+`bench` and `stress` require `file-storage` (`required-features` in
+Cargo.toml).
 
-## CRDT per-layer merge policy (P3 — roadmap)
+**CRDT transport security boundary:** the core is transport-agnostic
+(`trait Transport`) and implements NO cryptography. `SignedEnvelope`
+(payload + node identity + opaque `auth`) is the wire envelope for
+*authenticated* transports (HMAC/ed25519/TLS, verified outside the core); the
+shipped `UdpTransport` is an **unauthenticated development demo** that does
+not use it — replace in production.
 
-v0.1 uses symmetric LWW (last-write-wins) for all layers — correct for
-configuration/state records, but LWW can *erase* conflicting episodic memories
-that should coexist as perspectives or versions. Roadmap v0.2 design:
+## CRDT per-layer merge policy (IMPLEMENTED v0.6)
 
-- LWW only for config/state records (L7 identity, `sys/*`)
-- multi-value register for episodic memories (L2/L3) — coexist on conflict
-- causal merge with the existing `VectorClock` (8 nodes)
-- per-layer reconciliation: L1 replaces, L2/L3 accumulate, L4 reindexes,
-  L7 requires HITL/trust
+`MergePolicy::for_layer(layer)` is the single point of truth (explicit table,
+not one universal LWW rule):
+
+| Layer | Policy | Semantics |
+|---|---|---|
+| L0 Sensory | `LocalOnly` | strictly local — remote never adopted (`Rejected`) |
+| L1 Working | `LocalWorking` | local-only working memory |
+| L2/L3 Episodic | `MultiValueRegister` | concurrent versions BOTH retained |
+| L4 Semantic | `CausalLwwWithHistory` | causally-dominant wins; older superseded |
+| L5 Procedural | `ControlledLww` | LWW with safeguards, history preserved |
+| L6 Reserved | `Reserved` | no merge semantics defined |
+| L7 Identity | `ControlledLww` | controlled identity state |
+
+The policy is consulted at two levels: version sync
+(`apply_remote_version_with_policy`; local layers return `MergeVerdict::Rejected`)
+and record merge (`Sgdb::merge_remote` — Applied/Stale/Duplicate/Conflict/
+Rejected). **Concurrent same-key memories are never silently overwritten** —
+`merge_remote` returns `Conflict`, preserves the local value and leaves the
+resolution to the cognitive layer (roadmap Phase 14/15).
+
+## Replication primitives (v0.6)
+
+- **`MemoryRecord`** — one memory as a unit: doc NMD1 + `MemoryState` +
+  validity window + `MemoryMeta` (identity/provenance). Wire `MDR1`,
+  bounds-checked decode (never panics).
+- **`Sgdb::export_record(key)` / `Sgdb::import_record(record)`** — export a
+  record with its side-tables; import WITHOUT ticking the local clock (the
+  receiver never becomes an author of someone else's memory). Pre-v0.6
+  records get a deterministic identity derived from the clock's author.
+- **`Sgdb::merge_remote(record)`** — policy-aware import (see table above).
+- **`MemoryDelta` / `MemorySnapshot`** — wire codecs (`MDLT`/`MSNP`) that
+  carry `Vec<MemoryRecord>`, replacing the pre-v0.6 stubs (`docs: Vec<u8>`).
+- **`CrdtMemorySync::missing_after(peer_versions)`** — the causal range a
+  peer lacks (what to request in a delta protocol).
+- Version 0 packets are ignored (a relay node's heartbeat never creates
+  phantom conflicts); `local_version` counts only own writes.
+
+Honest boundary: this is **version sync + record transfer**, not a full
+anti-entropy protocol yet — versions/records propagate along direct links,
+and replication state is not durable across restarts (v0.8 milestone).
 
 ## What does NOT go public
 

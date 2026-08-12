@@ -12,6 +12,8 @@ pub enum SgdbError {
     Storage(&'static str),
     /// Registro corrompido (CRC/parse).
     Corrupt,
+    /// Entrada fora de contrato (ex: importância não-finita; chave sem memória).
+    Invalid(&'static str),
 }
 
 impl core::fmt::Display for SgdbError {
@@ -19,6 +21,7 @@ impl core::fmt::Display for SgdbError {
         match self {
             SgdbError::Storage(m) => write!(f, "storage: {m}"),
             SgdbError::Corrupt => write!(f, "corrupt record"),
+            SgdbError::Invalid(m) => write!(f, "invalid: {m}"),
         }
     }
 }
@@ -851,7 +854,8 @@ mod tests {
         // escreve. Durability "Flushed" preservada (write_all + flush por put).
         let p = tmp_path("fz_lazy.db");
         {
-            let s = FileStorage::open(&p).unwrap();
+            // open sem usar o handle: só verifica que o arquivo NÃO é criado
+            let _s = FileStorage::open(&p).unwrap();
             assert!(!p.exists(), "open lazy não deve criar o arquivo");
         }
         {

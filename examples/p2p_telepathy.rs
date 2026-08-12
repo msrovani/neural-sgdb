@@ -15,7 +15,7 @@
 //! sua versão e replica o que falta. É a telepatia: memória, não pacotes.
 
 use neural_sgdb::{
-    CrdtMemorySync, InMemory, MemoryLayer, Sgdb, SgdbError, Transport,
+    CrdtMemorySync, InMemory, MemoryLayer, MemoryState, MergeVerdict, Sgdb, SgdbError, Transport,
 };
 
 /// Fila em memória entre dois nós (loopback). No mundo real: UDP/TLS/serial.
@@ -49,7 +49,6 @@ impl Transport for Pipe {
 
 /// Uma instância "viva": banco + relógio CRDT + fila de saída.
 struct Node {
-    id: u8,
     db: Sgdb,
     crdt: CrdtMemorySync,
     out: Pipe,
@@ -58,7 +57,6 @@ struct Node {
 impl Node {
     fn new(id: u8) -> Self {
         Node {
-            id,
             db: Sgdb::open(InMemory::new()).expect("open"),
             crdt: CrdtMemorySync::new(id),
             out: Pipe::default(),
@@ -72,8 +70,10 @@ impl Node {
     }
 }
 
-/// Replica de `src` para `dst` os docs que `dst` ainda não tem (diff por
-/// storage key). Idempotente — o CRDT de versões só dispara quando convém.
+/// Replica de `src` para `dst` via `MemoryRecord` (doc + estado + validade) e
+/// `merge_remote` (política por camada): aplica o que falta, reaplica
+/// side-metadata avançado, preserva conflitos. Idempotente — o CRDT de
+/// versões só dispara quando convém.
 fn replicate_missing(src: &mut Sgdb, dst: &mut Sgdb) -> Result<usize, SgdbError> {
     let mut n = 0;
     for layer in [
@@ -86,11 +86,13 @@ fn replicate_missing(src: &mut Sgdb, dst: &mut Sgdb) -> Result<usize, SgdbError>
         let prefix = format!("md/{}/", layer.as_str());
         let keys = src.scan_prefix(&prefix)?;
         for (sk, _) in keys {
-            let rel = sk.trim_start_matches(&prefix);
-            if let Ok(Some(doc)) = src.get(layer, rel) {
-                if dst.get(layer, rel)?.is_none() {
-                    dst.put(doc)?;
-                    n += 1;
+            if let Ok(Some(rec)) = src.export_record(&sk) {
+                match dst.merge_remote(rec)? {
+                    MergeVerdict::Applied => n += 1,
+                    MergeVerdict::Conflict => {
+                        eprintln!("[↔] conflito preservado em {sk} (camada superior resolve)");
+                    }
+                    _ => {}
                 }
             }
         }
@@ -172,6 +174,23 @@ fn main() -> Result<(), SgdbError> {
         texts_b.iter().any(|t| t.contains("instancia A")),
         "B deveria recuperar a memória de A via recall"
     );
+
+    // ── side-metadata viaja (P0-5): A supersede m1 e marca validade ──────
+    a.remember("m1b", "eu sou a instancia A, memoria um (revisada)", &emb(5))?;
+    a.db.supersede("md/L4/m1", "md/L4/m1b")?;
+    a.db.set_validity("md/L4/m1", 0, 2000)?;
+    a.crdt.record_change();
+    let (ab4, ba4) = telepathy_round(&mut a, &mut b, 600)?;
+    println!("[↔] ronda 4 (supersede + validade): A→B {ab4} doc(s), B→A {ba4} doc(s)");
+
+    // B vê o estado e a validade replicados (o record carrega as side-tables)
+    assert_eq!(b.db.get_state("md/L4/m1").unwrap(), MemoryState::Superseded);
+    assert!(b.db.validity_at("md/L4/m1", 1000).unwrap());
+    assert!(!b.db.validity_at("md/L4/m1", 2500).unwrap());
+    // lineage viaja: m1b tem m1 como pai (DAG causal)
+    let parents = b.db.meta("md/L4/m1b").unwrap().unwrap().parent_ids;
+    assert!(parents.contains(&a.db.memory_id("md/L4/m1").unwrap().unwrap()));
+    println!("[✓] estado/validade/lineage replicados em B (contradição #2 fechada)");
 
     println!("\nTelepatia OK — as duas instâncias convergiram via p2p.");
     Ok(())

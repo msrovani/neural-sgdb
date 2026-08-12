@@ -36,9 +36,10 @@ filesystem, no external runtime.
 
 ## Status
 
-**v0.5** ✅ — dual-mode (`no_std` + `std`, zero dependencies):
+**v0.6** ✅ — dual-mode (`no_std` + `std`, zero dependencies):
 
-- `cargo test` on host: **92 tests + doc-test** (102 + doc-test with `p2p`)
+- `cargo test` on host: **120 tests + doc-test** (143 + doc-test with `p2p`,
+  81 + doc-test with `--no-default-features`)
 - `cargo check --no-default-features --target x86_64-unknown-none`: **clean**
 - **Recall stack**: BQ coarse → FP32 rescore, SIMD hamming (AVX-512/AVX2/
   scalar), auto-oversample by dimensionality, `recall_oversampled`,
@@ -49,9 +50,18 @@ filesystem, no external runtime.
   persistent lazy handle ~38x, durability levels, atomic compaction) +
   `TickvFile` (byte-exact TKLV **with TKCK checkpoint fast-mount + GC/compact**
   + in-place `TKL\0` invalidation)
-- **Memory semantics**: 8 layers L0–L7, `MemoryState` lifecycle, temporal
-  validity window (`sys/validity/` — invalidate-not-delete), CRDT sync with
-  conflict preservation + delta sending (`p2p`), vector clock
+- **Memory semantics**: 8 layers L0–L7, `MemoryState` lifecycle (incl.
+  `Decayed`), temporal validity window (`sys/validity/` —
+  invalidate-not-delete), physical `Sgdb::delete` (tombstone + index
+  removal, distinct from logical state), **memory identity + provenance**
+  (`memory_id`, source, confidence, importance, parent_ids in `sys/meta/`,
+  exposed as `Hit.provenance`), **dynamic VectorClock** (8-node fast path +
+  bounded overflow registry, NMD1 stays byte-identical), CRDT sync with
+  conflict preservation + delta sending (`p2p`), **replication units**
+  (`MemoryRecord` carries doc + state + validity + provenance; `export`/
+  `import`/`merge_remote`), **per-layer merge policy** (L2/L3 multi-value,
+  L4 causal-LWW-with-history, L0/L1 local-only) and a **3-node
+  partition/rejoin test harness**
 - **Interfaces**: MCP server with `memory://{layer}/{key}` resources +
   `nextCursor` pagination + tool annotations; `cargo run --release
   --example stress` (100k-op stress) and `--example bench`
@@ -94,8 +104,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 More: `cargo run --release --example bench` (benchmarks), `--example stress`
 (100k-op stress), `--example mcp_server` (MCP), and **telepathy** —
 `cargo run --release --example p2p_telepathy --features p2p` exchanges
-memories between two `Sgdb` instances via CRDT version sync + doc pull
-(two instances converge with no central server). The crate doc
+memories between two `Sgdb` instances via CRDT version sync + record pull
+(`export_record` → `merge_remote` — state/validity/lineage travel too;
+two instances converge with no central server). The crate doc
 (`cargo doc --open`) is a runnable tour of the whole API.
 
 **How the memory sync really works** — [docs/telepathy.md](docs/telepathy.md)

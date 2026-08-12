@@ -18,6 +18,7 @@
 
 use alloc::vec::Vec;
 
+use crate::memory_doc::{MemoryLayer, MemoryRecord};
 use crate::storage::SgdbError;
 
 /// Intervalo mínimo entre syncs (unidades do relógio do caller, ex: ticks).
@@ -35,19 +36,138 @@ pub struct MemoryVersion {
     pub version: u64,
 }
 
-/// Delta de memória (futuro — Doc 04 §4): versões base + documentos NMD1.
-/// Abstração limpa do protocolo de replicação; NÃO implementado nesta sprint.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Delta de memória (v0.6 — P0-5, Doc 04 §4): versões BASE que o remetente
+/// assume que o receptor já conhece + `records` completos (doc NMD1 + estado
+/// + validade) para as versões faltantes. Um delta carrega o necessário para
+/// o merge causal correto — um número de versão sozinho NÃO basta.
+///
+/// Wire "MDLT" v1: `magic | ver u8 | nbase u16 (node u8 + version u64)* |
+/// nrec u16 (len u32 + MemoryRecord)*`. `decode` nunca panics (parsing
+/// safety — fuzz-tested).
+#[derive(Clone, Debug, PartialEq)]
 pub struct MemoryDelta {
     pub base: Vec<MemoryVersion>,
-    pub docs: Vec<Vec<u8>>, // MemoryDoc encoded (NMD1)
+    pub records: Vec<MemoryRecord>,
 }
 
-/// Snapshot completo de memória (futuro — Doc 04 §4).
-#[derive(Clone, Debug, PartialEq, Eq)]
+impl MemoryDelta {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(DELTA_MAGIC);
+        out.push(1); // versão do formato
+        encode_versions(&mut out, &self.base);
+        encode_records(&mut out, &self.records);
+        out
+    }
+
+    pub fn decode(data: &[u8]) -> Result<Self, &'static str> {
+        if data.len() < 5 || &data[0..4] != DELTA_MAGIC {
+            return Err("bad delta magic");
+        }
+        if data[4] != 1 {
+            return Err("bad delta version");
+        }
+        let mut off = 5;
+        let base = decode_versions(data, &mut off).ok_or("trunc delta base")?;
+        let records = decode_records(data, &mut off).ok_or("trunc delta records")?;
+        Ok(MemoryDelta { base, records })
+    }
+}
+
+/// Snapshot completo de memória (v0.6 — P0-5): estado conhecido (versões por
+/// nó) + todos os records. Usado para bootstrap de nó novo / restauração.
+///
+/// Wire "MSNP" v1: `magic | ver u8 | nver u16 (node u8 + version u64)* |
+/// nrec u16 (len u32 + MemoryRecord)*`. `decode` nunca panics.
+#[derive(Clone, Debug, PartialEq)]
 pub struct MemorySnapshot {
     pub versions: Vec<MemoryVersion>,
-    pub docs: Vec<Vec<u8>>,
+    pub records: Vec<MemoryRecord>,
+}
+
+impl MemorySnapshot {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(SNAP_MAGIC);
+        out.push(1);
+        encode_versions(&mut out, &self.versions);
+        encode_records(&mut out, &self.records);
+        out
+    }
+
+    pub fn decode(data: &[u8]) -> Result<Self, &'static str> {
+        if data.len() < 5 || &data[0..4] != SNAP_MAGIC {
+            return Err("bad snapshot magic");
+        }
+        if data[4] != 1 {
+            return Err("bad snapshot version");
+        }
+        let mut off = 5;
+        let versions = decode_versions(data, &mut off).ok_or("trunc snap versions")?;
+        let records = decode_records(data, &mut off).ok_or("trunc snap records")?;
+        Ok(MemorySnapshot { versions, records })
+    }
+}
+
+const DELTA_MAGIC: &[u8; 4] = b"MDLT";
+const SNAP_MAGIC: &[u8; 4] = b"MSNP";
+
+fn encode_versions(out: &mut Vec<u8>, vs: &[MemoryVersion]) {
+    out.extend_from_slice(&(vs.len() as u16).to_le_bytes());
+    for v in vs {
+        out.push(v.node_id);
+        out.extend_from_slice(&v.version.to_le_bytes());
+    }
+}
+
+/// Bounds-checked — `None` em truncado (nunca panics).
+fn decode_versions(data: &[u8], off: &mut usize) -> Option<Vec<MemoryVersion>> {
+    let n = rd_u16(data, *off)? as usize;
+    *off += 2;
+    let mut vs = Vec::with_capacity(n.min(4096));
+    for _ in 0..n {
+        let node = *data.get(*off)?;
+        *off += 1;
+        let b = data.get(*off..off.checked_add(8)?)?;
+        let version = u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]);
+        *off += 8;
+        vs.push(MemoryVersion { node_id: node, version });
+    }
+    Some(vs)
+}
+
+fn encode_records(out: &mut Vec<u8>, recs: &[MemoryRecord]) {
+    out.extend_from_slice(&(recs.len() as u16).to_le_bytes());
+    for r in recs {
+        let enc = r.encode();
+        out.extend_from_slice(&(enc.len() as u32).to_le_bytes());
+        out.extend_from_slice(&enc);
+    }
+}
+
+/// Bounds-checked — `None` em truncado/inválido (nunca panics).
+fn decode_records(data: &[u8], off: &mut usize) -> Option<Vec<MemoryRecord>> {
+    let n = rd_u16(data, *off)? as usize;
+    *off += 2;
+    let mut recs = Vec::with_capacity(n.min(4096));
+    for _ in 0..n {
+        let len = rd_u32(data, *off)? as usize;
+        *off += 4;
+        let body = data.get(*off..off.checked_add(len)?)?;
+        *off += len;
+        recs.push(MemoryRecord::decode(body).ok()?);
+    }
+    Some(recs)
+}
+
+fn rd_u16(data: &[u8], off: usize) -> Option<u16> {
+    let b = data.get(off..off.checked_add(2)?)?;
+    Some(u16::from_le_bytes([b[0], b[1]]))
+}
+
+fn rd_u32(data: &[u8], off: usize) -> Option<u32> {
+    let b = data.get(off..off.checked_add(4)?)?;
+    Some(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
 }
 
 /// Veredicto de merge de uma versão recebida (observável — o caller decide
@@ -65,6 +185,74 @@ pub enum MergeVerdict {
     /// Versão concorrente com estado local — **PRESERVADA em `conflicts`**
     /// (nunca resolvida por LWW cego; camada superior decide).
     Conflict,
+    /// Política da CAMADA bloqueou a adoção (L0/L1 local-only, L6 reservado —
+    /// P0-6). Nada é escrito nem registrado como conflito.
+    Rejected,
+}
+
+/// Política de merge POR CAMADA (v0.6 — P0-6). Tabela explícita em código:
+/// NÃO existe uma regra LWW universal para todas as camadas (item 8).
+///
+/// | Camada | Política | Semântica |
+/// |---|---|---|
+/// | L0 Sensory | `LocalOnly` | estritamente local — remota nunca adotada |
+/// | L1 Working | `LocalWorking` | memória de trabalho local |
+/// | L2/L3 Episódico | `MultiValueRegister` | concorrentes → AMBAS preservadas |
+/// | L4 Semântico | `CausalLwwWithHistory` | dominante causal ativa; antiga superseded |
+/// | L5 Procedural | `ControlledLww` | LWW com histórico e salvaguardas |
+/// | L6 Reservado | `Reserved` | sem semântica de merge definida |
+/// | L7 Identity | `ControlledLww` | identidade controlada |
+///
+/// Regra central: para L2/L3, escritas concorrentes são AMBAS retidas
+/// (multi-value register, nunca LWW cego); para L4/L5/L7 a asserção
+/// nova/dominante vira ativa e a antiga fica `Superseded` — mas NUNCA é
+/// descartada silenciosamente. A política é consultada no merge path
+/// (`apply_remote_version_with_policy`, `Sgdb::merge_remote`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MergePolicy {
+    LocalOnly,
+    LocalWorking,
+    MultiValueRegister,
+    CausalLwwWithHistory,
+    ControlledLww,
+    Reserved,
+}
+
+impl MergePolicy {
+    /// Tabela camada → política (ponto único de verdade).
+    pub fn for_layer(layer: MemoryLayer) -> Self {
+        match layer {
+            MemoryLayer::L0Sensory => Self::LocalOnly,
+            MemoryLayer::L1Working => Self::LocalWorking,
+            MemoryLayer::L2EpisodicShort | MemoryLayer::L3EpisodicLong => Self::MultiValueRegister,
+            MemoryLayer::L4Semantic => Self::CausalLwwWithHistory,
+            MemoryLayer::L5Procedural | MemoryLayer::L7Identity => Self::ControlledLww,
+            MemoryLayer::L6Reserved => Self::Reserved,
+        }
+    }
+
+    /// Camadas que aceitam versões/records remotos (L0/L1 são estritamente
+    /// locais; L6 não tem semântica definida).
+    pub fn accepts_remote(&self) -> bool {
+        !matches!(self, Self::LocalOnly | Self::LocalWorking | Self::Reserved)
+    }
+
+    pub fn description(&self) -> &'static str {
+        match self {
+            Self::LocalOnly => "L0 sensory: strictly local, remote never adopted",
+            Self::LocalWorking => "L1 working: local-only working memory",
+            Self::MultiValueRegister => {
+                "L2/L3 episodic: concurrent versions both retained (multi-value)"
+            }
+            Self::CausalLwwWithHistory => {
+                "L4 semantic: causally-dominant wins, older superseded with history"
+            }
+            Self::ControlledLww => {
+                "L5/L7 procedural/identity: LWW with safeguards, history preserved"
+            }
+            Self::Reserved => "L6 reserved: no merge semantics defined",
+        }
+    }
 }
 
 /// Transporte plugável de memórias entre nós.
@@ -82,6 +270,76 @@ pub trait Transport {
     fn send_delta(&mut self, node_id: u8, version: u64, payload: &[u8]) -> Result<(), SgdbError> {
         let _ = payload;
         self.send_crdt(node_id, version)
+    }
+}
+
+/// Envelope de transporte **autenticável** (v0.2 — fronteira de segurança
+/// explícita, item 12).
+///
+/// `payload` + `node_id` (identidade de origem) + `auth` (assinatura/HMAC
+/// **opaca**). O core NÃO implementa criptografia: `auth` é preenchido e
+/// verificado pelo TRANSPORTE (HMAC compartilhado, ed25519, TLS — fora deste
+/// crate). Usar este envelope dá um formato de fio determinístico e
+/// bounds-checked para carregar autenticação SEM acoplar o core a uma lib de
+/// criptografia.
+///
+/// Wire: `[node_id u8][plen u32le][alen u32le][payload][auth]`. `decode`
+/// nunca panics em entrada malformada/truncada (maturation P6) — retorna None.
+///
+/// ⚠️ O `UdpTransport` entregue é DEMO NÃO autenticado e NÃO usa este
+/// envelope; em produção use um transporte que preencha/verifique `auth` e
+/// rejeite pacotes inválidos.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SignedEnvelope {
+    /// Identidade do nó de origem (nunca confundida com memory_id — item 20).
+    pub node_id: u8,
+    /// Payload do protocolo (ex: versão CRDT, doc NMD1, delta).
+    pub payload: Vec<u8>,
+    /// Autenticação opaca: assinatura/HMAC sobre o payload (verificado pelo
+    /// transporte, não pelo core).
+    pub auth: Vec<u8>,
+}
+
+impl SignedEnvelope {
+    pub fn new(node_id: u8, payload: Vec<u8>, auth: Vec<u8>) -> Self {
+        SignedEnvelope {
+            node_id,
+            payload,
+            auth,
+        }
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(9 + self.payload.len() + self.auth.len());
+        out.push(self.node_id);
+        out.extend_from_slice(&(self.payload.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(self.auth.len() as u32).to_le_bytes());
+        out.extend_from_slice(&self.payload);
+        out.extend_from_slice(&self.auth);
+        out
+    }
+
+    /// Bounds-checked: `None` em input truncado/corrompido — nunca panics.
+    /// Retorna (envelope, bytes consumidos) para streams com múltiplos pacotes.
+    pub fn decode(data: &[u8]) -> Option<(Self, usize)> {
+        if data.len() < 9 {
+            return None;
+        }
+        let node_id = data[0];
+        let plen = u32::from_le_bytes(data[1..5].try_into().ok()?) as usize;
+        let alen = u32::from_le_bytes(data[5..9].try_into().ok()?) as usize;
+        let end = 9usize.checked_add(plen)?.checked_add(alen)?;
+        if end > data.len() {
+            return None;
+        }
+        Some((
+            SignedEnvelope {
+                node_id,
+                payload: data[9..9 + plen].to_vec(),
+                auth: data[9 + plen..end].to_vec(),
+            },
+            end,
+        ))
     }
 }
 
@@ -155,6 +413,22 @@ impl CrdtMemorySync {
         self.pending.len()
     }
 
+    /// Aplica uma versão recebida sob a política da CAMADA do doc associado
+    /// (P0-6). Camadas locais (L0/L1) e reservadas (L6) nunca adotam versão
+    /// remota → `Rejected`; as demais seguem a detecção de concorrência
+    /// padrão (`apply_remote_version`).
+    pub fn apply_remote_version_with_policy(
+        &mut self,
+        node: u8,
+        v: u64,
+        policy: MergePolicy,
+    ) -> MergeVerdict {
+        if !policy.accepts_remote() {
+            return MergeVerdict::Rejected;
+        }
+        self.apply_remote_version(node, v)
+    }
+
     /// Aplica uma versão recebida com veredicto explícito. Núcleo do merge.
     ///
     /// Regras:
@@ -166,6 +440,13 @@ impl CrdtMemorySync {
     pub fn apply_remote_version(&mut self, node: u8, v: u64) -> MergeVerdict {
         if node == self.node_id {
             return MergeVerdict::SelfPacket;
+        }
+        if v == 0 {
+            // versão 0 = "nada a sincronizar": um nó sem escritas locais não
+            // tem versão causal a adotar nem a conflitar. Registrar (node, 0)
+            // como estado de peer criaria conflitos FANTASMA (ex: um nó que
+            // só faz relay/publica heartbeat vira "concorrente" de todos).
+            return MergeVerdict::Duplicate;
         }
         let known = self.node_versions.iter().find(|(n, _)| *n == node).map(|(_, k)| *k);
         match known {
@@ -188,12 +469,44 @@ impl CrdtMemorySync {
             }
             MergeVerdict::Conflict
         } else {
-            // primeiro conhecimento (estado vazio) → adoção
-            if v > self.local_version {
-                self.local_version = v;
-            }
+            // primeiro conhecimento (estado vazio) → Applied, mas `local_version`
+            // NUNCA adota a versão do peer: local_version = contador de ESCRITAS
+            // PRÓPRIAS. Se um nó fresh adotasse, um relay publicaria (self, v)
+            // como se fosse autoria — criando conflitos fantasma em todos
+            // (ex: C recebe (1,1) de A, re-broadcasta (3,1), e A/B veem C
+            // "concorrente"). O conhecimento do peer fica em `node_versions`.
             MergeVerdict::Applied
         }
+    }
+
+    /// Faixa causal FALTANTE para um peer (P0-5): versões (por nó) que
+    /// `self` conhece e o peer (com `peer_versions`) ainda não — o que o
+    /// receptor deve PEDIR num protocolo de delta. As versões de um nó são
+    /// contíguas (`record_change` incrementa de 1), então o watermark por nó
+    /// cobre a faixa `(conhecida_do_peer, watermark]`. Determinístico
+    /// (ordenado por node_id).
+    pub fn missing_after(&self, peer_versions: &[(u8, u64)]) -> Vec<MemoryVersion> {
+        let known = |n: u8| -> u64 {
+            peer_versions
+                .iter()
+                .find(|(nn, _)| *nn == n)
+                .map(|(_, v)| *v)
+                .unwrap_or(0)
+        };
+        let mut out: Vec<MemoryVersion> = Vec::new();
+        for &(n, k) in &self.node_versions {
+            if known(n) < k {
+                out.push(MemoryVersion { node_id: n, version: k });
+            }
+        }
+        if known(self.node_id) < self.local_version {
+            out.push(MemoryVersion {
+                node_id: self.node_id,
+                version: self.local_version,
+            });
+        }
+        out.sort_by_key(|v| (v.node_id, v.version));
+        out
     }
 
     /// Sincroniza versões com peers via transporte.
@@ -222,6 +535,9 @@ impl CrdtMemorySync {
                     crate::sgdb_log!(
                         "CRDT sync: node={node} v={v} CONFLITO preservado (concorrente)",
                     );
+                }
+                MergeVerdict::Rejected => {
+                    crate::sgdb_log!("CRDT sync: node={node} v={v} rejeitado (politica da camada)");
                 }
             }
         }
@@ -259,10 +575,13 @@ impl CrdtMemorySync {
     }
 }
 
-/// Transporte UDP broadcast (`std`) — demonstração/desenvolvimento.
+/// Transporte UDP broadcast (`std`) — **demonstração/desenvolvimento apenas**.
 ///
 /// Wire format: `[node_id u8][version u64 LE]` (9 bytes) broadcast na porta.
-/// **Não autenticado** — substituir por transporte assinado em produção.
+/// **NÃO autenticado**: qualquer host na rede pode injetar versões. Em
+/// produção substitua por um transporte autenticado que use o
+/// [`SignedEnvelope`] (HMAC/ed25519/TLS — verificado fora do core) ou rejeite
+/// pacotes inválidos na origem.
 #[cfg(feature = "std")]
 pub struct UdpTransport {
     socket: std::net::UdpSocket,
@@ -445,13 +764,9 @@ mod tests {
         a.sync(0, &mut ta).unwrap();
         b.sync(0, &mut tb).unwrap();
 
-        // "rede": entrega o que cada um publicou ao outro
-        let from_a = ta.take_sent(); // a publicou (1, 2)
-        let from_b = tb.take_sent(); // b publicou (2, 1)
-        let mut ta2 = LoopTransport::from(from_b);
-        let mut tb2 = LoopTransport::from(from_a);
-
-        // Verdicto do merge para cada lado
+        // "rede": cada um publicou (ta = (1,2), tb = (2,1)). O merge é
+        // aplicado diretamente via apply_remote_version (o sync() com
+        // loopback entregaria o mesmo pacote — verificado nos node_versions)
         assert_eq!(a.apply_remote_version(2, 1), MergeVerdict::Conflict);
         assert_eq!(b.apply_remote_version(1, 2), MergeVerdict::Conflict);
 
@@ -550,8 +865,532 @@ mod tests {
         let v3 = MemoryVersion { node_id: 2, version: 8 };
         assert_eq!(v1, v2);
         assert_ne!(v1, v3);
-        let d = MemoryDelta { base: vec![v1], docs: vec![vec![1, 2, 3]] };
-        let d2 = MemoryDelta { base: vec![v2], docs: vec![vec![1, 2, 3]] };
+        let rec = MemoryRecord::new(
+            crate::memory_doc::MemoryDoc::new(
+                crate::memory_doc::MemoryLayer::L4Semantic,
+                "k",
+                vec![1, 2, 3, 4],
+            ),
+            crate::memory_doc::MemoryState::Active,
+            None,
+        );
+        let d = MemoryDelta { base: vec![v1], records: vec![rec.clone()] };
+        let d2 = MemoryDelta { base: vec![v2], records: vec![rec] };
         assert_eq!(d, d2); // igualdade determinística
+    }
+
+    // ── SignedEnvelope: fronteira de segurança explícita (item 12) ─────────
+
+    #[test]
+    fn signed_envelope_roundtrip_and_prefix() {
+        let env = SignedEnvelope::new(3, b"payload".to_vec(), b"sig".to_vec());
+        let enc = env.encode();
+        let (dec, n) = SignedEnvelope::decode(&enc).unwrap();
+        assert_eq!(n, enc.len());
+        assert_eq!(dec, env);
+        // payload/auth vazios são válidos (envelope mínimo = 9 bytes)
+        let empty = SignedEnvelope::new(1, Vec::new(), Vec::new());
+        let (d2, n2) = SignedEnvelope::decode(&empty.encode()).unwrap();
+        assert_eq!(d2, empty);
+        assert_eq!(n2, 9);
+        // bytes sobrando após o envelope → retorna só o consumido (stream)
+        let mut ext = enc.clone();
+        ext.extend_from_slice(b"next");
+        let (d3, n3) = SignedEnvelope::decode(&ext).unwrap();
+        assert_eq!(d3, env);
+        assert_eq!(n3, enc.len());
+    }
+
+    #[test]
+    fn signed_envelope_never_panics_on_malformed() {
+        let env = SignedEnvelope::new(1, vec![0xAB; 16], vec![0xCD; 8]);
+        let enc = env.encode();
+        for cut in 0..enc.len() {
+            let _ = SignedEnvelope::decode(&enc[..cut]); // truncado em todo ponto
+        }
+        // lengths absurdos (u32::MAX) → None, nunca panic
+        let mut bad = vec![0u8; 9];
+        bad[1..5].copy_from_slice(&u32::MAX.to_le_bytes());
+        bad[5..9].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(SignedEnvelope::decode(&bad).is_none());
+        // LCG fuzz determinístico
+        let mut state = 0x0DDB_1A5Eu64;
+        for len in 0..64usize {
+            let data: Vec<u8> = (0..len)
+                .map(|_| {
+                    state = state.wrapping_mul(1103515245).wrapping_add(12345);
+                    ((state >> 32) & 0xFF) as u8
+                })
+                .collect();
+            let _ = SignedEnvelope::decode(&data);
+        }
+    }
+
+    // ── P0-5: MemoryDelta/MemorySnapshot codecs (v0.6) ─────────────────────
+
+    fn sample_record() -> MemoryRecord {
+        let mut doc = MemoryDoc::new(MemoryLayer::L4Semantic, "k", vec![1, 2, 3, 4]);
+        doc.clock.tick(1);
+        MemoryRecord::new(doc, MemoryState::Active, None)
+    }
+
+    #[test]
+    fn delta_snapshot_roundtrip() {
+        let d = MemoryDelta {
+            base: vec![
+                MemoryVersion { node_id: 1, version: 3 },
+                MemoryVersion { node_id: 2, version: 1 },
+            ],
+            records: vec![sample_record()],
+        };
+        assert_eq!(MemoryDelta::decode(&d.encode()).unwrap(), d);
+        let s = MemorySnapshot {
+            versions: vec![MemoryVersion { node_id: 1, version: 3 }],
+            records: vec![sample_record()],
+        };
+        assert_eq!(MemorySnapshot::decode(&s.encode()).unwrap(), s);
+        // vazio também é válido (bootstrap de nó novo sem estado)
+        let e = MemoryDelta { base: Vec::new(), records: Vec::new() };
+        assert_eq!(MemoryDelta::decode(&e.encode()).unwrap(), e);
+    }
+
+    #[test]
+    fn delta_snapshot_never_panics_on_malformed() {
+        let d = MemoryDelta {
+            base: vec![MemoryVersion { node_id: 1, version: 3 }],
+            records: vec![sample_record()],
+        };
+        let enc = d.encode();
+        // truncado em todo ponto
+        for cut in 0..enc.len() {
+            let _ = MemoryDelta::decode(&enc[..cut]);
+        }
+        // fuzz LCG determinístico
+        let mut state = 0xC0FF_EE00_BAAD_F00Du64;
+        for len in 0..96usize {
+            for _ in 0..8 {
+                let data: Vec<u8> = (0..len)
+                    .map(|_| {
+                        state = state.wrapping_mul(1103515245).wrapping_add(12345);
+                        ((state >> 32) & 0xFF) as u8
+                    })
+                    .collect();
+                let _ = MemoryDelta::decode(&data);
+                let _ = MemorySnapshot::decode(&data);
+            }
+        }
+        // magic errado / versão desconhecida
+        let mut bad = enc.clone();
+        bad[0] = b'X';
+        assert!(MemoryDelta::decode(&bad).is_err());
+        let mut bad2 = enc;
+        bad2[4] = 9;
+        assert!(MemoryDelta::decode(&bad2).is_err());
+        assert!(MemoryDelta::decode(b"MDLT").is_err());
+    }
+
+    // ── P0-5: missing_after — faixa causal faltante para um peer ──────────
+
+    #[test]
+    fn missing_after_requests_unseen_range() {
+        let mut a = CrdtMemorySync::new(1);
+        a.record_change(); // v1
+        a.record_change(); // v2
+        a.apply_remote_version(2, 4);
+        a.apply_remote_version(3, 7);
+        // peer fresco: tudo o que conhecemos está faltando
+        assert_eq!(
+            a.missing_after(&[]),
+            vec![
+                MemoryVersion { node_id: 1, version: 2 },
+                MemoryVersion { node_id: 2, version: 4 },
+                MemoryVersion { node_id: 3, version: 7 },
+            ]
+        );
+        // peer parcial: conhece self até 1 e nó 2 até 4 → só os gaps
+        assert_eq!(
+            a.missing_after(&[(1, 1), (2, 4)]),
+            vec![
+                MemoryVersion { node_id: 1, version: 2 },
+                MemoryVersion { node_id: 3, version: 7 },
+            ]
+        );
+        // peer convergido → nada faltando
+        assert!(a.missing_after(&[(1, 2), (2, 4), (3, 7)]).is_empty());
+    }
+
+    #[test]
+    fn version_zero_is_ignored() {
+        // nó sem escritas (heartbeat v=0) nunca vira peer state nem conflito
+        let mut a = CrdtMemorySync::new(1);
+        a.record_change(); // v1
+        assert_eq!(a.apply_remote_version(2, 0), MergeVerdict::Duplicate);
+        assert!(a.node_versions.is_empty());
+        assert!(a.conflicts.is_empty());
+        // mas v>0 é registrado normalmente
+        assert_eq!(a.apply_remote_version(2, 1), MergeVerdict::Conflict);
+        assert_eq!(a.node_versions, vec![(2, 1)]);
+    }
+
+    // ── P0-6: política de merge por camada ────────────────────────────────
+
+    #[test]
+    fn merge_policy_table() {
+        use MemoryLayer::*;
+        assert_eq!(MergePolicy::for_layer(L0Sensory), MergePolicy::LocalOnly);
+        assert_eq!(MergePolicy::for_layer(L1Working), MergePolicy::LocalWorking);
+        assert_eq!(MergePolicy::for_layer(L2EpisodicShort), MergePolicy::MultiValueRegister);
+        assert_eq!(MergePolicy::for_layer(L3EpisodicLong), MergePolicy::MultiValueRegister);
+        assert_eq!(MergePolicy::for_layer(L4Semantic), MergePolicy::CausalLwwWithHistory);
+        assert_eq!(MergePolicy::for_layer(L5Procedural), MergePolicy::ControlledLww);
+        assert_eq!(MergePolicy::for_layer(L7Identity), MergePolicy::ControlledLww);
+        assert_eq!(MergePolicy::for_layer(L6Reserved), MergePolicy::Reserved);
+        // aceitação remota
+        assert!(!MergePolicy::LocalOnly.accepts_remote());
+        assert!(!MergePolicy::LocalWorking.accepts_remote());
+        assert!(!MergePolicy::Reserved.accepts_remote());
+        for p in [
+            MergePolicy::MultiValueRegister,
+            MergePolicy::CausalLwwWithHistory,
+            MergePolicy::ControlledLww,
+        ] {
+            assert!(p.accepts_remote(), "{} deveria aceitar remoto", p.description());
+        }
+        // todas as camadas têm política definida (exaustivo)
+        for l in [
+            MemoryLayer::L0Sensory, MemoryLayer::L1Working, MemoryLayer::L2EpisodicShort,
+            MemoryLayer::L3EpisodicLong, MemoryLayer::L4Semantic, MemoryLayer::L5Procedural,
+            MemoryLayer::L6Reserved, MemoryLayer::L7Identity,
+        ] {
+            let _ = MergePolicy::for_layer(l);
+        }
+    }
+
+    #[test]
+    fn layer_policy_rejects_local_layers() {
+        let mut a = CrdtMemorySync::new(1);
+        // L0/L1/L6: versão remota NUNCA adotada
+        for layer in [
+            MemoryLayer::L0Sensory,
+            MemoryLayer::L1Working,
+            MemoryLayer::L6Reserved,
+        ] {
+            assert_eq!(
+                a.apply_remote_version_with_policy(2, 1, MergePolicy::for_layer(layer)),
+                MergeVerdict::Rejected
+            );
+            assert!(a.node_versions.is_empty(), "camada local não pode registrar peer");
+        }
+        // L4 (semântica): aceita — primeiro conhecimento → Applied
+        assert_eq!(
+            a.apply_remote_version_with_policy(2, 1, MergePolicy::for_layer(MemoryLayer::L4Semantic)),
+            MergeVerdict::Applied
+        );
+    }
+
+    // ── P0-7: harness de 3 nós + partition/rejoin ─────────────────────────
+
+    use crate::memory_doc::{MemoryDoc, MemoryRecord, MemoryState};
+    use crate::sgdb::Sgdb;
+    use crate::storage::InMemory;
+
+    struct MeshNode {
+        db: Sgdb,
+        crdt: CrdtMemorySync,
+    }
+
+    /// Malha de teste: N nós (Sgdb + CRDT) com arestas direcionais.
+    /// `round()` = TX (publica) → RX (drena) → pull de records via
+    /// `merge_remote` ao longo das arestas. Simula partições (sem aresta),
+    /// duplicatas (injeção 2x) e entrega atrasada (versão antiga re-aplicada).
+    struct Mesh {
+        ids: Vec<u8>,
+        nodes: Vec<MeshNode>,
+        /// edges[i][j] = i pode entregar para j
+        edges: Vec<Vec<bool>>,
+    }
+
+    impl Mesh {
+        fn new(ids: &[u8]) -> Self {
+            let nodes = ids
+                .iter()
+                .map(|&id| MeshNode {
+                    db: Sgdb::open_with_node_id(id, InMemory::new()).unwrap(),
+                    crdt: CrdtMemorySync::new(id),
+                })
+                .collect();
+            let n = ids.len();
+            Mesh {
+                ids: ids.to_vec(),
+                nodes,
+                edges: vec![vec![false; n]; n],
+            }
+        }
+
+        fn connect(&mut self, i: usize, j: usize) {
+            self.edges[i][j] = true;
+            self.edges[j][i] = true;
+        }
+
+        fn remember(&mut self, i: usize, key: &str, text: &str, emb: &[f32]) {
+            self.nodes[i].db.remember_semantic(key, text, emb).unwrap();
+            self.nodes[i].crdt.record_change();
+        }
+
+        fn l2_text(&mut self, i: usize, key: &str) -> String {
+            String::from_utf8_lossy(
+                &self.nodes[i]
+                    .db
+                    .get(MemoryLayer::L2EpisodicShort, key)
+                    .unwrap()
+                    .unwrap()
+                    .payload,
+            )
+            .into_owned()
+        }
+
+        fn doc_count(&mut self, i: usize) -> usize {
+            let mut n = 0;
+            for layer in [MemoryLayer::L2EpisodicShort, MemoryLayer::L4Semantic] {
+                n += self.nodes[i]
+                    .db
+                    .scan_prefix(&format!("md/{}/", layer.as_str()))
+                    .unwrap()
+                    .len();
+            }
+            n
+        }
+
+        /// Uma ronda de telepatia no mesh. `dup` injeta cada pacote 2x
+        /// (teste de duplicata). Retorna docs aplicados no pull.
+        fn round(&mut self, now: u64, dup: bool) -> Result<usize, SgdbError> {
+            let n = self.nodes.len();
+            let mut outboxes: Vec<Vec<(u8, u64)>> = vec![Vec::new(); n];
+            // TX
+            for i in 0..n {
+                let mut t = FanOut(&mut outboxes[i]);
+                self.nodes[i].crdt.sync(now, &mut t)?;
+            }
+            // RX
+            for j in 0..n {
+                let mut recv = Vec::new();
+                for i in 0..n {
+                    if i != j && self.edges[i][j] {
+                        recv.extend(outboxes[i].iter().copied());
+                        if dup {
+                            recv.extend(outboxes[i].iter().copied());
+                        }
+                    }
+                }
+                let mut t = FanIn(recv);
+                self.nodes[j].crdt.sync(now, &mut t)?;
+            }
+            // pull de records ao longo das arestas (i→j: src = nodes[i], dst = nodes[j])
+            let mut applied = 0;
+            for i in 0..n {
+                for j in 0..n {
+                    if i == j || !self.edges[i][j] {
+                        continue;
+                    }
+                    if i < j {
+                        let (l, r) = self.nodes.split_at_mut(j);
+                        applied += pull_missing(&mut l[i].db, &mut r[0].db)?;
+                    } else {
+                        let (l, r) = self.nodes.split_at_mut(i);
+                        applied += pull_missing(&mut r[0].db, &mut l[j].db)?;
+                    }
+                }
+            }
+            Ok(applied)
+        }
+
+        fn converge(&mut self, rounds: usize) -> Result<usize, SgdbError> {
+            let mut applied = 0;
+            for r in 0..rounds {
+                applied += self.round((r as u64) * 200, false)?;
+            }
+            Ok(applied)
+        }
+    }
+
+    /// Transporte de saída: acumula TX (RX vazio).
+    struct FanOut<'a>(&'a mut Vec<(u8, u64)>);
+    impl Transport for FanOut<'_> {
+        fn send_crdt(&mut self, n: u8, v: u64) -> Result<(), SgdbError> {
+            self.0.push((n, v));
+            Ok(())
+        }
+        fn send_delta(&mut self, n: u8, v: u64, _p: &[u8]) -> Result<(), SgdbError> {
+            self.0.push((n, v));
+            Ok(())
+        }
+        fn recv_crdt(&mut self) -> Vec<(u8, u64)> {
+            Vec::new()
+        }
+    }
+
+    /// Transporte de entrada: entrega pacotes recebidos (TX descartado — o
+    /// TX da fase RX é rate-limited pela mesma `now` da fase TX).
+    struct FanIn(Vec<(u8, u64)>);
+    impl Transport for FanIn {
+        fn send_crdt(&mut self, _n: u8, _v: u64) -> Result<(), SgdbError> {
+            Ok(())
+        }
+        fn recv_crdt(&mut self) -> Vec<(u8, u64)> {
+            core::mem::take(&mut self.0)
+        }
+    }
+
+    /// Pull/diff: exporta cada record de `src` e `merge_remote` em `dst` — o
+    /// merge decide Applied/Stale/Duplicate/Conflict (idempotente).
+    fn pull_missing(src: &mut Sgdb, dst: &mut Sgdb) -> Result<usize, SgdbError> {
+        let mut n = 0;
+        for layer in [
+            MemoryLayer::L2EpisodicShort,
+            MemoryLayer::L3EpisodicLong,
+            MemoryLayer::L4Semantic,
+            MemoryLayer::L5Procedural,
+            MemoryLayer::L7Identity,
+        ] {
+            let prefix = format!("md/{}/", layer.as_str());
+            for (sk, _) in src.scan_prefix(&prefix)? {
+                if let Ok(Some(rec)) = src.export_record(&sk) {
+                    if dst.merge_remote(rec)? == MergeVerdict::Applied {
+                        n += 1;
+                    }
+                }
+            }
+        }
+        Ok(n)
+    }
+
+    fn emb16(seed: u64) -> Vec<f32> {
+        let mut s = seed.wrapping_mul(1103515245).wrapping_add(12345);
+        let mut v = Vec::with_capacity(16);
+        for _ in 0..16 {
+            s = s.wrapping_mul(1103515245).wrapping_add(12345);
+            v.push(((s >> 32) as i32 % 200) as f32 / 100.0 - 1.0);
+        }
+        v
+    }
+
+    #[test]
+    fn three_node_triangle_convergence() {
+        // A ── B, \ /, C — malha completa; convergência multi-direcional
+        let mut m = Mesh::new(&[1, 2, 3]);
+        m.connect(0, 1);
+        m.connect(1, 2);
+        m.connect(0, 2);
+        m.remember(0, "m1", "memoria do no A", &emb16(1));
+        m.remember(1, "m2", "memoria do no B", &emb16(2));
+        m.remember(2, "m3", "memoria do no C", &emb16(3));
+        let applied = m.converge(8).unwrap();
+        assert!(applied >= 6, "deveria replicar as 3 memórias (L4+L2): {applied}");
+        // convergência: todo nó tem as 3 memórias (6 docs L4+L2)
+        for i in 0..3 {
+            assert_eq!(m.doc_count(i), 6, "nó {i} deveria ter 6 docs");
+        }
+        // versões convergem (máximo por nó em toda a malha)
+        for i in 0..3 {
+            let mut vs = m.nodes[i].crdt.node_versions.clone();
+            vs.sort();
+            let expected: Vec<(u8, u64)> = (0..3)
+                .filter(|j| *j != i)
+                .map(|j| (m.ids[j], 1))
+                .collect();
+            assert_eq!(vs, expected, "nó {i} com versões incompletas");
+        }
+        // ponto-fixo: mais rondas não aplicam docs novos
+        assert_eq!(m.converge(4).unwrap(), 0);
+    }
+
+    #[test]
+    fn partition_rejoin_preserves_concurrent_writes() {
+        // A e B escrevem a MESMA chave (concorrentes) enquanto desconectados;
+        // C (relay) recebe de ambos; na reconexão NENHUMA versão é perdida.
+        let mut m = Mesh::new(&[1, 2, 3]);
+        m.connect(0, 2); // A↔C
+        m.connect(1, 2); // B↔C (A e B SEM conexão direta)
+        m.remember(0, "pref", "usuario prefere DARK", &emb16(1));
+        m.remember(1, "pref", "usuario prefere LIGHT", &emb16(2));
+        // fase particionada: C recebe de ambos
+        m.converge(4).unwrap();
+        assert_eq!(m.l2_text(0, "pref"), "usuario prefere DARK");
+        assert_eq!(m.l2_text(1, "pref"), "usuario prefere LIGHT");
+        // C aplicou a primeira (A) e PRESERVOU o conflito com a de B
+        assert_eq!(m.l2_text(2, "pref"), "usuario prefere DARK");
+        assert!(
+            m.nodes[2].crdt.conflicts.iter().any(|c| c.node_id == 2),
+            "C deveria ter o conflito com B: {:?}",
+            m.nodes[2].crdt.conflicts
+        );
+        // reconexão A↔B
+        m.connect(0, 1);
+        m.converge(6).unwrap();
+        // nenhuma versão foi destruída: cada autor mantém a sua
+        assert_eq!(m.l2_text(0, "pref"), "usuario prefere DARK");
+        assert_eq!(m.l2_text(1, "pref"), "usuario prefere LIGHT");
+        assert_eq!(m.l2_text(2, "pref"), "usuario prefere DARK");
+        // conflitos preservados em TODOS (nunca LWW cego)
+        assert!(m.nodes[0].crdt.conflicts.iter().any(|c| c.node_id == 2));
+        assert!(m.nodes[1].crdt.conflicts.iter().any(|c| c.node_id == 1));
+        assert!(m.nodes[2].crdt.conflicts.iter().any(|c| c.node_id == 2));
+        // estado causal convergido (máximo por nó)
+        assert_eq!(m.nodes[0].crdt.node_versions, vec![(2, 1)]);
+        assert_eq!(m.nodes[1].crdt.node_versions, vec![(1, 1)]);
+        // sincronização repetida é idempotente
+        assert_eq!(m.converge(4).unwrap(), 0, "pós-convergência não aplica nada");
+    }
+
+    #[test]
+    fn duplicate_and_stale_delivery_is_idempotent() {
+        let mut m = Mesh::new(&[1, 2]);
+        m.connect(0, 1);
+        m.remember(0, "d1", "doc um", &emb16(1));
+        // ronda com duplicata: B recebe (1,1) 2x
+        let applied = m.round(0, true).unwrap();
+        assert!(applied >= 2, "d1 (L4+L2) deveria ser aplicado: {applied}");
+        assert_eq!(m.nodes[1].crdt.node_versions, vec![(1, 1)]);
+        // segunda escrita + ronda normal
+        m.remember(0, "d2", "doc dois", &emb16(2));
+        m.round(200, false).unwrap();
+        assert_eq!(m.nodes[1].crdt.node_versions, vec![(1, 2)]);
+        // entrega atrasada de versão antiga (out-of-order) → Stale
+        assert_eq!(m.nodes[1].crdt.apply_remote_version(1, 1), MergeVerdict::Stale);
+        assert_eq!(m.nodes[1].crdt.node_versions, vec![(1, 2)]);
+        // docs presentes UMA vez cada (recall não duplica)
+        let hits = m.nodes[1].db.recall(&emb16(1), 10).unwrap();
+        assert_eq!(hits.iter().filter(|h| h.key.ends_with("/d1")).count(), 1);
+        assert_eq!(m.doc_count(1), 4, "2 memórias × (L4+L2)");
+    }
+
+    #[test]
+    fn fresh_node_catches_up_after_restart() {
+        // A e B convergem; C entra NOVO (db vazio + relógio zerado — simula
+        // restart sem estado durável) e alcança tudo.
+        let mut m = Mesh::new(&[1, 2]);
+        m.connect(0, 1);
+        m.remember(0, "m1", "memoria um", &emb16(1));
+        m.remember(1, "m2", "memoria dois", &emb16(2));
+        m.converge(4).unwrap();
+        // nó C entra (restart)
+        m.ids.push(3);
+        m.nodes.push(MeshNode {
+            db: Sgdb::open_with_node_id(3, InMemory::new()).unwrap(),
+            crdt: CrdtMemorySync::new(3),
+        });
+        let n = m.nodes.len();
+        m.edges.push(vec![false; n]);
+        for e in &mut m.edges {
+            e.resize(n, false);
+        }
+        m.connect(2, 0);
+        m.connect(2, 1);
+        m.converge(8).unwrap();
+        // nó novo alcançou tudo, sem perda nos antigos
+        assert_eq!(m.doc_count(2), 4, "nó novo deveria alcançar as 2 memórias");
+        assert_eq!(m.doc_count(0), 4);
+        assert_eq!(m.doc_count(1), 4);
+        assert_eq!(m.nodes[2].crdt.node_versions, vec![(1, 1), (2, 1)]);
     }
 }

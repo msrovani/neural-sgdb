@@ -90,8 +90,11 @@ pub use hamming_dispatch::{
     select_best_hamming_kernel, CpuCaps,
 };
 pub use lexical::LexicalIndex;
-pub use memory_doc::{MemoryDoc, MemoryDocView, MemoryLayer, MemoryState, VectorClock};
-pub use sgdb::{Hit, Sgdb};
+pub use memory_doc::{
+    generate_memory_id, MemoryDoc, MemoryDocView, MemoryLayer, MemoryMeta, MemoryRecord,
+    MemoryState, VectorClock,
+};
+pub use sgdb::{Hit, HitProvenance, Sgdb};
 pub use storage::{InMemory, Storage, SgdbError};
 pub use tickv::{
     encode_ckpt, encode_record, fnv1a64, scan_volume, CKPT_KEY, MAGIC, MAX_KLEN, MAX_VLEN,
@@ -102,4 +105,7 @@ pub use storage::FileStorage;
 #[cfg(feature = "file-storage")]
 pub use tickv::TickvFile;
 #[cfg(feature = "p2p")]
-pub use crdt::{demo as crdt_demo, CrdtMemorySync, Transport, UdpTransport, DEFAULT_P2P_PORT};
+pub use crdt::{
+    demo as crdt_demo, CrdtMemorySync, MemoryDelta, MemorySnapshot, MemoryVersion, MergePolicy,
+    MergeVerdict, SignedEnvelope, Transport, UdpTransport, DEFAULT_P2P_PORT,
+};

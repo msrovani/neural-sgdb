@@ -8,8 +8,22 @@ use alloc::vec::Vec;
 
 use crate::bq::{quantize_f32, BqFlatIndex};
 use crate::engine::AiosDatabaseEngine;
-use crate::memory_doc::{MemoryDoc, MemoryLayer, MemoryState};
+use crate::memory_doc::{MemoryDoc, MemoryLayer, MemoryMeta, MemoryRecord, MemoryState};
 use crate::storage::{Storage, SgdbError};
+
+/// Proveniência de um hit (v0.6 — Phase 9 parcial): epistemologia exposta ao
+/// caller — memórias com estados diferentes NÃO se parecem iguais no recall.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HitProvenance {
+    pub memory_id: String,
+    pub layer: MemoryLayer,
+    pub state: MemoryState,
+    pub source: u8,
+    pub confidence: f32,
+    pub importance: f32,
+    pub created_tick: u64,
+    pub parent_ids: Vec<String>,
+}
 
 /// Resultado de recall semântico.
 #[derive(Clone, Debug)]
@@ -18,6 +32,10 @@ pub struct Hit {
     pub text: String,
     /// distância 1−cos (0 = idêntico) em escala 0..1
     pub dist: f32,
+    /// Proveniência (v0.6) — `None` para hits sem metadados (registros
+    /// pré-v0.6 ainda não re-escritos) e para recalls puramente lexicais
+    /// quando o doc não tem meta.
+    pub provenance: Option<HitProvenance>,
 }
 
 /// Cognitive memory database. `Sgdb::open(backend)` + remember/recall.
@@ -67,12 +85,60 @@ impl Sgdb {
 
     /// Conveniência cognitiva: marca `old` como `Superseded` (histórico
     /// preservado, sem `delete` físico) — a cadeia causal sobrevive para CRDT
-    /// (Doc 04 §3).
+    /// (Doc 04 §3). v0.6: registra a lineage em `new.parent_ids` (DAG causal
+    /// começa aqui — Phase 3 incrementa).
     pub fn supersede(&mut self, old: &str, new: &str) -> Result<(), SgdbError> {
         let old_sk = self.resolve_storage_key(old);
         let new_sk = self.resolve_storage_key(new);
         self.engine.set_state(&old_sk, MemoryState::Superseded)?;
-        self.engine.set_state(&new_sk, MemoryState::Active)
+        self.engine.set_state(&new_sk, MemoryState::Active)?;
+        if let Some(old_id) = self.engine.meta(&old_sk)?.map(|m| m.memory_id) {
+            if let Some(mut nm) = self.engine.meta(&new_sk)? {
+                if !nm.parent_ids.contains(&old_id) {
+                    nm.parent_ids.push(old_id);
+                }
+                self.engine.write_meta(&new_sk, &nm)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Identidade estável da memória (v0.6). `None` = sem doc na chave ou
+    /// registro pré-v0.6 ainda sem meta (re-put/`ensure_meta` atribui).
+    pub fn memory_id(&mut self, key: &str) -> Result<Option<String>, SgdbError> {
+        let sk = self.resolve_storage_key(key);
+        Ok(self.engine.meta(&sk)?.map(|m| m.memory_id))
+    }
+
+    /// Metadados completos (memory_id, source, confidence, importance,
+    /// created_tick, parent_ids, clock_overflow).
+    pub fn meta(&mut self, key: &str) -> Result<Option<MemoryMeta>, SgdbError> {
+        let sk = self.resolve_storage_key(key);
+        self.engine.meta(&sk)
+    }
+
+    /// Importância [0..1] (normalizada; fora do intervalo é clampada, não-
+    /// finita é rejeitada). Persistente em `sys/meta/`; usada pelo lifecycle
+    /// (fase posterior) e exposta no recall via `Hit.provenance`.
+    pub fn set_importance(&mut self, key: &str, importance: f32) -> Result<(), SgdbError> {
+        if !importance.is_finite() {
+            return Err(SgdbError::Invalid("importance must be finite"));
+        }
+        let sk = self.resolve_storage_key(key);
+        let mut m = self.engine.ensure_meta(&sk)?;
+        m.importance = importance.clamp(0.0, 1.0);
+        self.engine.write_meta(&sk, &m)
+    }
+
+    /// Confiança [0..1] (mesmo contrato da importância).
+    pub fn set_confidence(&mut self, key: &str, confidence: f32) -> Result<(), SgdbError> {
+        if !confidence.is_finite() {
+            return Err(SgdbError::Invalid("confidence must be finite"));
+        }
+        let sk = self.resolve_storage_key(key);
+        let mut m = self.engine.ensure_meta(&sk)?;
+        m.confidence = confidence.clamp(0.0, 1.0);
+        self.engine.write_meta(&sk, &m)
     }
 
     /// Resolve uma chave lógica para storage key canônica `md/Lx/...`.
@@ -241,6 +307,19 @@ impl Sgdb {
     /// dims baixas (ex: 16) o filtro BQ colide em bits e o match exato escapa
     /// do top-k pequeno; aumentar o oversample recupera sem mudar o formato.
     /// `oversample >= 1`; `recall()` delega com oversample=4 (compatível).
+    ///
+    /// Estágios explícitos do pipeline (item 15/16):
+    /// 1. **Candidate generation** — BQ binary (hamming SIMD) sobre os bitvecs
+    ///    → pool de `oversample·k` candidatos. BQ é mecanismo de geração de
+    ///    candidatos, NÃO representação semântica completa (item 4).
+    /// 2. **Filtragem** — candidatos sem doc vivo (deletado/corrompido) são
+    ///    pulados: índice derivado nunca ressuscita memória (item 17).
+    /// 3. **Reranking** — cosseno FP32 sobre os f32 ORIGINAIS (payload NMD1);
+    ///    sem payload f32, fallback = hamming normalizado (0..1).
+    /// 4. **Finalização** — dedupe por storage key (overwrite), sort
+    ///    determinístico por (score u32, storage key) → top-k.
+    /// Filtros futuros (camada, metadado, temporal, proveniência) entram entre
+    /// 2 e 3 sem mudar o contrato público.
     pub fn recall_oversampled(
         &mut self,
         query: &[f32],
@@ -262,12 +341,31 @@ impl Sgdb {
                 continue;
             };
             // score bruto u32: fp32 rescore OU hamming (mesma escala de ordenação do OS)
-            let (score, dist) = match self.engine.get_by_storage_key(&sk) {
-                Ok(Some(doc)) => match Self::fp32_dist_u32(query, &doc.payload) {
-                    Some(d) => (d, d as f32 / 10_000.0),
-                    None => (ham, (ham as f32 / ham_max).min(1.0)),
-                },
-                _ => (ham, (ham as f32 / ham_max).min(1.0)),
+            let (score, dist, provenance) = match self.engine.get_by_storage_key(&sk) {
+                Ok(Some(doc)) => {
+                    let (score, dist) = match Self::fp32_dist_u32(query, &doc.payload) {
+                        Some(d) => (d, d as f32 / 10_000.0),
+                        None => (ham, (ham as f32 / ham_max).min(1.0)),
+                    };
+                    // v0.6 — provenance exposta (Phase 9 parcial): quem/quando/
+                    // quão confiável/estado — memórias superseded não se fingem
+                    // de ativas no resultado.
+                    let prov = doc.meta.as_ref().map(|m| HitProvenance {
+                        memory_id: m.memory_id.clone(),
+                        layer: doc.layer,
+                        state: self.engine.get_state(&sk),
+                        source: m.source,
+                        confidence: m.confidence,
+                        importance: m.importance,
+                        created_tick: m.created_tick,
+                        parent_ids: m.parent_ids.clone(),
+                    });
+                    (score, dist, prov)
+                }
+                // doc sumiu (delete físico) ou corrompeu: o BQ é índice
+                // DERIVADO — candidato sem doc vivo NUNCA vira hit (não
+                // ressuscita memória deletada nem mostra lixo, item 17/21)
+                Ok(None) | Err(_) => continue,
             };
             // L2 companion text (direct storage key; only the 1st occurrence
             // of the /L4/ prefix — a key containing "/L4/" is not corrupted)
@@ -284,6 +382,7 @@ impl Sgdb {
                     key: sk,
                     text,
                     dist,
+                    provenance,
                 },
             ));
         }
@@ -369,10 +468,21 @@ impl Sgdb {
         let mut out = Vec::with_capacity(scored.len());
         for (sk, score) in scored {
             if let Ok(Some(doc)) = self.engine.get_by_storage_key(&sk) {
+                let provenance = doc.meta.as_ref().map(|m| HitProvenance {
+                    memory_id: m.memory_id.clone(),
+                    layer: doc.layer,
+                    state: self.engine.get_state(&sk),
+                    source: m.source,
+                    confidence: m.confidence,
+                    importance: m.importance,
+                    created_tick: m.created_tick,
+                    parent_ids: m.parent_ids.clone(),
+                });
                 out.push(Hit {
                     key: sk,
                     text: String::from_utf8_lossy(&doc.payload).into_owned(),
                     dist: (1.0 - score / max).clamp(0.0, 1.0),
+                    provenance,
                 });
             }
         }
@@ -478,6 +588,102 @@ impl Sgdb {
     /// `remember_*` — útil para o pull de memórias do peer no sync.
     pub fn put(&mut self, doc: MemoryDoc) -> Result<u64, SgdbError> {
         self.engine.put(doc)
+    }
+
+    /// Exporta uma memória como UNIDADE de replicação (P0-5): doc NMD1 (com
+    /// meta anexada) + estado lógico + janela de validade. `None` = sem doc
+    /// na chave. O lado remoto reimporta com `import_record`/`merge_remote`.
+    ///
+    /// Fecha a contradição #2: estado/validade são side-tables (`sys/state/`,
+    /// `sys/validity/`) que o antigo diff/pull doc-a-doc descartava — agora
+    /// viajam com o doc.
+    pub fn export_record(&mut self, key: &str) -> Result<Option<MemoryRecord>, SgdbError> {
+        let sk = self.resolve_storage_key(key);
+        self.engine.export_record(&sk)
+    }
+
+    /// Importa uma `MemoryRecord` replicada (P0-5): grava o NMD1 **sem tick
+    /// do relógio local** (o receptor não vira autor de memória alheia),
+    /// preserva a identidade do criador (`meta`) e aplica estado + validade
+    /// que viajam no record. Indexa ART/BQ/lexical como qualquer put.
+    pub fn import_record(&mut self, rec: MemoryRecord) -> Result<u64, SgdbError> {
+        self.engine.import_record(rec)
+    }
+
+    /// Merge de um record REMOTO sob a política da camada (P0-6). Veredicto:
+    ///
+    /// - `Rejected` — camada não aceita remoto (L0/L1 local-only, L6).
+    /// - `Applied` — não existe local, ou o remoto domina causalmente (importa
+    ///   com lineage em `parent_ids`), ou o side-metadata avançou (estado/
+    ///   validade reaplicados sem tocar no NMD1).
+    /// - `Stale` — o local domina causalmente: sem regressão, nada escrito.
+    /// - `Duplicate` — mesmo conteúdo causal E mesmo estado/validade.
+    /// - `Conflict` — clocks CONCORRENTES: NUNCA LWW cego — o local é
+    ///   preservado, o conflito é reportado (camada superior resolve).
+    ///
+    /// O CRDT detecta/preserva; a camada cognitiva interpreta/decide
+    /// (item 20/21 — nenhuma decisão semântica aqui).
+    #[cfg(feature = "p2p")]
+    pub fn merge_remote(&mut self, rec: MemoryRecord) -> Result<crate::crdt::MergeVerdict, SgdbError> {
+        use crate::crdt::{MergePolicy, MergeVerdict};
+        let policy = MergePolicy::for_layer(rec.doc.layer);
+        if !policy.accepts_remote() {
+            return Ok(MergeVerdict::Rejected);
+        }
+        let sk = rec.doc.storage_key();
+        let Some(local) = self.engine.get_by_storage_key(&sk)? else {
+            // sem local: adoção limpa (bootstrap / nó novo)
+            self.engine.import_record(rec)?;
+            return Ok(MergeVerdict::Applied);
+        };
+        let same_content = rec.doc.clock == local.clock
+            && rec.doc.payload == local.payload
+            && rec.doc.bitvec == local.bitvec;
+        if same_content {
+            // side-metadata evolui SEM tocar o NMD1 (supersede/invalidate):
+            // conteúdo causal igual + estado/validade iguais → duplicata;
+            // senão reimporta SÓ para propagar o side-metadata novo.
+            let same_state = self.engine.get_state(&sk) == rec.state;
+            let same_validity = self.engine.validity_window(&sk) == rec.validity;
+            if same_state && same_validity {
+                return Ok(MergeVerdict::Duplicate);
+            }
+            self.engine.import_record(rec)?;
+            return Ok(MergeVerdict::Applied);
+        }
+        if rec.doc.clock.happens_before(&local.clock) {
+            return Ok(MergeVerdict::Stale); // local domina — sem regressão
+        }
+        if local.clock.happens_before(&rec.doc.clock) {
+            // remoto domina causalmente → importa: o conteúdo do slot é
+            // atualizado, a IDENTIDADE permanece (v0.6: overwrite = mesma
+            // memória). A lineage entre CHAVES distintas é registrada por
+            // `supersede(old, new)` — aqui seria auto-parentesco (self-parent).
+            self.engine.import_record(rec)?;
+            return Ok(MergeVerdict::Applied);
+        }
+        // CONCORRENTE: nunca descartar memória — preserva o local e expõe o
+        // conflito (L2/L3 multi-value: ambas retidas em seus nós de origem)
+        Ok(MergeVerdict::Conflict)
+    }
+
+    /// Deleção **física** (tombstone + remoção dos índices derivados).
+    ///
+    /// Diferente do estado lógico (`set_state`/`supersede`/`invalidate`), que
+    /// PRESERVA o doc na história (invalidar-não-deletar), aqui o doc some do
+    /// storage, das side-tables (`sys/state/`, `sys/validity/`) e dos índices
+    /// (ART, lexical, id→sk). Candidatos BQ órfãos são pulados no recall — o
+    /// índice é derivado, não fonte da verdade (item 17/18).
+    ///
+    /// `key` = storage key canônica (`md/Lx/...`) ou `Lx/k`.
+    /// Retorna `true` se o doc existia. Idempotente (segunda chamada = `false`).
+    ///
+    /// Nota: `remember_semantic` cria um PAR (L4 embedding + L2 companion
+    /// text) — `delete` remove exatamente a chave resolvida; delete ambos para
+    /// remoção completa da memória.
+    pub fn delete(&mut self, key: &str) -> Result<bool, SgdbError> {
+        let sk = self.resolve_storage_key(key);
+        self.engine.delete(&sk)
     }
 
     /// Lookup ART por prefixo de storage key (ex: "md/L1/").
@@ -586,6 +792,8 @@ fn sqrt_f32(x: f32) -> f32 {
 mod tests {
     use super::*;
     use crate::storage::InMemory;
+
+    use alloc::vec; // no_std test build: `vec!` não está no prelude
 
     #[test]
     fn exchange_and_prompt() {
@@ -929,7 +1137,7 @@ mod tests {
         // #7: termo raro que o BQ (16-dim, 1 word) perde por colisão de bits é
         // recuperado pelo path lexical BM25-style.
         let mut db = Sgdb::open(InMemory::new()).unwrap();
-        let mut emb = |seed: u64| -> Vec<f32> {
+        let emb = |seed: u64| -> Vec<f32> {
             let mut s = seed.wrapping_mul(1103515245).wrapping_add(12345);
             let mut v = Vec::with_capacity(16);
             for _ in 0..16 {
@@ -957,5 +1165,435 @@ mod tests {
         assert_eq!(db.node_id(), 7);
         db.remember_fact("f", 1).unwrap();
         assert_eq!(db.node_id(), 7); // estável
+    }
+
+    // ── Deleção física vs estado lógico (item 9/17) ─────────────────────────
+
+    #[test]
+    fn delete_removes_doc_and_keeps_indexes_consistent() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("k1", "texto um", &[1.0, -1.0, 1.0, -1.0]).unwrap();
+        db.remember_exchange("oi", "ola").unwrap(); // L1 RAM
+        assert!(db.scan_prefix("md/L4/").unwrap().len() >= 1);
+
+        // validade marcada antes do delete — side-table deve morrer com o doc
+        db.set_validity("md/L4/k1", 0, 1000).unwrap();
+        assert!(!db.validity_at("md/L4/k1", 1500).unwrap()); // fora da janela
+
+        assert!(db.delete("md/L4/k1").unwrap());
+        // sumiu do storage + índices + side-tables
+        assert!(db.get(MemoryLayer::L4Semantic, "k1").unwrap().is_none());
+        assert!(db.scan_prefix("md/L4/").unwrap().is_empty());
+        assert!(db.validity_at("md/L4/k1", 1500).unwrap()); // side-table limpa → default
+        // idempotente: segunda chamada = false (sem tombstone espúrio no mapa)
+        assert!(!db.delete("md/L4/k1").unwrap());
+
+        // recall NÃO ressuscita o deletado (candidato BQ stale é pulado)
+        let hits = db.recall(&[1.0, -1.0, 1.0, -1.0], 10).unwrap();
+        assert!(hits.iter().all(|h| !h.key.contains("/k1")), "deletado ressuscitou: {:?}", hits);
+
+        // re-add após delete funciona (id novo, índices consistentes)
+        db.remember_semantic("k1", "de novo", &[1.0, -1.0, 1.0, -1.0]).unwrap();
+        let hits = db.recall(&[1.0, -1.0, 1.0, -1.0], 10).unwrap();
+        assert!(hits.iter().any(|h| h.key.ends_with("/k1") && h.text == "de novo"));
+
+        // L1/L0 (RAM) também são deletáveis
+        assert!(db.delete("md/L1/last_user").unwrap());
+        assert!(db.get(MemoryLayer::L1Working, "last_user").unwrap().is_none());
+        // chave nunca existida → false
+        assert!(!db.delete("md/L3/ts/nao-existe").unwrap());
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn delete_persists_across_reopen() {
+        let dir = std::env::temp_dir().join("neural_sgdb_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("sgdb_delete.db");
+        let _ = std::fs::remove_file(&path);
+        {
+            let mut db = Sgdb::open(crate::storage::FileStorage::open(&path).unwrap()).unwrap();
+            db.remember_semantic("k1", "texto um", &[1.0, -1.0, 1.0, -1.0]).unwrap();
+            db.remember_semantic("k2", "texto dois", &[-1.0, 1.0, -1.0, 1.0]).unwrap();
+            assert!(db.delete("md/L4/k1").unwrap());
+            db.checkpoint().unwrap();
+        }
+        {
+            // tombstone aplicado no recovery: k1 não ressuscita, k2 sobrevive
+            let mut db = Sgdb::open(crate::storage::FileStorage::open(&path).unwrap()).unwrap();
+            assert!(db.get(MemoryLayer::L4Semantic, "k1").unwrap().is_none());
+            assert!(db.get(MemoryLayer::L4Semantic, "k2").unwrap().is_some());
+            let hits = db.recall(&[1.0, -1.0, 1.0, -1.0], 10).unwrap();
+            assert!(hits.iter().all(|h| !h.key.contains("/k1")));
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── Estágios explícitos do retrieval (item 4/16) ───────────────────────
+
+    #[test]
+    fn retrieval_stages_candidate_generation_then_fp32_rerank() {
+        // BQ (sinais) e cosseno FP32 (magnitudes) DISCORDAM neste caso: o
+        // top-1 do filtro grosseiro NÃO é o top-1 do rerank — prova que o
+        // recall é geração de candidatos + reranking, e que o rerank muda a
+        // ordem final.
+        //   q = [10,1,1,1,1,1,1,1]
+        //   A = [10,-1,-1,-1,-1,-1,-1,-1] → hamming 7,  cos = 93/107 ≈ 0.869
+        //   B = [1,1,1,1,1,1,1,10]        → hamming 0,  cos = 26/107 ≈ 0.243
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("A", "vetor A", &[10.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0])
+            .unwrap();
+        db.remember_semantic("B", "vetor B", &[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 10.0])
+            .unwrap();
+        let q = [10.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0];
+
+        // (1) candidate generation: B (hamming 0) lidera A (hamming 7)
+        let coarse = db.bq().top_k_f32(&q, 2);
+        assert_eq!(coarse.len(), 2);
+        assert_eq!(coarse[0].1, 0, "BQ deveria preferir B (hamming 0): {coarse:?}");
+        assert_eq!(coarse[1].1, 7, "BQ deveria colocar A em segundo (hamming 7): {coarse:?}");
+
+        // (2)+(3) rerank FP32 inverte a ordem: A (dist≈0.13) antes de B (≈0.76)
+        let hits = db.recall(&q, 2).unwrap();
+        assert_eq!(hits.len(), 2);
+        assert!(hits[0].key.ends_with("/A"), "rerank deveria trazer A primeiro: {:?}", hits);
+        assert!(hits[1].key.ends_with("/B"));
+        assert!(hits[0].dist < hits[1].dist);
+
+        // (4) determinístico: mesma DB + mesma query + mesmo k ⇒ mesma ordem
+        let again = db.recall(&q, 2).unwrap();
+        let keys: Vec<&str> = hits.iter().map(|h| h.key.as_str()).collect();
+        let keys2: Vec<&str> = again.iter().map(|h| h.key.as_str()).collect();
+        assert_eq!(keys, keys2);
+        assert_eq!(hits[0].dist.to_bits(), again[0].dist.to_bits());
+    }
+
+    // ── v0.6: identidade estável + proveniência (Phase 1) ──────────────────
+
+    #[test]
+    fn put_assigns_stable_identity_across_overwrite() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("k1", "alpha", &[1.0, -1.0, 1.0, -1.0])
+            .unwrap();
+        let id1 = db.memory_id("md/L4/k1").unwrap().expect("id criado");
+        assert_eq!(id1.len(), 32);
+        assert_ne!(id1, alloc::format!("{}", db.node_id())); // nunca confundido com node_id
+        // overwrite = MESMA memória: identidade estável
+        db.remember_semantic("k1", "alpha v2", &[1.0, -1.0, 1.0, -1.0])
+            .unwrap();
+        let id2 = db.memory_id("md/L4/k1").unwrap().expect("id");
+        assert_eq!(id1, id2);
+        // chave diferente → id diferente
+        db.remember_semantic("k2", "beta", &[0.0, 1.0, 0.0, 1.0])
+            .unwrap();
+        let id3 = db.memory_id("md/L4/k2").unwrap().expect("id");
+        assert_ne!(id1, id3);
+        // memória deletada e recriada: watermark garante id NOVO
+        db.delete("md/L4/k1").unwrap();
+        db.remember_semantic("k1", "renascida", &[1.0, -1.0, 1.0, -1.0])
+            .unwrap();
+        let id4 = db.memory_id("md/L4/k1").unwrap().expect("id");
+        assert_ne!(id1, id4, "re-criação após delete físico deve ter id novo");
+    }
+
+    #[test]
+    fn meta_viaja_com_o_doc_na_replicacao() {
+        let mut src = Sgdb::open_with_node_id(3, InMemory::new()).unwrap();
+        src.remember_semantic("k", "texto", &[1.0, -1.0, 1.0, -1.0])
+            .unwrap();
+        let id = src.memory_id("md/L4/k").unwrap().unwrap();
+        let doc = src.get(MemoryLayer::L4Semantic, "k").unwrap().unwrap();
+        assert!(doc.meta.is_some(), "get deveria anexar a meta");
+        // réplica com node_id diferente: identidade do CRIADOR viaja
+        let mut dst = Sgdb::open_with_node_id(9, InMemory::new()).unwrap();
+        dst.put(doc).unwrap();
+        assert_eq!(dst.memory_id("md/L4/k").unwrap().unwrap(), id);
+        let m = dst.meta("md/L4/k").unwrap().unwrap();
+        assert_eq!(m.source, 3, "origem preservada na replicação");
+        assert_eq!(m.created_tick, src.meta("md/L4/k").unwrap().unwrap().created_tick);
+    }
+
+    #[test]
+    fn set_importance_confidence_contract() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("k", "t", &[1.0, -1.0, 1.0, -1.0])
+            .unwrap();
+        // clamp de valores fora de 0..1
+        db.set_importance("md/L4/k", 5.0).unwrap();
+        assert_eq!(db.meta("md/L4/k").unwrap().unwrap().importance, 1.0);
+        db.set_importance("md/L4/k", -2.0).unwrap();
+        assert_eq!(db.meta("md/L4/k").unwrap().unwrap().importance, 0.0);
+        db.set_confidence("md/L4/k", 0.7).unwrap();
+        assert_eq!(db.meta("md/L4/k").unwrap().unwrap().confidence, 0.7);
+        // não-finita → rejeitada (contrato explícito, sem NaN no storage)
+        assert!(matches!(
+            db.set_importance("md/L4/k", f32::NAN),
+            Err(SgdbError::Invalid(_))
+        ));
+        assert!(matches!(
+            db.set_confidence("md/L4/k", f32::INFINITY),
+            Err(SgdbError::Invalid(_))
+        ));
+        // chave sem doc → erro
+        assert!(matches!(
+            db.set_importance("md/L4/nao-existe", 0.5),
+            Err(SgdbError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn supersede_wires_parent_ids() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("old", "texto antigo", &[1.0, -1.0, 1.0, -1.0])
+            .unwrap();
+        db.remember_semantic("new", "texto novo", &[1.0, -1.0, 1.0, -1.0])
+            .unwrap();
+        let old_id = db.memory_id("md/L4/old").unwrap().unwrap();
+        db.supersede("md/L4/old", "md/L4/new").unwrap();
+        assert_eq!(
+            db.get_state("md/L4/old").unwrap(),
+            MemoryState::Superseded
+        );
+        // lineage: new.parent_ids = [old.memory_id] — DAG causal começa aqui
+        let nm = db.meta("md/L4/new").unwrap().unwrap();
+        assert_eq!(nm.parent_ids, vec![old_id.clone()]);
+        // supersede repetido não duplica o pai
+        db.supersede("md/L4/old", "md/L4/new").unwrap();
+        assert_eq!(
+            db.meta("md/L4/new").unwrap().unwrap().parent_ids,
+            vec![old_id]
+        );
+    }
+
+    #[test]
+    fn recall_exposes_provenance() {
+        let mut db = Sgdb::open_with_node_id(7, InMemory::new()).unwrap();
+        db.remember_semantic("k", "texto", &[1.0, -1.0, 1.0, -1.0])
+            .unwrap();
+        db.set_importance("md/L4/k", 0.9).unwrap();
+        db.set_confidence("md/L4/k", 0.7).unwrap();
+        let hits = db.recall(&[1.0, -1.0, 1.0, -1.0], 5).unwrap();
+        let h = hits.iter().find(|h| h.key.ends_with("/k")).expect("hit");
+        let p = h.provenance.as_ref().expect("provenance no hit");
+        assert_eq!(p.source, 7);
+        assert_eq!(p.layer, MemoryLayer::L4Semantic);
+        assert_eq!(p.state, MemoryState::Active);
+        assert_eq!(p.importance, 0.9);
+        assert_eq!(p.confidence, 0.7);
+        assert_eq!(p.memory_id, db.memory_id("md/L4/k").unwrap().unwrap());
+        // recall_lexical também expõe provenance
+        let lh = db.recall_lexical("texto", 5).unwrap();
+        let l = lh.iter().find(|h| h.key.ends_with("/k")).expect("lexical hit");
+        assert!(l.provenance.is_some());
+    }
+
+    #[test]
+    fn decayed_state_roundtrip() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("k", "t", &[1.0, -1.0, 1.0, -1.0])
+            .unwrap();
+        db.set_state("md/L4/k", MemoryState::Decayed).unwrap();
+        assert_eq!(db.get_state("md/L4/k").unwrap(), MemoryState::Decayed);
+        assert_eq!(MemoryState::from_u8(4), Some(MemoryState::Decayed));
+        // estado é lógico: o doc continua recuperável (histórico preservado)
+        assert!(db.get(MemoryLayer::L4Semantic, "k").unwrap().is_some());
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn identity_and_meta_persist_across_reopen() {
+        let dir = std::env::temp_dir().join("neural_sgdb_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("sgdb_meta.db");
+        let _ = std::fs::remove_file(&path);
+        let id;
+        {
+            let mut db = Sgdb::open(crate::storage::FileStorage::open(&path).unwrap()).unwrap();
+            db.remember_semantic("k", "texto", &[1.0, -1.0, 1.0, -1.0])
+                .unwrap();
+            db.set_importance("md/L4/k", 0.8).unwrap();
+            db.set_confidence("md/L4/k", 0.6).unwrap();
+            id = db.memory_id("md/L4/k").unwrap().unwrap();
+            db.checkpoint().unwrap();
+        }
+        {
+            let mut db = Sgdb::open(crate::storage::FileStorage::open(&path).unwrap()).unwrap();
+            // identidade + meta persistem (side-table sys/meta/ via Storage cru)
+            assert_eq!(db.memory_id("md/L4/k").unwrap().unwrap(), id);
+            let m = db.meta("md/L4/k").unwrap().unwrap();
+            assert_eq!(m.importance, 0.8);
+            assert_eq!(m.confidence, 0.6);
+            // overwrite pós-reopen preserva a identidade (watermark reconstruído)
+            db.remember_semantic("k", "texto v2", &[1.0, -1.0, 1.0, -1.0])
+                .unwrap();
+            assert_eq!(db.memory_id("md/L4/k").unwrap().unwrap(), id);
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn dynamic_clock_overflow_persists_across_reopen() {
+        let dir = std::env::temp_dir().join("neural_sgdb_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("sgdb_clock9.db");
+        let _ = std::fs::remove_file(&path);
+        {
+            let mut db =
+                Sgdb::open_with_node_id(1, crate::storage::FileStorage::open(&path).unwrap())
+                    .unwrap();
+            let mut doc = MemoryDoc::new(MemoryLayer::L4Semantic, "k", vec![0xAA; 4]);
+            for n in 2..=10u8 {
+                doc.clock.tick(n); // 9 nós → 8 fixos + overflow
+            }
+            doc.clock.tick(1); // 10º nó → overflow (fixo cheio)
+            db.put(doc).unwrap();
+            db.checkpoint().unwrap();
+        }
+        {
+            let mut db =
+                Sgdb::open_with_node_id(1, crate::storage::FileStorage::open(&path).unwrap())
+                    .unwrap();
+            // overflow re-fundido da side-table sys/meta/ (NMD1 guarda só 72B)
+            let d = db.get(MemoryLayer::L4Semantic, "k").unwrap().unwrap();
+            assert_eq!(d.clock.counter_of(10), 1);
+            assert_eq!(d.clock.counter_of(9), 1);
+            assert!(d.clock.counter_of(1) >= 2, "self tick + put tick");
+            // identidade estável no overwrite pós-reopen
+            let id1 = db.memory_id("md/L4/k").unwrap().unwrap();
+            db.remember_semantic("k", "v2", &[1.0, -1.0, 1.0, -1.0])
+                .unwrap();
+            let id2 = db.memory_id("md/L4/k").unwrap().unwrap();
+            assert_eq!(id1, id2);
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── P0-5: export/import de MemoryRecord (doc + estado + validade) ─────
+
+    #[test]
+    fn export_import_preserves_state_and_validity() {
+        let mut a = Sgdb::open_with_node_id(1, InMemory::new()).unwrap();
+        let mut b = Sgdb::open_with_node_id(2, InMemory::new()).unwrap();
+        let emb = [1.0, -1.0, 1.0, -1.0];
+        a.remember_semantic("k1", "doc 1", &emb).unwrap();
+        a.remember_semantic("k2", "doc 2", &emb).unwrap();
+        a.supersede("md/L4/k1", "md/L4/k2").unwrap();
+        a.set_validity("md/L4/k1", 0, 1000).unwrap();
+        // exportação carrega estado + validade + meta
+        let rec = a.export_record("md/L4/k1").unwrap().expect("record");
+        assert_eq!(rec.state, MemoryState::Superseded);
+        assert_eq!(rec.validity, Some((0, 1000)));
+        let mid = rec.doc.meta.as_ref().unwrap().memory_id.clone();
+        // importação aplica o side-metadata (contradição #2 fechada)
+        b.import_record(rec).unwrap();
+        assert_eq!(b.get_state("md/L4/k1").unwrap(), MemoryState::Superseded);
+        assert!(!b.validity_at("md/L4/k1", 1500).unwrap());
+        assert!(b.validity_at("md/L4/k1", 500).unwrap());
+        // identidade do criador preservada (source = nó 1)
+        assert_eq!(b.memory_id("md/L4/k1").unwrap().unwrap(), mid);
+        assert_eq!(b.meta("md/L4/k1").unwrap().unwrap().source, 1);
+        // chave sem doc → None
+        assert!(a.export_record("md/L4/nao-existe").unwrap().is_none());
+    }
+
+    #[test]
+    fn import_does_not_inflate_receiver_clock() {
+        let mut a = Sgdb::open_with_node_id(1, InMemory::new()).unwrap();
+        let mut b = Sgdb::open_with_node_id(2, InMemory::new()).unwrap();
+        a.remember_semantic("k", "doc", &[1.0, -1.0, 1.0, -1.0])
+            .unwrap();
+        let rec = a.export_record("md/L4/k").unwrap().unwrap();
+        let clock_before = rec.doc.clock.clone();
+        b.import_record(rec).unwrap();
+        let doc = b.get(MemoryLayer::L4Semantic, "k").unwrap().unwrap();
+        assert_eq!(
+            doc.clock, clock_before,
+            "import não deve tickar o relógio do receptor"
+        );
+        assert_eq!(
+            doc.clock.counter_of(2),
+            0,
+            "receptor não vira escritor de memória alheia"
+        );
+    }
+
+    #[test]
+    fn import_derives_meta_from_clock_author() {
+        // registro pré-v0.6 (sem meta) replicado: identidade derivada do
+        // AUTOR do relógio, nunca reivindicada pelo receptor
+        let mut b = Sgdb::open_with_node_id(5, InMemory::new()).unwrap();
+        let mut doc = MemoryDoc::new(MemoryLayer::L4Semantic, "old", vec![1, 2, 3, 4]);
+        doc.clock.tick(3); // autor original = nó 3
+        let rec = MemoryRecord::new(doc, MemoryState::Active, None);
+        b.import_record(rec).unwrap();
+        let m = b.meta("md/L4/old").unwrap().unwrap();
+        assert_eq!(m.source, 3, "autor derivado do relógio");
+        assert_eq!(m.created_tick, 1);
+        assert_ne!(m.source, 5, "não reivindica autoria local");
+    }
+
+    // ── P0-6: merge de record remoto sob política da camada ───────────────
+
+    #[cfg(feature = "p2p")]
+    #[test]
+    fn merge_remote_policies() {
+        use crate::crdt::{MergePolicy, MergeVerdict};
+        let mut db = Sgdb::open_with_node_id(1, InMemory::new()).unwrap();
+        // L0/L1/L6 → Rejected, nada importado
+        for layer in [
+            MemoryLayer::L0Sensory,
+            MemoryLayer::L1Working,
+            MemoryLayer::L6Reserved,
+        ] {
+            let rec = MemoryRecord::new(
+                MemoryDoc::new(layer, "k", vec![1]),
+                MemoryState::Active,
+                None,
+            );
+            assert_eq!(db.merge_remote(rec).unwrap(), MergeVerdict::Rejected);
+            assert!(db.get(layer, "k").unwrap().is_none(), "{layer:?} não deve importar");
+        }
+        // L4 sem local → Applied
+        let mut doc = MemoryDoc::new(MemoryLayer::L4Semantic, "k", vec![1, 2, 3, 4]);
+        doc.clock.tick(1);
+        let rec = MemoryRecord::new(doc, MemoryState::Active, None);
+        assert_eq!(db.merge_remote(rec).unwrap(), MergeVerdict::Applied);
+        // duplicata (mesmo conteúdo causal + mesmo side-metadata) → Duplicate
+        let mut doc = MemoryDoc::new(MemoryLayer::L4Semantic, "k", vec![1, 2, 3, 4]);
+        doc.clock.tick(1);
+        let rec = MemoryRecord::new(doc, MemoryState::Active, None);
+        assert_eq!(db.merge_remote(rec).unwrap(), MergeVerdict::Duplicate);
+        // CONCORRENTE (outro nó) → Conflict, local preservado, nada sobrescrito
+        let mut doc = MemoryDoc::new(MemoryLayer::L4Semantic, "k", vec![9, 9, 9, 9]);
+        doc.clock.tick(2);
+        let rec = MemoryRecord::new(doc, MemoryState::Active, None);
+        assert_eq!(db.merge_remote(rec).unwrap(), MergeVerdict::Conflict);
+        let cur = db.get(MemoryLayer::L4Semantic, "k").unwrap().unwrap();
+        assert_eq!(cur.payload, vec![1, 2, 3, 4], "conflito nunca sobrescreve o local");
+        // Stale: remoto causalmente mais antigo (relógio vazio) → sem regressão
+        let stale = MemoryRecord::new(
+            MemoryDoc::new(MemoryLayer::L4Semantic, "k", vec![7, 7, 7, 7]),
+            MemoryState::Active,
+            None,
+        );
+        assert_eq!(db.merge_remote(stale).unwrap(), MergeVerdict::Stale);
+        // remoto causalmente DOMINANTE → Applied; identidade do slot preservada
+        let id_before = db.memory_id("md/L4/k").unwrap().unwrap();
+        let mut doc = MemoryDoc::new(MemoryLayer::L4Semantic, "k", vec![5, 5, 5, 5]);
+        doc.clock.tick(1);
+        doc.clock.tick(1); // (1,2) domina o local (1,1)
+        let rec = MemoryRecord::new(doc, MemoryState::Active, None);
+        assert_eq!(db.merge_remote(rec).unwrap(), MergeVerdict::Applied);
+        assert_eq!(
+            db.memory_id("md/L4/k").unwrap().unwrap(),
+            id_before,
+            "overwrite dominante não muda a identidade do slot"
+        );
+        // política por camada consultável (tabela explícita)
+        assert_eq!(
+            MergePolicy::for_layer(MemoryLayer::L2EpisodicShort),
+            MergePolicy::MultiValueRegister
+        );
     }
 }

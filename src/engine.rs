@@ -10,7 +10,10 @@ use alloc::vec::Vec;
 use crate::art::ArtIndex;
 use crate::bq::BqFlatIndex;
 use crate::lexical::LexicalIndex;
-use crate::memory_doc::{MemoryDoc, MemoryDocView, MemoryLayer, MemoryState};
+use crate::memory_doc::{
+    generate_memory_id, MemoryDoc, MemoryDocView, MemoryLayer, MemoryMeta, MemoryRecord,
+    MemoryState, VectorClock,
+};
 use crate::storage::{Storage, SgdbError};
 
 /// Contador monotônico de handles internos (ART / BQ ids).
@@ -36,6 +39,17 @@ fn validity_key(sk: &str) -> Vec<u8> {
     k
 }
 
+/// Namespace lateral de metadados de memória (`sys/meta/<storage_key>` →
+/// MemoryMeta codec "MDM1", v0.6). Identidade + proveniência FORA do NMD1
+/// (contrato byte-idêntico com o OS). Anexado no `get`; viaja com o doc na
+/// replicação (`Sgdb::put` preserva `doc.meta`).
+fn meta_key(sk: &str) -> Vec<u8> {
+    let mut k = Vec::with_capacity(9 + sk.len());
+    k.extend_from_slice(b"sys/meta/");
+    k.extend_from_slice(sk.as_bytes());
+    k
+}
+
 fn is_ram_layer(layer: MemoryLayer) -> bool {
     matches!(layer, MemoryLayer::L0Sensory | MemoryLayer::L1Working)
 }
@@ -55,6 +69,10 @@ pub struct AiosDatabaseEngine {
     pub ram_puts: u64,
     /// id lógico → storage_key (recall BQ → doc).
     id_to_sk: BTreeMap<u64, String>,
+    /// Watermark do contador próprio (node_id): máximo contador deste nó em
+    /// docs + overflow de metas. Garante `created_tick`/memory_id monotônicos
+    /// através de restarts (o NMD1 72B perde o overflow >8 nós).
+    own_clock_watermark: u64,
     storage: Box<dyn Storage>,
 }
 
@@ -70,6 +88,7 @@ impl AiosDatabaseEngine {
             ram_l0l1: BTreeMap::new(),
             ram_puts: 0,
             id_to_sk: BTreeMap::new(),
+            own_clock_watermark: 0,
             storage,
         }
     }
@@ -79,8 +98,32 @@ impl AiosDatabaseEngine {
     }
 
     /// Persiste doc: L0/L1 → RAM; demais → Storage (`md/Lx/key`) + indexa.
-    pub fn put(&mut self, mut doc: MemoryDoc) -> Result<u64, SgdbError> {
-        doc.clock.tick(self.node_id);
+    /// v0.6: além do NMD1, escreve a side-table `sys/meta/` (identidade +
+    /// proveniência) — identidade é ESTÁVEL: um doc já existente na chave
+    /// mantém memory_id/source/created (overwrite = mesma memória); um doc
+    /// que CHEGA com `meta` (replicação) preserva a identidade do criador.
+    /// Put de AUTORIA local (tick do relógio próprio + watermark).
+    pub fn put(&mut self, doc: MemoryDoc) -> Result<u64, SgdbError> {
+        self.put_inner(doc, true)
+    }
+
+    /// Importação de REPLICAÇÃO (P0-5): `tick_local = false` NÃO incrementa o
+    /// relógio próprio nem promove o watermark — o receptor nunca vira
+    /// "escritor" de uma memória que não criou (sem inflação causal).
+    fn put_inner(&mut self, mut doc: MemoryDoc, tick_local: bool) -> Result<u64, SgdbError> {
+        if tick_local {
+            doc.clock.tick(self.node_id);
+            // Monotonia do contador próprio através de overwrites e restarts:
+            // clocks frescos (ou com overflow perdido no NMD1) são promovidos
+            // acima do watermark — `created_tick`/memory_id nunca regridem.
+            let own = doc.clock.counter_of(self.node_id);
+            if own <= self.own_clock_watermark {
+                doc.clock
+                    .set_counter(self.node_id, self.own_clock_watermark.saturating_add(1));
+            }
+            self.own_clock_watermark = doc.clock.counter_of(self.node_id);
+        }
+
         let id = NEXT_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         let sk = doc.storage_key();
         let blob = doc.encode();
@@ -92,9 +135,95 @@ impl AiosDatabaseEngine {
             self.storage.put(sk.as_bytes(), &blob)?;
         }
 
+        self.persist_meta(&sk, &doc)?;
         self.index_doc(id, &doc, &sk);
         self.puts += 1;
         Ok(id)
+    }
+
+    /// Escreve/lê `sys/meta/<sk>`. Regra de identidade (v0.6):
+    /// - `(None, None)` — criação: gera memory_id determinístico.
+    /// - `(None, Some(d))` — replicado: identidade do remetente viaja.
+    /// - `(Some(e), _)` — overwrite: identidade LOCAL vence (memory_id é
+    ///   estável por chave); confidence/importance/parents vêm do doc se
+    ///   presentes, senão do existente.
+    fn persist_meta(&mut self, sk: &str, doc: &MemoryDoc) -> Result<(), SgdbError> {
+        let existing = match self.storage.get(&meta_key(sk)) {
+            Ok(Some(b)) => MemoryMeta::decode(&b).ok(),
+            _ => None,
+        };
+        let tick = doc.clock.counter_of(self.node_id);
+        let mut m = match (existing, doc.meta.clone()) {
+            (Some(e), Some(d)) => {
+                let mut mm = e;
+                mm.confidence = d.confidence;
+                mm.importance = d.importance;
+                for p in d.parent_ids {
+                    if !mm.parent_ids.contains(&p) {
+                        mm.parent_ids.push(p);
+                    }
+                }
+                mm
+            }
+            (Some(e), None) => e,
+            (None, Some(d)) => d,
+            (None, None) => MemoryMeta {
+                memory_id: generate_memory_id(self.node_id, tick, doc.layer, &doc.key),
+                source: self.node_id,
+                confidence: 1.0,
+                importance: doc.layer.default_importance(),
+                created_tick: tick,
+                parent_ids: Vec::new(),
+                clock_overflow: Vec::new(),
+            },
+        };
+        // overflow do relógio dinâmico persiste com a meta (o NMD1 não guarda)
+        m.clock_overflow = doc.clock.overflow.clone();
+        self.storage.put(&meta_key(sk), &m.encode())
+    }
+
+    /// Lê `sys/meta/<sk>` (None = sem metadados: registro pré-v0.6).
+    pub fn read_meta(&mut self, sk: &str) -> Option<MemoryMeta> {
+        match self.storage.get(&meta_key(sk)) {
+            Ok(Some(b)) => MemoryMeta::decode(&b).ok(),
+            _ => None,
+        }
+    }
+
+    pub fn write_meta(&mut self, sk: &str, m: &MemoryMeta) -> Result<(), SgdbError> {
+        self.storage.put(&meta_key(sk), &m.encode())
+    }
+
+    /// Meta da memória em `sk` (None = sem doc OU registro pré-v0.6).
+    pub fn meta(&mut self, sk: &str) -> Result<Option<MemoryMeta>, SgdbError> {
+        Ok(self.read_meta(sk))
+    }
+
+    /// Garante meta para `sk` (migração de registros pré-v0.6: cria
+    /// identidade determinística a partir do doc). Err se o doc não existe.
+    pub fn ensure_meta(&mut self, sk: &str) -> Result<MemoryMeta, SgdbError> {
+        if let Some(m) = self.read_meta(sk) {
+            return Ok(m);
+        }
+        let exists = self.ram_l0l1.contains_key(sk) || self.storage.get(sk.as_bytes())?.is_some();
+        if !exists {
+            return Err(SgdbError::Invalid("no memory at key"));
+        }
+        let doc = self
+            .get_by_storage_key(sk)?
+            .ok_or(SgdbError::Invalid("no memory at key"))?;
+        let tick = doc.clock.counter_of(self.node_id);
+        let m = MemoryMeta {
+            memory_id: generate_memory_id(self.node_id, tick, doc.layer, &doc.key),
+            source: self.node_id,
+            confidence: 1.0,
+            importance: doc.layer.default_importance(),
+            created_tick: tick,
+            parent_ids: Vec::new(),
+            clock_overflow: doc.clock.overflow.clone(),
+        };
+        self.write_meta(sk, &m)?;
+        Ok(m)
     }
 
     /// Flush L0/L1 RAM → Storage. Honesty: sem isto, reboot perde L0/L1.
@@ -168,6 +297,8 @@ impl AiosDatabaseEngine {
         self.bq.clear();
         self.lexical = LexicalIndex::new();
         self.id_to_sk.clear();
+        // watermark reconstruído do storage (docs = fonte da verdade)
+        self.own_clock_watermark = 0;
         // Reindex RAM L0/L1 first (logical ids fresh)
         let mut n = 0usize;
         let ram_keys: Vec<(String, Vec<u8>)> = self
@@ -180,6 +311,10 @@ impl AiosDatabaseEngine {
                 let id = NEXT_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                 self.index_doc(id, &doc, &sk);
                 n += 1;
+                let own = doc.clock.counter_of(self.node_id);
+                if own > self.own_clock_watermark {
+                    self.own_clock_watermark = own;
+                }
             }
         }
         let keys = self.storage.scan_prefix(b"md/")?;
@@ -192,6 +327,23 @@ impl AiosDatabaseEngine {
                 let id = NEXT_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                 self.index_doc(id, &doc, &sk);
                 n += 1;
+                // watermark: contador próprio nos docs (72B fixos)
+                let own = doc.clock.counter_of(self.node_id);
+                if own > self.own_clock_watermark {
+                    self.own_clock_watermark = own;
+                }
+            }
+        }
+        // watermark também cobre o overflow (metas `sys/meta/`): um contador
+        // próprio além do 8º nó não sobrevive no NMD1, mas persiste na meta
+        let meta_keys = self.storage.scan_prefix(b"sys/meta/")?;
+        for (_mk, bytes) in meta_keys {
+            if let Ok(m) = MemoryMeta::decode(&bytes) {
+                for &(n, c) in &m.clock_overflow {
+                    if n == self.node_id && c > self.own_clock_watermark {
+                        self.own_clock_watermark = c;
+                    }
+                }
             }
         }
         Ok(n)
@@ -203,15 +355,35 @@ impl AiosDatabaseEngine {
     }
 
     /// Load por storage key canônica `md/Lx/...` (RAM L0/L1 ou Storage).
+    /// v0.6: anexa a meta (`sys/meta/`) e re-funde o overflow do relógio
+    /// dinâmico que o NMD1 72B não carrega.
     pub fn get_by_storage_key(&mut self, sk: &str) -> Result<Option<MemoryDoc>, SgdbError> {
         self.gets += 1;
         if let Some(bytes) = self.ram_l0l1.get(sk) {
-            return Ok(Some(MemoryDoc::decode(bytes).map_err(|_| SgdbError::Corrupt)?));
+            let mut doc = MemoryDoc::decode(bytes).map_err(|_| SgdbError::Corrupt)?;
+            self.attach_meta(sk, &mut doc);
+            return Ok(Some(doc));
         }
         match self.storage.get(sk.as_bytes()) {
-            Ok(Some(bytes)) => Ok(Some(MemoryDoc::decode(&bytes).map_err(|_| SgdbError::Corrupt)?)),
+            Ok(Some(bytes)) => {
+                let mut doc = MemoryDoc::decode(&bytes).map_err(|_| SgdbError::Corrupt)?;
+                self.attach_meta(sk, &mut doc);
+                Ok(Some(doc))
+            }
             Ok(None) => Ok(None),
             Err(e) => Err(e),
+        }
+    }
+
+    /// Anexa meta + overflow do relógio ao doc recém-decodificado.
+    fn attach_meta(&mut self, sk: &str, doc: &mut MemoryDoc) {
+        if let Some(m) = self.read_meta(sk) {
+            let mut oc = VectorClock::new();
+            for &(n, c) in &m.clock_overflow {
+                oc.set_counter(n, c);
+            }
+            doc.clock.merge(&oc);
+            doc.meta = Some(m);
         }
     }
 
@@ -301,6 +473,19 @@ impl AiosDatabaseEngine {
         Ok(())
     }
 
+    /// Janela de validade BRUTA de `sk` (`sys/validity/`) — `None` = sem
+    /// marcação (sempre válido). Usada na exportação de `MemoryRecord`
+    /// (P0-5): a janela viaja com o doc na replicação.
+    pub fn validity_window(&mut self, sk: &str) -> Option<(u64, u64)> {
+        match self.storage.get(&validity_key(sk)) {
+            Ok(Some(b)) if b.len() == 16 => Some((
+                u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]),
+                u64::from_le_bytes([b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]]),
+            )),
+            _ => None,
+        }
+    }
+
     /// `true` se o doc está válido em `now`. Sem marcação = sempre válido.
     pub fn validity_at(&mut self, sk: &str, now: u64) -> bool {
         match self.storage.get(&validity_key(sk)) {
@@ -323,6 +508,98 @@ impl AiosDatabaseEngine {
             _ => 0,
         };
         self.set_validity(sk, from, now)
+    }
+
+    /// Deleção FÍSICA por storage key canônica (`md/Lx/...`): remove do
+    /// Storage (tombstone) + side-tables (`sys/state/`, `sys/validity/`) +
+    /// índices derivados (ART, lexical, id→sk).
+    ///
+    /// Distinta de `set_state`/`supersede`/`invalidate` (invalidar-NÃO-
+    /// deletar): aqui o doc SOME da história. O BQ é um índice flat
+    /// append-only SEM remoção O(1) — as entradas ficam inertes (o recall
+    /// resolve id→storage key e pula as que não resolvem; o rebuild/
+    /// compactação eventualmente as reclama).
+    ///
+    /// Retorna `true` se o doc existia (RAM L0/L1 ou Storage) antes da
+    /// remoção.
+    pub fn delete(&mut self, sk: &str) -> Result<bool, SgdbError> {
+        let existed = self.ram_l0l1.contains_key(sk)
+            || self.storage.get(sk.as_bytes())?.is_some();
+        self.storage.delete(sk.as_bytes())?;
+        self.ram_l0l1.remove(sk);
+        // side-tables da memória morrem com ela (estado + validade + meta)
+        self.storage.delete(&state_key(sk))?;
+        self.storage.delete(&validity_key(sk))?;
+        self.storage.delete(&meta_key(sk))?;
+        self.art.delete(sk);
+        self.lexical.remove(sk);
+        // desliga o mapeamento id → sk: candidatos BQ desses ids são pulados
+        let dead: Vec<u64> = self
+            .id_to_sk
+            .iter()
+            .filter(|(_, v)| v.as_str() == sk)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in dead {
+            self.id_to_sk.remove(&id);
+        }
+        Ok(existed)
+    }
+
+    /// Exporta uma memória como UNIDADE de replicação (P0-5): doc NMD1 com
+    /// meta anexada + estado lógico + janela de validade. `None` = sem doc
+    /// na chave. O lado remoto reimporta com `import_record` — estado e
+    /// validade NÃO são mais perdidos no diff/pull (contradição #2).
+    pub fn export_record(&mut self, sk: &str) -> Result<Option<MemoryRecord>, SgdbError> {
+        let Some(doc) = self.get_by_storage_key(sk)? else {
+            return Ok(None);
+        };
+        let state = self.get_state(sk);
+        let validity = self.validity_window(sk);
+        Ok(Some(MemoryRecord::new(doc, state, validity)))
+    }
+
+    /// Importa uma `MemoryRecord` replicada: grava o NMD1 SEM tick local (o
+    /// receptor não vira escritor), preserva a meta do criador (ou deriva
+    /// identidade determinística do relógio para registros pré-v0.6) e aplica
+    /// estado + validade que viajam no record. Indexa ART/BQ/lexical como
+    /// qualquer put.
+    pub fn import_record(&mut self, mut rec: MemoryRecord) -> Result<u64, SgdbError> {
+        if rec.doc.meta.is_none() {
+            rec.doc.meta = Some(meta_for_import(&rec.doc));
+        }
+        let sk = rec.doc.storage_key();
+        let id = self.put_inner(rec.doc, false)?;
+        // side-metadata viaja com o doc (P0-5)
+        self.set_state(&sk, rec.state)?;
+        match rec.validity {
+            Some((from, until)) => self.set_validity(&sk, from, until)?,
+            None => self.set_validity(&sk, 0, 0)?, // sem marcação → limpa a local
+        }
+        Ok(id)
+    }
+}
+
+/// Meta determinística para um doc REPLICADO sem meta (pré-v0.6): autor =
+/// nó com o maior contador no relógio (tie-break: menor node_id) — nunca
+/// reivindica autoria local de uma memória vinda de outro nó.
+fn meta_for_import(doc: &MemoryDoc) -> MemoryMeta {
+    let mut author = 0u8;
+    let mut maxc = 0u64;
+    for (n, c) in doc.clock.entries() {
+        if c > maxc || (c == maxc && n < author) {
+            maxc = c;
+            author = n;
+        }
+    }
+    MemoryMeta {
+        memory_id: generate_memory_id(author, maxc, doc.layer, &doc.key),
+        source: author,
+        confidence: 1.0,
+        importance: doc.layer.default_importance(),
+        created_tick: maxc,
+        parent_ids: Vec::new(),
+        clock_overflow: doc.clock.overflow.clone(),
     }
 }
 

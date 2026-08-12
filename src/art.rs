@@ -1033,6 +1033,7 @@ impl Default for ArtIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::format; // no_std test build: `format!` não está no prelude
 
     #[test]
     fn art_smoke() {
