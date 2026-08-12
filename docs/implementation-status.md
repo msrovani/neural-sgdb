@@ -19,9 +19,9 @@
 
 | Check | Command | Result |
 |---|---|---|
-| Default tests | `cargo test` | **113 lib + 1 doc-test ok** |
-| P2P tests | `cargo test --features p2p` | **125 lib + 1 doc-test ok** |
-| no_std tests | `cargo test --no-default-features` | **74 lib + 1 doc-test ok** |
+| Default tests | `cargo test` | **136 lib + 1 doc-test ok** |
+| P2P tests | `cargo test --features p2p` | **163 lib + 1 doc-test ok** |
+| no_std tests | `cargo test --no-default-features` | **95 lib + 1 doc-test ok** |
 | no_std target | `cargo check --no-default-features --target x86_64-unknown-none` | **ok** |
 | Examples | `cargo test --examples` | **ok** |
 | Bench | `cargo run --release --example bench` | BQ top-k heap(k=5) = 98.9 µs vs full-sort = 279.5 µs (**2.8×**) |
@@ -47,10 +47,10 @@ index-rebuild, docs) are **staged but uncommitted** — the git identity
 | Conflict preservation | PARTIAL→**improved (v0.6)** — per-layer `MergePolicy` table (L2/L3 multi-value, L4 causal-LWW-with-history, L5/L7 controlled, L0/L1 local-only → `Rejected`); `Sgdb::merge_remote` never LWW-overwrites concurrent same-key memories | `MergePolicy`, `MergeVerdict` in crdt.rs; `merge_remote` in sgdb.rs | per-layer conflict model + resolution API |
 | Dynamic VectorClock | **IMPLEMENTED (v0.6)** — 8-node fast path + overflow registry (bounded), dynamic `set_counter`, overflow-aware compare/merge; NMD1 stays 72B | `VectorClock` in `src/memory_doc.rs` + tests | causal DAG on top |
 | Causal DAG | PARTIAL→**implemented core (v0.7)** — per-version identity (`MemoryMeta.version_id`, MDM1 v2, v1-decodable), `sys/version/` reverse index, `Sgdb::version_of`/`lineage`, `supersede` links versions; merge-branch exploration via `parent_ids` | `src/memory_doc.rs`, `src/engine.rs`, `src/sgdb.rs` | full DAG queries (children/descendants) |
-| Provenance | PARTIAL→**implemented core (v0.6)** — `MemoryMeta` (source, confidence, importance, created_tick, parents) in `sys/meta/`; exposed in `Hit.provenance`; pre-v0.6 records lazily migrated | `src/memory_doc.rs`, `src/engine.rs`, `src/sgdb.rs` | provenance-aware recall modes (active vs historical) |
-| L6 associations | DESIGN — no `associate`/`related_to` API | `docs/architecture/01` §5, `06-cognitive-api.md` | relation index on ART |
-| Lifecycle engine | PARTIAL — primitives only (state, validity, supersede); no tick/decay/consolidation | engine/sgdb + `docs/architecture/02` | `MemoryLifecycle::tick(db, now)` |
-| Semantic consolidation | DESIGN | `docs/architecture/02` | deterministic heuristic (no LLM) |
+| Provenance | PARTIAL→**implemented core (v0.6)** — `MemoryMeta` (source, confidence, importance, created_tick, parents) in `sys/meta/`; exposed in `Hit.provenance`; pre-v0.6 records lazily migrated. **Provenance-aware recall (v0.8)**: default recall = ACTIVE only; `recall_historical`/`recall_lexical_historical` include inactive with state exposed | `src/memory_doc.rs`, `src/engine.rs`, `src/sgdb.rs` | explain/arbitration on top |
+| L6 associations | DESIGN→**IMPLEMENTED (v0.8)** — `associate`/`related_to`/`causes`/`supports`/`contradicts`/`derived_from`; side-table `sys/rel/` + ART forward/reverse index (derived, rebuilt on open, pruned on delete); no inference | `src/engine.rs`, `src/sgdb.rs`, `RelationKind` in `memory_doc.rs` | relation-aware retrieval fusion |
+| Lifecycle engine | PARTIAL→**IMPLEMENTED (v0.8)** — `MemoryLifecycle::tick(db, now)` deterministic (no hidden wall clock), `LifecycleConfig`/`LifecycleReport`; L1→L2 commit, L2→L3 promotion, L3→L4 heuristic semanticization (no LLM/embedding in core), decay→Decayed (never delete), archive of aged superseded; lineage wired on every promotion | `src/lifecycle.rs` | consolidation/reinforcement (v0.9) |
+| Semantic consolidation | PARTIAL→**heuristic foundation (v0.8)** — L3→L4 promotion by importance+age records `derived_from`; embedding backfill is the upper layer's job | `src/lifecycle.rs` | repetition/similarity-density signals |
 | Cognitive API | PARTIAL — `remember`/`recall`/`rag_context`/`supersede`/`delete` + `memory_id`/`meta`/`set_importance`/`set_confidence` (v0.6); no associate/reinforce/explain | `src/sgdb.rs` | progressive verb surface |
 | AI arbitration | NOT core — correctly absent | `docs/architecture/06` | separate upper layer |
 
@@ -183,10 +183,15 @@ explain, supersede) or provenance/state fields in responses.
 - Same-key concurrent writes are never silently overwritten (`Conflict`),
   but both values are not co-located in one store: each stays on its author
   node until a higher layer resolves.
-- No provenance/confidence/importance filtering in `recall` (exposed via
-  `Hit.provenance`); `recall_weighted` uses the layer as a coarse proxy.
-- L6 associations absent; lifecycle engine absent (only state/validity/
-  supersede primitives); no decay/reinforcement/consolidation.
+- Recall (v0.8) filters to **active** by default (`recall_historical` opts
+  into inactive with `provenance.state`); `recall_weighted` still uses the
+  layer as a coarse importance proxy — importance-aware weighting is v0.9
+  along with reinforcement/decay APIs.
+- Lifecycle (v0.8) does commit/promote/semanticize/decay/archive but there
+  is no **reinforcement** (`reinforce`) or consolidation-by-repetition yet;
+  L4→L5 proceduralization is deliberately manual (HITL). L3→L4 promotion
+  creates the L4 doc without a bitvec — semantic (BQ) retrieval of
+  consolidated memories requires the upper layer to backfill embeddings.
 - `UdpTransport` unauthenticated (documented, demo-only).
 
 ## 6. Architecture contradictions found in the code
@@ -215,9 +220,11 @@ explain, supersede) or provenance/state fields in responses.
 | BQ / top-k / rerank | `bq.rs`, `sgdb.rs` (stages test, determinism) |
 | Storage / recovery | `storage.rs` (fault injection, parity InMemory↔FileStorage↔TickvFile) |
 | Tickv | `tickv.rs` (byte-exact codec, GC, crash) |
-| Sgdb API / lifecycle | `sgdb.rs` (delete, supersede, validity, rebuild, reopen) |
+| Sgdb API / lifecycle | `sgdb.rs` (delete, supersede, validity, rebuild, reopen, relations, active/historical recall) + `lifecycle.rs` (commit/promote/semanticize/decay/archive, determinism, idempotence) |
+| L6 relations | `sgdb.rs` (directions, determinism, reopen persistence, delete topology cleanup, reserved-`#` rejection) |
 | CRDT | `crdt.rs` (self/stale/newer/concurrent/duplicate, envelope malformed-input) |
 | CRDT anti-entropy / durability | `crdt.rs` (3-node triangle, partition/rejoin, relay through intermediate node, version-range pull, `CrdtState` roundtrip + restart-no-regression, idempotence) |
+| Recall modes | `sgdb.rs` (active default vs historical, semantic + lexical) |
 | p2p / telepathy | `examples/p2p_telepathy.rs` (two-node convergence) |
 | Stress / bench | `examples/stress.rs`, `examples/bench.rs` |
 
@@ -227,7 +234,18 @@ associativity/idempotence) cover the VectorClock merge; remaining: a full
 property suite over the mesh convergence (multiple random topologies) and
 A↔B↔C concurrent-write scenarios at scale.
 
-## 7.5 v0.6 + v0.7 (M1) delivered (this session)
+## 7.5 v0.6 + v0.7 + v0.8 (M1/M2) delivered (this session)
+
+**v0.8 — M2 (Phase 8/9/15/16):** L6 associative memory (`associate`/
+`related_to`/`causes`/`supports`/`contradicts`/`derived_from`, side-table
+`sys/rel/` + ART forward/reverse, topology pruned on delete); provenance-
+aware recall (default = active only; `recall_historical`/
+`recall_lexical_historical`); deterministic `MemoryLifecycle::tick(db,
+now)` with `LifecycleConfig`/`LifecycleReport` (L1→L2 commit, L2→L3
+promotion, L3→L4 heuristic semanticization without LLM/embedding in core,
+configurable decay → Decayed, aged-superseded archiving; every promotion
+wires parent_ids + `derived_from`); `Sgdb::add_parents`.
+
 
 **v0.7 — M1 (Phase 3 + 6):** per-version identity (`version_id`), MDM1 v2
 (v1-decodable), `sys/version/` reverse index (key + the version's own meta),
@@ -250,29 +268,33 @@ layer-aware `MergePolicy` table + `MergeVerdict::Rejected`; 3-node triangle
 convergence, partition/rejoin preserving concurrent writes, duplicate/stale/
 out-of-order idempotence, fresh-node catch-up, merge-associativity property.
 Contradictions #1–#3 are resolved (see §6); anti-entropy + durable
-replication state (P0-7/P0-11) are done in v0.7.
-Pending: P0-8 (lifecycle tick), P0-9b (active/historical recall), P0-10
-(L6 relations) — the v0.8 milestone.
+replication state (P0-7/P0-11) are done in v0.7; lifecycle tick (P0-8),
+active/historical recall (P0-9b) and L6 relations (P0-10) are done in
+v0.8.
 
-## 8. First concrete tasks (Phase 1 onward — v0.8)
+## 8. First concrete tasks (v0.9 — M3, cognitive API)
 
-> P0-1..P0-7 + P0-11 are **done (v0.6/v0.7)** — see §7.5. Remaining backlog:
+> P0-1..P0-11 are **done (v0.6/v0.7/v0.8)** — see §7.5. Remaining backlog:
 
-1. **P0-8 (lifecycle): deterministic `MemoryLifecycle::tick(db, now)`**
-   driving the existing state/validity primitives (L1→L2 commit,
-   L2→L3 promotion signals) with no hidden wall clock.
-2. **P0-9b (retrieval): provenance-aware recall mode** — `recall_active`
-   default filtering superseded/invalidated/decayed, historical mode opting
-   in; expose provenance fields in `rag_context`.
-3. **P0-10 (L6 foundation): relation side-index on ART** —
-   `associate(a, rel, b)` + `related_to`/`contradicts`/`causes`/`supports`,
-   memory-native, no inference.
+1. **Reinforcement/decay API** — `reinforce(key, delta)` + `last_reinforced`
+   (Phase 17); decay already ticks in the lifecycle but needs the explicit
+   counter-signal.
+2. **First-class conflict model** — `Conflict` object (conflict_id, subject,
+   candidates, concurrency, sources, confidence) persisted, not just the
+   in-memory `conflicts` vec (Phase 14).
+3. **Resolution API** — `resolve_conflict`/`supersede`/`invalidate`/
+   `merge_memories` at the cognitive surface; CRDT detects/preserves, the
+   layer decides (Phase 15).
+4. **Cognitive verbs** — `forget`/`explain`/`transfer`/`merge` + MCP
+   surface exposing provenance/state (Phase 18/19).
+5. **Arbitration (v1.0)** — policy-pluggable arbitration WITHOUT LLM in the
+   core, trust seam on the authenticated transport, observability counters.
 
 Suggested versioning (respecting §37, per maintainer decision): P0-1..P0-7
-land together in the **v0.6.x** line (identity + provenance + dynamic clock
-foundation + delta replication + layer-aware CRDT); anti-entropy +
-per-version identity in **v0.7**; P0-8..P0-10 land in **v0.8** (lifecycle +
-L6). Nothing below ships without tests and doc updates.
+in the **v0.6.x** line; anti-entropy + per-version identity in **v0.7**;
+P0-8..P0-10 in **v0.8** (lifecycle + L6); cognitive API in **v0.9**;
+arbitration/trust/observability in **v1.0**. Nothing ships without tests
+and doc updates.
 
 ## 9. How this document is maintained
 

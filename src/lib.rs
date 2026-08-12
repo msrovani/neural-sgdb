@@ -77,6 +77,7 @@ pub mod tickv;
 
 #[cfg(feature = "p2p")]
 pub mod crdt;
+pub mod lifecycle;
 
 mod engine;
 mod sgdb;

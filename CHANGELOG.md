@@ -6,6 +6,39 @@ All notable changes to this project. Format based on
 
 ## [Unreleased]
 
+### v0.8 — L6 associations + provenance-aware recall + lifecycle engine (Phase 8/9/15/16)
+- **L6 associative memory** (`RelationKind` + `associate`/`related_to`/
+  `causes`/`supports`/`contradicts`/`derived_from`) — topologia cognitiva
+  memória-NATIVA: side-table `sys/rel/<kind>/<a>#<b>` (storage = fonte da
+  verdade) + índice ART forward/reverse (derivado, reconstruído no rebuild,
+  removido no delete — memória morta não mantém topologia). Relações
+  sobrevivem a reopen; `#` é separador reservado (rejeitado na entrada).
+  NENHUMA inferência: a camada superior afirma, o SGDB armazena.
+- **Provenance-aware recall (P0-9b)** — o recall default agora devolve só
+  memórias **ATIVAS**: `Superseded`/`Archived`/`Decayed`/`Invalidated` são
+  filtradas ANTES do ranking (não consomem vagas do top-k) — memória
+  superseded nunca se finge de ativa (item 13). `recall_historical` e
+  `recall_lexical_historical` incluem as inativas com `provenance.state`
+  exposto (histórico explícito). `recall_at` continua compondo validade.
+- **`MemoryLifecycle` determinístico** (`src/lifecycle.rs`, P0-8) —
+  `tick(db, now)` sem relógio de parede oculto nem thread; `LifecycleConfig`
+  + `LifecycleReport` estruturado (observabilidade). Transições: L1→L2
+  commit (origem Archived), L2→L3 promoção por importância+idade, L3→L4
+  semanticização heurística (L4 nasce SEM bitvec — embeddings são da camada
+  superior; o core nunca gera representação semântica), L4→L5 NUNCA
+  automática (HITL), decay configurável (Decayed, nunca delete) e archive
+  de superseded envelhecido. Toda promoção registra `parent_ids` + relação
+  L6 `derived_from` (DAG + topologia). Idempotente: fonte só promove se
+  `Active`.
+- **`Sgdb::add_parents`** — anexa `parent_ids` à meta (linhagem; base da
+  fusão do v0.9).
+- Testes (+10 lib, +5 no_std): relações (direções, determinismo, reopen,
+  delete limpa topologia, derived_from, chave `#` rejeitada), recall
+  active/histórico (semântico + lexical), lifecycle (commit idempotente,
+  promoção por idade, semanticização com linhagem, decay sem delete,
+  archive, determinismo, contador explícito). Matriz: default **136+1**,
+  p2p **163+1**, no-default-features **95+1**, `x86_64-unknown-none` ok.
+
 ### v0.7 — Causal DAG + anti-entropy (Phase 3/6)
 - **Anti-entropy de verdade (P0-7, Phase 6)** — o mesh não faz mais
   diff/pull doc-a-doc: cada ronda **anuncia o clock completo** (próprio +

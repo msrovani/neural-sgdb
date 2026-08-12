@@ -4,7 +4,7 @@
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use crate::art::ArtIndex;
@@ -12,7 +12,7 @@ use crate::bq::BqFlatIndex;
 use crate::lexical::LexicalIndex;
 use crate::memory_doc::{
     generate_memory_id, MemoryDoc, MemoryDocView, MemoryLayer, MemoryMeta, MemoryRecord,
-    MemoryState, VectorClock,
+    MemoryState, RelationKind, VectorClock,
 };
 use crate::storage::{Storage, SgdbError};
 
@@ -83,6 +83,45 @@ fn decode_version_entry(data: &[u8]) -> Option<(String, MemoryMeta)> {
 
 fn is_ram_layer(layer: MemoryLayer) -> bool {
     matches!(layer, MemoryLayer::L0Sensory | MemoryLayer::L1Working)
+}
+
+// ── L6 relations (v0.8): side-table persistente + índice ART derivado ──
+//
+// storage (fonte da verdade):  sys/rel/<kind>/<a>#<b>        → [fmt u8]
+// ART forward (derivado):      rel/<kind>/<a>#<b>            → 0
+// ART reverse (derivado):      rev/<kind>/<b>#<a>            → 0
+//
+// '#' é separador reservado — `associate` REJEITA chaves com '#', então o
+// decode do rebuild nunca divide no lugar errado (e jamais panics).
+
+fn rel_storage_key(kind: RelationKind, a: &str, b: &str) -> Vec<u8> {
+    let mut k = Vec::with_capacity(16 + a.len() + b.len());
+    k.extend_from_slice(b"sys/rel/");
+    k.extend_from_slice(kind.as_str().as_bytes());
+    k.push(b'/');
+    k.extend_from_slice(a.as_bytes());
+    k.push(b'#');
+    k.extend_from_slice(b.as_bytes());
+    k
+}
+
+fn rel_art_key(rev: bool, kind: RelationKind, x: &str, y: &str) -> String {
+    let mut s = String::with_capacity(12 + x.len() + y.len());
+    s.push_str(if rev { "rev/" } else { "rel/" });
+    s.push_str(kind.as_str());
+    s.push('/');
+    s.push_str(x);
+    s.push('#');
+    s.push_str(y);
+    s
+}
+
+fn parse_rel_storage_key(s: &str) -> Option<(RelationKind, String, String)> {
+    let rest = s.strip_prefix("sys/rel/")?;
+    let (kind_str, pair) = rest.split_once('/')?;
+    let kind = RelationKind::from_str(kind_str)?;
+    let (a, b) = pair.split_once('#')?;
+    Some((kind, a.to_string(), b.to_string()))
 }
 
 pub struct AiosDatabaseEngine {
@@ -465,6 +504,15 @@ impl AiosDatabaseEngine {
                     .put(&version_key(&m.version_id), &encode_version_entry(&sk, &m))?;
             }
         }
+        // relações L6 (v0.8): side-table → índice ART forward+reverse
+        let rel_keys = self.storage.scan_prefix(b"sys/rel/")?;
+        for (rk, _) in rel_keys {
+            let s = String::from_utf8_lossy(&rk).into_owned();
+            if let Some((kind, a, b)) = parse_rel_storage_key(&s) {
+                self.art.insert(&rel_art_key(false, kind, &a, &b), 0);
+                self.art.insert(&rel_art_key(true, kind, &b, &a), 0);
+            }
+        }
         Ok(n)
     }
 
@@ -562,6 +610,109 @@ impl AiosDatabaseEngine {
 
     pub fn write_side_bytes(&mut self, key: &str, bytes: &[u8]) -> Result<(), SgdbError> {
         self.storage.put(key.as_bytes(), bytes)
+    }
+
+    // ── L6 relations (v0.8, roadmap Phase 12) ─────────────────────────────
+    //
+    // Sem inferência: a camada superior afirma a relação, o SGDB armazena.
+    // Persistência em `sys/rel/` (storage = fonte da verdade) + índice ART
+    // forward/reverse (derivado, reconstruído no rebuild, removido no delete).
+
+    /// Persiste `a --kind--> b` (idempotente: re-associate sobrescreve).
+    /// Rejeita chaves com `#` (separador reservado do wire) e kinds inválidos.
+    pub fn associate(
+        &mut self,
+        a: &str,
+        rel: RelationKind,
+        b: &str,
+    ) -> Result<(), SgdbError> {
+        if a.contains('#') || b.contains('#') {
+            return Err(SgdbError::Invalid("relation key contains reserved '#'"));
+        }
+        let sk = rel_storage_key(rel, a, b);
+        // [fmt u8] = 0 — metadados futuros (created/node/confidence) entram
+        // como versões posteriores sem quebrar o decode
+        self.storage.put(&sk, &[0])?;
+        self.art.insert(&rel_art_key(false, rel, a, b), 0);
+        self.art.insert(&rel_art_key(true, rel, b, a), 0);
+        Ok(())
+    }
+
+    /// Alvos de `key --kind--> *` (relações de SAÍDA), via prefix scan ART.
+    pub fn relations_outgoing(&self, kind: RelationKind, key: &str) -> Vec<String> {
+        let prefix = alloc::format!("rel/{}/{}#", kind.as_str(), key);
+        let mut out: Vec<String> = self
+            .art
+            .scan_prefix(&prefix)
+            .into_iter()
+            .filter_map(|(k, _)| k.strip_prefix(&prefix).map(|r| r.to_string()))
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// Todas as relações envolvendo `key` (saídas E entradas, todos os kinds),
+    /// determinístico por (kind, alvo).
+    pub fn related_to(&self, key: &str) -> Vec<(RelationKind, String)> {
+        let mut out: Vec<(RelationKind, String)> = Vec::new();
+        for kind in RelationKind::ALL {
+            let fwd = alloc::format!("rel/{}/{}#", kind.as_str(), key);
+            for (k, _) in self.art.scan_prefix(&fwd) {
+                if let Some(rest) = k.strip_prefix(&fwd) {
+                    out.push((kind, rest.to_string()));
+                }
+            }
+            let rev = alloc::format!("rev/{}/{}#", kind.as_str(), key);
+            for (k, _) in self.art.scan_prefix(&rev) {
+                if let Some(rest) = k.strip_prefix(&rev) {
+                    out.push((kind, rest.to_string()));
+                }
+            }
+        }
+        out.sort_by_key(|(k, t)| (*k as u8, t.clone()));
+        out
+    }
+
+    /// Remove TODAS as relações que envolvem `key` (storage + ART forward +
+    /// reverse) — chamado pelo delete: memória morta não mantém topologia.
+    pub fn remove_relations_for(&mut self, key: &str) -> Result<(), SgdbError> {
+        for kind in RelationKind::ALL {
+            // saídas: rel/<kind>/<key>#<b>
+            let fwd = alloc::format!("rel/{}/{}#", kind.as_str(), key);
+            let out: Vec<String> = self
+                .art
+                .scan_prefix(&fwd)
+                .into_iter()
+                .map(|(k, _)| k)
+                .collect();
+            for k in out {
+                if let Some(b) = k.strip_prefix(&fwd) {
+                    self.storage.delete(&rel_storage_key(kind, key, b))?;
+                }
+                self.art.delete(&k);
+                if let Some(b) = k.strip_prefix(&fwd) {
+                    self.art.delete(&rel_art_key(true, kind, b, key));
+                }
+            }
+            // entradas: rev/<kind>/<key>#<a>
+            let rev = alloc::format!("rev/{}/{}#", kind.as_str(), key);
+            let inc: Vec<String> = self
+                .art
+                .scan_prefix(&rev)
+                .into_iter()
+                .map(|(k, _)| k)
+                .collect();
+            for k in inc {
+                if let Some(a) = k.strip_prefix(&rev) {
+                    self.storage.delete(&rel_storage_key(kind, a, key))?;
+                }
+                self.art.delete(&k);
+                if let Some(a) = k.strip_prefix(&rev) {
+                    self.art.delete(&rel_art_key(false, kind, a, key));
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn ram_l0l1_len(&self) -> usize {
@@ -680,6 +831,8 @@ impl AiosDatabaseEngine {
         self.storage.delete(&meta_key(sk))?;
         self.art.delete(sk);
         self.lexical.remove(sk);
+        // relações L6 envolvendo a memória morta somem com ela (topologia)
+        self.remove_relations_for(sk)?;
         // desliga o mapeamento id → sk: candidatos BQ desses ids são pulados
         let dead: Vec<u64> = self
             .id_to_sk

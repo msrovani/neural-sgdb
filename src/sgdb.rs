@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 use crate::bq::{quantize_f32, BqFlatIndex};
 use crate::engine::AiosDatabaseEngine;
 use crate::memory_doc::{
-    LineageEntry, MemoryDoc, MemoryLayer, MemoryMeta, MemoryRecord, MemoryState,
+    LineageEntry, MemoryDoc, MemoryLayer, MemoryMeta, MemoryRecord, MemoryState, RelationKind,
 };
 use crate::storage::{Storage, SgdbError};
 
@@ -191,6 +191,20 @@ impl Sgdb {
         self.engine.write_meta(&sk, &m)
     }
 
+    /// Anexa `parent_ids` à meta da memória (linhagem causal do DAG) —
+    /// usado pela promoção do lifecycle e pela fusão (`merge_memories`,
+    /// v0.9). Idempotente; registros pré-v0.6 ganham meta via `ensure_meta`.
+    pub fn add_parents(&mut self, key: &str, parents: &[String]) -> Result<(), SgdbError> {
+        let sk = self.resolve_storage_key(key);
+        let mut m = self.engine.ensure_meta(&sk)?;
+        for p in parents {
+            if !m.parent_ids.contains(p) {
+                m.parent_ids.push(p.clone());
+            }
+        }
+        self.engine.write_meta(&sk, &m)
+    }
+
     /// Resolve uma chave lógica para storage key canônica `md/Lx/...`.
     /// Aceita tanto `md/Lx/k` quanto `Lx/k` ou `k` (heurística por camada
     /// ativa é do caller; aqui só normaliza prefixo).
@@ -342,6 +356,10 @@ impl Sgdb {
     /// Oversample é AUTO por dimensionalidade: BQ degrada com poucos words
     /// (#5, Qdrant: abaixo de ~768 dims o 1-bit colide) — poucos words ⇒
     /// pool maior. Para controle explícito use `recall_oversampled`.
+    /// Recall semântico **default = memórias ATIVAS** (v0.8, roadmap §13):
+    /// `Superseded`/`Archived`/`Decayed`/`Invalidated` NUNCA se fingem de
+    /// ativas no resultado — use [`Sgdb::recall_historical`] para incluí-las
+    /// (com `provenance.state` exposto para o caller distinguir).
     pub fn recall(&mut self, query: &[f32], k: usize) -> Result<Vec<Hit>, SgdbError> {
         let words = self.engine.bq.words_per_vec;
         let ov = match words {
@@ -350,6 +368,19 @@ impl Sgdb {
             _ => 4,
         };
         self.recall_oversampled(query, k, ov)
+    }
+
+    /// Recall que INCLUI memórias inativas (superseded/archived/decayed/
+    /// invalidated) — histórico explícito: cada `Hit.provenance.state` expõe
+    /// o estado, nunca há silêncio sobre o que é corrente vs obsoleto.
+    pub fn recall_historical(&mut self, query: &[f32], k: usize) -> Result<Vec<Hit>, SgdbError> {
+        let words = self.engine.bq.words_per_vec;
+        let ov = match words {
+            0 | 1 => 16,
+            2..=4 => 8,
+            _ => 4,
+        };
+        self.recall_impl(query, k, ov, false)
     }
 
     /// Recall com **oversampling** configurável (pesquisa upstream Qdrant/BQ):
@@ -380,6 +411,22 @@ impl Sgdb {
         if query.is_empty() {
             return Ok(Vec::new());
         }
+        self.recall_impl(query, k, oversample, true)
+    }
+
+    /// Núcleo do recall com modo de estado explícito. `active_only = true`:
+    /// memórias inativas são descartadas ANTES do ranking (não consomem
+    /// vagas do top-k); `false` = histórico (todas, com provenance exposta).
+    fn recall_impl(
+        &mut self,
+        query: &[f32],
+        k: usize,
+        oversample: usize,
+        active_only: bool,
+    ) -> Result<Vec<Hit>, SgdbError> {
+        if query.is_empty() {
+            return Ok(Vec::new());
+        }
         let k = k.max(1);
         let cand = k.saturating_mul(oversample.max(1));
         let hits = self.engine.bq_top_k_f32(query, cand);
@@ -398,6 +445,12 @@ impl Sgdb {
                         Some(d) => (d, d as f32 / 10_000.0),
                         None => (ham, (ham as f32 / ham_max).min(1.0)),
                     };
+                    // v0.8 — estado lido UMA vez e filtrado ANTES do ranking:
+                    // memória inativa não compete por vagas do top-k
+                    let state = self.engine.get_state(&sk);
+                    if active_only && state != MemoryState::Active {
+                        continue;
+                    }
                     // v0.6 — provenance exposta (Phase 9 parcial): quem/quando/
                     // quão confiável/estado — memórias superseded não se fingem
                     // de ativas no resultado.
@@ -405,7 +458,7 @@ impl Sgdb {
                         memory_id: m.memory_id.clone(),
                         version_id: m.version_id.clone(),
                         layer: doc.layer,
-                        state: self.engine.get_state(&sk),
+                        state,
                         source: m.source,
                         confidence: m.confidence,
                         importance: m.importance,
@@ -513,18 +566,42 @@ impl Sgdb {
 
     /// Recall **lexical contextual** (#7, BM25-style sobre o índice invertido
     /// dos textos L2/L3): recupera casamentos de termos que o BQ perde.
-    /// `dist` = 1 − score normalizado (0 = melhor hit lexical).
+    /// `dist` = 1 − score normalizado (0 = melhor hit lexical). Default =
+    /// memórias ATIVAS (paridade com `recall`); `recall_lexical_historical`
+    /// inclui as inativas com `provenance.state` exposto.
     pub fn recall_lexical(&mut self, query_text: &str, k: usize) -> Result<Vec<Hit>, SgdbError> {
+        self.recall_lexical_impl(query_text, k, true)
+    }
+
+    /// Recall lexical incluindo memórias inativas (histórico explícito).
+    pub fn recall_lexical_historical(
+        &mut self,
+        query_text: &str,
+        k: usize,
+    ) -> Result<Vec<Hit>, SgdbError> {
+        self.recall_lexical_impl(query_text, k, false)
+    }
+
+    fn recall_lexical_impl(
+        &mut self,
+        query_text: &str,
+        k: usize,
+        active_only: bool,
+    ) -> Result<Vec<Hit>, SgdbError> {
         let scored = self.engine.lexical.search(query_text, k.max(1));
         let max = scored.first().map(|(_, s)| *s).unwrap_or(0.0).max(1e-6);
         let mut out = Vec::with_capacity(scored.len());
         for (sk, score) in scored {
             if let Ok(Some(doc)) = self.engine.get_by_storage_key(&sk) {
+                let state = self.engine.get_state(&sk);
+                if active_only && state != MemoryState::Active {
+                    continue;
+                }
                 let provenance = doc.meta.as_ref().map(|m| HitProvenance {
                     memory_id: m.memory_id.clone(),
                     version_id: m.version_id.clone(),
                     layer: doc.layer,
-                    state: self.engine.get_state(&sk),
+                    state,
                     source: m.source,
                     confidence: m.confidence,
                     importance: m.importance,
@@ -757,6 +834,51 @@ impl Sgdb {
         self.engine.delete(&sk)
     }
 
+    // ── L6 associative memory (v0.8, roadmap Phase 12) ────────────────────
+    //
+    // Relações são memória-NATIVAS: persistidas em `sys/rel/` e indexadas no
+    // ART (forward + reverse). NENHUMA inferência — a camada superior afirma,
+    // o SGDB armazena. `a`/`b` são storage keys canônicas (`md/Lx/...`).
+
+    /// Afirma `a --kind--> b` (idempotente). Rejeita chaves com `#`.
+    pub fn associate(
+        &mut self,
+        a: &str,
+        rel: crate::memory_doc::RelationKind,
+        b: &str,
+    ) -> Result<(), SgdbError> {
+        let a = self.resolve_storage_key(a);
+        let b = self.resolve_storage_key(b);
+        self.engine.associate(&a, rel, &b)
+    }
+
+    /// Todas as relações envolvendo `key` (saídas E entradas, todos os kinds),
+    /// determinístico por (kind, alvo).
+    pub fn related_to(&self, key: &str) -> Vec<(crate::memory_doc::RelationKind, String)> {
+        self.engine.related_to(key)
+    }
+
+    /// `causes(key)` → alvos de `key --causes--> *`.
+    pub fn causes(&self, key: &str) -> Vec<String> {
+        self.engine.relations_outgoing(RelationKind::Causes, key)
+    }
+
+    /// `supports(key)` → alvos de `key --supports--> *`.
+    pub fn supports(&self, key: &str) -> Vec<String> {
+        self.engine.relations_outgoing(RelationKind::Supports, key)
+    }
+
+    /// `contradicts(key)` → alvos de `key --contradicts--> *`.
+    pub fn contradicts(&self, key: &str) -> Vec<String> {
+        self.engine.relations_outgoing(RelationKind::Contradicts, key)
+    }
+
+    /// `derived_from(key)` → alvos de `key --derived_from--> *` (linhagem
+    /// semântica; a consolidação escreve esta relação ao derivar).
+    pub fn derived_from(&self, key: &str) -> Vec<String> {
+        self.engine.relations_outgoing(RelationKind::DerivedFrom, key)
+    }
+
     /// Lookup ART por prefixo de storage key (ex: "md/L1/").
     pub fn scan_prefix(&mut self, prefix: &str) -> Result<Vec<(String, u64)>, SgdbError> {
         Ok(self.engine.art.scan_prefix(prefix))
@@ -862,9 +984,9 @@ fn sqrt_f32(x: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::InMemory;
-
+    use alloc::string::ToString; // no_std test build
     use alloc::vec; // no_std test build: `vec!` não está no prelude
+    use crate::storage::InMemory;
 
     #[test]
     fn exchange_and_prompt() {
@@ -1763,5 +1885,127 @@ mod tests {
             MergePolicy::for_layer(MemoryLayer::L2EpisodicShort),
             MergePolicy::MultiValueRegister
         );
+    }
+
+    // ── L6 relations (v0.8) ───────────────────────────────────────────────
+
+    #[test]
+    fn relations_associate_and_query_all_directions() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let a = "md/L4/fire";
+        let b = "md/L4/smoke";
+        let c = "md/L4/heat";
+        db.associate(a, RelationKind::Causes, b).unwrap();
+        db.associate(a, RelationKind::Supports, c).unwrap();
+        db.associate(b, RelationKind::Contradicts, c).unwrap();
+        // queries direcionais (saídas)
+        assert_eq!(db.causes(a), vec![b.to_string()]);
+        assert_eq!(db.supports(a), vec![c.to_string()]);
+        assert_eq!(db.contradicts(b), vec![c.to_string()]);
+        // related_to: ambos os sentidos, todos os kinds, determinístico
+        let rels = db.related_to(a);
+        assert_eq!(
+            rels,
+            vec![
+                (RelationKind::Causes, b.to_string()),
+                (RelationKind::Supports, c.to_string()),
+            ]
+        );
+        let rels_b = db.related_to(b);
+        // aresta a--causes-->b vista de b devolve o OUTRO lado (a);
+        // b--contradicts-->c devolve c — determinístico por (kind, alvo)
+        assert_eq!(
+            rels_b,
+            vec![
+                (RelationKind::Causes, a.to_string()),
+                (RelationKind::Contradicts, c.to_string()),
+            ]
+        );
+        // idempotente
+        db.associate(a, RelationKind::Causes, b).unwrap();
+        assert_eq!(db.causes(a), vec![b.to_string()]);
+        // chave com '#' é rejeitada (separador reservado)
+        assert!(db.associate("md/L4/x#y", RelationKind::Causes, b).is_err());
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn relations_persist_across_reopen_and_delete_cleans_topology() {
+        let dir = std::env::temp_dir().join("neural_sgdb_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("rel.db");
+        let _ = std::fs::remove_file(&path);
+        let (a, b) = ("md/L4/fire", "md/L4/smoke");
+        {
+            let mut db = Sgdb::open(crate::storage::FileStorage::open(&path).unwrap()).unwrap();
+            db.associate(a, RelationKind::Causes, b).unwrap();
+            db.associate(a, RelationKind::Supports, b).unwrap();
+        }
+        // reopen: índice reconstruído do storage (fonte da verdade)
+        {
+            let mut db = Sgdb::open(crate::storage::FileStorage::open(&path).unwrap()).unwrap();
+            assert_eq!(db.causes(a), vec![b.to_string()]);
+            assert_eq!(db.supports(a), vec![b.to_string()]);
+            assert_eq!(db.related_to(a).len(), 2);
+            // delete de uma memória limpa a topologia envolvendo ela
+            db.delete(b).unwrap();
+            assert!(db.related_to(b).is_empty());
+            assert!(db.causes(a).is_empty(), "b morto não é mais alvo");
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn relations_do_not_require_docs_and_support_derived_from() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        // a relação é afirmada pela camada superior; o doc não precisa existir
+        db.associate("md/L4/sem", RelationKind::DerivedFrom, "md/L3/ep1").unwrap();
+        db.associate("md/L4/sem", RelationKind::DerivedFrom, "md/L3/ep2").unwrap();
+        assert_eq!(db.derived_from("md/L4/sem").len(), 2);
+        assert_eq!(db.related_to("md/L3/ep1").len(), 1);
+    }
+
+    // ── recall active vs historical (v0.8) ────────────────────────────────
+
+    #[test]
+    fn recall_defaults_to_active_historical_opts_in() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("k1", "memoria viva", &[1.0, -1.0, 1.0, -1.0]).unwrap();
+        db.remember_semantic("k2", "memoria velha", &[1.0, -1.0, 1.0, -1.0]).unwrap();
+        // k2 envelhece: superseded → não deve aparecer no recall default
+        // (estado é POR DOC: o companion L2 também é marcado, senão o texto
+        // continua ativo no recall lexical)
+        db.set_state("md/L4/k2", MemoryState::Superseded).unwrap();
+        db.set_state("md/L2/k2", MemoryState::Superseded).unwrap();
+        db.set_state("md/L4/k1", MemoryState::Decayed).unwrap();
+        db.set_state("md/L2/k1", MemoryState::Decayed).unwrap();
+        let active = db.recall(&[1.0, -1.0, 1.0, -1.0], 10).unwrap();
+        assert!(
+            active.iter().all(|h| h.key.ends_with("/k2") == false && h.key.ends_with("/k1") == false),
+            "recall default não deve conter memórias inativas: {:?}",
+            active.iter().map(|h| h.key.clone()).collect::<Vec<_>>()
+        );
+        assert!(active.is_empty(), "só havia memórias inativas");
+        // histórico: ambas aparecem COM estado exposto
+        let hist = db.recall_historical(&[1.0, -1.0, 1.0, -1.0], 10).unwrap();
+        let st: Vec<(String, MemoryState)> = hist
+            .iter()
+            .map(|h| {
+                (
+                    h.key.clone(),
+                    h.provenance.as_ref().map(|p| p.state).unwrap_or(MemoryState::Active),
+                )
+            })
+            .collect();
+        assert!(st.iter().any(|(k, s)| k.ends_with("/k1") && *s == MemoryState::Decayed));
+        assert!(st.iter().any(|(k, s)| k.ends_with("/k2") && *s == MemoryState::Superseded));
+        // lexical: mesmo contrato
+        let lx = db.recall_lexical("memoria velha", 10).unwrap();
+        assert!(
+            lx.iter().all(|h| !h.key.ends_with("/k2")),
+            "lexical default filtra inativas"
+        );
+        let lxh = db.recall_lexical_historical("memoria velha", 10).unwrap();
+        assert!(lxh.iter().any(|h| h.key.ends_with("/k2")));
     }
 }

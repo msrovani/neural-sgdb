@@ -36,10 +36,10 @@ filesystem, no external runtime.
 
 ## Status
 
-**v0.7** ✅ — dual-mode (`no_std` + `std`, zero dependencies):
+**v0.8** ✅ — dual-mode (`no_std` + `std`, zero dependencies):
 
-- `cargo test` on host: **126 tests + doc-test** (153 + doc-test with `p2p`,
-  86 + doc-test with `--no-default-features`)
+- `cargo test` on host: **136 tests + doc-test** (163 + doc-test with `p2p`,
+  95 + doc-test with `--no-default-features`)
 - `cargo check --no-default-features --target x86_64-unknown-none`: **clean**
 - **Recall stack**: BQ coarse → FP32 rescore, SIMD hamming (AVX-512/AVX2/
   scalar), auto-oversample by dimensionality, `recall_oversampled`,
@@ -63,7 +63,11 @@ filesystem, no external runtime.
   L4 causal-LWW-with-history, L0/L1 local-only), a **3-node
   partition/rejoin test harness**, and **anti-entropy** (v0.7): clock
   announce/gossip through relay nodes, directed pull of the missing causal
-  range (`keys_for_clock`), durable `CrdtState` for restart-safe clocks
+  range (`keys_for_clock`), durable `CrdtState` for restart-safe clocks,
+  **L6 associative memory** (associate/related_to/causes/supports/
+  contradicts/derived_from on ART), **provenance-aware recall** (default =
+  active only; historical opt-in) and a **deterministic `MemoryLifecycle`**
+  (commit/promote/semanticize/decay/archive with no hidden wall clock)
 - **Interfaces**: MCP server with `memory://{layer}/{key}` resources +
   `nextCursor` pagination + tool annotations; `cargo run --release
   --example stress` (100k-op stress) and `--example bench`

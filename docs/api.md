@@ -329,6 +329,57 @@ resolution to the cognitive layer (roadmap Phase 14/15).
   the CRDT version aligned with the per-doc clock (without this the directed
   pull loses companion docs).
 
+## L6 associative memory (v0.8 — Phase 8)
+
+- **`RelationKind`** — `RelatedTo`, `Causes`, `Supports`, `Contradicts`,
+  `DerivedFrom`, `Supersedes`. Memory-native relations: persisted in
+  side-table `sys/rel/<kind>/<a>#<b>` (storage = source of truth) and
+  indexed in the ART (forward `rel/…` + reverse `rev/…`, derived, rebuilt
+  on open, pruned on delete — a deleted memory never keeps topology).
+- **`Sgdb::associate(a, rel, b)`** — asserts `a --rel--> b` (idempotent;
+  rejects keys containing the reserved `#`). **No inference**: the upper
+  layer (agent/LLM) asserts, SGDB stores.
+- **`Sgdb::related_to(key)`** — both directions, all kinds, deterministic by
+  `(kind, target)`. **`causes` / `supports` / `contradicts` /
+  `derived_from(key)`** — outgoing targets per kind.
+- Relations survive reopen (reindexed from storage); no doc is required for
+  either endpoint.
+
+## Provenance-aware recall (v0.8 — Phase 9)
+
+- **`recall(query, k)` defaults to ACTIVE memories only** — `Superseded` /
+  `Archived` / `Decayed` / `Invalidated` are filtered *before* ranking (they
+  never consume top-k slots). A superseded memory is never silently
+  presented as active.
+- **`recall_historical(query, k)`** — includes inactive memories with
+  `Hit.provenance.state` exposed (explicit historical query). Same for
+  `recall_lexical` vs `recall_lexical_historical`.
+- `recall_at` (validity) composes on top; `recall_weighted` and
+  `rag_context` inherit the active-only default.
+
+## Lifecycle engine (v0.8 — Phase 15/16)
+
+- **`MemoryLifecycle::new(config)` / `tick(&mut db, now)`** — deterministic
+  (`now` is explicit; no hidden wall clock, no background thread; the caller
+  schedules). Returns a structured `LifecycleReport` (tick, committed,
+  promoted, semanticized, archived, decayed).
+- **`LifecycleConfig`** — `l1_commit_after_ticks`, `l2_to_l3_importance` /
+  `l2_to_l3_min_age_ticks`, `l3_to_l4_importance` /
+  `l3_to_l4_min_age_ticks`, `decay_per_tick` (0.0 = off),
+  `decayed_below`, `archive_superseded_after_ticks` (None = off).
+- Transitions per tick: **L1→L2 commit** (origin Archived), **L2→L3
+  promotion** (importance + age), **L3→L4 heuristic semanticization** (the
+  L4 doc is created WITHOUT a bitvec — embeddings are the upper layer's job;
+  the core never generates semantic representations), **decay**
+  (importance decays; below threshold → `Decayed`, never deleted),
+  **archive** (aged superseded → Archived). **L4→L5 is never automatic**
+  (proceduralization requires explicit upper-layer/HITL decision).
+- Every promotion wires `parent_ids += [source version]` and the L6
+  relation `new --derived_from--> old` (causal DAG + topology).
+  Idempotent: a source is only promoted while `Active`.
+- **`Sgdb::add_parents(key, ids)`** — appends lineage parents to a memory's
+  meta (also the base of v0.9's `merge_memories`).
+
 ## What does NOT go public
 
 - **OS namespaces:** `hanr/`, `pkg/`, `audit/`, `sys/`, `hw/` are AIOS-specific

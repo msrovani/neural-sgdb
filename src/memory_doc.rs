@@ -472,6 +472,66 @@ pub fn generate_memory_id(
     s
 }
 
+/// Tipo de relação associativa (L6, v0.8 — roadmap Phase 12). Memória-NATIVA:
+/// persistida em side-table `sys/rel/<kind>/<a>#<b>` (storage = fonte da
+/// verdade) e indexada no ART (forward `rel/…` + reverse `rev/…` — índices
+/// derivados, reconstruídos no rebuild). Nenhuma inferência aqui: a camada
+/// superior (agente/LLM) afirma a relação, o SGDB armazena.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RelationKind {
+    /// afim/semântica fraca — simétrica no recall
+    RelatedTo = 0,
+    /// A --causes--> B (causalidade)
+    Causes = 1,
+    /// A --supports--> B (evidência)
+    Supports = 2,
+    /// A --contradicts--> B (contradição explícita)
+    Contradicts = 3,
+    /// A --derived_from--> B (linhagem semântica; usado pela consolidação)
+    DerivedFrom = 4,
+    /// A --supersedes--> B (B obsoletado por A; a inversa do supersede de docs)
+    Supersedes = 5,
+}
+
+impl RelationKind {
+    pub const ALL: [RelationKind; 6] = [
+        RelationKind::RelatedTo,
+        RelationKind::Causes,
+        RelationKind::Supports,
+        RelationKind::Contradicts,
+        RelationKind::DerivedFrom,
+        RelationKind::Supersedes,
+    ];
+
+    pub fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(Self::RelatedTo),
+            1 => Some(Self::Causes),
+            2 => Some(Self::Supports),
+            3 => Some(Self::Contradicts),
+            4 => Some(Self::DerivedFrom),
+            5 => Some(Self::Supersedes),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RelatedTo => "related_to",
+            Self::Causes => "causes",
+            Self::Supports => "supports",
+            Self::Contradicts => "contradicts",
+            Self::DerivedFrom => "derived_from",
+            Self::Supersedes => "supersedes",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|k| k.as_str() == s)
+    }
+}
+
 impl MemoryLayer {
     /// Importância default [0..1] por camada (v0.6) — espelha o peso de
     /// `recall_weighted` (L4/L7 alta, L5 média-alta, L3 média, L2 baixa,

@@ -223,6 +223,22 @@ cargo check --no-default-features --target x86_64-unknown-none   # no_std gate
   sobre `Option` (`.get()`) não compila nessa assinatura (`ok_or` antes);
   truncamento em `bytes.len()` não é truncamento. `restore` recusa node_id
   alheio.
+- **L6 relations (v0.8)** (`engine.rs`/`sgdb.rs`): persistidas em
+  `sys/rel/<kind>/<a>#<b>` + índice ART forward (`rel/…`) e reverse
+  (`rev/…`) — AMBOS derivados (rebuild reindexa de `sys/rel/`; delete chama
+  `remove_relations_for`). `#` é separador reservado (associate rejeita).
+  `related_to` devolve o OUTRO lado da aresta (a--causes-->b visto de b = a).
+- **Recall active-only (v0.8)**: o filtro de estado roda DENTRO do
+  `recall_impl`/`recall_lexical_impl` (antes do ranking); estado é POR DOC —
+  marcar `md/L4/k` não marca o companion `md/L2/k` (testes devem marcar
+  ambos se quiserem sumir dos dois índices). `recall_historical` opta-in.
+- **Lifecycle (v0.8)** (`src/lifecycle.rs`): `tick(db, now)` é determinístico
+  e idempotente por construção (fonte só promove se `Active`); promoção
+  grava `parent_ids` (via `add_parents`, `ensure_meta` cria meta p/ registros
+  pré-v0.6) + relação `derived_from`. L3→L4 cria L4 SEM bitvec (embedding é
+  da camada superior — nunca gerar embedding no core). no_std: `vec!` e
+  `to_string` precisam de `use alloc::vec;` / `alloc::string::ToString` nos
+  testes.
 - **`MemoryRecord::decode`**: cuidado com flags — cada flag (vflag/metaflag)
   avança `off` mesmo no ramo 0 (bug real: metaflag=0 não avançava e o NMD1
   começava no byte errado).
