@@ -43,6 +43,31 @@ pub struct Hit {
     pub provenance: Option<HitProvenance>,
 }
 
+/// Explicação ESTRUTURADA do estado corrente de uma memória (v0.9,
+/// roadmap Phase 17): por que ela está no estado em que está. Machine-
+/// readable — a camada cognitiva converte em texto, nunca o contrário.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MemoryExplanation {
+    pub key: String,
+    pub layer: MemoryLayer,
+    pub state: MemoryState,
+    pub memory_id: String,
+    pub version_id: String,
+    pub source: u8,
+    pub confidence: f32,
+    pub importance: f32,
+    pub created_tick: u64,
+    /// Último tick de reforço (0 = nunca) — evidência de uso/decay.
+    pub last_reinforced: u64,
+    /// Parentes causais (DAG) — supersessão/derivação/fusão.
+    pub parents: Vec<String>,
+    /// Janela de validade (None = sempre válido).
+    pub validity: Option<(u64, u64)>,
+    /// Quem supersedeu/foi supersedido: versões FILHAS deste slot (derivadas
+    /// do índice `sys/version/` + `parent_ids`).
+    pub children: Vec<String>,
+}
+
 /// Cognitive memory database. `Sgdb::open(backend)` + remember/recall.
 pub struct Sgdb {
     engine: AiosDatabaseEngine,
@@ -196,13 +221,158 @@ impl Sgdb {
     /// v0.9). Idempotente; registros pré-v0.6 ganham meta via `ensure_meta`.
     pub fn add_parents(&mut self, key: &str, parents: &[String]) -> Result<(), SgdbError> {
         let sk = self.resolve_storage_key(key);
+        self.engine.add_parents(&sk, parents)
+    }
+
+    /// Reforço (v0.9, roadmap Phase 12): `importance += delta` (clampada a
+    /// [0,1]) e `last_reinforced` = contador próprio atual. Persistente em
+    /// `sys/meta/` (MDM1 v3). Não ticka o relógio — reforço é metadado
+    /// cognitivo local, não uma nova versão causal.
+    pub fn reinforce(&mut self, key: &str, delta: f32) -> Result<(), SgdbError> {
+        if !delta.is_finite() {
+            return Err(SgdbError::Invalid("reinforce delta must be finite"));
+        }
+        let sk = self.resolve_storage_key(key);
         let mut m = self.engine.ensure_meta(&sk)?;
-        for p in parents {
-            if !m.parent_ids.contains(p) {
-                m.parent_ids.push(p.clone());
+        m.importance = (m.importance + delta).clamp(0.0, 1.0);
+        m.last_reinforced = self.engine.own_counter();
+        self.engine.write_meta(&sk, &m)
+    }
+
+    /// `forget` cognitivo (roadmap §23): ARCHIVA a memória (`Archived`),
+    /// nunca deleta. História permanece acessível (`recall_historical`,
+    /// `lineage`). Para remoção física, `delete` é o caminho explícito.
+    pub fn forget(&mut self, key: &str) -> Result<(), SgdbError> {
+        let sk = self.resolve_storage_key(key);
+        self.engine.set_state(&sk, MemoryState::Archived)
+    }
+
+    /// Explicação estruturada (roadmap Phase 17): por que a memória está no
+    /// estado em que está. Sem registro pré-v0.6 / sem doc → `Err`.
+    pub fn explain(&mut self, key: &str) -> Result<MemoryExplanation, SgdbError> {
+        let sk = self.resolve_storage_key(key);
+        let m = self.engine.ensure_meta(&sk)?;
+        let doc = self.engine.get_by_storage_key(&sk)?;
+        if doc.is_none() {
+            return Err(SgdbError::Invalid("no memory at key"));
+        }
+        // filhos: versões que listam ESTA versão como parent
+        let mut children = Vec::new();
+        if let Ok(rows) = self.engine.scan_versions() {
+            for (vid, _sk, meta) in rows {
+                if meta.parent_ids.contains(&m.version_id) {
+                    children.push(vid);
+                }
             }
         }
-        self.engine.write_meta(&sk, &m)
+        children.sort();
+        Ok(MemoryExplanation {
+            key: sk.clone(),
+            layer: doc
+                .as_ref()
+                .map(|d| d.layer)
+                .unwrap_or(crate::memory_doc::MemoryLayer::L4Semantic),
+            state: self.engine.get_state(&sk),
+            memory_id: m.memory_id,
+            version_id: m.version_id,
+            source: m.source,
+            confidence: m.confidence,
+            importance: m.importance,
+            created_tick: m.created_tick,
+            last_reinforced: m.last_reinforced,
+            parents: m.parent_ids.clone(),
+            validity: self.engine.validity_window(&sk),
+            children,
+        })
+    }
+
+    /// Transfere uma memória para outra camada (v0.9): novo doc na camada
+    /// alvo com a MESMA identidade causal de slot, `parent_ids += [versão
+    /// fonte]` e relação L6 `derived_from`; a fonte vira `Archived` (história
+    /// preservada — nada é deletado). Generaliza a promoção do lifecycle.
+    pub fn transfer_to(&mut self, key: &str, to_layer: MemoryLayer) -> Result<String, SgdbError> {
+        let sk = self.resolve_storage_key(key);
+        let Some(rec) = self.engine.export_record(&sk)? else {
+            return Err(SgdbError::Invalid("no memory at key"));
+        };
+        if rec.doc.layer == to_layer {
+            return Ok(sk); // idempotente
+        }
+        let origin_vid = rec
+            .doc
+            .meta
+            .as_ref()
+            .map(|m| m.version_id.clone())
+            .unwrap_or_else(|| String::from("pre-v0.6"));
+        let mut doc =
+            crate::memory_doc::MemoryDoc::new(to_layer, &rec.doc.key, rec.doc.payload.clone());
+        doc.bitvec = None; // embedding é da camada superior
+        self.engine.put(doc)?;
+        let new_sk = alloc::format!("md/{}/{}", to_layer.as_str(), rec.doc.key);
+        self.engine.add_parents(&new_sk, &[origin_vid])?;
+        self.engine.associate(&new_sk, RelationKind::DerivedFrom, &sk)?;
+        self.engine.set_state(&sk, MemoryState::Archived)?;
+        Ok(new_sk)
+    }
+
+    /// Fusão de duas memórias (roadmap Phase 16): C nasce com
+    /// `parent_ids = [A, B]`, payload concatenado (separador explícito) e
+    /// importância/confiança = máximo das fontes. A e B ficam INTACTAS
+    /// (história preservada). O alvo `target` deve ser uma chave NOVA;
+    /// vazio → gerada de `a--b`.
+    pub fn merge_memories(
+        &mut self,
+        a: &str,
+        b: &str,
+        target: &str,
+    ) -> Result<String, SgdbError> {
+        let sk_a = self.resolve_storage_key(a);
+        let sk_b = self.resolve_storage_key(b);
+        let Some(ra) = self.engine.export_record(&sk_a)? else {
+            return Err(SgdbError::Invalid("no memory at key a"));
+        };
+        let Some(rb) = self.engine.export_record(&sk_b)? else {
+            return Err(SgdbError::Invalid("no memory at key b"));
+        };
+        let layer = if (ra.doc.layer as u8) >= (rb.doc.layer as u8) {
+            ra.doc.layer
+        } else {
+            rb.doc.layer
+        };
+        let key = if target.is_empty() {
+            alloc::format!("{}--{}", ra.doc.key, rb.doc.key)
+        } else {
+            String::from(target)
+        };
+        let mut payload = ra.doc.payload.clone();
+        payload.push(0x1F); // separador de unidade (0x1F = unit separator)
+        payload.extend_from_slice(&rb.doc.payload);
+        let mut doc = crate::memory_doc::MemoryDoc::new(layer, &key, payload);
+        doc.bitvec = None;
+        self.engine.put(doc)?;
+        let new_sk = alloc::format!("md/{}/{}", layer.as_str(), key);
+        let va = ra
+            .doc
+            .meta
+            .as_ref()
+            .map(|m| m.version_id.clone())
+            .unwrap_or_else(|| String::from("pre-v0.6"));
+        let vb = rb
+            .doc
+            .meta
+            .as_ref()
+            .map(|m| m.version_id.clone())
+            .unwrap_or_else(|| String::from("pre-v0.6"));
+        self.engine.add_parents(&new_sk, &[va, vb])?;
+        let mut m = self.engine.ensure_meta(&new_sk)?;
+        let ia = ra.doc.meta.as_ref().map(|m| m.importance).unwrap_or(0.0);
+        let ib = rb.doc.meta.as_ref().map(|m| m.importance).unwrap_or(0.0);
+        let ca = ra.doc.meta.as_ref().map(|m| m.confidence).unwrap_or(0.0);
+        let cb = rb.doc.meta.as_ref().map(|m| m.confidence).unwrap_or(0.0);
+        m.importance = ia.max(ib);
+        m.confidence = ca.max(cb);
+        self.engine.write_meta(&new_sk, &m)?;
+        Ok(new_sk)
     }
 
     /// Resolve uma chave lógica para storage key canônica `md/Lx/...`.
@@ -810,9 +980,124 @@ impl Sgdb {
             self.engine.import_record(rec)?;
             return Ok(MergeVerdict::Applied);
         }
-        // CONCORRENTE: nunca descartar memória — preserva o local e expõe o
-        // conflito (L2/L3 multi-value: ambas retidas em seus nós de origem)
+        // CONCORRENTE: nunca descartar memória — preserva o local e REGISTRA
+        // o conflito com evidência completa (v0.9, Phase 14): id determinís-
+        // tico (re-merge upserta), candidatos + records MDR1 de AMBOS os
+        // lados. A resolução re-importa o vencedor sem depender do nó remoto.
+        let local_rec = self.engine.export_record(&sk)?;
+        let local_vid = local_rec
+            .as_ref()
+            .and_then(|r| r.doc.meta.as_ref())
+            .map(|m| m.version_id.clone())
+            .unwrap_or_else(|| String::from("pre-v0.6"));
+        let remote_vid = rec
+            .doc
+            .meta
+            .as_ref()
+            .map(|m| m.version_id.clone())
+            .unwrap_or_else(|| String::from("pre-v0.6"));
+        // pares (vid, record) ordenados por vid — candidates e records ficam
+        // paralelos (contrato do ConflictRecord)
+        let mut pairs: Vec<(String, Vec<u8>)> = Vec::with_capacity(2);
+        if let Some(lr) = &local_rec {
+            pairs.push((local_vid.clone(), lr.encode()));
+        }
+        pairs.push((remote_vid.clone(), rec.encode()));
+        pairs.sort_by(|a, b| a.0.cmp(&b.0));
+        pairs.dedup_by(|a, b| a.0 == b.0);
+        let mut candidates: Vec<String> = pairs.iter().map(|(v, _)| v.clone()).collect();
+        let records: Vec<Vec<u8>> = pairs.iter().map(|(_, r)| r.clone()).collect();
+        // nós fonte (autor do doc local + autor do remoto), únicos e ordenados
+        let mut nodes: Vec<u8> = Vec::with_capacity(2);
+        let local_author = local_rec
+            .as_ref()
+            .and_then(|r| r.doc.meta.as_ref())
+            .map(|m| m.source)
+            .unwrap_or(self.engine.node_id);
+        for n in [local_author, rec.doc.meta.as_ref().map(|m| m.source).unwrap_or(0)] {
+            if !nodes.contains(&n) {
+                nodes.push(n);
+            }
+        }
+        nodes.sort();
+        let conflict = crate::conflict::ConflictRecord {
+            conflict_id: crate::conflict::generate_conflict_id(&sk, &mut candidates),
+            subject: sk.clone(),
+            candidates,
+            nodes,
+            created_tick: self.engine.own_counter(),
+            status: crate::conflict::ConflictStatus::Open,
+            resolved_winner: None,
+            records,
+        };
+        self.engine.put_conflict(&conflict)?;
         Ok(MergeVerdict::Conflict)
+    }
+
+    /// Conflitos persistidos (v0.9, Phase 14/15): a camada superior enumera,
+    /// inspeciona evidência e decide. O core detecta/preserva; NUNCA decide.
+    pub fn conflicts(&mut self) -> Vec<crate::conflict::ConflictRecord> {
+        self.engine.list_conflicts()
+    }
+
+    pub fn conflict(&mut self, conflict_id: &str) -> Option<crate::conflict::ConflictRecord> {
+        self.engine.get_conflict(conflict_id)
+    }
+
+    /// Resolução EXPLÍCITA de conflito (Phase 15): o chamador (camada
+    /// cognitiva/arbitração) escolhe o vencedor por `version_id`. Efeitos:
+    ///
+    /// - vencedor importado (se não for o local) → `Active` no slot;
+    /// - perdedor: permanece na história (linhagem + evidência do conflito);
+    /// - `parent_ids` do vencedor += perdedor (linhagem registrada);
+    /// - conflito marcado `Resolved`.
+    ///
+    /// O CORE não decide o vencedor — apenas executa a decisão e preserva
+    /// evidência. Idempotente (conflito já Resolved = Ok).
+    pub fn resolve_conflict(
+        &mut self,
+        conflict_id: &str,
+        winner_vid: &str,
+    ) -> Result<(), SgdbError> {
+        let Some(mut c) = self.engine.get_conflict(conflict_id) else {
+            return Err(SgdbError::Invalid("conflict not found"));
+        };
+        if c.status == crate::conflict::ConflictStatus::Resolved {
+            return Ok(()); // idempotente
+        }
+        let winner_idx = match c.candidates.iter().position(|v| v == winner_vid) {
+            Some(i) => i,
+            None => return Err(SgdbError::Invalid("winner not a candidate")),
+        };
+        // importa o record do VENCEDOR (evidência preservada no conflito — a
+        // resolução não depende de re-buscar o nó remoto)
+        if let Some(rec_bytes) = c.records.get(winner_idx) {
+            if let Ok(rec) = crate::memory_doc::MemoryRecord::decode(rec_bytes) {
+                let sk = rec.doc.storage_key();
+                self.engine.import_record(rec)?;
+                // decisão EXPLÍCITA da camada superior: o vencedor vira a
+                // versão CORRENTE do slot (differe do overwrite implícito, que
+                // preserva a identidade local); perdedores viram parents
+                let mut m = self.engine.ensure_meta(&sk)?;
+                m.version_id = String::from(winner_vid);
+                for (i, v) in c.candidates.iter().enumerate() {
+                    if i != winner_idx && !m.parent_ids.contains(v) {
+                        m.parent_ids.push(v.clone());
+                    }
+                }
+                self.engine.write_meta(&sk, &m)?;
+            }
+        }
+        c.status = crate::conflict::ConflictStatus::Resolved;
+        c.resolved_winner = Some(String::from(winner_vid));
+        self.engine.put_conflict(&c)
+    }
+
+    /// Remove o REGISTRO do conflito após a camada superior encerrar o
+    /// assunto (ex: `merge_memories` consumiu a evidência). A história das
+    /// versões permanece via `lineage`/`sys/version/` — só o marcador some.
+    pub fn dismiss_conflict(&mut self, conflict_id: &str) -> Result<(), SgdbError> {
+        self.engine.delete_conflict(conflict_id)
     }
 
     /// Deleção **física** (tombstone + remoção dos índices derivados).
@@ -2007,5 +2292,230 @@ mod tests {
         );
         let lxh = db.recall_lexical_historical("memoria velha", 10).unwrap();
         assert!(lxh.iter().any(|h| h.key.ends_with("/k2")));
+    }
+
+    // ── v0.9: reforço, conflito de 1ª classe, resolução, API cognitiva ────
+
+    #[test]
+    fn reinforce_updates_importance_and_last_reinforced() {
+        let mut db = Sgdb::open_with_node_id(1, InMemory::new()).unwrap();
+        let doc = MemoryDoc::new(MemoryLayer::L4Semantic, "pref", b"dark theme".to_vec());
+        db.put(doc).unwrap();
+        let before = db.meta("md/L4/pref").unwrap().unwrap();
+        assert_eq!(before.importance, 1.0);
+        assert_eq!(before.last_reinforced, 0, "nunca reforçada");
+        db.reinforce("md/L4/pref", 0.1).unwrap();
+        let after = db.meta("md/L4/pref").unwrap().unwrap();
+        assert!((after.importance - 1.0).abs() < 1e-6, "1.0 já é o teto");
+        assert_eq!(after.last_reinforced, 1, "contador próprio no reforço");
+        // delta não-finita é rejeitada
+        assert!(db.reinforce("md/L4/pref", f32::NAN).is_err());
+    }
+
+    #[test]
+    fn reinforce_importance_is_clamped() {
+        let mut db = Sgdb::open_with_node_id(1, InMemory::new()).unwrap();
+        let doc = MemoryDoc::new(MemoryLayer::L4Semantic, "imp", b"x".to_vec());
+        db.put(doc).unwrap();
+        db.set_importance("md/L4/imp", 0.9).unwrap();
+        db.reinforce("md/L4/imp", 0.5).unwrap(); // 1.4 → clamp 1.0
+        assert_eq!(db.meta("md/L4/imp").unwrap().unwrap().importance, 1.0);
+        db.reinforce("md/L4/imp", -1.0).unwrap(); // 0.0 (clamp)
+        assert_eq!(db.meta("md/L4/imp").unwrap().unwrap().importance, 0.0);
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn reinforce_persists_across_reopen() {
+        let dir = std::env::temp_dir().join("neural_sgdb_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("sgdb_reinforce.db");
+        let _ = std::fs::remove_file(&path);
+        {
+            let mut db = Sgdb::open(crate::storage::FileStorage::open(&path).unwrap()).unwrap();
+            db.put(MemoryDoc::new(MemoryLayer::L4Semantic, "r", b"x".to_vec()))
+                .unwrap();
+            db.reinforce("md/L4/r", 0.3).unwrap();
+            db.checkpoint().unwrap();
+        }
+        {
+            let mut db = Sgdb::open(crate::storage::FileStorage::open(&path).unwrap()).unwrap();
+            let m = db.meta("md/L4/r").unwrap().unwrap();
+            assert!((m.importance - 1.0).abs() < 1e-6); // 0.7+0.3 → 1.0
+            assert!(m.last_reinforced > 0, "last_reinforced sobrevive ao reopen");
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(feature = "p2p")]
+    #[test]
+    fn concurrent_merge_creates_persisted_conflict() {
+        let mut a = Sgdb::open_with_node_id(1, InMemory::new()).unwrap();
+        let mut b = Sgdb::open_with_node_id(2, InMemory::new()).unwrap();
+        a.remember_semantic("theme", "dark", &[1.0, -1.0, 1.0, -1.0])
+            .unwrap();
+        b.remember_semantic("theme", "light", &[1.0, -1.0, 1.0, -1.0])
+            .unwrap();
+        let a_vid = a.version_of("md/L4/theme").unwrap().unwrap();
+        let b_vid = b.version_of("md/L4/theme").unwrap().unwrap();
+        let rec_b = b.export_record("md/L4/theme").unwrap().unwrap();
+        let rec_a = a.export_record("md/L4/theme").unwrap().unwrap();
+        // A recebe B e B recebe A → AMBOS veem Conflict
+        let v_a = a.merge_remote(rec_b).unwrap();
+        let v_b = b.merge_remote(rec_a).unwrap();
+        use crate::crdt::MergeVerdict;
+        assert_eq!(v_a, MergeVerdict::Conflict);
+        assert_eq!(v_b, MergeVerdict::Conflict);
+        // conflito persistido com evidência dos DOIS lados
+        let cs = a.conflicts();
+        assert_eq!(cs.len(), 1, "um conflito, id determinístico (upsert)");
+        let c = &cs[0];
+        assert_eq!(c.subject, "md/L4/theme");
+        assert_eq!(c.candidates.len(), 2);
+        assert_eq!(c.records.len(), 2, "evidência MDR1 dos dois candidatos");
+        assert_eq!(c.status, crate::conflict::ConflictStatus::Open);
+        assert_eq!(b.conflicts().len(), 1, "B também preserva (id igual)");
+        // re-entrega (duplicata causal) NÃO duplica o conflito
+        let rec_b2 = b.export_record("md/L4/theme").unwrap().unwrap();
+        let _ = a.merge_remote(rec_b2).unwrap();
+        assert_eq!(a.conflicts().len(), 1);
+        // nem o local nem o remoto foram sobrescritos silenciosamente
+        assert_eq!(a.version_of("md/L4/theme").unwrap().unwrap(), a_vid);
+        assert_eq!(b.version_of("md/L4/theme").unwrap().unwrap(), b_vid);
+    }
+
+    #[cfg(feature = "p2p")]
+    #[test]
+    fn resolve_conflict_imports_winner_and_preserves_loser() {
+        let mut a = Sgdb::open_with_node_id(1, InMemory::new()).unwrap();
+        let mut b = Sgdb::open_with_node_id(2, InMemory::new()).unwrap();
+        a.remember_semantic("theme", "dark", &[1.0, -1.0, 1.0, -1.0])
+            .unwrap();
+        b.remember_semantic("theme", "light", &[1.0, -1.0, 1.0, -1.0])
+            .unwrap();
+        let a_vid = a.version_of("md/L4/theme").unwrap().unwrap();
+        let b_vid = b.version_of("md/L4/theme").unwrap().unwrap();
+        let rec_b = b.export_record("md/L4/theme").unwrap().unwrap();
+        assert_eq!(a.merge_remote(rec_b).unwrap(), crate::crdt::MergeVerdict::Conflict);
+        let cid = a.conflicts()[0].conflict_id.clone();
+        // vencedor inválido → Err, nada muda (conflito ainda Open)
+        assert!(a.resolve_conflict(&cid, "vid-inexistente").is_err());
+        // a camada superior decide: vence B (o remoto)
+        a.resolve_conflict(&cid, &b_vid).unwrap();
+        // slot agora tem a versão do vencedor, ativa
+        assert_eq!(a.version_of("md/L4/theme").unwrap().unwrap(), b_vid);
+        assert_eq!(a.get_state("md/L4/theme").unwrap(), MemoryState::Active);
+        // perdedor preservado na linhagem do vencedor
+        let m = a.meta("md/L4/theme").unwrap().unwrap();
+        assert!(m.parent_ids.contains(&a_vid), "perdedor vira parent");
+        // conflito marcado Resolved (idempotente: resolver de novo = Ok)
+        let c = a.conflict(&cid).unwrap();
+        assert_eq!(c.status, crate::conflict::ConflictStatus::Resolved);
+        assert_eq!(c.resolved_winner.as_deref(), Some(b_vid.as_str()));
+        a.resolve_conflict(&cid, &b_vid).unwrap();
+        // evidência original continua íntegra
+        assert_eq!(c.records.len(), 2);
+    }
+
+    #[cfg(feature = "p2p")]
+    #[test]
+    fn dismiss_conflict_removes_only_the_marker() {
+        let mut a = Sgdb::open_with_node_id(1, InMemory::new()).unwrap();
+        let mut b = Sgdb::open_with_node_id(2, InMemory::new()).unwrap();
+        a.remember_semantic("k", "a", &[1.0, -1.0, 1.0, -1.0]).unwrap();
+        b.remember_semantic("k", "b", &[1.0, -1.0, 1.0, -1.0]).unwrap();
+        let _ = a.merge_remote(b.export_record("md/L4/k").unwrap().unwrap()).unwrap();
+        let cid = a.conflicts()[0].conflict_id.clone();
+        a.dismiss_conflict(&cid).unwrap();
+        assert!(a.conflicts().is_empty());
+        // memórias continuam íntegras (só o marcador sumiu)
+        assert!(a.get(MemoryLayer::L4Semantic, "k").unwrap().is_some());
+    }
+
+    #[test]
+    fn merge_memories_creates_child_with_both_parents() {
+        let mut db = Sgdb::open_with_node_id(1, InMemory::new()).unwrap();
+        db.put(MemoryDoc::new(MemoryLayer::L4Semantic, "a", b"fato a".to_vec()))
+            .unwrap();
+        db.put(MemoryDoc::new(MemoryLayer::L3EpisodicLong, "b", b"fato b".to_vec()))
+            .unwrap();
+        db.set_importance("md/L4/a", 0.4).unwrap();
+        db.set_importance("md/L3/b", 0.9).unwrap();
+        let va = db.version_of("md/L4/a").unwrap().unwrap();
+        let vb = db.version_of("md/L3/b").unwrap().unwrap();
+        let new_sk = db.merge_memories("md/L4/a", "md/L3/b", "c").unwrap();
+        assert_eq!(new_sk, "md/L4/c", "camada = max(a, b)");
+        // C nasce com ambos os parents e payload fundido
+        let m = db.meta(&new_sk).unwrap().unwrap();
+        assert!(m.parent_ids.contains(&va));
+        assert!(m.parent_ids.contains(&vb));
+        assert!((m.importance - 0.9).abs() < 1e-6, "importância = max");
+        let doc = db.get(MemoryLayer::L4Semantic, "c").unwrap().unwrap();
+        let text = String::from_utf8_lossy(&doc.payload);
+        assert!(text.contains("fato a") && text.contains("fato b"));
+        // fontes intactas
+        assert!(db.get(MemoryLayer::L4Semantic, "a").unwrap().is_some());
+        assert!(db.get(MemoryLayer::L3EpisodicLong, "b").unwrap().is_some());
+    }
+
+    #[test]
+    fn forget_archives_but_keeps_history() {
+        let mut db = Sgdb::open_with_node_id(1, InMemory::new()).unwrap();
+        let doc = MemoryDoc::new(MemoryLayer::L4Semantic, "t", b"texto".to_vec());
+        db.put(doc).unwrap();
+        db.set_importance("md/L4/t", 0.7).unwrap();
+        db.forget("md/L4/t").unwrap();
+        assert_eq!(db.get_state("md/L4/t").unwrap(), MemoryState::Archived);
+        // história preservada: doc acessível e recall histórico o vê
+        assert!(db.get(MemoryLayer::L4Semantic, "t").unwrap().is_some());
+        let emb = vec![1.0, -1.0, 1.0, -1.0];
+        assert!(db.recall(&emb, 5).unwrap().is_empty(), "default exclui Archived");
+        assert!(
+            db.recall_historical(&emb, 5).unwrap().len() == 1,
+            "histórico mantém a memória"
+        );
+        // metadados intactos (importância não sumiu com o forget)
+        assert!((db.meta("md/L4/t").unwrap().unwrap().importance - 0.7).abs() < 1e-6);
+    }
+
+    #[test]
+    fn explain_reports_state_lineage_and_reinforcement() {
+        let mut db = Sgdb::open_with_node_id(1, InMemory::new()).unwrap();
+        db.put(MemoryDoc::new(MemoryLayer::L4Semantic, "e", b"x".to_vec()))
+            .unwrap();
+        db.set_importance("md/L4/e", 0.8).unwrap();
+        db.set_confidence("md/L4/e", 0.9).unwrap();
+        db.reinforce("md/L4/e", 0.1).unwrap();
+        let ex = db.explain("md/L4/e").unwrap();
+        assert_eq!(ex.key, "md/L4/e");
+        assert_eq!(ex.layer, MemoryLayer::L4Semantic);
+        assert_eq!(ex.state, MemoryState::Active);
+        assert!((ex.importance - 0.9).abs() < 1e-6);
+        assert!((ex.confidence - 0.9).abs() < 1e-6);
+        assert_eq!(ex.last_reinforced, 1);
+        assert_eq!(ex.validity, None);
+        // supersede: estado muda e a versão nova aparece como child
+        db.put(MemoryDoc::new(MemoryLayer::L4Semantic, "e", b"nova".to_vec()))
+            .unwrap();
+        let ex2 = db.explain("md/L4/e").unwrap();
+        assert_eq!(ex2.state, MemoryState::Active);
+        assert_eq!(ex2.parents.len(), 1, "overwrite vira parent");
+        assert!(ex2.parents.contains(&ex.version_id));
+    }
+
+    #[test]
+    fn transfer_to_moves_layer_with_lineage() {
+        let mut db = Sgdb::open_with_node_id(1, InMemory::new()).unwrap();
+        db.remember_exchange("oi", "tudo bem").unwrap(); // L1 last_user
+        let src_vid = db.version_of("md/L1/last_user").unwrap().unwrap();
+        let new_sk = db.transfer_to("md/L1/last_user", MemoryLayer::L4Semantic).unwrap();
+        assert_eq!(new_sk, "md/L4/last_user");
+        assert_eq!(db.get_state("md/L4/last_user").unwrap(), MemoryState::Active);
+        assert_eq!(db.get_state("md/L1/last_user").unwrap(), MemoryState::Archived);
+        let m = db.meta("md/L4/last_user").unwrap().unwrap();
+        assert!(m.parent_ids.contains(&src_vid), "linhagem registrada");
+        assert_eq!(db.derived_from("md/L4/last_user"), vec!["md/L1/last_user".to_string()]);
+        // idempotente: transferir para a mesma camada = no-op
+        assert_eq!(db.transfer_to("md/L4/last_user", MemoryLayer::L4Semantic).unwrap(), new_sk);
     }
 }

@@ -380,6 +380,69 @@ resolution to the cognitive layer (roadmap Phase 14/15).
 - **`Sgdb::add_parents(key, ids)`** — appends lineage parents to a memory's
   meta (also the base of v0.9's `merge_memories`).
 
+## Conflict model (v0.9 — Phase 14/15)
+
+- **`ConflictRecord`** — first-class conflict: deterministic `conflict_id`
+  (FNV-1a 128 over subject + sorted candidates), `subject` (storage key),
+  `candidates` (version IDs), `nodes` (source nodes), `created_tick`,
+  `status` (Open/Resolved), `resolved_winner`, and `records: Vec<Vec<u8>>`
+  (MDR1-encoded `MemoryRecord` per candidate, parallel to `candidates`) —
+  evidence is self-contained: resolving does not require re-fetching the
+  remote node. Wire `CFL1 v1`, bounds-checked decode.
+- **`Sgdb::merge_remote`** — on CONCURRENT verdict, upserts a
+  `ConflictRecord` in `sys/conflict/<id>` with both candidates' evidence;
+  re-delivery of the same concurrent pair upserts (never duplicates).
+- **`Sgdb::conflicts()` / `conflict(id)` / `dismiss_conflict(id)`** —
+  enumerate open/resolved conflicts, inspect, or clean up after resolution.
+- **`Sgdb::resolve_conflict(conflict_id, winner_vid)`** — explicit
+  upper-layer decision: imports the winner's `MemoryRecord` via evidence,
+  sets it as the current version of the slot (`version_id = winner_vid`),
+  appends all losers to `parent_ids` (causal lineage), marks the conflict
+  `Resolved`. Idempotent (already Resolved = `Ok`). Winner validation:
+  must be a candidate or `Err`.
+- **`engine.put_conflict` / `get_conflict` / `list_conflicts` /
+  `delete_conflict`** — raw side-table helpers (`sys/conflict/<id>`).
+- The core never decides semantic truth; it detects, preserves, and executes
+  explicit decisions.
+
+## Cognitive API (v0.9 — Phase 12/17/23)
+
+- **`reinforce(key, delta)`** — `importance += delta` (clamped [0, 1]);
+  `last_reinforced = own_counter` (MDM1 v3). Does NOT tick the clock —
+  reinforcement is local cognitive metadata. Persisted in `sys/meta/`.
+  Decay (v0.8 lifecycle) uses importance, so reinforced memories decay
+  slower.
+- **`forget(key)`** — archives a memory (`MemoryState::Archived`). History
+  is preserved (accessible via `recall_historical`, `lineage`); the memory
+  is removed from default active recall. For physical removal, use
+  `delete`.
+- **`explain(key)` → `MemoryExplanation`** — structured, machine-readable
+  explanation of a memory's current state: `key`, `layer`, `state`,
+  `memory_id`, `version_id`, `source`, `confidence`, `importance`,
+  `created_tick`, `last_reinforced`, `parents`, `validity`, `children`
+  (versions that list this as parent — derived from the `sys/version/`
+  index). No human-readable narrative: the upper layer formats.
+- **`transfer_to(key, target_layer)`** — moves a memory to another layer
+  with full lineage: the new doc gets `parent_ids += [source version_id]`
+  and the L6 relation `new --derived_from--> old` is asserted; the source
+  is archived (never deleted). Idempotent (same layer = no-op). Generalizes
+  lifecycle promotion for arbitrary layer moves.
+- **`merge_memories(a, b, target)`** — creates a new memory C at `target`
+  (or auto-generated key) with `parent_ids = [A.version_id, B.version_id]`,
+  payload = A payload + 0x1F separator + B payload, `importance = max(A, B)`,
+  `confidence = max(A, B)`. A and B remain intact (history preserved).
+  Roadmap Phase 16 — no semantic merging; concatenation + lineage.
+- **`engine.add_parents(sk, parents)`** — low-level lineage append
+  (also the base of `merge_memories` and lifecycle promotion).
+- **`engine.scan_versions()`** — iterates `sys/version/` index;
+  returns `(version_id, storage_key, MemoryMeta)` tuples (used by `explain`
+  for children enumeration).
+- **`engine.own_counter()`** — current own-clock watermark (used by
+  `reinforce`).
+- **`MemoryExplanation`** struct — `key`, `layer`, `state`, `memory_id`,
+  `version_id`, `source`, `confidence`, `importance`, `created_tick`,
+  `last_reinforced`, `parents`, `validity`, `children`.
+
 ## What does NOT go public
 
 - **OS namespaces:** `hanr/`, `pkg/`, `audit/`, `sys/`, `hw/` are AIOS-specific

@@ -36,10 +36,10 @@ filesystem, no external runtime.
 
 ## Status
 
-**v0.8** ✅ — dual-mode (`no_std` + `std`, zero dependencies):
+**v0.9** ✅ — dual-mode (`no_std` + `std`, zero dependencies):
 
-- `cargo test` on host: **136 tests + doc-test** (163 + doc-test with `p2p`,
-  95 + doc-test with `--no-default-features`)
+- `cargo test` on host: **147 tests + doc-test** (177 + doc-test with `p2p`,
+  105 + doc-test with `--no-default-features`)
 - `cargo check --no-default-features --target x86_64-unknown-none`: **clean**
 - **Recall stack**: BQ coarse → FP32 rescore, SIMD hamming (AVX-512/AVX2/
   scalar), auto-oversample by dimensionality, `recall_oversampled`,
@@ -67,10 +67,15 @@ filesystem, no external runtime.
   **L6 associative memory** (associate/related_to/causes/supports/
   contradicts/derived_from on ART), **provenance-aware recall** (default =
   active only; historical opt-in) and a **deterministic `MemoryLifecycle`**
-  (commit/promote/semanticize/decay/archive with no hidden wall clock)
+  (commit/promote/semanticize/decay/archive with no hidden wall clock),
+  **first-class conflict model** (deterministic id, MDR1 evidence per
+  candidate, `resolve_conflict` via evidence, `dismiss_conflict`),
+  **cognitive API** (`reinforce`/`forget`/`explain`/`transfer_to`/
+  `merge_memories`/`conflicts`/`resolve_conflict`) and **MCP 14 tools**
+  (provenance per hit in recall, ServerInfo v0.9.0)
 - **Interfaces**: MCP server with `memory://{layer}/{key}` resources +
-  `nextCursor` pagination + tool annotations; `cargo run --release
-  --example stress` (100k-op stress) and `--example bench`
+  `nextCursor` pagination + 14 cognitive tools + tool annotations;
+  `cargo run --release --example stress` (100k-op stress) and `--example bench`
 - Full API contract in [`docs/api.md`](docs/api.md)
 
 The reference implementation runs on bare-metal in the parent OS

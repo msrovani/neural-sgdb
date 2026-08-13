@@ -246,6 +246,29 @@ cargo check --no-default-features --target x86_64-unknown-none   # no_std gate
   range — só desce em filhos que casam o prefixo). `MCP` (example): resources
   `memory://{layer}/{key}`, `nextCursor` paginação opaca, annotations
   `readOnlyHint`/`destructiveHint`/`idempotentHint`.
+- **MDM1 decode (v0.9 bug fix)**: o branch `ver >= 2` do `version_id` não
+  avançava `off` (`off += vid_len` faltava) — inofensivo no v2 (último
+  campo), mas o v3 `last_reinforced` expôs o bug. Correção: `off += vid_len`
+  dentro do branch. Sempre testar decode com versões intermediárias (v1,
+  v2) e com v3.
+- **Conflict model (v0.9)** (`src/conflict.rs`): `ConflictRecord.records` são
+  `Vec<Vec<u8>>` (MDR1 paralelos a `candidates`) — re-merge upserta (id
+  determinístico FNV-1a sobre subject+candidates ordenados, nunca duplica).
+  `resolve_conflict` importa o winner via evidência e sobrescreve
+  `version_id` no slot (decisão explícita ≠ overwrite implícito, que
+  preserva identidade local). `dismiss_conflict` remove só o marcador;
+  história permanece via `sys/version/`.
+- **Reinforce (v0.9)**: `importance += delta` clampada a [0,1],
+  `last_reinforced = engine.own_counter()`. Não ticka relógio — metadado
+  local. Decode MDM1 v1/v2 sem `last_reinforced` → 0 (migração explícita,
+  nunca reinterpreta bytes antigos).
+- **`merge_remote` Conflict branch (v0.9)**: paraleliza (vid, MDR1) dos
+  candidatos, ordena por vid, deduplica; nós fonte únicos e ordenados;
+  `CrdtMemorySync::apply_remote_version` NÃO atualiza `local_version` do
+  nó relay (evita poluição de broadcast).
+- **`MemoryRecord` encode/decode**: cada flag (vflag/metaflag) avança `off`
+  MESMO no ramo 0 — o bug real do `MemoryRecord` (v0.8, `metaflag=0` não
+  avançava) foi corrigido; aplicar a mesma discipline em codecs novos.
 - **Format contracts**: NMD1/TKLV byte-identical to the OS — golden tests
   (`golden_nmd1_bytes`, `golden_record_bytes`, `fnv1a64_known_vector`) pin the
   layout; change them in the same commit as any format change.

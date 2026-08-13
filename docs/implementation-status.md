@@ -44,14 +44,14 @@ index-rebuild, docs) are **staged but uncommitted** — the git identity
 | Persistence | IMPLEMENTED — Storage trait, FileStorage (CRC append-log), TickvFile, recovery, compaction | `src/storage.rs`, `src/tickv.rs` | durable cognitive lifecycle |
 | CRDT version sync | IMPLEMENTED (v0.6) — `missing_after(peer)` + delta/snapshot abstractions; version 0 ignored; `local_version` = own writes only | `src/crdt.rs` | causal distributed memory |
 | Full memory replication | PARTIAL→**anti-entropy (v0.7)** — `MemoryRecord` (doc+state+validity+meta) travels as one unit; clock announcement + directed pull of the missing causal range; relay through intermediates; durable `CrdtState` | `src/memory_doc.rs`, `src/engine.rs`, `src/crdt.rs` | overlay routing/trust (v0.8+) |
-| Conflict preservation | PARTIAL→**improved (v0.6)** — per-layer `MergePolicy` table (L2/L3 multi-value, L4 causal-LWW-with-history, L5/L7 controlled, L0/L1 local-only → `Rejected`); `Sgdb::merge_remote` never LWW-overwrites concurrent same-key memories | `MergePolicy`, `MergeVerdict` in crdt.rs; `merge_remote` in sgdb.rs | per-layer conflict model + resolution API |
+| Conflict preservation | IMPLEMENTED **(v0.9)** — `ConflictRecord` (id determinístico, candidates+records MDR1 paralelos, status Open/Resolved, evidência preservada) em `sys/conflict/`; `merge_remote` cria conflito na branch CONCORRENTE; `resolve_conflict` importa vencedor via evidência + marca loser parent; `dismiss_conflict` limpa; `conflicts()` enumera. Nenhuma decisão semântica no core (roadmap §14/15). | `src/conflict.rs`, `src/engine.rs`, `src/sgdb.rs` | arbitração plugável (M4) |
 | Dynamic VectorClock | **IMPLEMENTED (v0.6)** — 8-node fast path + overflow registry (bounded), dynamic `set_counter`, overflow-aware compare/merge; NMD1 stays 72B | `VectorClock` in `src/memory_doc.rs` + tests | causal DAG on top |
 | Causal DAG | PARTIAL→**implemented core (v0.7)** — per-version identity (`MemoryMeta.version_id`, MDM1 v2, v1-decodable), `sys/version/` reverse index, `Sgdb::version_of`/`lineage`, `supersede` links versions; merge-branch exploration via `parent_ids` | `src/memory_doc.rs`, `src/engine.rs`, `src/sgdb.rs` | full DAG queries (children/descendants) |
 | Provenance | PARTIAL→**implemented core (v0.6)** — `MemoryMeta` (source, confidence, importance, created_tick, parents) in `sys/meta/`; exposed in `Hit.provenance`; pre-v0.6 records lazily migrated. **Provenance-aware recall (v0.8)**: default recall = ACTIVE only; `recall_historical`/`recall_lexical_historical` include inactive with state exposed | `src/memory_doc.rs`, `src/engine.rs`, `src/sgdb.rs` | explain/arbitration on top |
 | L6 associations | DESIGN→**IMPLEMENTED (v0.8)** — `associate`/`related_to`/`causes`/`supports`/`contradicts`/`derived_from`; side-table `sys/rel/` + ART forward/reverse index (derived, rebuilt on open, pruned on delete); no inference | `src/engine.rs`, `src/sgdb.rs`, `RelationKind` in `memory_doc.rs` | relation-aware retrieval fusion |
 | Lifecycle engine | PARTIAL→**IMPLEMENTED (v0.8)** — `MemoryLifecycle::tick(db, now)` deterministic (no hidden wall clock), `LifecycleConfig`/`LifecycleReport`; L1→L2 commit, L2→L3 promotion, L3→L4 heuristic semanticization (no LLM/embedding in core), decay→Decayed (never delete), archive of aged superseded; lineage wired on every promotion | `src/lifecycle.rs` | consolidation/reinforcement (v0.9) |
 | Semantic consolidation | PARTIAL→**heuristic foundation (v0.8)** — L3→L4 promotion by importance+age records `derived_from`; embedding backfill is the upper layer's job | `src/lifecycle.rs` | repetition/similarity-density signals |
-| Cognitive API | PARTIAL — `remember`/`recall`/`rag_context`/`supersede`/`delete` + `memory_id`/`meta`/`set_importance`/`set_confidence` (v0.6); no associate/reinforce/explain | `src/sgdb.rs` | progressive verb surface |
+| Cognitive API | **IMPLEMENTED core (v0.9)** — `remember`/`recall`/`rag_context`/`supersede`/`delete` + `memory_id`/`meta`/`set_importance`/`set_confidence` + `reinforce(key,delta)` + `forget` (Archived) + `explain` → `MemoryExplanation` + `transfer_to` (layer move + lineage) + `merge_memories(a,b,target)` + `associate`/`related_to`/`contradicts` + `conflicts`/`resolve_conflict`/`dismiss_conflict`. MCP exposes all 14 tools (v0.9). | `src/sgdb.rs`, `examples/mcp_server.rs` | arbitration/trust (M4) |
 | AI arbitration | NOT core — correctly absent | `docs/architecture/06` | separate upper layer |
 
 ## 3. Per-subsystem detail
@@ -142,9 +142,10 @@ write→close→reopen→rebuild→recall).
 
 ### 3.6 MCP (`examples/mcp_server.rs`) — PARTIAL (integration layer)
 
-`memory://{layer}/{key}` resources; embedding generation is a trigram demo,
-clearly labeled. Does not yet expose cognitive verbs (associate, reinforce,
-explain, supersede) or provenance/state fields in responses.
+`memory://{layer}/{key}` resources; embedding generation is a trigram demo,  clearly labeled. v0.9 exposes 14 MCP tools (remember/recall/rag_context/
+  explain/reinforce/forget/associate/related_to/contradicts/supersede/
+  conflicts/resolve_conflict/merge_memories) + provenance (state/imp/conf/src)
+  per hit in recall. ServerInfo v0.9.0.
 
 ## 4. Compatibility constraints
 
@@ -169,9 +170,9 @@ explain, supersede) or provenance/state fields in responses.
   extra nodes); the 256-node u8 space is the hard limit. Per-version
   identity (causal DAG) is **implemented (v0.7)**: `version_id` + `lineage`
   walk (parents resolve via the `sys/version/` index); `memory_id` still
-  identifies the (layer+key) slot and is stable across overwrites. DAG
-  queries (children/descendants) and per-layer conflict-resolution on top of
-  it remain future work.
+  identifies the (layer+key) slot and is stable across overwrites.  DAG queries (children/descendants) implemented, `transfer_to` (layer move with lineage),
+  `merge_memories` (fusão com parent_ids=[A,B]), `forget` (archival),
+  `reinforce` (importance delta + last_reinforced), and MCP 14 tools (v0.9).
 - Anti-entropy (v0.7) relays versions and records through intermediate
   nodes and persists replication state (`CrdtState`); the remaining
   limitation is that reconciliation is edge-directed (no overlay routing),
@@ -179,17 +180,18 @@ explain, supersede) or provenance/state fields in responses.
   the p2p demo stays ephemeral.
 - Layer policy is explicit and enforced at the version and record level
   (v0.6), but there is no **resolution** API yet — conflicts are detected
-  and preserved, a higher layer decides (roadmap Phase 14/15, v0.9).
+  and preserved, a higher layer decides — `resolve_conflict` (v0.9) imports winner
+  via evidence + marks loser parent; `dismiss_conflict` cleans up (Phase 14/15, v0.9).
 - Same-key concurrent writes are never silently overwritten (`Conflict`),
   but both values are not co-located in one store: each stays on its author
   node until a higher layer resolves.
 - Recall (v0.8) filters to **active** by default (`recall_historical` opts
   into inactive with `provenance.state`); `recall_weighted` still uses the
   layer as a coarse importance proxy — importance-aware weighting is v0.9
-  along with reinforcement/decay APIs.
-- Lifecycle (v0.8) does commit/promote/semanticize/decay/archive but there
-  is no **reinforcement** (`reinforce`) or consolidation-by-repetition yet;
-  L4→L5 proceduralization is deliberately manual (HITL). L3→L4 promotion
+  along with `reinforce` (v0.9).
+- `reinforce` (v0.9) updates importance + `last_reinforced` (MDM1 v3); lifecycle
+  decay (v0.8) uses importance, so reinforced memories decay slower.
+- L4→L5 proceduralization is deliberately manual (HITL). L3→L4 promotion
   creates the L4 doc without a bitvec — semantic (BQ) retrieval of
   consolidated memories requires the upper layer to backfill embeddings.
 - `UdpTransport` unauthenticated (documented, demo-only).

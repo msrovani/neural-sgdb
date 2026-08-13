@@ -155,7 +155,7 @@ fn main() {
                 send(&json!({"jsonrpc":"2.0","id":id,"result":{
                     "protocolVersion":"2025-11-25",
                     "capabilities":{"tools":{}},
-                    "serverInfo":{"name":"neural-sgdb","version":"0.1.0"}
+                    "serverInfo":{"name":"neural-sgdb","version":"0.9.0"}
                 }}));
             }
             "notifications/initialized" | "notifications/cancelled" | "notifications/progress" => {
@@ -189,7 +189,70 @@ fn main() {
                          "query":{"type":"string","description":"Texto de busca"},
                          "k":{"type":"integer","minimum":1,"maximum":10,"default":3}},
                        "required":["query"]},
-                     "annotations":{"readOnlyHint":true}}
+                     "annotations":{"readOnlyHint":true}},
+                    {"name":"explain",
+                     "description":"Explica ESTRUTURADAMENTE por que uma memoria esta no estado atual (proveniencia, importância, linhagem, validade).",
+                     "inputSchema":{"type":"object",
+                       "properties":{"key":{"type":"string","description":"Storage key (md/L4/k ou L4/k)"}},
+                       "required":["key"]},
+                     "annotations":{"readOnlyHint":true}},
+                    {"name":"reinforce",
+                     "description":"Reforca uma memoria: importância += delta (clampada a [0,1]) e registra last_reinforced.",
+                     "inputSchema":{"type":"object",
+                       "properties":{
+                         "key":{"type":"string"},
+                         "delta":{"type":"number","description":"Aumento de importância (ex: 0.1)"}},
+                       "required":["key","delta"]}},
+                    {"name":"forget",
+                     "description":"Esquece (ARCHIVA) uma memoria — historia preservada, recall default passa a ignora-la.",
+                     "inputSchema":{"type":"object",
+                       "properties":{"key":{"type":"string"}},
+                       "required":["key"]},
+                     "annotations":{"destructiveHint":true,"idempotentHint":true}},
+                    {"name":"associate",
+                     "description":"Afirma uma relacao L6: a --kind--> b (related_to|causes|supports|contradicts|derived_from|supersedes).",
+                     "inputSchema":{"type":"object",
+                       "properties":{
+                         "a":{"type":"string"},
+                         "kind":{"type":"string","enum":["related_to","causes","supports","contradicts","derived_from","supersedes"]},
+                         "b":{"type":"string"}},
+                       "required":["a","kind","b"]}},
+                    {"name":"related_to",
+                     "description":"Lista alvos de relacoes partindo de uma memoria.",
+                     "inputSchema":{"type":"object",
+                       "properties":{"key":{"type":"string"}},
+                       "required":["key"]},
+                     "annotations":{"readOnlyHint":true}},
+                    {"name":"contradicts",
+                     "description":"Lista memorias que contradizem a informada.",
+                     "inputSchema":{"type":"object",
+                       "properties":{"key":{"type":"string"}},
+                       "required":["key"]},
+                     "annotations":{"readOnlyHint":true}},
+                    {"name":"supersede",
+                     "description":"Marca old como superseded e liga new como sucessor (linhagem causal).",
+                     "inputSchema":{"type":"object",
+                       "properties":{"old":{"type":"string"},"new":{"type":"string"}},
+                       "required":["old","new"]}},
+                    {"name":"conflicts",
+                     "description":"Lista conflitos persistidos (Open/Resolved) com evidencias preservadas.",
+                     "inputSchema":{"type":"object","properties":{}},
+                     "annotations":{"readOnlyHint":true}},
+                    {"name":"resolve_conflict",
+                     "description":"Resolve um conflito escolhendo o vencedor por version_id — o perdedor permanece na historia.",
+                     "inputSchema":{"type":"object",
+                       "properties":{
+                         "conflict_id":{"type":"string"},
+                         "winner_version_id":{"type":"string"}},
+                       "required":["conflict_id","winner_version_id"]}},
+                    {"name":"merge_memories",
+                     "description":"Funde duas memorias em C: parent_ids=[A,B], payload concatenado, fontes intactas.",
+                     "inputSchema":{"type":"object",
+                       "properties":{
+                         "a":{"type":"string"},
+                         "b":{"type":"string"},
+                         "target":{"type":"string","description":"Chave nova (vazia = gerada)"}},
+                       "required":["a","b"]}}
                 ]}}));
             }
             "resources/list" => {
@@ -273,8 +336,14 @@ fn main() {
                         let text = if page.is_empty() {
                             "nenhuma memoria similar encontrada".into()
                         } else {
-                            page.iter().map(|h| format!("- {} (d={:.3})", h.text, h.dist))
-                                .collect::<Vec<_>>().join("\n")
+                            // v0.9: hits expõem proveniência (roadmap §13) —
+                            // estado/importância/confiança/fonte por hit
+                            page.iter().map(|h| {
+                                let p = h.provenance.as_ref().map(|p| format!(
+                                    " [state={:?} imp={:.2} conf={:.2} src={}]",
+                                    p.state, p.importance, p.confidence, p.source)).unwrap_or_default();
+                                format!("- {} (d={:.3}){}", h.text, h.dist, p)
+                            }).collect::<Vec<_>>().join("\n")
                         };
                         let mut result = json!({
                             "content":[{"type":"text","text":text}],"isError":false
@@ -297,6 +366,151 @@ fn main() {
                                 "content":[{"type":"text","text":if ctx.is_empty() {
                                     "nenhum contexto recuperado".into()} else {ctx}}],
                                 "isError":false}})),
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
+                        }
+                    }
+                    "explain" => {
+                        let key = args["key"].as_str().unwrap_or("");
+                        if key.is_empty() {
+                            send(&error_response(&id, -32602, "parametro 'key' obrigatorio"));
+                            continue;
+                        }
+                        match db.explain(key) {
+                            Ok(ex) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":serde_json::to_string_pretty(&json!({
+                                    "key": ex.key, "layer": format!("{:?}", ex.layer),
+                                    "state": format!("{:?}", ex.state),
+                                    "memory_id": ex.memory_id, "version_id": ex.version_id,
+                                    "source": ex.source, "confidence": ex.confidence,
+                                    "importance": ex.importance, "created_tick": ex.created_tick,
+                                    "last_reinforced": ex.last_reinforced, "parents": ex.parents,
+                                    "validity": ex.validity, "children": ex.children})).unwrap_or_default()}],
+                                "isError":false}})),
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
+                        }
+                    }
+                    "reinforce" => {
+                        let key = args["key"].as_str().unwrap_or("");
+                        let delta = args["delta"].as_f64().unwrap_or(0.0) as f32;
+                        if key.is_empty() {
+                            send(&error_response(&id, -32602, "parametro 'key' obrigatorio"));
+                            continue;
+                        }
+                        match db.reinforce(key, delta) {
+                            Ok(()) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":format!("reforcada: {key} (+{delta})")}],"isError":false}})),
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
+                        }
+                    }
+                    "forget" => {
+                        let key = args["key"].as_str().unwrap_or("");
+                        if key.is_empty() {
+                            send(&error_response(&id, -32602, "parametro 'key' obrigatorio"));
+                            continue;
+                        }
+                        match db.forget(key) {
+                            Ok(()) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":format!("arquivada: {key} (historia preservada)")}],"isError":false}})),
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
+                        }
+                    }
+                    "associate" => {
+                        let a = args["a"].as_str().unwrap_or("");
+                        let b = args["b"].as_str().unwrap_or("");
+                        let kind = match args["kind"].as_str().unwrap_or("") {
+                            "related_to" => neural_sgdb::RelationKind::RelatedTo,
+                            "causes" => neural_sgdb::RelationKind::Causes,
+                            "supports" => neural_sgdb::RelationKind::Supports,
+                            "contradicts" => neural_sgdb::RelationKind::Contradicts,
+                            "derived_from" => neural_sgdb::RelationKind::DerivedFrom,
+                            "supersedes" => neural_sgdb::RelationKind::Supersedes,
+                            _ => { send(&error_response(&id, -32602, "kind invalido")); continue; }
+                        };
+                        match db.associate(a, kind, b) {
+                            Ok(()) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":format!("relacao: {a} --{kind:?}--> {b}")}],"isError":false}})),
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
+                        }
+                    }
+                    "related_to" => {
+                        let key = args["key"].as_str().unwrap_or("");
+                        if key.is_empty() {
+                            send(&error_response(&id, -32602, "parametro 'key' obrigatorio"));
+                            continue;
+                        }
+                        let rels = db.related_to(key);
+                        let text = if rels.is_empty() { "sem relacoes".into() }
+                            else { rels.iter().map(|(k, t)| format!("{k:?} -> {t}")).collect::<Vec<_>>().join("\n") };
+                        send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                            "content":[{"type":"text","text":text}],"isError":false}}));
+                    }
+                    "contradicts" => {
+                        let key = args["key"].as_str().unwrap_or("");
+                        if key.is_empty() {
+                            send(&error_response(&id, -32602, "parametro 'key' obrigatorio"));
+                            continue;
+                        }
+                        let cs = db.contradicts(key);
+                        let text = if cs.is_empty() { "sem contradicoes".into() }
+                            else { cs.join("\n") };
+                        send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                            "content":[{"type":"text","text":text}],"isError":false}}));
+                    }
+                    "supersede" => {
+                        let old = args["old"].as_str().unwrap_or("");
+                        let new = args["new"].as_str().unwrap_or("");
+                        if old.is_empty() || new.is_empty() {
+                            send(&error_response(&id, -32602, "parametros 'old' e 'new' obrigatorios"));
+                            continue;
+                        }
+                        match db.supersede(old, new) {
+                            Ok(()) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":format!("{old} superseded por {new}")}],"isError":false}})),
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
+                        }
+                    }
+                    "conflicts" => {
+                        let cs = db.conflicts();
+                        let text = if cs.is_empty() { "nenhum conflito persistido".into() }
+                            else { cs.iter().map(|c| format!(
+                                "{} [{}] {} :: candidatos={} nodos={:?} records={}",
+                                c.conflict_id, format!("{:?}", c.status), c.subject,
+                                c.candidates.join(","), c.nodes, c.records.len()))
+                                .collect::<Vec<_>>().join("\n") };
+                        send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                            "content":[{"type":"text","text":text}],"isError":false}}));
+                    }
+                    "resolve_conflict" => {
+                        let cid = args["conflict_id"].as_str().unwrap_or("");
+                        let winner = args["winner_version_id"].as_str().unwrap_or("");
+                        if cid.is_empty() || winner.is_empty() {
+                            send(&error_response(&id, -32602, "parametros 'conflict_id' e 'winner_version_id' obrigatorios"));
+                            continue;
+                        }
+                        match db.resolve_conflict(cid, winner) {
+                            Ok(()) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":format!("conflito {cid} resolvido -> {winner}")}],"isError":false}})),
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
+                        }
+                    }
+                    "merge_memories" => {
+                        let a = args["a"].as_str().unwrap_or("");
+                        let b = args["b"].as_str().unwrap_or("");
+                        let target = args["target"].as_str().unwrap_or("");
+                        if a.is_empty() || b.is_empty() {
+                            send(&error_response(&id, -32602, "parametros 'a' e 'b' obrigatorios"));
+                            continue;
+                        }
+                        match db.merge_memories(a, b, target) {
+                            Ok(sk) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":format!("fundidas em {sk}")}],"isError":false}})),
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
                         }

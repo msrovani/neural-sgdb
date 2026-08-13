@@ -315,6 +315,11 @@ pub struct MemoryMeta {
     pub parent_ids: Vec<String>,
     /// Overflow do VectorClock (>8 nós) — o NMD1 guarda só 72B fixos.
     pub clock_overflow: Vec<(u8, u64)>,
+    /// Último tick de reforço (v0.9 — `Sgdb::reinforce`): o contador do
+    /// relógio próprio no momento do reforço. 0 = nunca reforçada. Exposta
+    /// no `explain` e consultável pela política de decay (reforço recente
+    /// contrabalança o decaimento).
+    pub last_reinforced: u64,
 }
 
 /// Um elo da linhagem causal (Phase 3, v0.7): a versão corrente e seus
@@ -331,7 +336,10 @@ pub struct LineageEntry {
 }
 
 const META_MAGIC: &[u8; 4] = b"MDM1";
-const META_VERSION: u8 = 2;
+/// v1 (v0.6): memória + proveniência · v2 (v0.7): version_id · v3 (v0.9):
+/// last_reinforced. `decode` aceita as três — migração explícita, nunca
+/// reinterpreta bytes antigos.
+const META_VERSION: u8 = 3;
 
 impl MemoryMeta {
     pub fn encode(&self) -> Vec<u8> {
@@ -356,6 +364,8 @@ impl MemoryMeta {
         }
         out.extend_from_slice(&(self.version_id.len() as u16).to_le_bytes());
         out.extend_from_slice(self.version_id.as_bytes());
+        // v3: último tick de reforço
+        out.extend_from_slice(&self.last_reinforced.to_le_bytes());
         out
     }
 
@@ -364,7 +374,7 @@ impl MemoryMeta {
             return Err("bad meta magic");
         }
         let ver = data[4];
-        if ver != 1 && ver != 2 {
+        if ver != 1 && ver != 2 && ver != 3 {
             return Err("bad meta version");
         }
         let mut off = 5;
@@ -407,16 +417,23 @@ impl MemoryMeta {
             clock_overflow.push((n, c));
         }
         // v2: identidade por versão; v1: migração explícita (versão = slot)
-        let version_id = if ver == 2 {
+        let version_id = if ver >= 2 {
             let vid_len = rd_u16(data, off).ok_or("trunc vidlen")? as usize;
             off += 2;
             if off + vid_len > data.len() {
                 return Err("trunc vid");
             }
             let vid = core::str::from_utf8(&data[off..off + vid_len]).map_err(|_| "utf8 vid")?;
+            off += vid_len;
             String::from(vid)
         } else {
             memory_id.clone()
+        };
+        // v3: último tick de reforço (v1/v2 = nunca reforçada)
+        let last_reinforced = if ver >= 3 {
+            rd_u64(data, off).ok_or("trunc last_reinforced")?
+        } else {
+            0
         };
         Ok(MemoryMeta {
             memory_id,
@@ -427,6 +444,7 @@ impl MemoryMeta {
             created_tick,
             parent_ids,
             clock_overflow,
+            last_reinforced,
         })
     }
 }
@@ -1189,6 +1207,7 @@ mod tests {
             created_tick: 42,
             parent_ids: vec![String::from("p1"), String::from("p2")],
             clock_overflow: vec![(9, 3), (12, 1)],
+            last_reinforced: 99,
         }
     }
 
@@ -1223,17 +1242,27 @@ mod tests {
         // = memory_id (a 1ª versão de um slot é o próprio slot). O v1 não
         // é reinterpretado silenciosamente: o decode conhece os dois layouts.
         let mut enc = sample_meta().encode();
-        // remove o campo v2 (vidlen u16 + vid) e marca ver=1
+        // remove o campo v3 (last_reinforced u64) + v2 (vidlen u16 + vid) e
+        // marca ver=1 — layout v1 genuíno (sem vid, sem lr)
         let vid = sample_meta().version_id;
-        let cut = enc.len() - 2 - vid.len();
+        let cut = enc.len() - 8 - 2 - vid.len();
         enc.truncate(cut);
         enc[4] = 1;
         let dec = MemoryMeta::decode(&enc).unwrap();
         assert_eq!(dec.version_id, dec.memory_id);
         assert_eq!(dec.version_id, "aabbccddeeff00112233445566778899");
+        assert_eq!(dec.last_reinforced, 0, "v1 nunca reforçada");
+        // v2 (sem last_reinforced) também decodifica com lr=0
+        let mut enc2 = sample_meta().encode();
+        let cut2 = enc2.len() - 8;
+        enc2.truncate(cut2);
+        enc2[4] = 2;
+        let dec2 = MemoryMeta::decode(&enc2).unwrap();
+        assert_eq!(dec2.last_reinforced, 0);
+        assert_eq!(dec2.version_id, sample_meta().version_id);
         // versão desconhecida → Err
         let mut bad = sample_meta().encode();
-        bad[4] = 3;
+        bad[4] = 4;
         assert!(MemoryMeta::decode(&bad).is_err());
         // truncado no vid → Err, nunca panic
         let full = sample_meta().encode();

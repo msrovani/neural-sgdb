@@ -69,6 +69,7 @@ macro_rules! sgdb_log {
 
 pub mod art;
 pub mod bq;
+pub mod conflict;
 pub mod hamming_dispatch;
 pub mod lexical;
 pub mod memory_doc;
@@ -86,6 +87,7 @@ pub use art::ArtIndex;
 pub use bq::{
     hamming, hamming_path, quantize_f32, quantize_f32_centered, BqFlatIndex, MihIndex,
 };
+pub use conflict::{generate_conflict_id, ConflictRecord, ConflictStatus};
 pub use hamming_dispatch::{
     cpu_caps, cpu_has_avx2, cpu_has_avx512, path_name as hamming_kernel_name,
     select_best_hamming_kernel, CpuCaps,
@@ -93,7 +95,7 @@ pub use hamming_dispatch::{
 pub use lexical::LexicalIndex;
 pub use memory_doc::{
     generate_memory_id, LineageEntry, MemoryDoc, MemoryDocView, MemoryLayer, MemoryMeta,
-    MemoryRecord, MemoryState, VectorClock,
+    MemoryRecord, MemoryState, RelationKind, VectorClock,
 };
 pub use sgdb::{Hit, HitProvenance, Sgdb};
 pub use storage::{InMemory, Storage, SgdbError};

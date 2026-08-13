@@ -6,6 +6,22 @@ All notable changes to this project. Format based on
 
 ## [Unreleased]
 
+### v0.9 — Conflict model + reinforce + cognitive API + MCP surface (Phase 14/15/17/23)
+- **First-class conflict model** (`src/conflict.rs`, `ConflictRecord`, `ConflictStatus`) — deterministic `conflict_id` (FNV-1a 128 sobre subject+candidates ordenados), re-merge upserta (nunca duplica). Persistido em `sys/conflict/<id>` com evidência completa: `records: Vec<Vec<u8>>` (MDR1 dos candidatos paralelos a `candidates`) — a resolução NÃO depende de re-buscar o nó remoto (item 14: conflict preservation).
+- **`Sgdb::merge_remote` grava conflito** — branch CONCORRENTE: paraleliza (vid, MDR1) dos candidatos, ordena, deduplica; nós fonte únicos; upsert idempotente.
+- **`resolve_conflict(cid, winner_vid)`** — decisão EXPLÍCITA da camada superior: importa o record do vencedor (via evidência), vira versão corrente do slot, perdedores viram `parent_ids`; conflito marcado `Resolved` (idempotente). Nenhuma decisão semântica no core (item 15/21).
+- **`conflicts()` / `conflict(id)` / `dismiss_conflict(id)`** — enumeração e limpeza explícita.
+- **`reinforce(key, delta)`** — `importance += delta` (clamp [0,1]), `last_reinforced = own_counter`. MDM1 v3 (decode retrocompatível v1/v2). Não ticka relógio — metadado cognitivo local.
+- **`forget(key)`** — ARQUIVA (preserva história; recall default ignora).
+- **`explain(key)` → `MemoryExplanation`** — machine-readable: state/layer/importance/confidence/source/version_id/parents/validity/children/last_reinforced (roadmap §17).
+- **`transfer_to(key, target_layer)`** — move camada com linhagem: parent_ids + relation `derived_from`; fonte `Archived` (nada deletado).
+- **`merge_memories(a, b, target)`** — C nasce com `parent_ids=[A,B]`, payload concatenado, importance/confidence = max. Fontes intactas (roadmap §16).
+- **`engine.add_parents` / `engine.scan_versions` / `engine.own_counter`** — helpers internos.
+- **`engine` conflict side-tables** — `put_conflict`, `get_conflict`, `list_conflicts`, `delete_conflict` (sys/conflict/).
+- **MCP server** (`examples/mcp_server.rs`) expõe 11 tools cognitivas: `explain`, `reinforce`, `forget`, `associate`, `related_to`, `contradicts`, `supersede`, `conflicts`, `resolve_conflict`, `merge_memories` + `recall` com proveniência por hit (state/imp/conf/src). ServerInfo v0.9.0.
+- **Bug fix**: MDM1 decode — `off += vid_len` ausente no branch `ver >= 2` (latente desde v0.7; o field v3 `last_reinforced` expôs).
+- Testes (+10 default, +3 p2p, +2 no_std): `conflict.rs` (roundtrip open/resolved, determinismo de id, fuzz decode), `sgdb.rs` (reinforce clamping, persistência across reopen, concurrent merge cria conflito, resolve importa vencedor + preserva loser + idempotente, dismiss remove registro, merge_memories com parents, forget arqueia, explain expõe lineage, transfer_to move layer, `v0.9` tests). Matriz: default **147+1**, p2p **177+1**, no-default-features **105+1**, `x86_64-unknown-none` ok.
+
 ### v0.8 — L6 associations + provenance-aware recall + lifecycle engine (Phase 8/9/15/16)
 - **L6 associative memory** (`RelationKind` + `associate`/`related_to`/
   `causes`/`supports`/`contradicts`/`derived_from`) — topologia cognitiva

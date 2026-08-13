@@ -64,6 +64,14 @@ fn version_key(vid: &str) -> Vec<u8> {
     k
 }
 
+/// Chave de side-table de um conflito (`sys/conflict/<id>` — v0.9).
+fn conflict_key(id: &str) -> Vec<u8> {
+    let mut k = Vec::with_capacity(14 + id.len());
+    k.extend_from_slice(b"sys/conflict/");
+    k.extend_from_slice(id.as_bytes());
+    k
+}
+
 fn encode_version_entry(sk: &str, m: &MemoryMeta) -> Vec<u8> {
     let mut out = Vec::with_capacity(4 + sk.len() + m.encode().len());
     out.extend_from_slice(&(sk.len() as u16).to_le_bytes());
@@ -296,6 +304,7 @@ impl AiosDatabaseEngine {
                     created_tick: tick,
                     parent_ids: Vec::new(),
                     clock_overflow: Vec::new(),
+                    last_reinforced: 0,
                 }
             }
         };
@@ -339,6 +348,33 @@ impl AiosDatabaseEngine {
         }
     }
 
+    /// Varre TODAS as versões indexadas `sys/version/` (v0.9 — filhos no
+    /// `explain`). Derivado; determinístico (ordenado por vid).
+    pub fn scan_versions(&mut self) -> Result<Vec<(String, String, MemoryMeta)>, SgdbError> {
+        let mut out = Vec::new();
+        let rows = self.storage.scan_prefix(b"sys/version/")?;
+        for (k, bytes) in rows {
+            let vid = String::from_utf8_lossy(&k[12..]).into_owned(); // strip sys/version/
+            if let Some((sk, m)) = decode_version_entry(&bytes) {
+                out.push((vid, sk, m));
+            }
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(out)
+    }
+
+    /// Anexa `parent_ids` à meta de `sk` (linhagem causal, idempotente).
+    /// Garante meta se o registro for pré-v0.6.
+    pub fn add_parents(&mut self, sk: &str, parents: &[String]) -> Result<(), SgdbError> {
+        let mut m = self.ensure_meta(sk)?;
+        for p in parents {
+            if !m.parent_ids.contains(p) {
+                m.parent_ids.push(p.clone());
+            }
+        }
+        self.write_meta(sk, &m)
+    }
+
     /// Garante meta para `sk` (migração de registros pré-v0.6: cria
     /// identidade determinística a partir do doc). Err se o doc não existe.
     pub fn ensure_meta(&mut self, sk: &str) -> Result<MemoryMeta, SgdbError> {
@@ -363,6 +399,7 @@ impl AiosDatabaseEngine {
             created_tick: tick,
             parent_ids: Vec::new(),
             clock_overflow: doc.clock.overflow.clone(),
+            last_reinforced: 0,
         };
         // índice reverso também é derivado na migração (DAG consultável)
         self.storage
@@ -610,6 +647,47 @@ impl AiosDatabaseEngine {
 
     pub fn write_side_bytes(&mut self, key: &str, bytes: &[u8]) -> Result<(), SgdbError> {
         self.storage.put(key.as_bytes(), bytes)
+    }
+
+    // ── Conflicts (v0.9, roadmap Phase 14/15) ─────────────────────────────
+    //
+    // Persistido em `sys/conflict/<id>` — a evidência (records MDR1 dos
+    // candidatos) sobrevive a restart e a resolução não depende do nó remoto.
+
+    /// Upsert de um `ConflictRecord` (id determinístico → re-merge upserta).
+    pub fn put_conflict(&mut self, c: &crate::conflict::ConflictRecord) -> Result<(), SgdbError> {
+        self.storage.put(&conflict_key(&c.conflict_id), &c.encode())
+    }
+
+    pub fn get_conflict(&mut self, id: &str) -> Option<crate::conflict::ConflictRecord> {
+        match self.storage.get(&conflict_key(id)) {
+            Ok(Some(b)) => crate::conflict::ConflictRecord::decode(&b).ok(),
+            _ => None,
+        }
+    }
+
+    pub fn delete_conflict(&mut self, id: &str) -> Result<(), SgdbError> {
+        self.storage.delete(&conflict_key(id))
+    }
+
+    /// Todos os conflitos persistidos, ordenados por id (determinístico).
+    pub fn list_conflicts(&mut self) -> Vec<crate::conflict::ConflictRecord> {
+        let mut out = Vec::new();
+        if let Ok(rows) = self.storage.scan_prefix(b"sys/conflict/") {
+            for (_, bytes) in rows {
+                if let Ok(c) = crate::conflict::ConflictRecord::decode(&bytes) {
+                    out.push(c);
+                }
+            }
+        }
+        out.sort_by(|a, b| a.conflict_id.cmp(&b.conflict_id));
+        out
+    }
+
+    /// Contador próprio atual (watermark) — usado por `reinforce` (v0.9)
+    /// para registrar `last_reinforced` sem tickar o relógio.
+    pub fn own_counter(&self) -> u64 {
+        self.own_clock_watermark
     }
 
     // ── L6 relations (v0.8, roadmap Phase 12) ─────────────────────────────
@@ -917,6 +995,7 @@ fn meta_for_import(doc: &MemoryDoc) -> MemoryMeta {
         created_tick: maxc,
         parent_ids: Vec::new(),
         clock_overflow: doc.clock.overflow.clone(),
+        last_reinforced: 0,
     }
 }
 
