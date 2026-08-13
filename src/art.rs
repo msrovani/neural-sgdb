@@ -227,6 +227,151 @@ impl ArtIndex {
         }
     }
 
+    /// Detecta prefix-key (regra 4): `true` se a árvore JÁ contém uma chave
+    /// que é prefixo de `key`, ou `key` é prefixo de alguma chave existente.
+    ///
+    /// A ART não suporta chaves onde uma é prefixo da outra: o `insert_rec`
+    /// devolve silenciosamente sem gravar (Inner: `d2 >= key.len()`) ou cria
+    /// filhos com byte `0` repetido (Leaf: `b1`/`b2` zerados quando uma chave
+    /// esgota) — a chave mais curta fica inacessível e o `get` diverge. Callers
+    /// de borda (engine::put / associate) usam esta guarda para devolver
+    /// `SgdbError::Invalid` ANTES de corromper o índice.
+    ///
+    /// Travessia O(k) sem alocar; `false` para árvore vazia ou key ausente.
+    pub fn has_prefix_conflict(&self, key: &str) -> bool {
+        let kb = key.as_bytes();
+        let mut node = match self.root.as_ref() {
+            Some(n) => n,
+            None => return false,
+        };
+        let mut depth = 0usize;
+        loop {
+            match node.as_ref() {
+                Node::Leaf { key: lk, .. } => {
+                    // Mesma chave = overwrite (NÃO é prefix-key). Caso contrário,
+                    // uma é prefixo da outra se a chave mais curta esgota.
+                    if lk.as_slice() == kb {
+                        return false;
+                    }
+                    let min = lk.len().min(kb.len());
+                    return lk[..min] == kb[..min];
+                }
+                Node::Inner4 {
+                    prefix,
+                    keys,
+                    children,
+                    n,
+                } => {
+                    if !kb[depth..].starts_with(prefix) {
+                        // diverge: nem a path existente é prefixo de key nem key
+                        // é prefixo dela (a não ser que key esgote DENTRO do
+                        // prefixo — caso abaixo)
+                        if kb.len() > depth && prefix.len() > kb.len() - depth {
+                            let seg = &kb[depth..];
+                            return prefix.starts_with(seg);
+                        }
+                        return false;
+                    }
+                    depth += prefix.len();
+                    if depth >= kb.len() {
+                        // key esgota exatamente onde começa um nó interno →
+                        // key é prefixo de todas as chaves abaixo (que continuam)
+                        return true;
+                    }
+                    let b = kb[depth];
+                    depth += 1;
+                    let mut found = None;
+                    for i in 0..*n as usize {
+                        if keys[i] == b {
+                            found = children[i].as_ref();
+                            break;
+                        }
+                    }
+                    node = match found {
+                        Some(c) => c,
+                        None => return false,
+                    };
+                }
+                Node::Inner16 {
+                    prefix,
+                    keys,
+                    children,
+                    n,
+                } => {
+                    if !kb[depth..].starts_with(prefix) {
+                        if kb.len() > depth && prefix.len() > kb.len() - depth {
+                            let seg = &kb[depth..];
+                            return prefix.starts_with(seg);
+                        }
+                        return false;
+                    }
+                    depth += prefix.len();
+                    if depth >= kb.len() {
+                        return true;
+                    }
+                    let b = kb[depth];
+                    depth += 1;
+                    let idx = find_child_byte16(keys, *n, b);
+                    node = match idx.and_then(|i| children[i].as_ref()) {
+                        Some(c) => c,
+                        None => return false,
+                    };
+                }
+                Node::Inner48 {
+                    prefix,
+                    keys,
+                    children,
+                    ..
+                } => {
+                    if !kb[depth..].starts_with(prefix) {
+                        if kb.len() > depth && prefix.len() > kb.len() - depth {
+                            let seg = &kb[depth..];
+                            return prefix.starts_with(seg);
+                        }
+                        return false;
+                    }
+                    depth += prefix.len();
+                    if depth >= kb.len() {
+                        return true;
+                    }
+                    let b = kb[depth] as usize;
+                    depth += 1;
+                    let idx = keys[b];
+                    if idx == 0 {
+                        return false;
+                    }
+                    node = match children[idx as usize - 1].as_ref() {
+                        Some(c) => c,
+                        None => return false,
+                    };
+                }
+                Node::Inner256 {
+                    prefix,
+                    children,
+                    ..
+                } => {
+                    if !kb[depth..].starts_with(prefix) {
+                        if kb.len() > depth && prefix.len() > kb.len() - depth {
+                            let seg = &kb[depth..];
+                            return prefix.starts_with(seg);
+                        }
+                        return false;
+                    }
+                    depth += prefix.len();
+                    if depth >= kb.len() {
+                        return true;
+                    }
+                    let b = kb[depth] as usize;
+                    depth += 1;
+                    node = match children[b].as_ref() {
+                        Some(c) => c,
+                        None => return false,
+                    };
+                }
+            }
+        }
+    }
+
     pub fn scan_prefix(&self, prefix: &str) -> Vec<(String, u64)> {
         self.scan_prefix_stats(prefix).0
     }
@@ -1187,6 +1332,35 @@ mod tests {
             );
         }
         assert_eq!(art.scan_prefix("k").len(), 50);
+    }
+
+    #[test]
+    fn art_prefix_key_detection() {
+        // Regra 4 (P1-7): `has_prefix_conflict` detecta prefix-key ANTES do
+        // insert corromper o índice. Chaves fixed-width (`k{i:03}`) nunca
+        // conflitam; uma chave que é prefixo de outra conflita nas duas ordens.
+        let mut art = ArtIndex::new();
+        assert!(!art.has_prefix_conflict("k000")); // árvore vazia
+        art.insert("k000", 0);
+        assert!(!art.has_prefix_conflict("k000")); // overwrite — NÃO é conflito
+        assert!(art.has_prefix_conflict("k000/x")); // "k000" é prefixo da nova
+        assert!(art.has_prefix_conflict("k00")); // nova é prefixo de "k000"
+        assert!(!art.has_prefix_conflict("k001"));
+        assert!(!art.has_prefix_conflict("k000")); // chave exata, sem conflito
+
+        // travessia profunda: prefixo de uma chave aninhada
+        art.insert("k010", 1);
+        art.insert("k010/ab", 2);
+        assert!(art.has_prefix_conflict("k010")); // "k010" é prefixo de "k010/ab"
+        assert!(art.has_prefix_conflict("k010/a"));
+        assert!(!art.has_prefix_conflict("k010/ac"));
+        assert!(!art.has_prefix_conflict("k01"));
+        // detecção é sobre o ESTADO PRÉ-INSERT: chaves conflitantes nunca são
+        // gravadas (o insert de prefix-key corrompe a árvore — a guarda na
+        // borda do engine impede). Integridade verificada nas chaves válidas.
+        assert_eq!(art.get("k000"), Some(0));
+        assert_eq!(art.get("k010/ab"), Some(2));
+        assert_eq!(art.len, 3);
     }
 }
 

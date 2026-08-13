@@ -44,7 +44,9 @@ Apache-2.0**. OS interop via byte-identical NMD1 and TKLV formats.
 3. **`f32::sqrt` does NOT exist in core** for that target — use `sqrt_f32`
    (Newton, in `sgdb.rs`) or `libm` (not in this crate).
 4. **ART does not support prefix keys** — keys where one is a prefix of another
-   break silently; use fixed-width suffixes.
+   break silently; use fixed-width suffixes. **Hardened (P1-7)**: `ArtIndex::
+   has_prefix_conflict` + guards in `engine::put`/`engine::associate` reject a
+   prefix-key with `SgdbError::Invalid` BEFORE writing (no more silent loss).
 5. **Formats are contracts** — NMD1 (`memory_doc.rs`) and TKLV (`tickv.rs`) are
    byte-identical to the OS; do NOT change encode/decode/layout without
    updating the OS.

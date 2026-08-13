@@ -1524,6 +1524,45 @@ mod tests {
         assert!(tiny.len() <= 1);
     }
 
+    // ── P1-7: prefix-key rejeitado na borda da API ──
+
+    #[test]
+    fn prefix_key_rejected_at_api_boundary() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let emb = vec![1.0f32, -1.0, 1.0, -1.0];
+        db.remember_semantic("k", "texto", &emb).unwrap();
+        // "md/L4/k" é prefixo de "md/L4/kx" → rejeita (regra 4)
+        let e = db.remember_semantic("kx", "texto2", &emb).unwrap_err();
+        assert!(matches!(e, SgdbError::Invalid(_)));
+        // ordem inversa: nova chave é prefixo da existente → rejeita
+        let mut db2 = Sgdb::open(InMemory::new()).unwrap();
+        db2.remember_semantic("kx", "texto2", &emb).unwrap();
+        let e = db2.remember_semantic("k", "texto", &emb).unwrap_err();
+        assert!(matches!(e, SgdbError::Invalid(_)));
+        // overwrite da MESMA chave continua válido (não é prefix-key)
+        db.remember_semantic("k", "texto-novo", &emb).unwrap();
+        let hits = db.recall(&emb, 5).unwrap();
+        assert!(hits.iter().any(|h| h.key.contains("/L4/k")));
+        // chaves não-prefixo (ex: `ts/` hex fixo, exchanges) nunca conflitam
+        db.remember_exchange("user", "resp").unwrap();
+        db.remember_fact("fato", 42).unwrap();
+    }
+
+    #[test]
+    fn relation_prefix_key_rejected() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        use crate::memory_doc::RelationKind;
+        db.associate("md/L4/a", RelationKind::Causes, "md/L4/b").unwrap();
+        // "rel/causes/md/L4/a#md/L4/b" é prefixo de "…#md/L4/bc" → rejeita
+        let e = db
+            .associate("md/L4/a", RelationKind::Causes, "md/L4/bc")
+            .unwrap_err();
+        assert!(matches!(e, SgdbError::Invalid(_)));
+        // mesma relação (idempotente) continua ok
+        db.associate("md/L4/a", RelationKind::Causes, "md/L4/b").unwrap();
+        assert_eq!(db.causes("md/L4/a"), vec!["md/L4/b".to_string()]);
+    }
+
     // ── Index/storage consistency: overwrite + determinism (maturation P2) ──
 
     #[test]
@@ -1546,7 +1585,8 @@ mod tests {
         let mut db = Sgdb::open(InMemory::new()).unwrap();
         for i in 0..20 {
             let emb = [1.0, -1.0, (i as f32 - 10.0) / 10.0, -1.0];
-            db.remember_semantic(&format!("d{i}"), &format!("doc {i}"), &emb).unwrap();
+            // chave fixed-width (regra 4: `d1` seria prefixo de `d10`…`d19`)
+            db.remember_semantic(&format!("d{i:02}"), &format!("doc {i}"), &emb).unwrap();
         }
         let q = [1.0, -1.0, 0.0, -1.0];
         let a = db.recall(&q, 10).unwrap();
@@ -1629,7 +1669,8 @@ mod tests {
         };
         let mut db = Sgdb::open(InMemory::new()).unwrap();
         for i in 0..2000 {
-            db.remember_semantic(&format!("d{i}"), &format!("doc {i}"), &emb16(i as u64))
+            // fixed-width (regra 4: `d1` seria prefixo de `d10`…`d1999`)
+            db.remember_semantic(&format!("d{i:04}"), &format!("doc {i}"), &emb16(i as u64))
                 .unwrap();
         }
         let mut exact_small = 0usize;
@@ -2744,7 +2785,7 @@ mod tests {
         assert_eq!(db.metrics().storage_recoveries, 1);
         assert_eq!(db.metrics().index_rebuilds, 1);
 
-        let mut doc = MemoryDoc::new(MemoryLayer::L4Semantic, "k", vec![1, 2, 3]);
+        let mut doc = MemoryDoc::new(MemoryLayer::L4Semantic, "k1", vec![1, 2, 3]);
         doc.bitvec = Some(quantize_f32(&[0.1, 0.2]));
         db.put(doc).unwrap();
         db.remember_semantic("k2", "text", &[0.5, 0.5]).unwrap();

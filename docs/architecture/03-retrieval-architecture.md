@@ -40,6 +40,10 @@ under this key", BQ answers "what is most similar to this", Graph answers
   becomes a layer/namespace query. This is correct and **should not change**
   (review P0: don't touch ART).
 - Inherited limitation: prefix keys unsupported (fixed-width suffixes).
+  **Hardened (P1-7)**: `ArtIndex::has_prefix_conflict` + guards in
+  `engine::put` / `engine::associate` reject a key that is a prefix of (or
+  whose prefix is) an existing key with `SgdbError::Invalid` BEFORE writing —
+  the silent corruption (short key becomes unreachable) is now a loud error.
 
 ## 3. Semantic retrieval (BQ) — honest framing
 

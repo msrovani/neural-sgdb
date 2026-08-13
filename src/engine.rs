@@ -222,6 +222,15 @@ impl AiosDatabaseEngine {
 
         let id = NEXT_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         let sk = doc.storage_key();
+        // Regra 4: ART não suporta prefix-key (chave nova que é prefixo de uma
+        // existente, ou vice-versa). Guarda na borda: rejeita ANTES de gravar
+        // storage/índice — caso contrário o insert_rec grava silenciosamente
+        // errado e a chave mais curta fica inacessível.
+        if self.art.has_prefix_conflict(&sk) {
+            return Err(SgdbError::Invalid(
+                "storage key is a prefix of an existing key (ART requires non-prefix keys)",
+            ));
+        }
         let blob = doc.encode();
 
         if is_ram_layer(doc.layer) {
@@ -709,11 +718,21 @@ impl AiosDatabaseEngine {
             return Err(SgdbError::Invalid("relation key contains reserved '#'"));
         }
         let sk = rel_storage_key(rel, a, b);
+        // Regra 4: as chaves ART `rel/…`/`rev/…` também não podem ser prefixo
+        // uma da outra (ex: `a="x"` e depois `a="x/y"`). Rejeita antes de
+        // gravar storage.
+        let fwd = rel_art_key(false, rel, a, b);
+        let rev = rel_art_key(true, rel, b, a);
+        if self.art.has_prefix_conflict(&fwd) || self.art.has_prefix_conflict(&rev) {
+            return Err(SgdbError::Invalid(
+                "relation key is a prefix of an existing key (ART requires non-prefix keys)",
+            ));
+        }
         // [fmt u8] = 0 — metadados futuros (created/node/confidence) entram
         // como versões posteriores sem quebrar o decode
         self.storage.put(&sk, &[0])?;
-        self.art.insert(&rel_art_key(false, rel, a, b), 0);
-        self.art.insert(&rel_art_key(true, rel, b, a), 0);
+        self.art.insert(&fwd, 0);
+        self.art.insert(&rev, 0);
         Ok(())
     }
 
