@@ -49,6 +49,11 @@ All notable changes to this project. Format based on
   truncation safety on every prefix of a valid encoding, and
   corrupt-magic/version → `Err`, never panic. Post-audit regression pass:
   full matrix green (bughunt oracle #1–#11 re-verified).
+- **MCP health/validate tools (P2-3 surface)**: `examples/mcp_server.rs` now
+  exposes 2 read-only tools — `health` (observable `HealthReport`: backend,
+  node_id, storage probe, doc/BQ/RAM counts, open conflicts) and `validate`
+  (integrity issues aggregated from `Sgdb::validate`; empty = healthy) — so
+  agents monitoring the DB get immediate observability over MCP.
 
 ### P0 — Hardening & tooling (delivered 2026-08-13)
 - **Docs aligned to v1.0.0**: README, docs/api.md, CHANGELOG, MCP

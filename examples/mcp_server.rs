@@ -256,7 +256,15 @@ fn main() {
                          "a":{"type":"string"},
                          "b":{"type":"string"},
                          "target":{"type":"string","description":"Chave nova (vazia = gerada)"}},
-                       "required":["a","b"]}}
+                       "required":["a","b"]}},
+                    {"name":"health",
+                     "description":"Estado observavel do banco: backend, node_id, sonda de storage, contagens (docs/BQ/RAM) e conflitos abertos.",
+                     "inputSchema":{"type":"object","properties":{}},
+                     "annotations":{"readOnlyHint":true}},
+                    {"name":"validate",
+                     "description":"Integridade: varre storage md/, decodifica NMD1, cruza ART/BQ e detecta side-tables orfas. Vazio = saudavel; cada issue = key + descricao.",
+                     "inputSchema":{"type":"object","properties":{}},
+                     "annotations":{"readOnlyHint":true}}
                 ]}}));
             }
             "resources/list" => {
@@ -518,6 +526,27 @@ fn main() {
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
                         }
+                    }
+                    "health" => {
+                        let h = db.health();
+                        send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                            "content":[{"type":"text","text":serde_json::to_string_pretty(&json!({
+                                "backend": h.backend, "node_id": h.node_id,
+                                "storage_ok": h.storage_ok, "doc_count": h.doc_count,
+                                "bq_len": h.bq_len, "ram_len": h.ram_len,
+                                "open_conflicts": h.open_conflicts})).unwrap_or_default()}],
+                            "isError":false}}));
+                    }
+                    "validate" => {
+                        let issues = db.validate();
+                        let text = if issues.is_empty() {
+                            "banco saudavel (nenhum issue de integridade)".into()
+                        } else {
+                            issues.iter().map(|i| format!("[{}] {}", i.key, i.message))
+                                .collect::<Vec<_>>().join("\n")
+                        };
+                        send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                            "content":[{"type":"text","text":text}],"isError":false}}));
                     }
                     _ => send(&error_response(&id, -32602, "Unknown tool")),
                 }
