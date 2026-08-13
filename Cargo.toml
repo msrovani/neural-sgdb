@@ -24,6 +24,10 @@ required-features = ["p2p"]
 name = "mesh_simulation"
 required-features = ["p2p"]
 
+[[example]]
+name = "signed_peer"
+required-features = ["p2p"]
+
 # Exemplos que dependem de backend de arquivo (FileStorage/TickvFile):
 # sem `file-storage` o crate roda no_std/no-file — estes exemplos não são
 # compilados (nem em `cargo test --no-default-features`).

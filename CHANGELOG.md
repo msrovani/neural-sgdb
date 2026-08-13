@@ -54,6 +54,12 @@ All notable changes to this project. Format based on
   node_id, storage probe, doc/BQ/RAM counts, open conflicts) and `validate`
   (integrity issues aggregated from `Sgdb::validate`; empty = healthy) — so
   agents monitoring the DB get immediate observability over MCP.
+- **Signed-transport example (ADR-0006)**: `examples/signed_peer.rs` (p2p)
+  is the documentary "where to plug real crypto" runnable — proves the full
+  reference flow end-to-end with the `HmacFnvSigner` demo: sign payload →
+  `SignedEnvelope` → verify → reject tampered payload → reject untrusted peer
+  via `TrustStore`, while `CrdtMemorySync` stays crypto-free. Production swap:
+  implement `trust::Signer` with Ed25519/HMAC at the transport boundary.
 
 ### P0 — Hardening & tooling (delivered 2026-08-13)
 - **Docs aligned to v1.0.0**: README, docs/api.md, CHANGELOG, MCP
