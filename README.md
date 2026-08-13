@@ -145,11 +145,10 @@ semantic recall, provide your own embeddings via `remember_semantic` / `recall`.
 
 ## Benchmarks
 
-`cargo run --release --example bench` — local environment numbers (AVX2):
-ART insert P50≈800ns / get P50≈200ns, BQ top-5 ≈160–175µs over 10k×1024 dims,
-CRC32 ≈2.6ms/1MiB, TickvFile fast-mount ≈2–3x under churn, recall@5 BQ coarse
-22%→35% as oversample 1×→16× (sign-BQ separates the cluster, not the exact
-member — the FP32 rescore re-ranks the candidates).
+`cargo run --release --example bench` — deterministic, reproducible numbers.
+See **[`BENCHMARKS.md`](BENCHMARKS.md)** for methodology, measured environment,
+per-run tables and honest caveats (this README no longer embeds raw numbers to
+avoid stale/unreproducible claims).
 
 ## Docs
 

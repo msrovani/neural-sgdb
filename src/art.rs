@@ -231,6 +231,27 @@ impl ArtIndex {
         self.scan_prefix_stats(prefix).0
     }
 
+    /// Página lexicográfica determinística de `scan_prefix` (P1-6).
+    ///
+    /// `scan_prefix` (heredado) devolve as folhas em ordem de travessia da
+    /// árvore, que NÃO é garantidamente lexicográfica (insert usa append sem
+    /// sort — ver `insert_rec`). Para paginar de forma estável, esta variante
+    /// ordena o resultado por chave e fatia `[offset, offset+limit)` — ordem
+    /// determinística entre chamadas (páginas não sobrepõem nem pulam itens).
+    pub fn scan_prefix_page(
+        &self,
+        prefix: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Vec<(String, u64)> {
+        let mut all = self.scan_prefix(prefix);
+        all.sort();
+        if offset >= all.len() {
+            return Vec::new();
+        }
+        all.into_iter().skip(offset).take(limit).collect()
+    }
+
     /// `scan_prefix` + contagem de nós visitados — diagnóstico/medição do
     /// pruning de range (#2): um prefixo estreito deve visitar O(match+path),
     /// não a árvore inteira.

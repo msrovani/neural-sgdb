@@ -33,6 +33,17 @@ pub const MAX_VLEN: usize = 1024 * 1024;
 /// `recall_impl` rejeitam com `SgdbError::Invalid` ANTES de alocar/gravar.
 pub const MAX_EMBEDDING_DIM: usize = 4096;
 
+/// Teto padrão de bytes para um bloco de contexto RAG (`rag_context`/`
+/// `rag_context_oversampled`, P1-6). Evita que um `k` alto materialize um
+/// prompt gigante sem teto — o contexto é truncado em fronteira de char.
+pub const MAX_RAG_CONTEXT_BYTES: usize = 8192;
+
+/// Tamanho padrão de página para `scan_prefix_page` (P1-6).
+///
+/// Paginar evita materializar todo o prefixo de uma vez; o caller percorre
+/// com `offset` crescente (ordem lexicográfica determinística).
+pub const DEFAULT_SCAN_PAGE_SIZE: usize = 100;
+
 #[cfg(test)]
 mod tests {
     use super::*;

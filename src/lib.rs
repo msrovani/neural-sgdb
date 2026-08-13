@@ -104,7 +104,7 @@ pub use memory_doc::{
 pub use sgdb::{Hit, HitProvenance, Sgdb};
 pub use storage::{InMemory, Storage, SgdbError};
 pub use limits::{
-    MAX_EMBEDDING_DIM, MAX_KLEN, MAX_VLEN,
+    DEFAULT_SCAN_PAGE_SIZE, MAX_EMBEDDING_DIM, MAX_KLEN, MAX_RAG_CONTEXT_BYTES, MAX_VLEN,
 };
 pub use tickv::{
     encode_ckpt, encode_record, fnv1a64, scan_volume, CKPT_KEY, MAGIC, record_size,

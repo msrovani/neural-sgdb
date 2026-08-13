@@ -2,6 +2,9 @@
 //!
 //! Run with: `cargo run --release --example bench`
 //!
+//! Numbers, methodology and the measured environment live in `BENCHMARKS.md`
+//! (the honest source of truth) — this binary only prints raw numbers.
+//!
 //! Measures:
 //! - ART: insert/get/scan_prefix latency (P50/P99)
 //! - BQ: recall top-k latency (P50/P99)
@@ -245,4 +248,5 @@ fn main() {
     println!("Sgdb 1k exchanges: {e2e:?} total");
 
     println!("\nBench completo. Kernel SIMD: {}", path_name());
+    println!("Metodologia, ambiente e números reproduzidos: BENCHMARKS.md (os valores aqui dependem do hardware local).");
 }

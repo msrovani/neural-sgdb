@@ -13,7 +13,7 @@ O(k) ART index, pluggable storage, CRDT sync (`p2p` feature), MCP server.
   `TickvFile`, …)
 - `Cargo.toml`: features `default=["std","file-storage","simd-runtime"]`, `p2p=["std"]`; dev-dep `serde_json` (examples only)
 - `docs/api.md`: API contract + migration map (Storage trait, seams, acceptance)
-- `examples/bench.rs`: measured benchmarks (ART P50/P99, BQ, recall vs FP32)
+- `examples/bench.rs`: measured benchmarks (ART P50/P99, BQ, recall vs FP32) — numbers/methodology in `BENCHMARKS.md`
 - `examples/mcp_server.rs`: MCP server for AI agents (JSON-RPC 2.0 stdio)
 
 ## Directory Map (Aggregated)

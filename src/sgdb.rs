@@ -850,33 +850,39 @@ impl Sgdb {
             .collect())
     }
 
-    /// Conveniência RAG com oversample explícito.
+    /// Conveniência RAG com oversample explícito (P1-6: teto de bytes).
     pub fn rag_context_oversampled(
         &mut self,
         query: &[f32],
         k: usize,
         oversample: usize,
     ) -> Result<String, SgdbError> {
-        let hits = self.recall_oversampled(query, k, oversample)?;
-        if hits.is_empty() {
-            return Ok(String::new());
-        }
-        let mut out = format!("[SGDB-RAG top-{}]\n", hits.len());
-        for (i, h) in hits.iter().enumerate() {
-            if h.text.is_empty() {
-                continue;
-            }
-            out.push_str(&format!("  #{}) d={:.4} {}\n", i + 1, h.dist, clamp(&h.text, 200)));
-        }
-        if out.len() <= "[SGDB-RAG top-".len() {
-            return Ok(String::new());
-        }
-        Ok(out)
+        self.rag_context_limited(query, k, oversample, crate::limits::MAX_RAG_CONTEXT_BYTES)
     }
 
     /// RAG context: recall + fetch payload + formato string pro prompt.
     pub fn rag_context(&mut self, query: &[f32], k: usize) -> Result<String, SgdbError> {
-        let hits = self.recall(query, k)?;
+        self.rag_context_limited(query, k, 0, crate::limits::MAX_RAG_CONTEXT_BYTES)
+    }
+
+    /// RAG context com teto explícito de bytes (`max_bytes`; P1-6).
+    ///
+    /// Mesmo recall de `rag_context`, mas o contexto acumulado NUNCA excede
+    /// `max_bytes` (truncado em fronteira de char, bughunt #7) — um `k` alto
+    /// não pode materializar um prompt gigante. `max_bytes=0` = sem teto
+    /// (comportamento legado). `oversample=0` usa a heurística padrão.
+    pub fn rag_context_limited(
+        &mut self,
+        query: &[f32],
+        k: usize,
+        oversample: usize,
+        max_bytes: usize,
+    ) -> Result<String, SgdbError> {
+        let hits = if oversample == 0 {
+            self.recall(query, k)?
+        } else {
+            self.recall_oversampled(query, k, oversample)?
+        };
         if hits.is_empty() {
             return Ok(String::new());
         }
@@ -885,7 +891,29 @@ impl Sgdb {
             if h.text.is_empty() {
                 continue;
             }
-            out.push_str(&format!("  #{}) d={:.4} {}\n", i + 1, h.dist, clamp(&h.text, 200)));
+            let line = format!("  #{}) d={:.4} {}\n", i + 1, h.dist, clamp(&h.text, 200));
+            if max_bytes != 0 && out.len() + line.len() > max_bytes {
+                // fecha no teto sem ultrapassar; para de acumular. A nota de
+                // truncamento só entra se ela própria couber (bughunt: header
+                // já consumiu budget — não pode estourar ao anotar).
+                let note = "  … (contexto truncado por max_bytes)\n";
+                if max_bytes != 0 && out.len() + note.len() <= max_bytes {
+                    out.push_str(note);
+                }
+                break;
+            }
+            out.push_str(&line);
+        }
+        // tetos minúsculos: o próprio header pode exceder max_bytes (ex: 1).
+        // Garante o contrato "nunca excede" truncando em fronteira de char.
+        if max_bytes != 0 && out.len() > max_bytes {
+            let cut = out
+                .char_indices()
+                .take_while(|(i, _)| *i < max_bytes)
+                .map(|(i, _)| i)
+                .last()
+                .unwrap_or(0);
+            out.truncate(cut);
         }
         if out.len() <= "[SGDB-RAG top-".len() {
             return Ok(String::new());
@@ -1216,6 +1244,20 @@ impl Sgdb {
         Ok(self.engine.art.scan_prefix(prefix))
     }
 
+    /// Página de `scan_prefix` com ordem lexicográfica determinística (P1-6).
+    ///
+    /// `offset` crescente (0, 100, 200, …) percorre o prefixo sem materializar
+    /// tudo de uma vez; `limit=0` ou `offset` além do fim devolve vazio.
+    /// `scan_prefix` (sem página) mantém a ordem de travessia da árvore.
+    pub fn scan_prefix_page(
+        &mut self,
+        prefix: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<(String, u64)>, SgdbError> {
+        Ok(self.engine.art.scan_prefix_page(prefix, offset, limit))
+    }
+
     /// Flush L0/L1 RAM → Storage.
     pub fn checkpoint(&mut self) -> Result<usize, SgdbError> {
         self.engine.checkpoint_l0l1()
@@ -1409,6 +1451,77 @@ mod tests {
         assert_eq!(l1.len(), 1);
         assert_eq!(l2.len(), 1);
         assert_eq!(l3.len(), 1);
+    }
+
+    // ── P1-6: paginação scan_prefix + teto rag_context ──
+
+    #[test]
+    fn scan_prefix_page_is_lexicographic_and_partitioning() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        // chaves de largura fixa (regra 4: ART não suporta prefix-key)
+        for i in 0..25 {
+            db.remember_fact(&format!("fato {:02}", i), i as u64 + 1).unwrap();
+        }
+        let all = db.scan_prefix("md/L3/").unwrap();
+        assert_eq!(all.len(), 25);
+
+        // scan_prefix (legado) pode vir em ordem de travessia da árvore;
+        // scan_prefix_page SEMPRE devolve ordem lexicográfica determinística.
+        let page1 = db.scan_prefix_page("md/L3/", 0, 10).unwrap();
+        let page2 = db.scan_prefix_page("md/L3/", 10, 10).unwrap();
+        let page3 = db.scan_prefix_page("md/L3/", 20, 10).unwrap();
+        assert_eq!(page1.len(), 10);
+        assert_eq!(page2.len(), 10);
+        assert_eq!(page3.len(), 5);
+        assert!(page1.windows(2).all(|w| w[0].0 < w[1].0));
+        assert!(page2.windows(2).all(|w| w[0].0 < w[1].0));
+        assert!(page3.windows(2).all(|w| w[0].0 < w[1].0));
+        // páginas não sobrepõem nem pulam itens
+        let mut joined: Vec<String> = page1
+            .into_iter()
+            .chain(page2)
+            .chain(page3)
+            .map(|(k, _)| k)
+            .collect();
+        joined.sort();
+        let mut expected: Vec<String> = all.iter().map(|(k, _)| k.clone()).collect();
+        expected.sort();
+        assert_eq!(joined, expected);
+
+        // limites: offset além do fim / limit 0 / offset+limit parciais
+        assert!(db.scan_prefix_page("md/L3/", 25, 10).unwrap().is_empty());
+        assert!(db.scan_prefix_page("md/L3/", 0, 0).unwrap().is_empty());
+        assert_eq!(db.scan_prefix_page("md/L3/", 23, 10).unwrap().len(), 2);
+        assert!(db.scan_prefix_page("md/Lx/", 0, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn rag_context_respects_max_bytes() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let emb = vec![1.0f32; 64];
+        for i in 0..5 {
+            let mut e = emb.clone();
+            e[i] = -1.0;
+            db.remember_semantic(&format!("k{:02}", i), &format!("resposta longa numero {:02} do banco", i), &e)
+                .unwrap();
+        }
+
+        let big = db.rag_context_limited(&emb, 5, 0, 210).unwrap();
+        assert!(big.len() <= 210);
+        assert!(big.contains("truncado por max_bytes"));
+        assert!(big.contains("#1"));
+
+        let huge = db.rag_context_limited(&emb, 5, 0, 0).unwrap();
+        assert!(huge.len() > 200);
+        assert!(!huge.contains("truncado por max_bytes"));
+
+        // default = MAX_RAG_CONTEXT_BYTES, nunca estoura
+        let dflt = db.rag_context(&emb, 5).unwrap();
+        assert!(dflt.len() <= crate::limits::MAX_RAG_CONTEXT_BYTES);
+
+        // teto apertado: ainda abre o header sem ultrapassar
+        let tiny = db.rag_context_limited(&emb, 5, 0, 1).unwrap();
+        assert!(tiny.len() <= 1);
     }
 
     // ── Index/storage consistency: overwrite + determinism (maturation P2) ──

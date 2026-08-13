@@ -124,12 +124,32 @@ impl Sgdb {
 
     // ---- RAG: recall + text fetch + formatted string ready for the prompt. ----
     pub fn rag_context(&mut self, query: &[f32], k: usize) -> Result<String, SgdbError>;
+    /// Tetos: `rag_context_limited(q, k, oversample, max_bytes)` — contexto
+    /// acumulado nunca excede `max_bytes` (0 = sem teto). Defaults:
+    /// `rag_context` usa `MAX_RAG_CONTEXT_BYTES` (8192); oversample 0 = padrão.
+    pub fn rag_context_limited(
+        &mut self,
+        query: &[f32],
+        k: usize,
+        oversample: usize,
+        max_bytes: usize,
+    ) -> Result<String, SgdbError>;
 
     // ---- facts (L3, ART by timestamp) ----
     pub fn remember_fact(&mut self, fact: &str, now: u64) -> Result<(), SgdbError>;
 
     // ---- key index (ART, O(k)) ----
     pub fn scan_prefix(&mut self, prefix: &str) -> Result<Vec<(String, u64)>, SgdbError>;
+    /// Página lexicográfica determinística (P1-6): `scan_prefix_page(prefix,
+    /// offset, limit)` — offset crescente (0, 100, …) sem materializar tudo.
+    /// Ordem garantida entre chamadas; `scan_prefix` legado NÃO garante
+    /// lexicográfica (ordem de travessia da ART).
+    pub fn scan_prefix_page(
+        &mut self,
+        prefix: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<(String, u64)>, SgdbError>;
 
     // ---- lifecycle ----
     pub fn checkpoint(&mut self) -> Result<(), SgdbError>;
