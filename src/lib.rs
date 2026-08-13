@@ -87,6 +87,9 @@ pub mod lifecycle;
 mod engine;
 mod sgdb;
 
+#[cfg(test)]
+mod wire_fuzz;
+
 pub use art::ArtIndex;
 pub use bq::{
     hamming, hamming_path, quantize_f32, quantize_f32_centered, BqFlatIndex, MihIndex,

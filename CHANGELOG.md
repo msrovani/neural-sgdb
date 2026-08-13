@@ -39,6 +39,16 @@ All notable changes to this project. Format based on
   byte-identical content with fixed point. New p2p test
   `layered_ai_telepathy_mesh` + runnable `examples/mesh_simulation.rs`
   (`--features p2p`). API unchanged (tests + example only).
+- **Central wire-codec fuzz harness (P2-4)**: `src/wire_fuzz.rs` closes the
+  "fuzz-tested" promise from `docs/api.md` with ONE deterministic LCG harness
+  (zero deps) over all 8 wire types — NMD1 (`MemoryDoc`), MDR1
+  (`MemoryRecord`), MDM1 (`MemoryMeta`), CFL1 (`ConflictRecord`), MDLT
+  (`MemoryDelta`), MSNP (`MemorySnapshot`), `SignedEnvelope`, `CrdtState`
+  (last 4 p2p-gated). Properties per type: never-panic on random bytes
+  (lengths 0..128 ×8 rounds), `decode∘encode` roundtrip (500 LCG samples),
+  truncation safety on every prefix of a valid encoding, and
+  corrupt-magic/version → `Err`, never panic. Post-audit regression pass:
+  full matrix green (bughunt oracle #1–#11 re-verified).
 
 ### P0 — Hardening & tooling (delivered 2026-08-13)
 - **Docs aligned to v1.0.0**: README, docs/api.md, CHANGELOG, MCP

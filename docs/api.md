@@ -92,7 +92,10 @@ impl Sgdb {
     /// CFL1, MDLT/MSNP/SignedEnvelope/CrdtState), ART-vs-BTreeMap differential
     /// (fixed-width keys — no prefix relationship), and the LWW semilattice
     /// laws of `VectorClock::merge` (associative, commutative, idempotent,
-    /// monotonic).
+    /// monotonic). **P2-4**: `src/wire_fuzz.rs` is a single LCG harness over
+    /// all 8 wire types (never-panic on random bytes, roundtrip, truncation-
+    /// safe prefixes, corrupt magic/version rejected) — the centralized
+    /// "fuzz-tested" gate.
     pub fn remember_semantic(&mut self, key: &str, text: &str, emb: &[f32]) -> Result<(), SgdbError>;
 
     /// L4 recall: coarse BQ top-k -> FP32 rescore -> fine top-k.
