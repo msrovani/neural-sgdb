@@ -42,9 +42,9 @@ pub const MAGIC: &[u8; 4] = b"TKLV";
 pub const MAGIC_PREFIX: &[u8; 3] = b"TKL";
 /// Tamanho do header fixo (magic + klen + vlen + crc).
 pub const HEADER: usize = 16;
-/// Limites do leitor (paridade com `recover()` do OS).
-pub const MAX_KLEN: usize = 4096;
-pub const MAX_VLEN: usize = 1024 * 1024;
+/// Limites do leitor (paridade com `recover()` do OS). Centralizados em
+/// `crate::limits` (P1-3) — re-export preserva a API pública de `tickv`.
+pub use crate::limits::{MAX_KLEN, MAX_VLEN};
 /// Canonical checkpoint key.
 pub const CKPT_KEY: &str = "sys/tickv_ckpt";
 

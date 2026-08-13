@@ -1425,3 +1425,129 @@ mod tests {
         assert!(MemoryRecord::decode(b"XXXX").is_err());
     }
 }
+
+// ── P1-4: property tests decode∘encode (NMD1) + merge associativo ──
+// Harness LCG determinístico (zero deps; decisão P1-4). Estratégias respeitam
+// as invariantes do wire:
+// - VectorClock: overflow NÃO entra no NMD1 (só os 72B fixos) → geração usa
+//   só os 8 slots fixos (node_id < 8), senão roundtrip não é igual.
+// - Meta: encode usa `as u16` (sem try_encode) → strings curtas; confidence/
+//   importance nunca NaN (PartialEq quebra em NaN).
+#[cfg(test)]
+mod prop_tests {
+    use super::*;
+    use alloc::format;
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    fn rng(state: &mut u64) -> u64 {
+        *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *state >> 32
+    }
+
+    fn doc(state: &mut u64) -> MemoryDoc {
+        let layer = MemoryLayer::from_u8((rng(state) % 8) as u8).unwrap();
+        let payload_len = (rng(state) % 64) as usize;
+        let payload: Vec<u8> = (0..payload_len).map(|_| rng(state) as u8).collect();
+        let mut d = MemoryDoc::new(layer, "k", payload);
+        // node_id < 8 (slots fixos) — overflow não viaja no NMD1
+        d.clock.tick((rng(state) % 8) as u8);
+        d.bitvec = Some(vec![rng(state), rng(state), 1]);
+        d
+    }
+
+    #[test]
+    fn prop_doc_roundtrip_lcg() {
+        let mut state = 0xC0FF_EE00_5EED_0001u64;
+        for _ in 0..2000 {
+            let d = doc(&mut state);
+            let dec = MemoryDoc::decode(&d.encode()).unwrap();
+            assert_eq!(dec, d);
+        }
+    }
+
+    #[test]
+    fn prop_record_roundtrip_lcg() {
+        let mut state = 0xC0FF_EE00_5EED_0002u64;
+        for _ in 0..2000 {
+            let d = doc(&mut state);
+            let state_u8 = (rng(&mut state) % 5) as u8;
+            let has_val = rng(&mut state).is_multiple_of(2);
+            let validity = if has_val {
+                Some((rng(&mut state), rng(&mut state)))
+            } else {
+                None
+            };
+            let rec = MemoryRecord::new(d, MemoryState::from_u8(state_u8).unwrap(), validity);
+            let dec = MemoryRecord::decode(&rec.encode()).unwrap();
+            assert_eq!(dec, rec);
+        }
+    }
+
+    #[test]
+    fn prop_meta_roundtrip_lcg() {
+        let mut state = 0xC0FF_EE00_5EED_0003u64;
+        for _ in 0..2000 {
+            let id_len = 1 + (rng(&mut state) % 16) as usize;
+            let id: String = (0..id_len).map(|_| format!("{:x}", rng(&mut state) % 16)).collect();
+            let m = MemoryMeta {
+                memory_id: id.clone(),
+                version_id: id,
+                source: rng(&mut state) as u8,
+                confidence: (rng(&mut state) % 10_001) as f32 / 10_000.0,
+                importance: (rng(&mut state) % 10_001) as f32 / 10_000.0,
+                created_tick: rng(&mut state),
+                parent_ids: Vec::new(),
+                clock_overflow: Vec::new(),
+                last_reinforced: 0,
+            };
+            let dec = MemoryMeta::decode(&m.encode()).unwrap();
+            assert_eq!(dec, m);
+        }
+    }
+
+    fn build_clock(state: &mut u64) -> VectorClock {
+        let mut c = VectorClock::new();
+        let n = rng(state) % 8;
+        for _ in 0..n {
+            c.set_counter((rng(state) % 8) as u8, rng(state));
+        }
+        c
+    }
+
+    // LWW join (max element-wise) — associativo, comutativo, idempotente,
+    // monotônico. Propriedades algébricas de semilattice — chave para a
+    // convergência do CRDT.
+    #[test]
+    fn prop_clock_merge_is_lww_semilattice() {
+        let mut state = 0xC0FF_EE00_5EED_0004u64;
+        for _ in 0..2000 {
+            let a = build_clock(&mut state);
+            let b = build_clock(&mut state);
+            let c = build_clock(&mut state);
+            // associativo: merge(a, merge(b, c)) == merge(merge(a, b), c)
+            let mut left = a.clone();
+            let mut bc = b.clone();
+            bc.merge(&c);
+            left.merge(&bc);
+            let mut right = a.clone();
+            right.merge(&b);
+            right.merge(&c);
+            assert_eq!(left, right, "associatividade");
+            // comutativo
+            let mut ab = a.clone();
+            ab.merge(&b);
+            let mut ba = b.clone();
+            ba.merge(&a);
+            assert_eq!(ab, ba, "comutatividade");
+            // idempotente
+            let mut aa = a.clone();
+            aa.merge(&a);
+            assert_eq!(aa, a, "idempotência");
+            // monotônico: merge nunca decresce
+            let mut ab2 = a.clone();
+            ab2.merge(&b);
+            assert!(a.happens_before(&ab2) || a == ab2, "monotonicidade");
+        }
+    }
+}

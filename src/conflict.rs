@@ -72,9 +72,13 @@ fn rd_u32(data: &[u8], off: usize) -> Option<u32> {
         .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
 }
 
-fn push_str(out: &mut Vec<u8>, s: &str) {
+fn push_str(out: &mut Vec<u8>, s: &str) -> Result<(), &'static str> {
+    if s.len() > u16::MAX as usize {
+        return Err("cfl str too long");
+    }
     out.extend_from_slice(&(s.len() as u16).to_le_bytes());
     out.extend_from_slice(s.as_bytes());
+    Ok(())
 }
 
 fn read_str(data: &[u8], off: &mut usize) -> Result<String, &'static str> {
@@ -89,32 +93,65 @@ fn read_str(data: &[u8], off: &mut usize) -> Result<String, &'static str> {
 }
 
 impl ConflictRecord {
-    pub fn encode(&self) -> Vec<u8> {
+    /// Encode truncating-seguro (P1-2): valida TODOS os campos de comprimento
+    /// antes de qualquer cast (`u16`/`u8`/`u32`). Um campo que não cabe no
+    /// wire retorna `Err` — nunca trunca silenciosamente (o decode leria um
+    /// comprimento diferente e rejeitaria/desalinharia o stream).
+    pub fn try_encode(&self) -> Result<Vec<u8>, &'static str> {
+        if self.conflict_id.len() > u16::MAX as usize
+            || self.subject.len() > u16::MAX as usize
+            || self.candidates.len() > u16::MAX as usize
+            || self.nodes.len() > u8::MAX as usize
+            || self.records.len() > u8::MAX as usize
+        {
+            return Err("cfl field count overflow");
+        }
+        for c in &self.candidates {
+            if c.len() > u16::MAX as usize {
+                return Err("cfl candidate too long");
+            }
+        }
+        if let Some(w) = &self.resolved_winner {
+            if w.len() > u16::MAX as usize {
+                return Err("cfl winner too long");
+            }
+        }
+        for r in &self.records {
+            if r.len() > u32::MAX as usize {
+                return Err("cfl record too long");
+            }
+        }
         let mut out = Vec::with_capacity(24 + self.subject.len() + self.candidates.len() * 34);
         out.extend_from_slice(CFL_MAGIC);
         out.push(CFL_VERSION);
         out.push(self.status as u8);
         out.push(self.resolved_winner.is_some() as u8);
         out.extend_from_slice(&self.created_tick.to_le_bytes());
-        push_str(&mut out, &self.conflict_id);
-        push_str(&mut out, &self.subject);
+        push_str(&mut out, &self.conflict_id)?;
+        push_str(&mut out, &self.subject)?;
         out.extend_from_slice(&(self.candidates.len() as u16).to_le_bytes());
         for c in &self.candidates {
-            push_str(&mut out, c);
+            push_str(&mut out, c)?;
         }
         out.push(self.nodes.len() as u8);
         for n in &self.nodes {
             out.push(*n);
         }
         if let Some(w) = &self.resolved_winner {
-            push_str(&mut out, w);
+            push_str(&mut out, w)?;
         }
         out.push(self.records.len() as u8);
         for r in &self.records {
             out.extend_from_slice(&(r.len() as u32).to_le_bytes());
             out.extend_from_slice(r);
         }
-        out
+        Ok(out)
+    }
+
+    /// Encode para uso interno (panic em overflow — os call-sites de
+    /// produção devem usar [`ConflictRecord::try_encode`] e propagar erro).
+    pub fn encode(&self) -> Vec<u8> {
+        self.try_encode().expect("conflict wire overflow")
     }
 
     /// Decode bounds-checked — nunca panics em entrada malformada/truncada.
@@ -211,7 +248,9 @@ pub fn generate_conflict_id(subject: &str, candidates: &mut Vec<String>) -> Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::format;
     use alloc::vec;
+    use alloc::vec::Vec;
 
     fn sample() -> ConflictRecord {
         ConflictRecord {
@@ -282,6 +321,86 @@ mod tests {
         let full = sample().encode();
         for cut in 0..full.len() {
             let _ = ConflictRecord::decode(&full[..cut]);
+        }
+    }
+
+    #[test]
+    fn try_encode_rejects_overflow_no_silent_truncation() {
+        // P1-2: campo que não cabe no wire → Err (nunca cast silencioso)
+        let base = sample();
+        // subject > u16::MAX
+        let mut big = base.clone();
+        big.subject = "x".repeat(u16::MAX as usize + 1);
+        assert!(big.try_encode().is_err());
+        assert!(base.try_encode().is_ok());
+        // candidates > u16::MAX
+        let mut many = base.clone();
+        many.candidates = (0..=u16::MAX as usize).map(|i| format!("c{i}")).collect();
+        assert!(many.try_encode().is_err());
+        // records > u8::MAX
+        let mut many_recs = base.clone();
+        many_recs.records = vec![vec![0u8; 4]; u8::MAX as usize + 1];
+        assert!(many_recs.try_encode().is_err());
+        // nodes > u8::MAX
+        let mut many_nodes = base.clone();
+        many_nodes.nodes = (0..=u8::MAX).collect();
+        assert!(many_nodes.try_encode().is_err());
+    }
+}
+
+// ── P1-4: property test decode∘encode (CFL1) ────────────────────────
+// Harness LCG determinístico (zero deps; decisão P1-4). `records` preservam a
+// ordem (decode∘encode é bijective) — tamanhos pequenos respeitam os limites
+// de `try_encode`. O `conflict_id` é gerado pelo engine (`generate_conflict_id`)
+// para não depender de strings arbitrariamente formatadas.
+#[cfg(test)]
+mod prop_tests {
+    use super::*;
+    use alloc::vec::Vec;
+
+    fn rng(state: &mut u64) -> u64 {
+        *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *state >> 32
+    }
+
+    fn record(state: &mut u64) -> ConflictRecord {
+        let n_cand = (rng(state) % 5) as usize;
+        let mut candidates: Vec<String> = (0..n_cand).map(|i| alloc::format!("vid-{i}")).collect();
+        let nodes: Vec<u8> = (0..(rng(state) % 5) as usize).map(|i| i as u8 + 1).collect();
+        let subject = alloc::format!("md/L4/subj{}", rng(state) % 4);
+        let conflict_id = generate_conflict_id(&subject, &mut candidates);
+        let resolved = rng(state).is_multiple_of(2);
+        let winner = if resolved && !candidates.is_empty() {
+            Some(candidates[0].clone())
+        } else {
+            None
+        };
+        let records: Vec<Vec<u8>> = (0..(rng(state) % 8) as usize)
+            .map(|_| {
+                let len = (rng(state) % 8) as usize;
+                (0..len).map(|_| rng(state) as u8).collect()
+            })
+            .collect();
+        ConflictRecord {
+            conflict_id,
+            subject,
+            candidates,
+            nodes,
+            created_tick: rng(state),
+            status: if resolved { ConflictStatus::Resolved } else { ConflictStatus::Open },
+            resolved_winner: winner,
+            records,
+        }
+    }
+
+    #[test]
+    fn prop_conflict_roundtrip_lcg() {
+        let mut state = 0xC0FF_EE00_5EED_000Au64;
+        for _ in 0..2000 {
+            let rec = record(&mut state);
+            let enc = rec.try_encode().unwrap();
+            let dec = ConflictRecord::decode(&enc).unwrap();
+            assert_eq!(dec, rec);
         }
     }
 }

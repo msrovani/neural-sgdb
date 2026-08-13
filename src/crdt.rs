@@ -51,13 +51,19 @@ pub struct MemoryDelta {
 }
 
 impl MemoryDelta {
-    pub fn encode(&self) -> Vec<u8> {
+    /// Encode truncating-seguro (P1-2): valida counts e lengths antes de
+    /// qualquer cast — um campo que não cabe no wire retorna `Err`.
+    pub fn try_encode(&self) -> Result<Vec<u8>, &'static str> {
         let mut out = Vec::new();
         out.extend_from_slice(DELTA_MAGIC);
         out.push(1); // versão do formato
-        encode_versions(&mut out, &self.base);
-        encode_records(&mut out, &self.records);
-        out
+        encode_versions(&mut out, &self.base)?;
+        encode_records(&mut out, &self.records)?;
+        Ok(out)
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        self.try_encode().expect("delta wire overflow")
     }
 
     pub fn decode(data: &[u8]) -> Result<Self, &'static str> {
@@ -86,13 +92,18 @@ pub struct MemorySnapshot {
 }
 
 impl MemorySnapshot {
-    pub fn encode(&self) -> Vec<u8> {
+    /// Encode truncating-seguro (P1-2) — ver [`MemoryDelta::try_encode`].
+    pub fn try_encode(&self) -> Result<Vec<u8>, &'static str> {
         let mut out = Vec::new();
         out.extend_from_slice(SNAP_MAGIC);
         out.push(1);
-        encode_versions(&mut out, &self.versions);
-        encode_records(&mut out, &self.records);
-        out
+        encode_versions(&mut out, &self.versions)?;
+        encode_records(&mut out, &self.records)?;
+        Ok(out)
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        self.try_encode().expect("snapshot wire overflow")
     }
 
     pub fn decode(data: &[u8]) -> Result<Self, &'static str> {
@@ -112,12 +123,16 @@ impl MemorySnapshot {
 const DELTA_MAGIC: &[u8; 4] = b"MDLT";
 const SNAP_MAGIC: &[u8; 4] = b"MSNP";
 
-fn encode_versions(out: &mut Vec<u8>, vs: &[MemoryVersion]) {
+fn encode_versions(out: &mut Vec<u8>, vs: &[MemoryVersion]) -> Result<(), &'static str> {
+    if vs.len() > u16::MAX as usize {
+        return Err("versions too many");
+    }
     out.extend_from_slice(&(vs.len() as u16).to_le_bytes());
     for v in vs {
         out.push(v.node_id);
         out.extend_from_slice(&v.version.to_le_bytes());
     }
+    Ok(())
 }
 
 /// Bounds-checked — `None` em truncado (nunca panics).
@@ -136,13 +151,20 @@ fn decode_versions(data: &[u8], off: &mut usize) -> Option<Vec<MemoryVersion>> {
     Some(vs)
 }
 
-fn encode_records(out: &mut Vec<u8>, recs: &[MemoryRecord]) {
+fn encode_records(out: &mut Vec<u8>, recs: &[MemoryRecord]) -> Result<(), &'static str> {
+    if recs.len() > u16::MAX as usize {
+        return Err("records too many");
+    }
     out.extend_from_slice(&(recs.len() as u16).to_le_bytes());
     for r in recs {
         let enc = r.encode();
+        if enc.len() > u32::MAX as usize {
+            return Err("record too long");
+        }
         out.extend_from_slice(&(enc.len() as u32).to_le_bytes());
         out.extend_from_slice(&enc);
     }
+    Ok(())
 }
 
 /// Bounds-checked — `None` em truncado/inválido (nunca panics).
@@ -309,14 +331,22 @@ impl SignedEnvelope {
         }
     }
 
-    pub fn encode(&self) -> Vec<u8> {
+    /// Encode truncating-seguro (P1-2): payload/auth > u32::MAX → `Err`.
+    pub fn try_encode(&self) -> Result<Vec<u8>, &'static str> {
+        if self.payload.len() > u32::MAX as usize || self.auth.len() > u32::MAX as usize {
+            return Err("envelope field overflow");
+        }
         let mut out = Vec::with_capacity(9 + self.payload.len() + self.auth.len());
         out.push(self.node_id);
         out.extend_from_slice(&(self.payload.len() as u32).to_le_bytes());
         out.extend_from_slice(&(self.auth.len() as u32).to_le_bytes());
         out.extend_from_slice(&self.payload);
         out.extend_from_slice(&self.auth);
-        out
+        Ok(out)
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        self.try_encode().expect("envelope wire overflow")
     }
 
     /// Bounds-checked: `None` em input truncado/corrompido — nunca panics.
@@ -392,7 +422,11 @@ const CRDT_MAGIC: &[u8; 4] = b"CRDT";
 const CRDT_VERSION: u8 = 1;
 
 impl CrdtState {
-    pub fn encode(&self) -> Vec<u8> {
+    /// Encode truncating-seguro (P1-2): node_versions > u16::MAX → `Err`.
+    pub fn try_encode(&self) -> Result<Vec<u8>, &'static str> {
+        if self.node_versions.len() > u16::MAX as usize {
+            return Err("crdt node_versions overflow");
+        }
         let mut out = Vec::with_capacity(16 + self.node_versions.len() * 9);
         out.extend_from_slice(CRDT_MAGIC);
         out.push(CRDT_VERSION);
@@ -404,7 +438,11 @@ impl CrdtState {
             out.push(n);
             out.extend_from_slice(&v.to_le_bytes());
         }
-        out
+        Ok(out)
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        self.try_encode().expect("crdt wire overflow")
     }
 
     pub fn decode(data: &[u8]) -> Result<Self, &'static str> {
@@ -1102,6 +1140,34 @@ mod tests {
         assert!(MemoryDelta::decode(b"MDLT").is_err());
     }
 
+    #[test]
+    fn try_encode_rejects_wire_overflow() {
+        // P1-2: campos que não cabem no wire → Err (nunca cast silencioso)
+        // MemoryDelta: base/records > u16::MAX
+        let v = MemoryVersion { node_id: 1, version: 3 };
+        let many_vers = vec![v; u16::MAX as usize + 1];
+        let d = MemoryDelta { base: many_vers, records: Vec::new() };
+        assert!(d.try_encode().is_err());
+        let many_recs = vec![sample_record(); u16::MAX as usize + 1];
+        let d2 = MemoryDelta { base: Vec::new(), records: many_recs };
+        assert!(d2.try_encode().is_err());
+        // MemorySnapshot: versions > u16::MAX
+        let s = MemorySnapshot { versions: vec![v; u16::MAX as usize + 1], records: Vec::new() };
+        assert!(s.try_encode().is_err());
+        // SignedEnvelope: payload > u32::MAX (impraticável alocar 4GiB no
+        // teste — validação lógica: payload de 1 byte passa, erro só por len)
+        let ok_env = SignedEnvelope::new(1, vec![1u8; 8], vec![2u8; 8]);
+        assert!(ok_env.try_encode().is_ok());
+        // CrdtState: node_versions > u16::MAX
+        let st = CrdtState {
+            node_id: 1,
+            local_version: 0,
+            own_writes: 0,
+            node_versions: vec![(1, 1u64); u16::MAX as usize + 1],
+        };
+        assert!(st.try_encode().is_err());
+    }
+
     // ── P0-5: missing_after — faixa causal faltante para um peer ──────────
 
     #[test]
@@ -1627,5 +1693,100 @@ mod tests {
         assert_eq!(m.l2_text(1, "v3"), "terceira");
         // idempotente: segunda ronda aplica nada
         assert_eq!(m.round(0, false).unwrap(), 0);
+    }
+}
+
+// ── P1-4: property tests decode∘encode dos codecs CRDT (p2p) ────────
+// Harness LCG determinístico (zero deps; decisão P1-4). Respeita as
+// invariantes do wire (counts ≤ u16::MAX via try_encode; MemoryRecord usa
+// doc válido com clock nos slots fixos).
+#[cfg(all(test, feature = "p2p"))]
+mod prop_tests {
+    use super::*;
+    use crate::memory_doc::{MemoryDoc, MemoryState};
+    use alloc::vec::Vec;
+
+    fn rng(state: &mut u64) -> u64 {
+        *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *state >> 32
+    }
+
+    fn rec(state: &mut u64) -> MemoryRecord {
+        let payload: Vec<u8> = (0..(rng(state) % 50) as usize).map(|_| rng(state) as u8).collect();
+        let mut doc = MemoryDoc::new(MemoryLayer::L4Semantic, "k", payload);
+        doc.clock.tick((rng(state) % 8) as u8);
+        MemoryRecord::new(doc, MemoryState::Active, None)
+    }
+
+    fn versions(state: &mut u64, n: usize) -> Vec<MemoryVersion> {
+        (0..n)
+            .map(|_| MemoryVersion { node_id: (rng(state) % 8) as u8, version: rng(state) })
+            .collect()
+    }
+
+    #[test]
+    fn prop_delta_roundtrip_lcg() {
+        let mut state = 0xC0FF_EE00_5EED_0020u64;
+        for _ in 0..1000 {
+            let n = (rng(&mut state) % 8) as usize;
+            let recs: Vec<MemoryRecord> = (0..n).map(|_| rec(&mut state)).collect();
+            let n2 = (rng(&mut state) % 8) as usize;
+            let base = versions(&mut state, n2);
+            let d = MemoryDelta { base, records: recs };
+            let enc = d.try_encode().unwrap();
+            let dec = MemoryDelta::decode(&enc).unwrap();
+            assert_eq!(dec, d);
+        }
+    }
+
+    #[test]
+    fn prop_snapshot_roundtrip_lcg() {
+        let mut state = 0xC0FF_EE00_5EED_0021u64;
+        for _ in 0..1000 {
+            let n = (rng(&mut state) % 8) as usize;
+            let recs: Vec<MemoryRecord> = (0..n).map(|_| rec(&mut state)).collect();
+            let n2 = (rng(&mut state) % 8) as usize;
+            let versions = versions(&mut state, n2);
+            let s = MemorySnapshot { versions, records: recs };
+            let enc = s.try_encode().unwrap();
+            let dec = MemorySnapshot::decode(&enc).unwrap();
+            assert_eq!(dec, s);
+        }
+    }
+
+    #[test]
+    fn prop_envelope_roundtrip_lcg() {
+        let mut state = 0xC0FF_EE00_5EED_0022u64;
+        for _ in 0..1000 {
+            let payload: Vec<u8> = (0..(rng(&mut state) % 100) as usize)
+                .map(|_| rng(&mut state) as u8)
+                .collect();
+            let auth: Vec<u8> = (0..(rng(&mut state) % 100) as usize)
+                .map(|_| rng(&mut state) as u8)
+                .collect();
+            let e = SignedEnvelope::new(rng(&mut state) as u8, payload, auth);
+            let enc = e.try_encode().unwrap();
+            let (dec, _) = SignedEnvelope::decode(&enc).unwrap();
+            assert_eq!(dec, e);
+        }
+    }
+
+    #[test]
+    fn prop_crdt_state_roundtrip_lcg() {
+        let mut state = 0xC0FF_EE00_5EED_0023u64;
+        for _ in 0..1000 {
+            let nvs: Vec<(u8, u64)> = (0..(rng(&mut state) % 16) as usize)
+                .map(|_| ((rng(&mut state) % 8) as u8, rng(&mut state)))
+                .collect();
+            let st = CrdtState {
+                node_id: rng(&mut state) as u8,
+                local_version: rng(&mut state),
+                own_writes: rng(&mut state),
+                node_versions: nvs,
+            };
+            let enc = st.try_encode().unwrap();
+            let dec = CrdtState::decode(&enc).unwrap();
+            assert_eq!(dec, st);
+        }
     }
 }

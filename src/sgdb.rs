@@ -484,15 +484,16 @@ impl Sgdb {
 
     /// Indexa embedding L4 (BQ). `emb` vazio = no-op. O texto é armazenado em
     /// L2 (companion `md/L2/<key>`) para recall trazer texto legível.
+    /// Grava uma memória semântica (L4 + companion L2). **Política de entrada
+    /// (P1-1)**: `emb` vazio, com NaN/±Inf ou com dim > `MAX_EMBEDDING_DIM`
+    /// retorna `SgdbError::Invalid` — nunca grava embeddas corruptas.
     pub fn remember_semantic(
         &mut self,
         key: &str,
         text: &str,
         emb: &[f32],
     ) -> Result<(), SgdbError> {
-        if emb.is_empty() {
-            return Ok(());
-        }
+        crate::bq::check_embedding(emb)?;
         let mut payload = Vec::with_capacity(emb.len() * 4);
         for x in emb {
             payload.extend_from_slice(&x.to_le_bytes());
@@ -619,6 +620,15 @@ impl Sgdb {
         if query.is_empty() {
             return Ok(Vec::new());
         }
+        // P1-1: query não-finita ou oversized corrompe o ranking (NaN → score 0)
+        for &x in query {
+            if !x.is_finite() {
+                return Err(SgdbError::Invalid("query contains NaN/Inf"));
+            }
+        }
+        if query.len() > crate::bq::MAX_EMBEDDING_DIM {
+            return Err(SgdbError::Invalid("query exceeds MAX_EMBEDDING_DIM"));
+        }
         self.metrics.recalls += 1;
         let k = k.max(1);
         let cand = k.saturating_mul(oversample.max(1));
@@ -732,9 +742,7 @@ impl Sgdb {
             scored.push((s, h));
         }
         scored.sort_by(|a, b| {
-            a.0.partial_cmp(&b.0)
-                .unwrap_or(core::cmp::Ordering::Equal)
-                .then_with(|| a.1.key.cmp(&b.1.key))
+            a.0.total_cmp(&b.0).then_with(|| a.1.key.cmp(&b.1.key))
         });
         Ok(scored.into_iter().take(k).map(|(_, h)| h).collect())
     }
@@ -1435,6 +1443,60 @@ mod tests {
             assert_eq!(x.key, y.key, "ordem não determinística");
             assert_eq!(x.dist.to_bits(), y.dist.to_bits());
         }
+    }
+
+    #[test]
+    fn recall_weighted_total_cmp_nan_does_not_break_order() {
+        // P1-1: pesos NaN devem produzir ordem total definida (total_cmp),
+        // nunca panic nem empate falso via partial_cmp.unwrap_or(Equal).
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        for i in 0..5 {
+            let emb = [1.0, -1.0, (i as f32) / 4.0, -1.0];
+            db.remember_semantic(&format!("d{i}"), &format!("doc {i}"), &emb).unwrap();
+        }
+        let q = [1.0, -1.0, 0.5, -1.0];
+        let res = db.recall_weighted(&q, 3, f32::NAN, 0.0, 0.0, 1_000_000).unwrap();
+        assert_eq!(res.len(), 3);
+        // total_cmp é total: repetir dá a mesma ordem
+        let res2 = db.recall_weighted(&q, 3, f32::NAN, 0.0, 0.0, 1_000_000).unwrap();
+        for (a, b) in res.iter().zip(res2.iter()) {
+            assert_eq!(a.key, b.key);
+        }
+    }
+
+    #[test]
+    fn embedding_policy_rejects_nonfinite_and_oversized() {
+        // P1-1: NaN/Inf/dim>MAX são erros de entrada, não corrupção silenciosa
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let err_nan = db.remember_semantic("k", "t", &[1.0, f32::NAN]);
+        assert!(err_nan.is_err(), "NaN deve ser rejeitado");
+        let err_inf = db.remember_semantic("k", "t", &[1.0, f32::INFINITY]);
+        assert!(err_inf.is_err(), "Inf deve ser rejeitado");
+        let err_neg = db.remember_semantic("k", "t", &[1.0, f32::NEG_INFINITY]);
+        assert!(err_neg.is_err(), "-Inf deve ser rejeitado");
+        let mut big = vec![0.0f32; crate::bq::MAX_EMBEDDING_DIM + 1];
+        big[0] = 1.0;
+        let err_big = db.remember_semantic("k", "t", &big);
+        assert!(err_big.is_err(), "dim acima do MAX deve ser rejeitado");
+        let err_empty = db.remember_semantic("k", "t", &[]);
+        assert!(err_empty.is_err(), "emb vazio deve ser rejeitado");
+        // nada foi gravado
+        assert!(db.scan_prefix("md/L4/").unwrap().is_empty());
+    }
+
+    #[test]
+    fn recall_rejects_nonfinite_query() {
+        // P1-1: query NaN/Inf → Err em vez de ranking corrupto (score 0)
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("k", "t", &[1.0, -1.0]).unwrap();
+        assert!(db.recall(&[f32::NAN, 0.0], 3).is_err());
+        assert!(db.recall(&[f32::INFINITY, 0.0], 3).is_err());
+        // query vazia continua sendo no-op (sem resultado, sem erro)
+        assert!(db.recall(&[], 3).unwrap().is_empty());
+        // query oversize → Err
+        let mut big = vec![0.0f32; crate::bq::MAX_EMBEDDING_DIM + 1];
+        big[0] = 1.0;
+        assert!(db.recall(&big, 3).is_err());
     }
 
     #[test]

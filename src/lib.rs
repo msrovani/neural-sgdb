@@ -73,6 +73,7 @@ pub mod bq;
 pub mod conflict;
 pub mod hamming_dispatch;
 pub mod lexical;
+pub mod limits;
 pub mod memory_doc;
 pub mod metrics;
 pub mod storage;
@@ -102,9 +103,11 @@ pub use memory_doc::{
 };
 pub use sgdb::{Hit, HitProvenance, Sgdb};
 pub use storage::{InMemory, Storage, SgdbError};
+pub use limits::{
+    MAX_EMBEDDING_DIM, MAX_KLEN, MAX_VLEN,
+};
 pub use tickv::{
-    encode_ckpt, encode_record, fnv1a64, scan_volume, CKPT_KEY, MAGIC, MAX_KLEN, MAX_VLEN,
-    record_size,
+    encode_ckpt, encode_record, fnv1a64, scan_volume, CKPT_KEY, MAGIC, record_size,
 };
 #[cfg(feature = "file-storage")]
 pub use storage::FileStorage;

@@ -5,6 +5,34 @@ use alloc::vec::Vec;
 
 use crate::hamming_dispatch::{self, hamming as hamming_dispatch_fn};
 
+/// Dimensão máxima aceita para embeddings (P1-1, política de entrada):
+/// 4096 floats = 64 words × 64 bits. Acima disso `quantize_f32`/`insert_f32`
+/// crescem sem limite útil (payload NMD1 com 4B/float) — a validação em
+/// `remember_semantic`/`recall_impl` rejeita com `SgdbError::Invalid` ANTES
+/// de alocar/gravar. Valores acima deste teto são erro de chamador, não
+/// truncamento silencioso. Centralizado em `crate::limits` (P1-3) — re-export
+/// preserva a API pública de `bq`.
+pub use crate::limits::MAX_EMBEDDING_DIM;
+
+/// Valida um vetor de embedding/query (P1-1): vazio → erro (caller deve
+/// decidir o no-op); não-finito (NaN/±Inf) → erro; dim > `MAX_EMBEDDING_DIM`
+/// → erro. Sem essa guarda, NaN se propaga: `x > 0.0` é falso → bit 0, e o
+/// rescore FP32 vira NaN → `as u32` satura para 0 (ordenação corrupta).
+pub fn check_embedding(v: &[f32]) -> Result<(), crate::storage::SgdbError> {
+    if v.is_empty() {
+        return Err(crate::storage::SgdbError::Invalid("empty embedding"));
+    }
+    if v.len() > MAX_EMBEDDING_DIM {
+        return Err(crate::storage::SgdbError::Invalid("embedding exceeds MAX_EMBEDDING_DIM"));
+    }
+    for &x in v {
+        if !x.is_finite() {
+            return Err(crate::storage::SgdbError::Invalid("embedding contains NaN/Inf"));
+        }
+    }
+    Ok(())
+}
+
 pub fn quantize_f32(v: &[f32]) -> Vec<u64> {
     let n_bits = v.len();
     let n_words = n_bits.div_ceil(64);

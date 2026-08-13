@@ -1168,3 +1168,88 @@ mod tests {
         assert_eq!(art.scan_prefix("k").len(), 50);
     }
 }
+
+// ── P1-4: differential property test — ART vs BTreeMap ──────────────
+// Harness LCG determinístico (zero deps; decisão P1-4). Chaves fixed-width
+// (`k{i:08x}` — 9 bytes) para nunca uma ser prefixo de outra (limitação
+// conhecida da ART, docs/api.md "Inherited limitations"). `scan_prefix` não
+// garante ordem lexicográfica → compara-se o CONJUNTO ordenado.
+#[cfg(test)]
+mod prop_tests {
+    use super::*;
+    use alloc::collections::BTreeMap;
+    use alloc::format;
+    use alloc::string::ToString;
+    use alloc::vec::Vec;
+
+    #[derive(Debug, Clone, Copy)]
+    enum Op {
+        Insert,
+        Delete,
+        Get,
+        Scan,
+    }
+
+    fn rng(state: &mut u64) -> u64 {
+        *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *state >> 32
+    }
+
+    fn key(i: u32) -> String {
+        format!("k{i:08x}")
+    }
+
+    #[test]
+    fn art_matches_btreemap_differential() {
+        // 64 seeds determinísticas × 200 ops cada — cobre splits, shrinks,
+        // deletes e scans em muitas topologias sem depender de gerador externo.
+        for seed in 0..64u64 {
+            let mut state = seed.wrapping_mul(0x9E37_79B9).wrapping_add(0x1234_5678);
+            let mut art = ArtIndex::new();
+            let mut bm: BTreeMap<String, u64> = BTreeMap::new();
+            for _ in 0..200 {
+                let op = match rng(&mut state) % 4 {
+                    0 => Op::Insert,
+                    1 => Op::Delete,
+                    2 => Op::Get,
+                    _ => Op::Scan,
+                };
+                let k = key((rng(&mut state) % 256) as u32);
+                match op {
+                    Op::Insert => {
+                        let v = rng(&mut state);
+                        art.insert(&k, v);
+                        bm.insert(k.clone(), v);
+                    }
+                    Op::Delete => {
+                        assert_eq!(art.delete(&k), bm.remove(&k).is_some(), "seed {seed}");
+                    }
+                    Op::Get => {
+                        assert_eq!(art.get(&k), bm.get(&k).copied(), "seed {seed}");
+                    }
+                    Op::Scan => {
+                        // prefixo curto estável: "k" ou "k0"/"k1"...
+                        let p = match rng(&mut state) % 3 {
+                            0 => "k".to_string(),
+                            1 => "k0".to_string(),
+                            _ => {
+                                let b = rng(&mut state) % 16;
+                                format!("k{b:x}")
+                            }
+                        };
+                        let mut a = art.scan_prefix(&p);
+                        a.sort();
+                        let mut b: Vec<(String, u64)> = bm
+                            .iter()
+                            .filter(|(kk, _)| kk.starts_with(&p))
+                            .map(|(kk, v)| (kk.clone(), *v))
+                            .collect();
+                        b.sort();
+                        assert_eq!(a, b, "seed {seed}, scan_prefix({p:?}) divergiu");
+                    }
+                }
+            }
+            assert_eq!(art.len, bm.len(), "seed {seed}: len divergiu");
+        }
+    }
+}

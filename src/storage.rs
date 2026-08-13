@@ -191,11 +191,10 @@ pub struct FileStorage {
 #[cfg(feature = "file-storage")]
 const TOMBSTONE: u32 = u32::MAX;
 
-/// Limites de sanidade do parser (paridade com TKLV: klen ≤ 4KiB, vlen ≤ 1MiB).
+/// Limites de sanidade do parser (paridade com TKLV). Centralizados em
+/// `crate::limits` (P1-3).
 #[cfg(feature = "file-storage")]
-const MAX_KLEN: usize = 4096;
-#[cfg(feature = "file-storage")]
-const MAX_VLEN: usize = 1024 * 1024;
+use crate::limits::{MAX_KLEN, MAX_VLEN};
 
 /// Parse seguro de u32 LE: retorna `None` se o slice é curto — nunca panics
 /// em dados externos (maturation P2: parsing safety). `pub(crate)` para o

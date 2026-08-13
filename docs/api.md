@@ -69,6 +69,30 @@ impl Sgdb {
     ) -> Result<(), SgdbError>;
 
     // ---- semantic (L4, BQ + FP32 rescore) ----
+    /// Embedding input policy (P1-1): `emb` must be non-empty, all-finite, and
+    /// `emb.len() <= MAX_EMBEDDING_DIM` (4096). NaN/±Inf/empty/oversized →
+    /// `SgdbError::Invalid`. A non-finite vector would silently corrupt
+    /// ranking (NaN → `x > 0.0` false → bit 0, and FP32 rescore NaN → score 0).
+    /// The same policy applies to every `query: &[f32]` parameter on recall*:
+    /// non-finite/oversized → `Invalid`; **empty query stays a no-op** (returns
+    /// `Ok(Vec::new())`, not an error). `recall_weighted` ranks with `total_cmp`
+    /// (total order — NaN weights are legal, sorted deterministically).
+    ///
+    /// **Centralized limits (P1-3)**: the storage ceilings (`MAX_KLEN` 4096,
+    /// `MAX_VLEN` 1 MiB) and the embedding ceiling (`MAX_EMBEDDING_DIM` 4096)
+    /// live in one module `neural_sgdb::limits` (re-exported at crate root and
+    /// via `tickv::*` / `bq::*` for API compat). Every reader of external data
+    /// (FileStorage recovery, `scan_volume`, fast-mount, wire decode) validates
+    /// a length field against its ceiling BEFORE allocating — an oversized
+    /// field is treated as corrupted tail, never a huge allocation.
+    ///
+    /// **Property tests (P1-4)**: deterministic LCG harnesses (zero deps —
+    /// see src/art.rs, src/conflict.rs, src/memory_doc.rs, src/crdt.rs
+    /// `mod prop_tests`) pin: decode∘encode roundtrips (NMD1 doc/record/meta,
+    /// CFL1, MDLT/MSNP/SignedEnvelope/CrdtState), ART-vs-BTreeMap differential
+    /// (fixed-width keys — no prefix relationship), and the LWW semilattice
+    /// laws of `VectorClock::merge` (associative, commutative, idempotent,
+    /// monotonic).
     pub fn remember_semantic(&mut self, key: &str, text: &str, emb: &[f32]) -> Result<(), SgdbError>;
 
     /// L4 recall: coarse BQ top-k -> FP32 rescore -> fine top-k.
@@ -303,6 +327,14 @@ resolution to the cognitive layer (roadmap Phase 14/15).
 - **`Sgdb::merge_remote(record)`** — policy-aware import (see table above).
 - **`MemoryDelta` / `MemorySnapshot`** — wire codecs (`MDLT`/`MSNP`) that
   carry `Vec<MemoryRecord>`, replacing the pre-v0.6 stubs (`docs: Vec<u8>`).
+  **Wire-safety (P1-2)**: every wire type (`ConflictRecord`, `MemoryDelta`,
+  `MemorySnapshot`, `SignedEnvelope`, `CrdtState`) exposes `try_encode() ->
+  Result<Vec<u8>, &'static str>` which validates every length/count field
+  before casting — a field that does not fit the wire format returns `Err`
+  instead of silently truncating (which would desynchronize the stream on
+  decode). `encode()` remains as the infallible convenience (panics on
+  overflow); production write paths use `try_encode()` and propagate the
+  error. `decode()` stays bounds-checked (never panics).
 - **`CrdtMemorySync::missing_after(peer_versions)`** — the causal range a
   peer lacks (what to request in a delta protocol).
 - Version 0 packets are ignored (a relay node's heartbeat never creates

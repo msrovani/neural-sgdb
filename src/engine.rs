@@ -656,7 +656,8 @@ impl AiosDatabaseEngine {
 
     /// Upsert de um `ConflictRecord` (id determinístico → re-merge upserta).
     pub fn put_conflict(&mut self, c: &crate::conflict::ConflictRecord) -> Result<(), SgdbError> {
-        self.storage.put(&conflict_key(&c.conflict_id), &c.encode())
+        let enc = c.try_encode().map_err(SgdbError::Invalid)?;
+        self.storage.put(&conflict_key(&c.conflict_id), &enc)
     }
 
     pub fn get_conflict(&mut self, id: &str) -> Option<crate::conflict::ConflictRecord> {
