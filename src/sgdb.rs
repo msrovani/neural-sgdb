@@ -71,6 +71,9 @@ pub struct MemoryExplanation {
 /// Cognitive memory database. `Sgdb::open(backend)` + remember/recall.
 pub struct Sgdb {
     engine: AiosDatabaseEngine,
+    /// Observabilidade estruturada (v1.0, Phase 32): contadores nomeados,
+    /// incrementados nos pontos de entrada. Snapshot via [`Sgdb::metrics`].
+    pub(crate) metrics: crate::metrics::Metrics,
 }
 
 impl Sgdb {
@@ -91,12 +94,27 @@ impl Sgdb {
         let mut engine = AiosDatabaseEngine::new(node_id, Box::new(backend));
         let recovered = engine.rebuild_indices_from_storage()?;
         crate::sgdb_log!("Sgdb open: {recovered} docs reindexados (ART/BQ)");
-        Ok(Sgdb { engine })
+        let mut metrics = crate::metrics::Metrics::default();
+        metrics.storage_recoveries = 1;
+        metrics.index_rebuilds = 1;
+        Ok(Sgdb { engine, metrics })
     }
 
     /// Node_id local (vector clock / origem) — estável por instância.
     pub fn node_id(&self) -> u8 {
         self.engine.node_id
+    }
+
+    /// Snapshot de observabilidade (v1.0, Phase 32): contadores estruturados
+    /// por subsistema — escreve/recall/lifecycle/conflitos/replicação/
+    /// recovery. Para diffing entre instâncias, use `snapshot()`.
+    pub fn metrics(&self) -> &crate::metrics::Metrics {
+        &self.metrics
+    }
+
+    /// Redefine todos os contadores (ex: antes de um teste de carga).
+    pub fn reset_metrics(&mut self) {
+        self.metrics = crate::metrics::Metrics::default();
     }
 
     /// Estado lógico de uma memória (default `Active`). Estado ≠ deleção
@@ -484,6 +502,8 @@ impl Sgdb {
         // do write (put_companion, v0.7) — um write lógico = uma versão.
         let tdoc = MemoryDoc::new(MemoryLayer::L2EpisodicShort, key, text.as_bytes().to_vec());
         let _ = self.engine.put_companion(tdoc)?;
+        self.metrics.memory_writes += 1;
+        self.metrics.clock_changes += 1;
         Ok(())
     }
 
@@ -597,6 +617,7 @@ impl Sgdb {
         if query.is_empty() {
             return Ok(Vec::new());
         }
+        self.metrics.recalls += 1;
         let k = k.max(1);
         let cand = k.saturating_mul(oversample.max(1));
         let hits = self.engine.bq_top_k_f32(query, cand);
@@ -887,7 +908,10 @@ impl Sgdb {
     /// migração). Indexa nos índices derivados (ART/BQ/lexical) como qualquer
     /// `remember_*` — útil para o pull de memórias do peer no sync.
     pub fn put(&mut self, doc: MemoryDoc) -> Result<u64, SgdbError> {
-        self.engine.put(doc)
+        let v = self.engine.put(doc)?;
+        self.metrics.memory_writes += 1;
+        self.metrics.clock_changes += 1;
+        Ok(v)
     }
 
     /// Exporta uma memória como UNIDADE de replicação (P0-5): doc NMD1 (com
@@ -899,7 +923,11 @@ impl Sgdb {
     /// viajam com o doc.
     pub fn export_record(&mut self, key: &str) -> Result<Option<MemoryRecord>, SgdbError> {
         let sk = self.resolve_storage_key(key);
-        self.engine.export_record(&sk)
+        let r = self.engine.export_record(&sk)?;
+        if r.is_some() {
+            self.metrics.replication_sent += 1;
+        }
+        Ok(r)
     }
 
     /// Importa uma `MemoryRecord` replicada (P0-5): grava o NMD1 **sem tick
@@ -907,7 +935,10 @@ impl Sgdb {
     /// preserva a identidade do criador (`meta`) e aplica estado + validade
     /// que viajam no record. Indexa ART/BQ/lexical como qualquer put.
     pub fn import_record(&mut self, rec: MemoryRecord) -> Result<u64, SgdbError> {
-        self.engine.import_record(rec)
+        let v = self.engine.import_record(rec)?;
+        self.metrics.replication_received += 1;
+        self.metrics.memory_writes += 1;
+        Ok(v)
     }
 
     /// Storage keys cujo relógio tem `counter_of(node) == counter` — o
@@ -944,8 +975,10 @@ impl Sgdb {
     #[cfg(feature = "p2p")]
     pub fn merge_remote(&mut self, rec: MemoryRecord) -> Result<crate::crdt::MergeVerdict, SgdbError> {
         use crate::crdt::{MergePolicy, MergeVerdict};
+        self.metrics.replication_received += 1;
         let policy = MergePolicy::for_layer(rec.doc.layer);
         if !policy.accepts_remote() {
+            self.metrics.replication_rejected += 1;
             return Ok(MergeVerdict::Rejected);
         }
         let sk = rec.doc.storage_key();
@@ -964,12 +997,14 @@ impl Sgdb {
             let same_state = self.engine.get_state(&sk) == rec.state;
             let same_validity = self.engine.validity_window(&sk) == rec.validity;
             if same_state && same_validity {
+                self.metrics.replication_duplicate += 1;
                 return Ok(MergeVerdict::Duplicate);
             }
             self.engine.import_record(rec)?;
             return Ok(MergeVerdict::Applied);
         }
         if rec.doc.clock.happens_before(&local.clock) {
+            self.metrics.replication_stale += 1;
             return Ok(MergeVerdict::Stale); // local domina — sem regressão
         }
         if local.clock.happens_before(&rec.doc.clock) {
@@ -1031,6 +1066,7 @@ impl Sgdb {
             records,
         };
         self.engine.put_conflict(&conflict)?;
+        self.metrics.conflicts_detected += 1;
         Ok(MergeVerdict::Conflict)
     }
 
@@ -1090,6 +1126,7 @@ impl Sgdb {
         }
         c.status = crate::conflict::ConflictStatus::Resolved;
         c.resolved_winner = Some(String::from(winner_vid));
+        self.metrics.conflicts_resolved += 1;
         self.engine.put_conflict(&c)
     }
 
@@ -1181,6 +1218,10 @@ impl Sgdb {
 
     pub fn backend(&self) -> &'static str {
         self.engine.backend_name()
+    }
+
+    pub(crate) fn engine_mut(&mut self) -> &mut AiosDatabaseEngine {
+        &mut self.engine
     }
 
     pub fn ready(&self) -> bool {
@@ -2517,5 +2558,51 @@ mod tests {
         assert_eq!(db.derived_from("md/L4/last_user"), vec!["md/L1/last_user".to_string()]);
         // idempotente: transferir para a mesma camada = no-op
         assert_eq!(db.transfer_to("md/L4/last_user", MemoryLayer::L4Semantic).unwrap(), new_sk);
+    }
+
+    // ── v1.0 — observabilidade (Phase 32): contadores estruturados ────────
+
+    #[test]
+    fn metrics_count_writes_and_recalls() {
+        let mut db = Sgdb::open(crate::storage::InMemory::new()).unwrap();
+        // open incrementa storage_recoveries + index_rebuilds
+        assert_eq!(db.metrics().storage_recoveries, 1);
+        assert_eq!(db.metrics().index_rebuilds, 1);
+
+        let mut doc = MemoryDoc::new(MemoryLayer::L4Semantic, "k", vec![1, 2, 3]);
+        doc.bitvec = Some(quantize_f32(&[0.1, 0.2]));
+        db.put(doc).unwrap();
+        db.remember_semantic("k2", "text", &[0.5, 0.5]).unwrap();
+        assert_eq!(db.metrics().memory_writes, 2);
+        assert_eq!(db.metrics().clock_changes, 2);
+
+        db.recall(&[0.1, 0.2], 3).unwrap();
+        assert_eq!(db.metrics().recalls, 1);
+
+        db.reset_metrics();
+        assert_eq!(db.metrics().memory_writes, 0);
+    }
+
+    #[test]
+    fn metrics_snapshot_is_structured() {
+        let db = Sgdb::open(crate::storage::InMemory::new()).unwrap();
+        let snap = db.metrics().snapshot();
+        assert!(snap.contains(&("storage_recoveries", 1)));
+        assert!(snap.contains(&("memory_writes", 0)));
+        assert!(snap.contains(&("replication_received", 0)));
+    }
+
+    #[test]
+    fn metrics_count_lifecycle_transitions() {
+        use crate::lifecycle::{LifecycleConfig, MemoryLifecycle};
+        let mut db = Sgdb::open(crate::storage::InMemory::new()).unwrap();
+        db.put(MemoryDoc::new(MemoryLayer::L1Working, "m", b"episode".to_vec()))
+            .unwrap();
+        db.reset_metrics();
+
+        let mut lc = MemoryLifecycle::new(LifecycleConfig::default());
+        let rep = lc.tick(&mut db, 10).unwrap();
+        assert!(rep.transitions >= 1);
+        assert_eq!(db.metrics().lifecycle_transitions, rep.transitions);
     }
 }

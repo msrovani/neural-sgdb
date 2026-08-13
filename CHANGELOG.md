@@ -6,6 +6,30 @@ All notable changes to this project. Format based on
 
 ## [Unreleased]
 
+### v1.0 — Arbitration + trust seam + observability (Phase 16/28/32)
+- **Arbitration layer** (`src/arbitration.rs`) — pluggable policy, NO LLM in
+  core: `ArbitrationPolicy` trait (prefer/invalidate/merge/escalate by
+  confidence/importance/recency) + `Arbitrator::arbitrate(db, conflict)`
+  returning a structured `ArbitrationDecision` (winner, action, reasons).
+  Deterministic, evidence-driven — the cognitive layer stays a consumer, the
+  core never decides semantic truth.
+- **Trust seam** (`src/trust.rs`, Phase 23/28) — `Peer` (node_id + identity +
+  auth status + trust level + capabilities), bounded `TrustStore` (upsert,
+  revoke, set_trust, trusted_peers), `Signer` trait with `HmacFnvSigner`
+  DEMO (keyed FNV-1a, explicitly non-cryptographic — production hosts plug a
+  real Ed25519/HMAC at the transport boundary; the core stays clean).
+- **Observability** (`src/metrics.rs`, Phase 32) — structured counters wired
+  into Sgdb: `memory_writes`, `recalls`, `lifecycle_transitions`,
+  `conflicts_detected/resolved`, `replication_sent/received/rejected/stale/
+  duplicate`, `clock_changes`, `storage_recoveries`, `index_rebuilds`;
+  `db.metrics().snapshot()` for monitoring/diffing. `LifecycleReport` now
+  carries `transitions`.
+- Testes (+8 default, +4 no_std): `trust.rs` (bounded upsert, revoke,
+  signer tamper/determinism), `metrics.rs` (snapshot), `sgdb.rs` (writes/
+  recalls/lifecycle counted), `arbitration.rs` (4 policies under `p2p`).
+  Matriz: default **155+1**, p2p **189+1**, no-default-features **113+1**,
+  `x86_64-unknown-none` ok.
+
 ### v0.9 — Conflict model + reinforce + cognitive API + MCP surface (Phase 14/15/17/23)
 - **First-class conflict model** (`src/conflict.rs`, `ConflictRecord`, `ConflictStatus`) — deterministic `conflict_id` (FNV-1a 128 sobre subject+candidates ordenados), re-merge upserta (nunca duplica). Persistido em `sys/conflict/<id>` com evidência completa: `records: Vec<Vec<u8>>` (MDR1 dos candidatos paralelos a `candidates`) — a resolução NÃO depende de re-buscar o nó remoto (item 14: conflict preservation).
 - **`Sgdb::merge_remote` grava conflito** — branch CONCORRENTE: paraleliza (vid, MDR1) dos candidatos, ordena, deduplica; nós fonte únicos; upsert idempotente.

@@ -52,7 +52,7 @@ index-rebuild, docs) are **staged but uncommitted** — the git identity
 | Lifecycle engine | PARTIAL→**IMPLEMENTED (v0.8)** — `MemoryLifecycle::tick(db, now)` deterministic (no hidden wall clock), `LifecycleConfig`/`LifecycleReport`; L1→L2 commit, L2→L3 promotion, L3→L4 heuristic semanticization (no LLM/embedding in core), decay→Decayed (never delete), archive of aged superseded; lineage wired on every promotion | `src/lifecycle.rs` | consolidation/reinforcement (v0.9) |
 | Semantic consolidation | PARTIAL→**heuristic foundation (v0.8)** — L3→L4 promotion by importance+age records `derived_from`; embedding backfill is the upper layer's job | `src/lifecycle.rs` | repetition/similarity-density signals |
 | Cognitive API | **IMPLEMENTED core (v0.9)** — `remember`/`recall`/`rag_context`/`supersede`/`delete` + `memory_id`/`meta`/`set_importance`/`set_confidence` + `reinforce(key,delta)` + `forget` (Archived) + `explain` → `MemoryExplanation` + `transfer_to` (layer move + lineage) + `merge_memories(a,b,target)` + `associate`/`related_to`/`contradicts` + `conflicts`/`resolve_conflict`/`dismiss_conflict`. MCP exposes all 14 tools (v0.9). | `src/sgdb.rs`, `examples/mcp_server.rs` | arbitration/trust (M4) |
-| AI arbitration | NOT core — correctly absent | `docs/architecture/06` | separate upper layer |
+| AI arbitration | **POLICY-PLUGGABLE (v1.0)** — `ArbitrationPolicy` trait + deterministic `Arbitrator` (prefer/invalidate/merge/escalate by confidence/importance/recency). NO LLM inside the core — the policy is a consumer; evidence preserved, never deleted | `src/arbitration.rs` | plug real AI/BitNet policies outside the crate |
 
 ## 3. Per-subsystem detail
 

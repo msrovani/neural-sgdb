@@ -83,6 +83,9 @@ pub struct LifecycleReport {
     pub archived: Vec<String>,
     /// storage keys que viraram `Decayed`
     pub decayed: Vec<String>,
+    /// Nº total de transições aplicadas neste tick (soma dos vetores
+    /// acima) — observabilidade estruturada (Phase 32).
+    pub transitions: u64,
 }
 
 /// Determinístico: o estado interno é só o contador de ticks + a config.
@@ -238,6 +241,12 @@ impl MemoryLifecycle {
             }
         }
 
+        report.transitions = (report.committed.len()
+            + report.promoted.len()
+            + report.semanticized.len()
+            + report.archived.len()
+            + report.decayed.len()) as u64;
+        db.metrics.lifecycle_transitions += report.transitions;
         Ok(report)
     }
 

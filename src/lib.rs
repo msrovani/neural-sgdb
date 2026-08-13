@@ -68,13 +68,16 @@ macro_rules! sgdb_log {
 }
 
 pub mod art;
+pub mod arbitration;
 pub mod bq;
 pub mod conflict;
 pub mod hamming_dispatch;
 pub mod lexical;
 pub mod memory_doc;
+pub mod metrics;
 pub mod storage;
 pub mod tickv;
+pub mod trust;
 
 #[cfg(feature = "p2p")]
 pub mod crdt;
