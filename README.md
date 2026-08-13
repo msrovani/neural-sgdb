@@ -163,6 +163,11 @@ avoid stale/unreproducible claims).
   Storage (05), Cognitive API (06) — formalizes the *cognitive memory system*
   step on top of the current *memory substrate*
 - **AI agent guides** — `AGENTS.md`, `CLAUDE.md`, `codemap.md` (atlas)
+- **Governance** — [`SECURITY.md`](SECURITY.md) (policy + trust model),
+  [`VERSIONING.md`](VERSIONING.md) (SemVer + release process),
+  [`MIGRATIONS.md`](MIGRATIONS.md) (format migrations),
+  [`ROADMAP.md`](ROADMAP.md) (honest status + non-goals),
+  [`docs/adr/`](docs/adr/) (architecture decision records)
 
 ## License
 

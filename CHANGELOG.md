@@ -6,6 +6,20 @@ All notable changes to this project. Format based on
 
 ## [Unreleased]
 
+### P2 — Governance & security hardening (2026-08-13)
+- **CRDT convergence in random topologies (P2-1)**: LCG-generated directed
+  meshes (ring spine + random edges) converge to byte-identical content
+  records; partitions/rejoins preserve concurrent writes with no lost
+  versions. Documented semantics: `node_versions` is gossip knowledge (not
+  converged state); `ConflictRecord` is LOCAL merge evidence (not a
+  replicated unit) — content converges, authors keep their own values.
+  API unchanged (tests only).
+- **Governance docs (P2-2)**: new `SECURITY.md`, `VERSIONING.md`,
+  `MIGRATIONS.md`, `ROADMAP.md` and `docs/adr/` (index + template + ADRs
+  0001–0006) capturing the zero-deps/no_std contract, BQ-vs-FAISS, side-table
+  metadata, byte-contract formats, ART prefix-key rejection and the
+  no-crypto-in-core trust seam.
+
 ### P0 — Hardening & tooling (delivered 2026-08-13)
 - **Docs aligned to v1.0.0**: README, docs/api.md, CHANGELOG, MCP
   ServerInfo, tickv module docs, storage architecture — test counts, tool
