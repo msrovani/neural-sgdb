@@ -37,7 +37,7 @@ fn ln_f32(x: f32) -> f32 {
     let m = f32::from_bits(mant);
     let y = m - 1.0;
     let ln_m = y * (1.0 - 0.5 * y + y * y / 3.0 - y * y * y / 4.0 + y * y * y * y / 5.0);
-    exp as f32 * 0.693_147_2 + ln_m
+    exp as f32 * core::f32::consts::LN_2 + ln_m
 }
 
 /// Índice invertido: termo → (storage_key → freq), mais comprimentos.
@@ -99,6 +99,10 @@ impl LexicalIndex {
 
     pub fn len(&self) -> usize {
         self.n_docs as usize
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.n_docs == 0
     }
 
     /// BM25-ish: log-tf × idf, soma por termo da query. Retorna (key, score)

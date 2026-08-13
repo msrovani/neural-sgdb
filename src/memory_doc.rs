@@ -545,6 +545,11 @@ impl RelationKind {
         }
     }
 
+    /// Parse inverso do `as_str`. Nome `from_str` colide com o da trait
+    /// `std::str::FromStr` (que retorna `Result`); esta é uma helper com
+    /// retorno `Option` — `#[allow]` documentado em vez de renomear (API
+    /// pública estável).
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         Self::ALL.iter().copied().find(|k| k.as_str() == s)
     }
@@ -701,7 +706,7 @@ impl MemoryDoc {
 ///
 /// Wire "MDR1" v1: `magic | state u8 | vflag u8 [from u64le until u64le] |
 /// metaflag u8 [mlen u32le + meta "MDM1"] | nmd1 bytes`. A meta (identidade
-/// + proveniência) viaja NO record para que um delta serializado não perca o
+/// e proveniência) viaja NO record para que um delta serializado não perca o
 /// criador. `decode` nunca panics em entrada malformada/truncada (parsing
 /// safety) — retorna Err.
 #[derive(Clone, Debug, PartialEq)]

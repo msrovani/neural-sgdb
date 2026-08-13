@@ -37,8 +37,8 @@ pub struct MemoryVersion {
 }
 
 /// Delta de memória (v0.6 — P0-5, Doc 04 §4): versões BASE que o remetente
-/// assume que o receptor já conhece + `records` completos (doc NMD1 + estado
-/// + validade) para as versões faltantes. Um delta carrega o necessário para
+/// assume que o receptor já conhece e `records` completos (doc NMD1 + estado
+/// e validade) para as versões faltantes. Um delta carrega o necessário para
 /// o merge causal correto — um número de versão sozinho NÃO basta.
 ///
 /// Wire "MDLT" v1: `magic | ver u8 | nbase u16 (node u8 + version u64)* |
@@ -1298,11 +1298,11 @@ mod tests {
             }
             // 2) entrega por arestas + merge de versões
             for j in 0..n {
-                for i in 0..n {
+                for (i, outbox) in outboxes.iter().enumerate() {
                     if i == j || !self.edges[i][j] {
                         continue;
                     }
-                    for &(node, v) in &outboxes[i] {
+                    for &(node, v) in outbox {
                         if dup {
                             let _ = self.nodes[j].crdt.apply_remote_version(node, v);
                         }

@@ -39,7 +39,7 @@ fn demo_embed(text: &str) -> Vec<f32> {
     // text < 3 bytes: no trigrams → degenerate zero vector; fallback by
     // individual bytes (fix #10)
     let windows: Vec<&[u8]> = if bytes.len() < 3 {
-        bytes.iter().map(|b| std::slice::from_ref(b)).collect()
+        bytes.iter().map(std::slice::from_ref).collect()
     } else {
         bytes.windows(3).collect()
     };
@@ -79,9 +79,13 @@ fn parse_resource_uri(uri: &str) -> Option<(neural_sgdb::MemoryLayer, String)> {
 }
 
 /// #8 — paginação com cursor opaco (offset). Retorna (página, nextCursor).
+/// `size` vem do JSON-RPC (entrada externa hostil): clampar impede DoS por
+/// alocação gigante; `saturating_add` impede overflow de `off + size`.
 fn paginate<T: Clone>(items: &[T], cursor: Option<&str>, size: usize) -> (Vec<T>, Option<String>) {
+    const MAX_PAGE_SIZE: usize = 1000;
+    let size = size.min(MAX_PAGE_SIZE);
     let off = cursor.and_then(|c| c.parse::<usize>().ok()).unwrap_or(0).min(items.len());
-    let end = (off + size).min(items.len());
+    let end = off.saturating_add(size).min(items.len());
     let page = items[off..end].to_vec();
     let next = if end < items.len() { Some((end as u32).to_string()) } else { None };
     (page, next)
@@ -155,7 +159,7 @@ fn main() {
                 send(&json!({"jsonrpc":"2.0","id":id,"result":{
                     "protocolVersion":"2025-11-25",
                     "capabilities":{"tools":{}},
-                    "serverInfo":{"name":"neural-sgdb","version":"0.9.0"}
+                    "serverInfo":{"name":"neural-sgdb","version":"1.0.0"}
                 }}));
             }
             "notifications/initialized" | "notifications/cancelled" | "notifications/progress" => {
@@ -479,8 +483,8 @@ fn main() {
                         let cs = db.conflicts();
                         let text = if cs.is_empty() { "nenhum conflito persistido".into() }
                             else { cs.iter().map(|c| format!(
-                                "{} [{}] {} :: candidatos={} nodos={:?} records={}",
-                                c.conflict_id, format!("{:?}", c.status), c.subject,
+                                "{} [{:?}] {} :: candidatos={} nodos={:?} records={}",
+                                c.conflict_id, c.status, c.subject,
                                 c.candidates.join(","), c.nodes, c.records.len()))
                                 .collect::<Vec<_>>().join("\n") };
                         send(&json!({"jsonrpc":"2.0","id":id,"result":{
@@ -561,5 +565,23 @@ mod tests {
         // cursor inválido → volta ao início
         let (p, _) = paginate(&items, Some("xyz"), 2);
         assert_eq!(p, vec![0, 1]);
+    }
+
+    #[test]
+    fn paginate_hostile_size_does_not_panic() {
+        let items: Vec<u32> = (0..10).collect();
+        // pageSize hostil (u64::MAX → usize::MAX) com cursor ≥ 1 não pode
+        // estourar `off + size` nem alocar além dos itens (regressão P0-8).
+        let (p, next) = paginate(&items, Some("1"), usize::MAX);
+        assert_eq!(p.len(), items.len() - 1, "clamp: página limitada aos itens");
+        assert_eq!(next, None, "cursor 1 + tudo → não há next");
+        // cursor no fim + size hostil
+        let (p, next) = paginate(&items, Some("9"), usize::MAX);
+        assert_eq!(p, vec![9]);
+        assert_eq!(next, None);
+        // tamanho acima do clamp não muda semântica legítima (page 0)
+        let (p, next) = paginate(&items, None, 2000);
+        assert_eq!(p, items);
+        assert_eq!(next, None);
     }
 }

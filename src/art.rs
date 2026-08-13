@@ -7,6 +7,10 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 #[derive(Clone)]
+// `large_enum_variant` é intencional: Node4..256 vivem no heap (`Box<Node>`
+// nos children); boxar as variantes grandes adicionaria indireção no hot path
+// do scan/insert sem ganho de alocação.
+#[allow(clippy::large_enum_variant)]
 enum Node {
     Leaf {
         key: Vec<u8>,
@@ -58,19 +62,22 @@ fn find_child_byte16(keys: &[u8; 16], n: u8, byte: u8) -> Option<usize> {
     #[cfg(target_arch = "x86_64")]
     {
         if crate::hamming_dispatch::cpu_has_avx2() {
+            // SAFETY: cpu_has_avx2() garantiu suporte runtime (AVX2 ⊃ SSE2); o
+            // kernel lê exatamente os 16 bytes de `keys` via loadu (array
+            // [u8;16] — buffer sempre legível) e máscara `(1<<n)-1` limita o
+            // bitfield aos n < 16 filhos válidos.
             return unsafe { find_child_byte16_sse(keys, n, byte) };
         }
     }
-    for i in 0..n {
-        if keys[i] == byte {
-            return Some(i);
-        }
-    }
-    None
+    keys[..n].iter().position(|&k| k == byte)
 }
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse2")]
+// SAFETY: requer SSE2 (target_feature) e suporte runtime — chamador verificou
+// cpu_has_avx2() (superset do SSE2). `keys` precisa ter 16 bytes legíveis
+// (invariante do array [u8;16]); `_mm_loadu_si128` é unaligned (len 16 exata);
+// `(1<<n)-1` com n<16 (Node16) nunca mascara bytes fora do slice.
 unsafe fn find_child_byte16_sse(keys: &[u8; 16], n: usize, byte: u8) -> Option<usize> {
     use core::arch::x86_64::*;
     let key = _mm_set1_epi8(byte as i8);

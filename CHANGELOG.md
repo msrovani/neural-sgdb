@@ -6,6 +6,37 @@ All notable changes to this project. Format based on
 
 ## [Unreleased]
 
+### P0 — Hardening & tooling (delivered 2026-08-13)
+- **Docs aligned to v1.0.0**: README, docs/api.md, CHANGELOG, MCP
+  ServerInfo, tickv module docs, storage architecture — test counts, tool
+  count (13), checkpoint/GC claims now match the code (P0-1/2/3).
+- **Clippy zero-warnings** across all targets/features (P0-5): 13 files
+  cleaned (needless loops, manual find, doc-list indentation, `?` blocks,
+  `is_empty`, type aliases, struct-update Default, SIMD loops). New gate:
+  `cargo clippy --all-targets --all-features -- -D warnings`.
+- **CI gates** (P0-4): added `cargo test --no-default-features`, clippy
+  `-D warnings`, and `cargo doc --no-deps` (RUSTDOCFLAGS `-D warnings`) to
+  `.github/workflows/ci.yml`. `cargo fmt` intentionally NOT gated (repo not
+  rustfmt-clean).
+- **MCP paginate overflow** (P0-8): `paginate` clamps `pageSize` to
+  `MAX_PAGE_SIZE=1000` and uses saturating offset arithmetic — hostile
+  `pageSize` can no longer panic the server. Regression test added.
+- **Arbitration empty-scores panic** (P0-9): `HeuristicArbitration` returns
+  `Escalate` when a conflict has records but no candidates (empty `scores`)
+  instead of panicking on `scores[0]`. Regression test added.
+- **FileStorage recovery sweep test** (P0-7): open() recovery truncation
+  verified deterministic for every cut offset (preserves complete records,
+  truncates to `valid_end`, never panics).
+- **SAFETY comments + differential SIMD test** (P0-10): all 9 unsafe sites
+  documented (hamming_dispatch.rs ×7, art.rs ×2); new
+  `differential_scalar_vs_all_kernels` proves scalar == AVX2 == AVX-512 over
+  17 lengths + unequal-length pairs. `hamming_scalar`/BQ have no remaining
+  clippy/lint issues.
+- Matriz: default **157+1**, p2p **192+1**, no-default **114+1**,
+  `x86_64-unknown-none` ok, clippy `-D warnings` ok, doc `-D warnings` ok.
+
+## [1.0.0] — 2026-08-13
+
 ### v1.0 — Arbitration + trust seam + observability (Phase 16/28/32)
 - **Arbitration layer** (`src/arbitration.rs`) — pluggable policy, NO LLM in
   core: `ArbitrationPolicy` trait (prefer/invalidate/merge/escalate by

@@ -24,6 +24,17 @@ jobs:
       - name: cargo test (p2p)
         run: cargo test --features p2p
 
+      - name: cargo test (no-default-features)
+        run: cargo test --no-default-features
+
+      - name: clippy (deny warnings)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: doc (deny warnings)
+        run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
       - name: no_std gate (x86_64-unknown-none)
         run: cargo check --no-default-features --target x86_64-unknown-none
 

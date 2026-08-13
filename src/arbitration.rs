@@ -214,6 +214,20 @@ impl ArbitrationPolicy for HeuristicArbitration {
         }
 
         // Default: Prefer o candidato com maior score
+        // Guarda: `records.len() >= 2` foi verificado, mas `scores` é povoado
+        // a partir de `candidates` — um ConflictRecord com records ≥ 2 e
+        // candidates vazio (struct pública, construção manual) deixaria
+        // `scores` vazio → `scores[0]` panica. Defesa em profundidade (P0-9).
+        if scores.is_empty() {
+            return Ok(ArbitrationDecision {
+                action: ArbitrationAction::Escalate,
+                winner_version_id: None,
+                invalidated_version_id: None,
+                merged_key: None,
+                evidence: Vec::new(),
+                reason: String::from("no candidates with evidence"),
+            });
+        }
         scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(core::cmp::Ordering::Equal));
         let winner = &scores[0];
 
@@ -274,19 +288,16 @@ pub fn apply_decision(
 #[cfg(feature = "p2p")]
 mod tests {
     use super::*;
-    use alloc::string::ToString;
     use alloc::vec;
-    use crate::conflict::{ConflictStatus, ConflictRecord, generate_conflict_id};
-    use crate::memory_doc::{MemoryDoc, MemoryLayer};
-    use crate::storage::InMemory;
+    use crate::conflict::{ConflictRecord, ConflictStatus};
 
     fn open_db_with_concurrent_writes() -> (Sgdb, Sgdb, ConflictRecord) {
         let mut a = Sgdb::open_with_node_id(1, crate::storage::InMemory::new()).unwrap();
         let mut b = Sgdb::open_with_node_id(2, crate::storage::InMemory::new()).unwrap();
         a.remember_semantic("k", "A", &[1.0, -1.0, 1.0, -1.0]).unwrap();
         b.remember_semantic("k", "B", &[1.0, -1.0, 1.0, -1.0]).unwrap();
-        let vid_a = a.version_of("md/L4/k").unwrap().unwrap();
-        let vid_b = b.version_of("md/L4/k").unwrap().unwrap();
+        let _vid_a = a.version_of("md/L4/k").unwrap().unwrap();
+        let _vid_b = b.version_of("md/L4/k").unwrap().unwrap();
         let rec_a = a.export_record("md/L4/k").unwrap().unwrap();
         let rec_b = b.export_record("md/L4/k").unwrap().unwrap();
         let _ = a.merge_remote(rec_b).unwrap();
@@ -358,6 +369,26 @@ mod tests {
             status: ConflictStatus::Open,
             resolved_winner: None,
             records: vec![vec![0]],
+        };
+        let policy = HeuristicArbitration::default();
+        let decision = policy.evaluate(&conflict, &mut db).unwrap();
+        assert_eq!(decision.action, ArbitrationAction::Escalate);
+    }
+
+    #[test]
+    fn empty_candidates_with_records_escalates_no_panic() {
+        // Regressão P0-9: ConflictRecord público com records.len() >= 2 mas
+        // candidates vazio — antes do fix, `scores[0]` panica.
+        let mut db = Sgdb::open(crate::storage::InMemory::new()).unwrap();
+        let conflict = ConflictRecord {
+            conflict_id: "empty-cand".into(),
+            subject: "md/L4/k".into(),
+            candidates: vec![],
+            nodes: vec![1, 2],
+            created_tick: 1,
+            status: ConflictStatus::Open,
+            resolved_winner: None,
+            records: vec![vec![0], vec![1]],
         };
         let policy = HeuristicArbitration::default();
         let decision = policy.evaluate(&conflict, &mut db).unwrap();

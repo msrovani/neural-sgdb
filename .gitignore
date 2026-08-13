@@ -4,3 +4,6 @@ Cargo.lock
 
 # MCP demo db
 sgdb_memory.db
+
+# FreeBuff tool state (local-only, not project code)
+.freebuff/

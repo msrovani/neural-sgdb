@@ -54,11 +54,15 @@ pub enum Durability {
 /// Backend plugável. Semântica: append-log power-loss safe — `put` idempotente,
 /// `delete` grava tombstone; o crate garante CRC + recuperação de crash sobre
 /// qualquer impl que siga essa semântica.
+/// Resultado de `scan_prefix`: pares (key, val) em ordem lexicográfica.
+/// Alias evita `type_complexity` no trait público (API estável).
+pub type ScanResult = Vec<(Vec<u8>, Vec<u8>)>;
+
 pub trait Storage {
     fn name(&self) -> &'static str;
     fn put(&mut self, key: &[u8], val: &[u8]) -> Result<(), SgdbError>;
     fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, SgdbError>;
-    fn scan_prefix(&mut self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, SgdbError>;
+    fn scan_prefix(&mut self, prefix: &[u8]) -> Result<ScanResult, SgdbError>;
     fn delete(&mut self, key: &[u8]) -> Result<(), SgdbError>;
 
     /// Nível de durabilidade garantido pelo `put` deste backend.
@@ -641,6 +645,51 @@ mod tests {
         let raw = std::fs::read(&p).unwrap();
         assert_eq!(raw.len(), rec(b"a", b"1").len());
         let _ = std::fs::remove_file(&p);
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn recovery_truncation_sweeps_all_offsets_deterministically() {
+        // P0-7: a truncação por-offset é determinística para TODO ponto de
+        // corte. Para cada offset c, o open recupera exatamente os records
+        // íntegros cujo fim <= c, trunca o arquivo fisicamente em valid_end
+        // (última fronteira completa) e nunca panics.
+        let recs = [
+            (b"a".to_vec(), b"1".to_vec()),
+            (b"be".to_vec(), b"2222".to_vec()),
+            (b"c".to_vec(), b"333333".to_vec()),
+            (b"d".to_vec(), b"4".to_vec()),
+        ];
+        let mut data = Vec::new();
+        let mut boundaries = Vec::new();
+        for (k, v) in &recs {
+            data.extend_from_slice(&rec(k, v));
+            boundaries.push(data.len());
+        }
+        for cut in 1..data.len() {
+            let p = tmp_path("fz_sweep.db");
+            write_raw(&p, &data[..cut]);
+            let s = FileStorage::open(&p).unwrap(); // nunca panics
+            let last_boundary = boundaries
+                .iter()
+                .copied()
+                .filter(|&b| b <= cut)
+                .max()
+                .unwrap_or(0);
+            let n_complete = boundaries.iter().filter(|&&b| b <= cut).count();
+            // mapa = exatamente os records completos
+            assert_eq!(s.map.len(), n_complete, "cut={cut}");
+            for (k, _) in recs.iter().take(n_complete) {
+                assert!(s.map.contains_key(k), "cut={cut} key={k:?}");
+            }
+            // arquivo truncado fisicamente em valid_end
+            let raw_len = std::fs::metadata(&p).unwrap().len() as usize;
+            assert_eq!(raw_len, last_boundary, "cut={cut}");
+            // determinismo: reopen reproduz o mesmo mapa
+            let s2 = FileStorage::open(&p).unwrap();
+            assert_eq!(s2.map, s.map, "cut={cut}");
+            let _ = std::fs::remove_file(&p);
+        }
     }
 
     #[cfg(feature = "file-storage")]

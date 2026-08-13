@@ -126,9 +126,9 @@ fn main() {
         }
         centers.push(center);
     }
-    for c in 0..CLUSTERS {
+    for (c, center) in centers.iter().enumerate() {
         for i in 0..PER_CLUSTER {
-            let mut v = centers[c].clone();
+            let mut v = center.clone();
             let mut st = (c * 100_003 + i) as u64;
             for x in v.iter_mut() {
                 st = st.wrapping_mul(1103515245).wrapping_add(12345);

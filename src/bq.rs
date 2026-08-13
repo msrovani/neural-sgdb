@@ -7,7 +7,7 @@ use crate::hamming_dispatch::{self, hamming as hamming_dispatch_fn};
 
 pub fn quantize_f32(v: &[f32]) -> Vec<u64> {
     let n_bits = v.len();
-    let n_words = (n_bits + 63) / 64;
+    let n_words = n_bits.div_ceil(64);
     let mut out = vec![0u64; n_words];
     for (i, &x) in v.iter().enumerate() {
         if x > 0.0 {
@@ -25,7 +25,7 @@ pub fn quantize_f32(v: &[f32]) -> Vec<u64> {
 pub fn quantize_f32_centered(v: &[f32]) -> Vec<u64> {
     let n = v.len();
     let mean = if n > 0 { v.iter().sum::<f32>() / n as f32 } else { 0.0 };
-    let n_words = (n + 63) / 64;
+    let n_words = n.div_ceil(64);
     let mut out = vec![0u64; n_words];
     for (i, &x) in v.iter().enumerate() {
         if x > mean {
@@ -89,20 +89,20 @@ impl MihIndex {
     pub fn build(src: &BqFlatIndex, blocks: usize) -> Self {
         let blocks = blocks.max(1);
         let w = src.words_per_vec.max(1);
-        let block_words = (w + blocks - 1) / blocks;
+        let block_words = w.div_ceil(blocks);
         let mut buckets: Vec<alloc::collections::BTreeMap<u64, Vec<usize>>> =
             (0..blocks).map(|_| alloc::collections::BTreeMap::new()).collect();
         for (i, _id) in src.ids.iter().enumerate() {
             let start = i * w;
             let vec = &src.flat[start..start + w];
-            for j in 0..blocks {
+            for (j, bucket) in buckets.iter_mut().enumerate() {
                 let lo = (j * block_words).min(w);
                 if lo >= w {
                     break; // blocos além da largura do vetor (w < blocks)
                 }
                 let hi = ((j + 1) * block_words).min(w);
                 let key = hash_words(&vec[lo..hi]);
-                buckets[j].entry(key).or_default().push(i);
+                bucket.entry(key).or_default().push(i);
             }
         }
         MihIndex { blocks, block_words, words_per_vec: w, buckets }
@@ -277,6 +277,10 @@ impl BqFlatIndex {
 
     pub fn len(&self) -> usize {
         self.ids.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ids.is_empty()
     }
 }
 

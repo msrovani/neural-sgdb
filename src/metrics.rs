@@ -67,9 +67,11 @@ mod tests {
 
     #[test]
     fn metrics_snapshot_roundtrip() {
-        let mut m = Metrics::default();
-        m.memory_writes = 3;
-        m.recalls = 5;
+        let m = Metrics {
+            memory_writes: 3,
+            recalls: 5,
+            ..Metrics::default()
+        };
         assert_eq!(m.value("memory_writes"), 3);
         assert_eq!(m.value("recalls"), 5);
         assert_eq!(m.value("nope"), 0);

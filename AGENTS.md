@@ -5,6 +5,15 @@ repo. **Read `codemap.md` (atlas), `docs/api.md` (contract) and
 `docs/architecture/` (v0.2 design — Memory Model, Lifecycle, Retrieval,
 Distributed, Storage, Cognitive API) before editing code.**
 
+## Post-P0 hardening state (2026-08-13)
+
+P0 (delivered, committed in `feat(v1.0): P0 hardening…`): docs aligned to
+v1.0.0, clippy zero-warnings (13 files), CI gates (clippy/doc/no-default —
+**fmt deliberately NOT gated**), MCP paginate overflow fix, arbitration
+empty-scores fix, FileStorage truncation sweep test, SAFETY comments on all 9
+unsafe sites, differential SIMD test. Matriz: 157+1 / 192+1 / 114+1, no_std
+gate ok. `.freebuff/` is tool state — gitignored, never commit.
+
 ## Repository Map
 
 A full codemap is available at `codemap.md` in the project root.
@@ -41,9 +50,10 @@ Apache-2.0**. OS interop via byte-identical NMD1 and TKLV formats.
    updating the OS.
 6. **Seams, not globals** — clock via `now: u64`, SIMD via `cpu_caps()`/
    `set_cpu_caps()`, log via `sgdb_log!`. No global engine statics.
-7. **Verification** — `cargo test` (120+1 default, 143+1 `--features p2p`,
-   81+1 `--no-default-features`) and `cargo check` (std + no_std) before
-   committing.
+7. **Verification** — `cargo test` (157+1 default, 192+1 `--features p2p`,
+   114+1 `--no-default-features`) and `cargo check` (std + no_std) before
+   committing. Clippy/rustdoc run with `-D warnings` (P0-5/P0-6/P0-10);
+   `cargo fmt` is NOT a gate (repo is not rustfmt-clean — 223 diffs).
 
 ## Quick API
 
@@ -77,10 +87,12 @@ cargo run --release --example mcp_server   # MCP server for AI agents
 ## Running tests
 
 ```bash
-cargo test                                 # 120+1 tests (InMemory/FileStorage/TickvFile)
-cargo test --features p2p                  # 143+1 (includes CRDT sync + mesh harness)
-cargo test --no-default-features           # 81+1 (no_std core, host test harness)
+cargo test                                 # 157+1 tests (InMemory/FileStorage/TickvFile)
+cargo test --features p2p                  # 192+1 (includes CRDT sync + mesh harness)
+cargo test --no-default-features           # 114+1 (no_std core, host test harness)
 cargo check --no-default-features --target x86_64-unknown-none   # no_std gate
+cargo clippy --all-targets --all-features -- -D warnings          # lint gate (P0-5)
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-6/P0-10)
 ```
 
 ## Repo-specific gotchas

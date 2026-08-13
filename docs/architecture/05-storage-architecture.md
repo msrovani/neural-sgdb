@@ -105,9 +105,11 @@ GC is driven by memory **state**, not just tombstones:
 - The byte-exact TKLV/TKCK format is a **contract with neural-os-core** —
   compaction must produce the same byte format the OS reads (golden tests
   pin it: `golden_record_bytes`, `fnv1a64_known_vector`).
-- `TickvFile` does not write checkpoints in v0.1 — v0.2 adds TKCK writes so
-  the OS can fast-mount instead of full scan. `encode_ckpt` already exists;
-  the backend just needs to call it.
+- `TickvFile` writes TKCK checkpoints (`checkpoint()` — TKCK record as the
+  LAST record) so a crate volume can fast-mount (`try_mount_from_ckpt`, FNV-1a
+  index check, per-entry CRC + stale check, ckpt-must-be-last) instead of full
+  scan; `open()` falls back to `scan_volume`. GC/compaction (`compact()`)
+  rewrites the live set + ckpt with an atomic rename.
 - Any NMD1/TKLV layout change (Doc 01 §4 variable clock, Doc 04 §2.1 value
   lists) is a **format version bump**, negotiated with the OS, golden tests
   updated in the same commit.

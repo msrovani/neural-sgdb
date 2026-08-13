@@ -20,12 +20,14 @@
 //!   semantics (512-aligned corrupt hunt, last-wins per key, `vlen=0`
 //!   tombstone, in-place `TKL\0` tombstone skip).
 //! - **Write an OS-readable volume:** `TickvFile` (a `Storage` backend) writes
-//!   byte-exact TKLV records; the OS mounts by full scan (`recover()` fallback,
-//!   no ckpt — `TickvFile` does not write a checkpoint in v0.1).
+//!   byte-exact TKLV records and a TKCK checkpoint (`checkpoint()` — the TKCK
+//!   record is the LAST record); `open()` fast-mounts via `try_mount_from_ckpt`
+//!   with a full `scan_volume` fallback. The OS mounts by full scan
+//!   (`recover()` fallback).
 //!
-//! ⚠️ No ckpt in v0.1: crate volumes mount in the OS via full scan (correct,
-//! slower than fast-mount). GC/compaction (zero-fill + rewrite live set)
-//! stays for v0.2 — append-only until then.
+//! ⚠️ Checkpoint é escrito por `checkpoint()` (TKCK sempre por último). Se
+//! GC/compaction estiver ativo, `compact()` reescreve o live set + ckpt e faz
+//! rename atômico. Volumes de teste (sem `checkpoint()`) montam por scan.
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -81,7 +83,7 @@ pub fn encode_ckpt(append_off: u64, entries: &[(String, u64)]) -> Vec<u8> {
     // entries.len() — um decodificador que lê n entradas desalinhava.
     let writable: Vec<(String, u64)> = entries
         .iter()
-        .filter(|(k, _)| k.as_bytes().len() <= 65535 && k.as_bytes() != CKPT_KEY.as_bytes())
+        .filter(|(k, _)| k.len() <= 65535 && k != CKPT_KEY)
         .cloned()
         .collect();
     let mut body = Vec::with_capacity(24 + writable.len() * 16);
@@ -237,8 +239,16 @@ pub fn scan_volume(data: &[u8]) -> ScanResult {
 /// de cada entrada (header `TKL V` não-stale, CRC, key bate) e que o ckpt é o
 /// ÚLTIMO record do volume (nada além dele, senão está stale e o mount completo
 /// é necessário). Qualquer anomalia → `None` → fallback `scan_volume`.
+/// Resultado de um mount a partir do checkpoint (evita `type_complexity`).
 #[cfg(feature = "file-storage")]
-fn try_mount_from_ckpt(data: &[u8]) -> Option<(BTreeMap<String, Vec<u8>>, BTreeMap<String, u64>, u64)> {
+type MountResult = (
+    BTreeMap<String, Vec<u8>>,
+    BTreeMap<String, u64>,
+    u64,
+);
+
+#[cfg(feature = "file-storage")]
+fn try_mount_from_ckpt(data: &[u8]) -> Option<MountResult> {
     let size = data.len() as u64;
     let mut off = 0u64;
     let mut ckpt: Option<(u64, u64, Vec<u8>)> = None; // (off, end, body)
@@ -1061,12 +1071,12 @@ mod tests {
             db.remember_exchange("oi", "ola").unwrap();
             db.remember_fact("fato 1", 42).unwrap();
             db.checkpoint().unwrap();
-            assert!(db.scan_prefix("md/L1/").unwrap().len() >= 1);
-            assert!(db.scan_prefix("md/L3/").unwrap().len() >= 1);
+            assert!(!db.scan_prefix("md/L1/").unwrap().is_empty());
+            assert!(!db.scan_prefix("md/L3/").unwrap().is_empty());
         }
         {
             let mut db = crate::sgdb::Sgdb::open(TickvFile::open(&path).unwrap()).unwrap();
-            assert!(db.scan_prefix("md/L3/").unwrap().len() >= 1);
+            assert!(!db.scan_prefix("md/L3/").unwrap().is_empty());
         }
         let _ = std::fs::remove_file(&path);
     }

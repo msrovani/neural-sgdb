@@ -36,10 +36,10 @@ filesystem, no external runtime.
 
 ## Status
 
-**v0.9** ✅ — dual-mode (`no_std` + `std`, zero dependencies):
+**v1.0.0** ✅ — dual-mode (`no_std` + `std`, zero dependencies):
 
-- `cargo test` on host: **147 tests + doc-test** (177 + doc-test with `p2p`,
-  105 + doc-test with `--no-default-features`)
+- `cargo test` on host: **157 tests + doc-test** (192 + doc-test with `p2p`,
+ 114 + doc-test with `--no-default-features`)
 - `cargo check --no-default-features --target x86_64-unknown-none`: **clean**
 - **Recall stack**: BQ coarse → FP32 rescore, SIMD hamming (AVX-512/AVX2/
   scalar), auto-oversample by dimensionality, `recall_oversampled`,
@@ -71,10 +71,10 @@ filesystem, no external runtime.
   **first-class conflict model** (deterministic id, MDR1 evidence per
   candidate, `resolve_conflict` via evidence, `dismiss_conflict`),
   **cognitive API** (`reinforce`/`forget`/`explain`/`transfer_to`/
-  `merge_memories`/`conflicts`/`resolve_conflict`) and **MCP 14 tools**
-  (provenance per hit in recall, ServerInfo v0.9.0)
+  `merge_memories`/`conflicts`/`resolve_conflict`) and **MCP 13 tools**
+  (provenance per hit in recall, ServerInfo v1.0.0)
 - **Interfaces**: MCP server with `memory://{layer}/{key}` resources +
-  `nextCursor` pagination + 14 cognitive tools + tool annotations;
+  `nextCursor` pagination + 13 cognitive tools + tool annotations;
   `cargo run --release --example stress` (100k-op stress) and `--example bench`
 - Full API contract in [`docs/api.md`](docs/api.md)
 
@@ -190,5 +190,7 @@ Licensed under **MIT** **or** **Apache-2.0** (dual license), your choice.
 - **TKLV/TKCK (storage):** `tickv::encode_record`/`scan_volume` replicate the
   TickvLite format (`crates/k_nano/src/storage/tickv.rs`) — a volume written on
   either side is read by the other. `TickvFile` writes 512-aligned records with
-  IEEE CRC32 over key‖val; tombstone `TKL\0`/`vlen=0`; EOF all-0x00/0xFF.
-  Note: no checkpoint in v0.1 (the OS mounts by full scan); GC in v0.2.
+IEEE CRC32 over key‖val; tombstone `TKL\0`/`vlen=0`; EOF all-0x00/0xFF.
+   `TickvFile` writes TKCK checkpoints (fast-mount via `try_mount_from_ckpt` with
+   full `scan_volume` fallback) and supports GC/compaction (rewrites live set +
+   ckpt + atomic rename).

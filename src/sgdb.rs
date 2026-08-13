@@ -94,9 +94,11 @@ impl Sgdb {
         let mut engine = AiosDatabaseEngine::new(node_id, Box::new(backend));
         let recovered = engine.rebuild_indices_from_storage()?;
         crate::sgdb_log!("Sgdb open: {recovered} docs reindexados (ART/BQ)");
-        let mut metrics = crate::metrics::Metrics::default();
-        metrics.storage_recoveries = 1;
-        metrics.index_rebuilds = 1;
+        let metrics = crate::metrics::Metrics {
+            storage_recoveries: 1,
+            index_rebuilds: 1,
+            ..crate::metrics::Metrics::default()
+        };
         Ok(Sgdb { engine, metrics })
     }
 
@@ -243,7 +245,7 @@ impl Sgdb {
     }
 
     /// Reforço (v0.9, roadmap Phase 12): `importance += delta` (clampada a
-    /// [0,1]) e `last_reinforced` = contador próprio atual. Persistente em
+    /// `[0,1]`) e `last_reinforced` = contador próprio atual. Persistente em
     /// `sys/meta/` (MDM1 v3). Não ticka o relógio — reforço é metadado
     /// cognitivo local, não uma nova versão causal.
     pub fn reinforce(&mut self, key: &str, delta: f32) -> Result<(), SgdbError> {
@@ -590,8 +592,8 @@ impl Sgdb {
     ///    sem payload f32, fallback = hamming normalizado (0..1).
     /// 4. **Finalização** — dedupe por storage key (overwrite), sort
     ///    determinístico por (score u32, storage key) → top-k.
-    /// Filtros futuros (camada, metadado, temporal, proveniência) entram entre
-    /// 2 e 3 sem mudar o contrato público.
+    ///    Filtros futuros (camada, metadado, temporal, proveniência) entram
+    ///    entre 2 e 3 sem mudar o contrato público.
     pub fn recall_oversampled(
         &mut self,
         query: &[f32],
@@ -1248,10 +1250,8 @@ impl Sgdb {
 fn ts_from_key(key: &str) -> Option<u64> {
     let hex = if let Some(p) = key.find("/ts/") {
         &key[p + 4..]
-    } else if let Some(rest) = key.strip_prefix("ts/") {
-        rest
     } else {
-        return None;
+        key.strip_prefix("ts/")?
     };
     let hex = hex.split('/').next()?;
     u64::from_str_radix(hex, 16).ok()
@@ -1320,8 +1320,8 @@ mod tests {
         db.remember_exchange("oi", "ola!").unwrap();
         let l1 = db.scan_prefix("md/L1/").unwrap();
         let l2 = db.scan_prefix("md/L2/").unwrap();
-        assert!(l1.len() >= 1);
-        assert!(l2.len() >= 1);
+        assert!(!l1.is_empty());
+        assert!(!l2.is_empty());
     }
 
     #[test]
@@ -1344,7 +1344,7 @@ mod tests {
         let mut db = Sgdb::open(InMemory::new()).unwrap();
         db.remember_fact("prefere dark mode", 100).unwrap();
         let l3 = db.scan_prefix("md/L3/").unwrap();
-        assert!(l3.len() >= 1);
+        assert!(!l3.is_empty());
     }
 
     #[test]
@@ -1358,7 +1358,7 @@ mod tests {
         assert_eq!(db.ram_len(), 0);
         // L1 sobrevive via Storage
         let l1 = db.scan_prefix("md/L1/").unwrap();
-        assert!(l1.len() >= 1);
+        assert!(!l1.is_empty());
     }
 
     #[cfg(feature = "file-storage")]
@@ -1381,9 +1381,9 @@ mod tests {
         // Reopen: índices reconstruídos do storage
         let mut db = Sgdb::open(crate::storage::FileStorage::open(&path).unwrap()).unwrap();
         let l1 = db.scan_prefix("md/L1/").unwrap();
-        assert!(l1.len() >= 1);
+        assert!(!l1.is_empty());
         let l3 = db.scan_prefix("md/L3/").unwrap();
-        assert!(l3.len() >= 1);
+        assert!(!l3.is_empty());
         let hits = db.recall(&[1.0, -1.0, 1.0, -1.0], 1).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].text, "clima ensolarado em sao paulo");
@@ -1537,8 +1537,8 @@ mod tests {
             assert_eq!(after.len(), 1, "recall pós-rebuild vazio");
             assert_eq!(after[0].text, "clima bom");
             // ART reconstruído: fatos e exchanges acessíveis por scan_prefix
-            assert!(db.scan_prefix("md/L1/").unwrap().len() >= 1);
-            assert!(db.scan_prefix("md/L3/").unwrap().len() >= 1);
+            assert!(!db.scan_prefix("md/L1/").unwrap().is_empty());
+            assert!(!db.scan_prefix("md/L3/").unwrap().is_empty());
         }
         let _ = std::fs::remove_file(&path);
     }
@@ -1630,7 +1630,7 @@ mod tests {
             // invalidar-não-deletar: doc permanece no storage
             db.invalidate(key, 600).unwrap();
             assert!(!db.validity_at(key, 600).unwrap());
-            assert!(db.scan_prefix("md/L3/").unwrap().len() >= 1);
+            assert!(!db.scan_prefix("md/L3/").unwrap().is_empty());
 
             // recall_at filtra inválidos; recall não
             let emb = [1.0, -1.0, 1.0, -1.0];
@@ -1693,7 +1693,7 @@ mod tests {
         let mut db = Sgdb::open(InMemory::new()).unwrap();
         db.remember_semantic("k1", "texto um", &[1.0, -1.0, 1.0, -1.0]).unwrap();
         db.remember_exchange("oi", "ola").unwrap(); // L1 RAM
-        assert!(db.scan_prefix("md/L4/").unwrap().len() >= 1);
+        assert!(!db.scan_prefix("md/L4/").unwrap().is_empty());
 
         // validade marcada antes do delete — side-table deve morrer com o doc
         db.set_validity("md/L4/k1", 0, 1000).unwrap();
@@ -2307,7 +2307,7 @@ mod tests {
         db.set_state("md/L2/k1", MemoryState::Decayed).unwrap();
         let active = db.recall(&[1.0, -1.0, 1.0, -1.0], 10).unwrap();
         assert!(
-            active.iter().all(|h| h.key.ends_with("/k2") == false && h.key.ends_with("/k1") == false),
+            active.iter().all(|h| !h.key.ends_with("/k2") && !h.key.ends_with("/k1")),
             "recall default não deve conter memórias inativas: {:?}",
             active.iter().map(|h| h.key.clone()).collect::<Vec<_>>()
         );

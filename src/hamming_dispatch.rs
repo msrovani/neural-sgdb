@@ -128,8 +128,8 @@ pub fn hamming_scalar(a: &[u64], b: &[u64]) -> u32 {
         d += (a[i] ^ b[i]).count_ones();
     }
     let longer = if a.len() > b.len() { a } else { b };
-    for j in n..longer.len() {
-        d += longer[j].count_ones();
+    for &w in longer[n..].iter() {
+        d += w.count_ones();
     }
     d
 }
@@ -141,6 +141,10 @@ pub fn hamming_scalar(a: &[u64], b: &[u64]) -> u32 {
 #[cfg(target_arch = "x86_64")]
 fn hamming_avx2_or_fallback(a: &[u64], b: &[u64]) -> u32 {
     if cpu_has_avx2() {
+        // SAFETY: cpu_has_avx2() confirmou suporte runtime ao AVX2; o kernel só
+        // executa instruções AVX2. a/b são slices válidos — o kernel nunca lê
+        // além de a[..min(a.len,b.len)] e do tail longer[n..] (bounds por
+        // construção, ver hamming_avx2_xor).
         return unsafe { hamming_avx2_xor(a, b) };
     }
     hamming_scalar(a, b)
@@ -149,6 +153,11 @@ fn hamming_avx2_or_fallback(a: &[u64], b: &[u64]) -> u32 {
 /// AVX2: XOR YMM + popcount via GPR extract (sem VPSHUFB, sem store p/ mem).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
+// SAFETY: requer AVX2 habilitado (target_feature) E suporte runtime — o
+// chamador deve ter verificado cpu_has_avx2(). a/b precisam de pelo menos
+// min(a.len,b.len) words legíveis (invariante de slice); leituras `loadu`
+// unaligned no main loop só ocorrem com i+4 <= n (32 bytes inteiros dentro
+// do slice); o tail loop e longer[n..] respeitam len().
 unsafe fn hamming_avx2_xor(a: &[u64], b: &[u64]) -> u32 {
     use core::arch::x86_64::*;
     let n = a.len().min(b.len());
@@ -171,8 +180,8 @@ unsafe fn hamming_avx2_xor(a: &[u64], b: &[u64]) -> u32 {
         i += 1;
     }
     let longer = if a.len() > b.len() { a } else { b };
-    for j in n..longer.len() {
-        d += longer[j].count_ones();
+    for &w in longer[n..].iter() {
+        d += w.count_ones();
     }
     d
 }
@@ -182,14 +191,23 @@ unsafe fn hamming_avx2_xor(a: &[u64], b: &[u64]) -> u32 {
 #[cfg(target_arch = "x86_64")]
 fn hamming_avx512_or_fallback(a: &[u64], b: &[u64]) -> u32 {
     if cpu_has_avx512() {
+        // SAFETY: cpu_has_avx512() confirmou AVX-512F runtime; o dispatch
+        // (via __cpuid_count) desce para um kernel cujo target_feature cobre
+        // as instruções usadas. a/b são slices válidos (bounds internos).
         return unsafe { hamming_avx512_dispatch(a, b) };
     }
     if cpu_has_avx2() {
+        // SAFETY: cpu_has_avx2() confirmou AVX2 runtime — mesmas garantias de
+        // hamming_avx2_or_fallback acima.
         return unsafe { hamming_avx2_xor(a, b) };
     }
     hamming_scalar(a, b)
 }
 
+// SAFETY: requer AVX-512F habilitado no runtime (chamador verificou
+// cpu_has_avx512()). Usa __cpuid_count (intrínseco, instrução CPUID) para
+// decidir entre kernels AVX-512 — `has_vpop` é o bit 14 do leaf 7/ecx
+// (AVX512_VPOPCNTDQ). a/b são slices válidos; bounds internos em cada kernel.
 #[cfg(target_arch = "x86_64")]
 unsafe fn hamming_avx512_dispatch(a: &[u64], b: &[u64]) -> u32 {
     let leaf7 = core::arch::x86_64::__cpuid_count(7, 0);
@@ -203,6 +221,10 @@ unsafe fn hamming_avx512_dispatch(a: &[u64], b: &[u64]) -> u32 {
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f", enable = "avx512vpopcntdq")]
+// SAFETY: requer AVX-512F + AVX-512VPOPCNTDQ (target_feature) e suporte
+// runtime — chamador verificou cpu_has_avx512() E o dispatch confirmou o bit
+// vpopcnt via CPUID. a/b: slices válidos; o main loop usa loadu só com
+// i+8 <= n (64 bytes inteiros dentro do slice); tail e longer[n..] por len().
 unsafe fn hamming_avx512_vpopcnt(a: &[u64], b: &[u64]) -> u32 {
     use core::arch::x86_64::*;
     let n = a.len().min(b.len());
@@ -225,14 +247,18 @@ unsafe fn hamming_avx512_vpopcnt(a: &[u64], b: &[u64]) -> u32 {
         i += 1;
     }
     let longer = if a.len() > b.len() { a } else { b };
-    for j in n..longer.len() {
-        d += longer[j].count_ones();
+    for &w in longer[n..].iter() {
+        d += w.count_ones();
     }
     d
 }
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
+// SAFETY: requer AVX-512F (target_feature) e suporte runtime — chamador
+// verificou cpu_has_avx512() e o dispatch NÃO viu o bit vpopcnt (sem VPOPCNTDQ,
+// usa XOR ZMM + popcount via store p/ mem local). a/b: slices válidos; loadu
+// só com i+8 <= n; tail e longer[n..] por len().
 unsafe fn hamming_avx512_xor(a: &[u64], b: &[u64]) -> u32 {
     use core::arch::x86_64::*;
     let n = a.len().min(b.len());
@@ -254,8 +280,8 @@ unsafe fn hamming_avx512_xor(a: &[u64], b: &[u64]) -> u32 {
         i += 1;
     }
     let longer = if a.len() > b.len() { a } else { b };
-    for j in n..longer.len() {
-        d += longer[j].count_ones();
+    for &w in longer[n..].iter() {
+        d += w.count_ones();
     }
     d
 }
@@ -278,6 +304,7 @@ pub fn smoke_1024() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec::Vec;
 
     #[test]
     fn scalar_correctness() {
@@ -295,4 +322,61 @@ mod tests {
 
     // (caps-injection test removed: SELECTED is a global static and parallel
     // tests race; smoke_1024 covers kernel correctness)
+
+    #[cfg(target_arch = "x86_64")]
+    fn deterministic_words(seed: &mut u64, n: usize) -> Vec<u64> {
+        // LCG xorshift64* — pseudo-aleatório determinístico (paridade host)
+        (0..n)
+            .map(|_| {
+                *seed ^= *seed << 13;
+                *seed ^= *seed >> 7;
+                *seed ^= *seed << 17;
+                *seed
+            })
+            .collect()
+    }
+
+    #[test]
+    fn differential_scalar_vs_all_kernels() {
+        // P0-10: todo kernel SIMD (se suportado) deve concordar EXATAMENTE com
+        // hamming_scalar — qualquer divergência = bug de dispatch/kernel.
+        // Cobertura de comprimentos: 1..17 words (cobre tails 4/8 + tail loop
+        // scalar + longer[n..]) e pares com lengths DESIGUAIS (a!=b).
+        let mut seed = 0xDEAD_BEEF_CAFE_F00Du64;
+        for n in 1..=17u64 {
+            let (a, b) = (
+                deterministic_words(&mut seed, n as usize),
+                deterministic_words(&mut seed, n as usize),
+            );
+            let expect = hamming_scalar(&a, &b);
+            if cpu_has_avx2() {
+                // SAFETY: cpu_has_avx2() verificado acima (requisito do kernel)
+                let got = unsafe { hamming_avx2_xor(&a, &b) };
+                assert_eq!(got, expect, "avx2 divergiu no len {n}");
+            }
+            if cpu_has_avx512() {
+                // SAFETY: cpu_has_avx512() verificado acima (requisito do kernel)
+                let got = unsafe { hamming_avx512_dispatch(&a, &b) };
+                assert_eq!(got, expect, "avx512 divergiu no len {n}");
+            }
+        }
+        // lengths desiguais: só o segmento comum é XOR; o resto do maior entra
+        let mut a = deterministic_words(&mut seed, 13);
+        let mut b = deterministic_words(&mut seed, 5);
+        let expect = hamming_scalar(&a, &b);
+        if cpu_has_avx2() {
+            // SAFETY: cpu_has_avx2() verificado acima
+            let got = unsafe { hamming_avx2_xor(&a, &b) };
+            assert_eq!(got, expect, "avx2 divergiu (len desiguais)");
+        }
+        if cpu_has_avx512() {
+            // SAFETY: cpu_has_avx512() verificado acima
+            let got = unsafe { hamming_avx512_dispatch(&a, &b) };
+            assert_eq!(got, expect, "avx512 divergiu (len desiguais)");
+        }
+        a.clear();
+        b.clear();
+        let expect = hamming_scalar(&a, &b);
+        assert_eq!(expect, 0, "scalar vazio deve ser 0");
+    }
 }

@@ -1,10 +1,10 @@
 # neural-sgdb — API Contract
 
 > Contract document for the extraction of the SGDB core from neural-os-core.
-> Status: **v0.1 implemented** — this document is the current public contract;
-> v0.2+ items are explicitly marked as roadmap. The internal API lives in
-> `crates/k_ai/src/sgdb/` of the parent OS; this doc defines the public surface
-> the community crate exposes (and already ships).
+> Status: **current public contract (crate v1.0.0)** — this document is the
+> current public contract; roadmap items are explicitly marked as such. The
+> internal API lives in `crates/k_ai/src/sgdb/` of the parent OS; this doc
+> defines the public surface the community crate exposes (and already ships).
 
 ## Principles
 
@@ -221,8 +221,9 @@ Binary layouts are contracts — documented by byte offsets in the source
 - OS → crate: golden bytes are derived from the OS spec (`crates/k_nano/src/
   storage/tickv.rs`); `scan_volume` re-parse proves the crate reads OS-written
   streams (incl. tombstones `TKL\0`/`vlen=0` and corrupt-hunt).
-- crate → OS: `TickvFile` writes 512-aligned TKLV records byte-exact; the OS
-  mounts by full scan (`recover()` fallback, no checkpoint in v0.1).
+- crate → OS: `TickvFile` writes 512-aligned TKLV records byte-exact, with
+  TKCK checkpoint fast-mount (`try_mount_from_ckpt`) and full `scan_volume`
+  fallback; the OS mounts by full scan (`recover()`).
 - A true bidirectional test running the OS's own reader on host is deferred
   until the OS publishes its TickvLite reader as a crate.
 
@@ -498,8 +499,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
       `fnv1a64`) + `TickvFile` backend (512-aligned records, IEEE CRC32 over
       key‖val, tombstone `TKL\0`/`vlen=0`, EOF all-0x00/0xFF). Verified by a
       golden bytes test + `scan_volume` re-parse (same semantics as the OS
-      `recover()`) + InMemory parity. Note: `TickvFile` does not write
-      checkpoints (v0.1) — the OS mounts by full scan; GC/compaction is v0.2
+      `recover()`) + InMemory parity. Note: `TickvFile` writes TKCK
+      checkpoints (v0.7+) with fast-mount (`try_mount_from_ckpt`, FNV-1a index
+      check, per-entry CRC + stale check, ckpt-must-be-last) and a full
+      `scan_volume` fallback; GC/compaction rewrites live set + ckpt + atomic
+      rename.
 - [x] Zero `k_nano` / kernel dependency in the crate code
 
 ## Note — relationship with the OS (Mode 1)
