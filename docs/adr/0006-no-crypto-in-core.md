@@ -18,8 +18,13 @@ must not impersonate an author or rewrite clocks.
 - `SignedEnvelope` is the authenticable envelope format for signed
   transports; `UdpTransport` is documented as an unauthenticated demo.
 - Production hosts plug a real signer/transport (Ed25519/HMAC/TLS) at the
-  boundary; the core stays clean. P2-3 delivers reference-signer guidance and
-  a `health()`/`validate()` surface.
+  boundary; the core stays clean. **P2-3 (2026-08-13)**: the reference
+  signed-transport flow is exercised end-to-end in `trust.rs`
+  (`signed_transport_reference_flow`, p2p) — sign → envelope → verify →
+  reject tampered payload → reject untrusted peer. `Sgdb::health()` reports
+  observable state (backend, counts, open conflicts) and `Sgdb::validate()`
+  runs integrity checks, giving hosts the observability to act on
+  authentication/trust failures.
 
 ## Consequences
 

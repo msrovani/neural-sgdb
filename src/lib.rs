@@ -101,7 +101,7 @@ pub use memory_doc::{
     generate_memory_id, LineageEntry, MemoryDoc, MemoryDocView, MemoryLayer, MemoryMeta,
     MemoryRecord, MemoryState, RelationKind, VectorClock,
 };
-pub use sgdb::{Hit, HitProvenance, Sgdb};
+pub use sgdb::{HealthReport, Hit, HitProvenance, Sgdb, ValidateIssue};
 pub use storage::{InMemory, Storage, SgdbError};
 pub use limits::{
     DEFAULT_SCAN_PAGE_SIZE, MAX_EMBEDDING_DIM, MAX_KLEN, MAX_RAG_CONTEXT_BYTES, MAX_VLEN,

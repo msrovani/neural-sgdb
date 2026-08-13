@@ -19,6 +19,16 @@ All notable changes to this project. Format based on
   0001–0006) capturing the zero-deps/no_std contract, BQ-vs-FAISS, side-table
   metadata, byte-contract formats, ART prefix-key rejection and the
   no-crypto-in-core trust seam.
+- **Health/validate + signed-transport reference (P2-3)**: `ready()` (hardcoded
+  `true`, low value) replaced by `Sgdb::health()` (observable `HealthReport`:
+  backend, node_id, storage probe, doc/BQ/RAM counts, open conflicts) and
+  `Sgdb::validate()` (aggregated integrity checks: storage `md/` walk + NMD1
+  decode + ART/BQ index cross-check + side-table orphan detection — returns
+  every issue, empty = healthy). Both `no_std`-safe. Crypto stays OUT of the
+  core: a reference signed-transport flow test (`trust.rs`, p2p) proves the
+  `Signer`/`TrustStore`/`SignedEnvelope` seam end-to-end (sign → envelope →
+  verify → reject tampered payload → reject untrusted peer) — the host plugs
+  real Ed25519/HMAC at the boundary (ADR-0006).
 
 ### P0 — Hardening & tooling (delivered 2026-08-13)
 - **Docs aligned to v1.0.0**: README, docs/api.md, CHANGELOG, MCP

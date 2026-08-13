@@ -30,6 +30,37 @@ pub struct HitProvenance {
     pub parent_ids: Vec<String>,
 }
 
+/// Estado observável de uma instância `Sgdb` (P2-3, substitui o `ready()`
+/// de baixo valor). `no_std`-safe — só inteiros/str/vec.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HealthReport {
+    /// Backend ativo (`in-memory`, `file`, `tickv`).
+    pub backend: &'static str,
+    /// node_id local (vector clock / origem).
+    pub node_id: u8,
+    /// Backend respondeu a uma sonda de leitura sem erro.
+    pub storage_ok: bool,
+    /// Docs indexados no ART (md/L0..L7).
+    pub doc_count: usize,
+    /// Embeddings no índice BQ (L4).
+    pub bq_len: usize,
+    /// Blobs L0/L1 em RAM (não persistidos).
+    pub ram_len: usize,
+    /// Conflitos persistidos em aberto (`sys/conflict/`).
+    pub open_conflicts: usize,
+}
+
+/// Problema de integridade encontrado por [`Sgdb::validate`] (P2-3).
+/// Agregado: um erro não impede os demais checks — `validate()` retorna
+/// TODOS os issues (vazia = saudável).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ValidateIssue {
+    /// Storage key (ou região) afetada.
+    pub key: String,
+    /// Descrição estática do problema.
+    pub message: &'static str,
+}
+
 /// Resultado de recall semântico.
 #[derive(Clone, Debug)]
 pub struct Hit {
@@ -1276,8 +1307,105 @@ impl Sgdb {
         &mut self.engine
     }
 
-    pub fn ready(&self) -> bool {
-        true // engine sempre tem storage
+    /// Estado observável da instância (P2-3). Substitui o `ready()` v0.1
+    /// (que retornava `true` hardcoded — o engine sempre tem storage).
+    pub fn health(&mut self) -> HealthReport {
+        let storage_ok = {
+            let probe = self.engine.scan_prefix_storage(b"md/");
+            probe.is_ok()
+        };
+        let open_conflicts = self.engine.list_conflicts().len();
+        HealthReport {
+            backend: self.engine.backend_name(),
+            node_id: self.engine.node_id,
+            storage_ok,
+            doc_count: self.engine.art.scan_prefix("md/").len(),
+            bq_len: self.engine.bq_len(),
+            ram_len: self.engine.ram_l0l1_len(),
+            open_conflicts,
+        }
+    }
+
+    /// Checks de integridade agregados (P2-3): caminha o storage `md/`
+    /// (fonte da verdade), decodifica cada NMD1 e cruza com os índices
+    /// derivados (ART/BQ) e com as side-tables (`sys/state|validity|meta`).
+    /// Retorna TODOS os issues encontrados — vazio = saudável.
+    pub fn validate(&mut self) -> Vec<ValidateIssue> {
+        let mut issues: Vec<ValidateIssue> = Vec::new();
+
+        // 1. storage: docs `md/` decodificam e estão no ART
+        let md = match self.engine.scan_prefix_storage(b"md/") {
+            Ok(md) => md,
+            Err(e) => {
+                issues.push(ValidateIssue {
+                    key: "md/".into(),
+                    message: match e {
+                        SgdbError::Corrupt => "storage corrupt",
+                        SgdbError::Storage(m) => m,
+                        SgdbError::Invalid(m) => m,
+                    },
+                });
+                return issues;
+            }
+        };
+        for (sk, bytes) in &md {
+            let sk = String::from_utf8_lossy(sk).into_owned();
+            if MemoryDoc::decode(bytes).is_err() {
+                issues.push(ValidateIssue {
+                    key: sk.clone(),
+                    message: "NMD1 doc does not decode",
+                });
+            }
+            if self.engine.art.get(&sk).is_none() {
+                issues.push(ValidateIssue {
+                    key: sk,
+                    message: "doc missing from ART index",
+                });
+            }
+        }
+
+        // 2. índices derivados: contagens BATEM com o storage
+        let l4_count = md
+            .iter()
+            .filter(|(sk, _)| sk.starts_with(b"md/L4/"))
+            .count();
+        if self.engine.bq_len() != l4_count {
+            issues.push(ValidateIssue {
+                key: "md/L4/".into(),
+                message: "BQ index count != L4 doc count",
+            });
+        }
+
+        // 3. side-tables não órfãs: cada sys/state|validity|meta aponta para
+        // um doc `md/` que existe (o inverso é permitido: doc sem meta =
+        // pré-v0.6, meta lazy).
+        for prefix in ["sys/state/", "sys/validity/", "sys/meta/"] {
+            if let Ok(rows) = self.engine.scan_prefix_storage(prefix.as_bytes()) {
+                for (sk, _) in rows {
+                    let target = String::from_utf8_lossy(&sk[prefix.len()..]).into_owned();
+                    if !target.starts_with("md/") {
+                        continue; // side-table não-doc (reservada) — fora do check
+                    }
+                    match self.engine.storage_get(target.as_bytes()) {
+                        Ok(Some(_)) => {}            // doc existe — ok
+                        Ok(None) => {
+                            issues.push(ValidateIssue {
+                                key: target,
+                                message: "side-table targets missing doc",
+                            });
+                        }
+                        Err(_) => {
+                            issues.push(ValidateIssue {
+                                key: target,
+                                message: "storage read failed during validate",
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        issues
     }
 
     pub fn bq_len(&self) -> usize {
@@ -2820,5 +2948,106 @@ mod tests {
         let rep = lc.tick(&mut db, 10).unwrap();
         assert!(rep.transitions >= 1);
         assert_eq!(db.metrics().lifecycle_transitions, rep.transitions);
+    }
+
+    // ── P2-3: health() / validate() ────────────────────────────────────────
+
+    #[test]
+    fn health_reports_observable_state() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("d1", "clima ensolarado", &[1.0, -1.0, 1.0, -1.0])
+            .unwrap();
+        db.remember_exchange("oi", "ola!").unwrap(); // L1 → RAM
+        let h = db.health();
+        assert!(h.storage_ok);
+        assert_eq!(h.backend, "in-memory");
+        assert!(h.doc_count >= 2); // L4 d1 + L2 companion
+        assert_eq!(h.bq_len, 1);
+        assert!(h.ram_len >= 1);
+        assert_eq!(h.open_conflicts, 0);
+    }
+
+    #[test]
+    fn validate_is_clean_on_healthy_db() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("d1", "clima ensolarado", &[1.0, -1.0, 1.0, -1.0])
+            .unwrap();
+        db.remember_fact("fato", 100).unwrap();
+        db.checkpoint().unwrap();
+        assert!(db.validate().is_empty());
+    }
+
+    #[test]
+    fn validate_detects_missing_art_index_entry() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("d1", "clima ensolarado", &[1.0, -1.0, 1.0, -1.0])
+            .unwrap();
+        // corrompe o índice derivado: remove a entrada ART (o storage fica
+        // intacto) — validate deve acusar "doc missing from ART index"
+        let sk = "md/L4/d1";
+        let v = db.engine.storage_get(sk.as_bytes()).unwrap().unwrap();
+        db.engine.art.delete(sk);
+        db.engine.bq.clear();
+        let issues = db.validate();
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.key == sk && i.message == "doc missing from ART index"),
+            "issues: {issues:?}"
+        );
+        let _ = v;
+    }
+
+    #[test]
+    fn validate_detects_corrupt_doc_bytes() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("d1", "clima ensolarado", &[1.0, -1.0, 1.0, -1.0])
+            .unwrap();
+        // grava bytes corrompidos por cima (simula bit rot no storage) —
+        // corrompe o MAGIC (decode falha garantido; corromper o meio pode
+        // cair no payload de texto livre e decodar igual)
+        let sk = "md/L4/d1";
+        let mut blob = db.engine.storage_get(sk.as_bytes()).unwrap().unwrap();
+        blob[0] ^= 0xFF;
+        db.engine.storage_put_raw(sk.as_bytes(), &blob).unwrap();
+        let issues = db.validate();
+        assert!(
+            issues.iter().any(|i| i.key == sk && i.message == "NMD1 doc does not decode"),
+            "issues: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn validate_detects_orphan_side_table() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("d1", "clima ensolarado", &[1.0, -1.0, 1.0, -1.0])
+            .unwrap();
+        // side-table órfã: sys/state/ apontando para um doc que não existe
+        db.engine
+            .storage_put_raw(b"sys/state/md/L4/ghost", &[1])
+            .unwrap();
+        let issues = db.validate();
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.key == "md/L4/ghost" && i.message == "side-table targets missing doc"),
+            "issues: {issues:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "p2p")]
+    fn health_reports_open_conflicts() {
+        let mut a = Sgdb::open_with_node_id(1, InMemory::new()).unwrap();
+        let mut b = Sgdb::open_with_node_id(2, InMemory::new()).unwrap();
+        a.remember_semantic("theme", "dark", &[1.0, -1.0, 1.0, -1.0])
+            .unwrap();
+        b.remember_semantic("theme", "light", &[1.0, -1.0, 1.0, -1.0])
+            .unwrap();
+        let rec_b = b.export_record("md/L4/theme").unwrap().unwrap();
+        let rec_a = a.export_record("md/L4/theme").unwrap().unwrap();
+        let _ = a.merge_remote(rec_b).unwrap();
+        let _ = b.merge_remote(rec_a).unwrap();
+        assert_eq!(a.health().open_conflicts, 1);
     }
 }

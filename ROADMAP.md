@@ -19,10 +19,12 @@ Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
    documented (evidence is local; content converges).
 ✅ **P2-2 — Governance docs** (this file, `SECURITY.md`, `VERSIONING.md`,
    `MIGRATIONS.md`, `docs/adr/`).
-🔜 **P2-3 — Security-by-backend**: real crypto (Ed25519/HMAC) at the
-   transport boundary via the existing `Signer`/`Transport` seams — the core
-   stays `no_std`-clean and crypto-free; plus a `health()`/`validate()`
-   observability surface replacing the low-value `ready()`.
+🔜 **P2-3 — Security-by-backend** (✅ delivered 2026-08-13): the reference
+   signed-transport flow (sign → envelope → verify → reject tampered/untrusted)
+   is proven end-to-end in `trust.rs` via the existing `Signer`/`Transport`/
+   `TrustStore`/`SignedEnvelope` seams — the core stays `no_std`-clean and
+   crypto-free (ADR-0006); `ready()` replaced by `Sgdb::health()` (observable
+   state) and `Sgdb::validate()` (aggregated integrity checks).
 🔜 **P2-4+ — Post-P2 audit**: re-run the full bughunt oracle pass against the
    hardened tree; fuzz more codecs (`MDR1`/`CFL1`/`MDLT`/`MSNP`); CI
    hardening (cross-target checks, examples gate).

@@ -14,7 +14,7 @@ use crate::memory_doc::{
     generate_memory_id, MemoryDoc, MemoryDocView, MemoryLayer, MemoryMeta, MemoryRecord,
     MemoryState, RelationKind, VectorClock,
 };
-use crate::storage::{Storage, SgdbError};
+use crate::storage::{ScanResult, Storage, SgdbError};
 
 /// Contador monotônico de handles internos (ART / BQ ids).
 static NEXT_ID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
@@ -179,6 +179,26 @@ impl AiosDatabaseEngine {
 
     pub fn backend_name(&self) -> &'static str {
         self.storage.name()
+    }
+
+    /// Scan CRU do storage por prefixo (P2-3, `Sgdb::health`/`validate`):
+    /// a fonte da verdade é o storage — os índices (ART/BQ/lexical) são
+    /// derivados. `no_std`-safe.
+    pub fn scan_prefix_storage(&mut self, prefix: &[u8]) -> Result<ScanResult, SgdbError> {
+        self.storage.scan_prefix(prefix)
+    }
+
+    /// Get CRU do storage por key (P2-3, `Sgdb::validate`): não passa pelo
+    /// índice ART nem pelo decode NMD1 — integridade da side-table.
+    pub fn storage_get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, SgdbError> {
+        self.storage.get(key)
+    }
+
+    /// Put CRU do storage (P2-3, testes de integridade): bypassa índices —
+    /// apenas para simular corrupção/injeção na fonte da verdade.
+    #[cfg(test)]
+    pub fn storage_put_raw(&mut self, key: &[u8], val: &[u8]) -> Result<(), SgdbError> {
+        self.storage.put(key, val)
     }
 
     /// Persiste doc: L0/L1 → RAM; demais → Storage (`md/Lx/key`) + indexa.

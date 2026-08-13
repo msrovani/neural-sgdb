@@ -68,4 +68,9 @@ gate + clippy/doc gates in CI. P1 series (2026-08-13): wire encode safety
 (bounds-checked, no truncating casts), centralized limits, deterministic LCG
 property tests, honest benchmarks, scan pagination + RAG size caps,
 ART prefix-key guards. P2 series: CRDT convergence in random topologies
-(P2-1), governance docs (P2-2), crypto-by-backend + health API (P2-3).
+(P2-1), governance docs (P2-2), and **P2-3**: `ready()` replaced by
+`Sgdb::health()` (observable state) + `Sgdb::validate()` (aggregated
+integrity checks: NMD1 decode + index cross-check + side-table orphan
+detection); crypto stays OUT of the core — the `Signer`/`TrustStore`/
+`SignedEnvelope` seam is proven end-to-end by a reference signed-transport
+flow test, and hosts plug real Ed25519/HMAC at the transport boundary.

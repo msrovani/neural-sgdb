@@ -155,7 +155,12 @@ impl Sgdb {
     pub fn checkpoint(&mut self) -> Result<(), SgdbError>;
     pub fn prune_working_ram(&mut self) -> Result<usize, SgdbError>;
     pub fn backend(&self) -> &'static str;
-    pub fn ready(&self) -> bool;
+    /// Observability (P2-3, replaces the v0.1 `ready()`): observable state —
+    /// backend, node_id, storage probe, doc/BQ/RAM counts, open conflicts.
+    pub fn health(&mut self) -> HealthReport;
+    /// Integrity checks (P2-3): walk storage `md/` + decode NMD1 + cross-check
+    /// derived indexes (ART/BQ) and side-tables. Empty vec = healthy.
+    pub fn validate(&mut self) -> Vec<ValidateIssue>;
 
     // ---- memory identity + provenance (v0.6) ----
     /// Stable identity of the memory at `key` (32-hex). `None` if no doc or
@@ -297,6 +302,19 @@ Cargo.toml).
 *authenticated* transports (HMAC/ed25519/TLS, verified outside the core); the
 shipped `UdpTransport` is an **unauthenticated development demo** that does
 not use it — replace in production.
+
+**Reference signed-transport flow (P2-3):** the `Signer`/`TrustStore`/
+`SignedEnvelope` seam is exercised end-to-end in `trust.rs`
+(`signed_transport_reference_flow`, p2p): sign → envelope → verify →
+reject tampered payload → reject untrusted peer. The host plugs a real
+signer (Ed25519/HMAC) at this boundary; the core stays crypto-free
+(ADR-0006).
+
+**Observability (P2-3, replaces `ready()`):** `Sgdb::health()` returns a
+`HealthReport` (backend, node_id, storage probe, doc/BQ/RAM counts, open
+conflicts); `Sgdb::validate()` runs integrity checks (storage `md/` walk +
+NMD1 decode + cross-check derived indexes and side-tables) returning every
+`ValidateIssue` found (empty = healthy). Both are `no_std`-safe.
 
 ## CRDT per-layer merge policy (IMPLEMENTED v0.6)
 

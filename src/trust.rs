@@ -271,4 +271,50 @@ mod tests {
         let b = HmacFnvSigner::new(42).sign(b"payload");
         assert_eq!(a, b);
     }
+
+    // ── P2-3: fluxo de referência — crypto via BACKEND (sem crypto no
+    // core) ──────────────────────────────────────────────────────────────
+    //
+    // O core NÃO implementa criptografia. Este teste demonstra o FLUXO que
+    // um transporte com signer REAL (Ed25519/HMAC/TLS — plugado fora do
+    // crate, ADR-0006) usa na fronteira: assinar → envelope → verificar →
+    // rejeitar payload adulterado e peer não-autenticado. O `HmacFnvSigner`
+    // é o DEMO determinístico; a estrutura é idêntica para um signer real.
+
+    #[test]
+    #[cfg(feature = "p2p")]
+    fn signed_transport_reference_flow() {
+        use crate::crdt::SignedEnvelope;
+
+        // host pluga um signer (produção: Ed25519/HMAC; demo: FNV keyed)
+        let signer = HmacFnvSigner::new(0xfeed_beef);
+
+        // emissor assina o payload e monta o envelope autenticável
+        let payload = b"md/L4/k1".to_vec();
+        let auth = signer.sign(&payload);
+        let env = SignedEnvelope::new(5, payload.clone(), auth);
+        let wire = env.try_encode().unwrap();
+
+        // receptor decodifica e VERIFICA antes de tocar o storage
+        let (dec, _) = SignedEnvelope::decode(&wire).unwrap();
+        assert!(signer.verify(&dec.payload, &dec.auth), "assinatura ok");
+
+        // payload adulterado em trânsito → verificação falha → rejeitado
+        let mut tampered = dec.clone();
+        tampered.payload = b"md/L4/EVIL".to_vec();
+        assert!(!signer.verify(&tampered.payload, &tampered.auth));
+
+        // peer não confiável (TrustStore) tem o pacote rejeitado no nível do
+        // transporte, mesmo com assinatura válida — política do host
+        let mut ts = TrustStore::new();
+        ts.upsert(Peer {
+            node_id: 5,
+            identity: String::from("alice"),
+            auth: AuthStatus::Authenticated,
+            trust: TrustLevel::Trusted,
+            capabilities: Vec::new(),
+        });
+        assert!(ts.is_trusted(5, TrustLevel::Trusted));
+        assert!(!ts.is_trusted(9, TrustLevel::Trusted), "peer desconhecido rejeitado");
+    }
 }
