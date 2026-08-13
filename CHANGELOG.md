@@ -29,6 +29,16 @@ All notable changes to this project. Format based on
   `Signer`/`TrustStore`/`SignedEnvelope` seam end-to-end (sign → envelope →
   verify → reject tampered payload → reject untrusted peer) — the host plugs
   real Ed25519/HMAC at the boundary (ADR-0006).
+- **Layered multi-AI telepathy simulation (P2-5)**: honest deterministic
+  stubs (no LLM/real embeddings) demonstrate the memory substrate: 8 agents
+  in 5 cognitive layers (L1 surface → L5 consolidation/identity) on a
+  directed mesh; an "external AI" writes at L1, each layer answers via its
+  own recall, telepathy (anti-entropy) propagates L1→L5, and a deep layer
+  recovers by semantic recall the exact memory that entered at L1 (seed
+  102 → "deploy quebrou a CI"), consolidates it, and re-converges to
+  byte-identical content with fixed point. New p2p test
+  `layered_ai_telepathy_mesh` + runnable `examples/mesh_simulation.rs`
+  (`--features p2p`). API unchanged (tests + example only).
 
 ### P0 — Hardening & tooling (delivered 2026-08-13)
 - **Docs aligned to v1.0.0**: README, docs/api.md, CHANGELOG, MCP

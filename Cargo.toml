@@ -20,6 +20,10 @@ serde_json = "1"
 name = "p2p_telepathy"
 required-features = ["p2p"]
 
+[[example]]
+name = "mesh_simulation"
+required-features = ["p2p"]
+
 # Exemplos que dependem de backend de arquivo (FileStorage/TickvFile):
 # sem `file-storage` o crate roda no_std/no-file — estes exemplos não são
 # compilados (nem em `cargo test --no-default-features`).

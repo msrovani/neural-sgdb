@@ -1949,6 +1949,108 @@ mod tests {
         // ponto-fixo
         assert_eq!(m.converge(5).unwrap(), 0);
     }
+
+    // ── P2-5: telepatia multi-IA em camadas (simulação) ───────────────────
+    // Cenário honesto: as "IAs" são POLÍTICAS DETERMINÍSTICAS stub (sem LLM,
+    // sem embeddings reais — demo). O que se prova é o SUBSTRATO de memória:
+    // 5 camadas de agentes (Sgdb + CRDT) em mesh; a "IA externa" fala com a
+    // camada 1; cada camada responde via recall do PRÓPRIO banco; telepatia
+    // (anti-entropy) propaga as memórias camada-acima; uma camada PROFUNDA
+    // deve recuperar por recall semântico uma memória que entrou na camada 1.
+
+    #[test]
+    fn layered_ai_telepathy_mesh() {
+        // 8 agentes em 5 camadas (limite do cenário). Camadas:
+        //   L1 superfície (fala com a IA externa): índices 0,1
+        //   L2: 2,3 | L3: 4,5 | L4: 6 | L5 consolidação/identidade: 7
+        let n = 8;
+        let mut m = Mesh::new(&[1, 2, 3, 4, 5, 6, 7, 8]);
+        let layers: [&[usize]; 5] = [&[0, 1], &[2, 3], &[4, 5], &[6], &[7]];
+
+        // mesh em camadas: arestas dirigidas camada k ↔ k+1 (telepatia sobe/
+        // desce) + intra-camada (redundância) + extras aleatórias (gossip).
+        for k in 0..layers.len() - 1 {
+            for &a in layers[k] {
+                for &b in layers[k + 1] {
+                    connect_directed(&mut m, a, b);
+                    connect_directed(&mut m, b, a);
+                }
+            }
+        }
+        for l in layers {
+            for w in 0..l.len() {
+                let a = l[w];
+                let b = l[(w + 1) % l.len()];
+                if a != b {
+                    connect_directed(&mut m, a, b);
+                    connect_directed(&mut m, b, a);
+                }
+            }
+        }
+        let mut s = 7u64;
+        for _ in 0..6 {
+            let i = (lcg(&mut s) % n as u64) as usize;
+            let j = (lcg(&mut s) % n as u64) as usize;
+            if i != j {
+                connect_directed(&mut m, i, j);
+            }
+        }
+
+        // IA EXTERNA fala com a camada 1 (mensagens viram memórias na
+        // superfície). Stub: cada agente guarda e responde com o que RECALLA.
+        let msgs = [
+            "usuario prefere dark mode",
+            "reuniao marcada as 14h",
+            "o deploy quebrou a CI",
+            "gosta de cafe espresso",
+            "proximo sprint e de features",
+        ];
+        for (idx, text) in msgs.iter().enumerate() {
+            let agent = if idx % 2 == 0 { 0 } else { 1 };
+            m.remember(agent, &format!("ext{idx:02}"), text, &emb16(100 + idx as u64));
+        }
+        // camada 1 responde a partir do PRÓPRIO recall (IA stub usando o
+        // substrato): "camada-1 responde: <top hit>"
+        for i in 0..2 {
+            let hits = m.nodes[i].db.recall(&emb16(50), 1).unwrap();
+            let top = hits.first().map(|h| h.text.clone()).unwrap_or_default();
+            m.remember(
+                i,
+                &format!("rsp{i:02}"),
+                &format!("camada-1 responde: {top}"),
+                &emb16(60 + i as u64),
+            );
+        }
+
+        // telepatia: convergência sobe as memórias L1 → L5
+        let applied = m.converge(12).unwrap();
+        assert!(applied >= 30, "replicou pouco entre camadas: {applied}");
+
+        // camadas PROFUNDAS (L4/L5) recuperam por recall o que entrou na
+        // camada 1 — telepatia: a memória EXATA `ext02` (seed 102) ressurge
+        // na camada mais profunda, e ambos criam memória consolidada derivada.
+        for (deep, seed) in [(6usize, 102u64), (7, 102)] {
+            let hits = m.nodes[deep].db.recall(&emb16(seed), 1).unwrap();
+            assert!(
+                hits.iter().any(|h| h.text.contains("deploy quebrou a CI")),
+                "camada {deep} não telepatizou a memória da camada 1: {:?}",
+                hits.iter().map(|h| &h.text).collect::<Vec<_>>()
+            );
+            let top = hits.first().unwrap().text.clone();
+            m.remember(
+                deep,
+                &format!("cons{deep:02}"),
+                &format!("consolidado: {top}"),
+                &emb16(200 + deep as u64),
+            );
+        }
+
+        // convergência final: byte-idêntica em TODOS (chaves distintas, sem
+        // conflitos) + ponto-fixo
+        m.converge(12).unwrap();
+        assert_converged(&mut m);
+        assert_eq!(m.converge(5).unwrap(), 0, "não é ponto-fixo após telepatia");
+    }
 }
 
 // ── P1-4: property tests decode∘encode dos codecs CRDT (p2p) ────────
