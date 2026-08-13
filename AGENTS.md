@@ -228,6 +228,16 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-
   "esconde" a lacuna e nada é puxado (bug real: `applied=0` no mesh).
   `pull_delta` puxa `known+1..=v` por nó (anúncio anuncia o MÁXIMO; peer
   tardio precisa da série inteira).
+- **Convergência mesh (P2-1)**: o que CONVERGE é o conteúdo causal
+  (byte-idêntico por storage key: NMD1 + clock + state + validade + meta) e
+  nenhuma-versão-perdida (autor preserva o próprio valor). **`node_versions`
+  do CRDT é conhecimento de GOSSIP** — parcial em topologias direcionais, NÃO
+  converge necessariamente (testes de clique comparam, topologias aleatórias
+  não). **`ConflictRecord` é evidência LOCAL do merge** (onde o merge
+  concorrente aconteceu) — não é a unidade MDR1 de replicação, então também
+  não converge entre nós. Testar convergência = comparar `export_record`
+  encode por key (exceto chaves em conflito, que preservam versões
+  distintas por design) + `db.conflicts()` não-vazio + conteúdo do autor.
 - **Um write lógico = uma versão causal** (v0.7): `remember_semantic` grava
   L4+L2 com puts separados e cada put ticka o relógio do doc — sem
   `put_companion` (mesmo contador, sem tick), o contador por-put diverge da

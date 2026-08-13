@@ -447,6 +447,13 @@ resolution to the cognitive layer (roadmap Phase 14/15).
   re-delivery of the same concurrent pair upserts (never duplicates).
 - **`Sgdb::conflicts()` / `conflict(id)` / `dismiss_conflict(id)`** —
   enumerate open/resolved conflicts, inspect, or clean up after resolution.
+  **Convergence note (P2-1)**: a `ConflictRecord` is LOCAL evidence, created
+  where the concurrent merge happened — it is NOT the replication unit
+  (`MemoryRecord` MDR1), so conflict records do not necessarily converge
+  across a mesh. What converges is the causal content (byte-identical
+  `MemoryRecord` per key in all nodes) plus no-lost-version (each author
+  keeps its own value). Convergence is verified by random-topology mesh
+  tests (LCG-generated directed graphs, partitions/rejoins).
 - **`Sgdb::resolve_conflict(conflict_id, winner_vid)`** — explicit
   upper-layer decision: imports the winner's `MemoryRecord` via evidence,
   sets it as the current version of the slot (`version_id = winner_vid`),

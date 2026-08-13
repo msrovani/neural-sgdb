@@ -1694,6 +1694,261 @@ mod tests {
         // idempotente: segunda ronda aplica nada
         assert_eq!(m.round(0, false).unwrap(), 0);
     }
+
+    // ── P2-1: convergência em topologias aleatórias (CRDT formal) ────────
+    // LCG determinístico (zero deps, decisão P1-4). Gera grafos direcionais
+    // CONEXOS (espinha em anel + arestas extras aleatórias) para que o
+    // anti-entropy tenha caminho entre todos os pares — gossip assimétrico
+    // + escritas distribuídas devem convergir ao MESMO estado em qualquer
+    // topologia conexa.
+
+    fn lcg(state: &mut u64) -> u64 {
+        *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *state
+    }
+
+    fn connect_directed(m: &mut Mesh, i: usize, j: usize) {
+        m.edges[i][j] = true;
+    }
+
+    fn assert_converged(m: &mut Mesh) {
+        let n = m.nodes.len();
+        // todos os nós: mesma contagem de docs (L2+L4)
+        let counts: Vec<usize> = (0..n).map(|i| m.doc_count(i)).collect();
+        for i in 1..n {
+            assert_eq!(
+                counts[i], counts[0],
+                "nó {i} com contagem divergente: {counts:?}"
+            );
+        }
+        // todos os nós: mesmo conjunto de keys (L2+L4)
+        let keys0: Vec<String> = {
+            let mut k: Vec<String> = m.nodes[0]
+                .db
+                .scan_prefix("md/L2/")
+                .unwrap()
+                .into_iter()
+                .map(|(k, _)| k)
+                .chain(
+                    m.nodes[0]
+                        .db
+                        .scan_prefix("md/L4/")
+                        .unwrap()
+                        .into_iter()
+                        .map(|(k, _)| k),
+                )
+                .collect();
+            k.sort();
+            k
+        };
+        for i in 1..n {
+            let mut k: Vec<String> = m.nodes[i]
+                .db
+                .scan_prefix("md/L2/")
+                .unwrap()
+                .into_iter()
+                .map(|(k, _)| k)
+                .chain(
+                    m.nodes[i]
+                        .db
+                        .scan_prefix("md/L4/")
+                        .unwrap()
+                        .into_iter()
+                        .map(|(k, _)| k),
+                )
+                .collect();
+            k.sort();
+            assert_eq!(k, keys0, "nó {i} com keys divergentes");
+        }
+        // ESTADO CONVERGENTE REAL: para cada storage key, o `MemoryRecord`
+        // exportado (NMD1 + clock causal + state + validade + meta/identidade)
+        // é byte-idêntico em todos os nós. NOTA: `node_versions` do CRDT é
+        // conhecimento de GOSSIP (parcial em topologias direcionais) — NÃO é
+        // o estado convergido; a igualdade de conteúdo/clock/identidade é.
+        for key in &keys0 {
+            let rec0 = m.nodes[0]
+                .db
+                .export_record(key)
+                .unwrap()
+                .unwrap_or_else(|| panic!("nó 0 sem {key}"));
+            let enc0 = rec0.encode();
+            for i in 1..n {
+                let rec = m.nodes[i]
+                    .db
+                    .export_record(key)
+                    .unwrap()
+                    .unwrap_or_else(|| panic!("nó {i} sem {key}"));
+                assert_eq!(
+                    rec.encode(),
+                    enc0,
+                    "nó {i} com record divergente para {key}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn random_topology_convergence() {
+        // 6 nós, 3 seeds de topologia distintas, cada uma com 30 writes
+        // distribuídos — todas devem convergir ao mesmo estado.
+        for seed in 1..=3u64 {
+            let mut s = seed;
+            let n = 6;
+            let mut m = Mesh::new(&[1, 2, 3, 4, 5, 6]);
+            // espinha em anel (garante conectividade fraca mínima)
+            for i in 0..n {
+                connect_directed(&mut m, i, (i + 1) % n);
+            }
+            // arestas extras aleatórias (assimetria/gossip parcial)
+            let extra = 4 + (lcg(&mut s) % 8) as usize;
+            for _ in 0..extra {
+                let i = (lcg(&mut s) % n as u64) as usize;
+                let j = (lcg(&mut s) % n as u64) as usize;
+                if i != j {
+                    connect_directed(&mut m, i, j);
+                }
+            }
+            // 30 writes distribuídos por autores/chaves fixas-width
+            for w in 0..30u64 {
+                let author = (lcg(&mut s) % n as u64) as usize;
+                m.remember(author, &format!("m{w:03}"), &format!("memoria {w}"), &emb16(w));
+            }
+            let applied = m.converge(20).unwrap();
+            assert!(applied >= 60, "seed {seed}: replicou pouco: {applied}");
+            assert_converged(&mut m);
+            // ponto-fixo: rondas extras não mudam nada
+            assert_eq!(m.converge(5).unwrap(), 0, "seed {seed}: não é ponto-fixo");
+        }
+    }
+
+    #[test]
+    fn random_topology_with_partitions_rejoins() {
+        // Mesma seed de escrita, mas com fases: 1) cluster [0,1] ↔ [2,3]
+        // separado de [4,5]; 2) writes concorrentes; 3) rejoin completo;
+        // 4) converge — nenhuma versão perdida, nenhum conflito cego.
+        let mut s = 42u64;
+        let n = 6;
+        let mut m = Mesh::new(&[1, 2, 3, 4, 5, 6]);
+        // fase 1: dois cliques desconexos
+        for i in 0..3 {
+            for j in 0..3 {
+                if i != j {
+                    connect_directed(&mut m, i, j);
+                    connect_directed(&mut m, j, i);
+                }
+            }
+        }
+        for i in 3..6 {
+            for j in 3..6 {
+                if i != j {
+                    connect_directed(&mut m, i, j);
+                    connect_directed(&mut m, j, i);
+                }
+            }
+        }
+        // fase 2: writes concorrentes — cluster 1 grava k_a/k_b, cluster 2
+        // grava a mesma k_a (conflito) + k_c (só do cluster 2)
+        m.remember(0, "ka", "cluster-1 ka", &emb16(1));
+        m.remember(1, "kb", "cluster-1 kb", &emb16(2));
+        m.remember(4, "ka", "cluster-2 ka", &emb16(3));
+        m.remember(5, "kc", "cluster-2 kc", &emb16(4));
+        m.converge(6).unwrap();
+        // cada cluster converge internamente
+        assert_eq!(m.doc_count(0), m.doc_count(1));
+        assert_eq!(m.doc_count(2), m.doc_count(3));
+        assert_eq!(m.doc_count(4), m.doc_count(5));
+        // fase 3: rejoin completo (anel + extras)
+        for i in 0..n {
+            connect_directed(&mut m, i, (i + 1) % n);
+        }
+        for _ in 0..6 {
+            let i = (lcg(&mut s) % n as u64) as usize;
+            let j = (lcg(&mut s) % n as u64) as usize;
+            if i != j {
+                connect_directed(&mut m, i, j);
+            }
+        }
+        m.converge(20).unwrap();
+        // convergência com conflito: keys IDÊNTICAS em todos + records
+        // byte-idênticos para as chaves NÃO concorrentes (kb, kc) + conflito
+        // ka preservado em todos (nunca LWW cego — versões concorrentes
+        // distintas continuam distintas, sem perda).
+        let keys0: Vec<String> = {
+            let mut k: Vec<String> = m.nodes[0]
+                .db
+                .scan_prefix("md/L2/")
+                .unwrap()
+                .into_iter()
+                .map(|(k, _)| k)
+                .chain(
+                    m.nodes[0]
+                        .db
+                        .scan_prefix("md/L4/")
+                        .unwrap()
+                        .into_iter()
+                        .map(|(k, _)| k),
+                )
+                .collect();
+            k.sort();
+            k
+        };
+        for i in 1..n {
+            let mut k: Vec<String> = m.nodes[i]
+                .db
+                .scan_prefix("md/L2/")
+                .unwrap()
+                .into_iter()
+                .map(|(k, _)| k)
+                .chain(
+                    m.nodes[i]
+                        .db
+                        .scan_prefix("md/L4/")
+                        .unwrap()
+                        .into_iter()
+                        .map(|(k, _)| k),
+                )
+                .collect();
+            k.sort();
+            assert_eq!(k, keys0, "nó {i} com keys divergentes pós-rejoin");
+        }
+        // chaves não-conflitantes: byte-idênticas (kb, kc + companions)
+        for key in &keys0 {
+            if key.ends_with("ka") || key.contains("ka") {
+                continue; // conflito — validado abaixo
+            }
+            let rec0 = m.nodes[0].db.export_record(key).unwrap().unwrap();
+            let enc0 = rec0.encode();
+            for i in 1..n {
+                let rec = m.nodes[i].db.export_record(key).unwrap().unwrap();
+                assert_eq!(rec.encode(), enc0, "nó {i}: record divergente em {key}");
+            }
+        }
+        // conflito ka preservado: a EVIDÊNCIA (ConflictRecord persistido via
+        // `merge_remote`, com records MDR1 dos dois lados) deve EXISTIR para
+        // a camada superior resolver (nunca LWW cego). NOTA: o ConflictRecord
+        // é evidência LOCAL do merge (criado onde o merge concorrente
+        // aconteceu) — NÃO é a unidade de replicação (MemoryRecord MDR1),
+        // então não se exige convergência de conflitos entre nós, apenas que
+        // a evidência exista e nenhuma versão seja descartada.
+        let cfl0: Vec<String> = {
+            let mut v: Vec<String> = m.nodes[0]
+                .db
+                .conflicts()
+                .into_iter()
+                .map(|c| c.conflict_id)
+                .collect();
+            v.sort();
+            v
+        };
+        assert!(!cfl0.is_empty(), "conflito ka deveria existir");
+        // autores preservam o PRÓPRIO conteúdo (nenhuma versão perdida):
+        // nó 0 (node_id 1) manteve "cluster-1 ka"; nó 4 (node_id 5) manteve
+        // "cluster-2 ka".
+        assert!(m.l2_text(0, "ka").contains("cluster-1 ka"));
+        assert!(m.l2_text(4, "ka").contains("cluster-2 ka"));
+        // ponto-fixo
+        assert_eq!(m.converge(5).unwrap(), 0);
+    }
 }
 
 // ── P1-4: property tests decode∘encode dos codecs CRDT (p2p) ────────
