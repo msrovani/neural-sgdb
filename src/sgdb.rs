@@ -2262,6 +2262,26 @@ mod tests {
         assert!(db.get(MemoryLayer::L4Semantic, "k").unwrap().is_some());
     }
 
+    #[test]
+    fn set_state_rejects_ghost_key_no_orphan_side_table() {
+        // AUDIT (battery 1): set_state em chave fantasma criava side-table
+        // `sys/state/` órfã (validate flagga "side-table targets missing doc").
+        // Active é remove-only (inócuo) — supersede marca new→Active antes de
+        // o new existir; os demais estados recusam chave sem doc.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        for st in [MemoryState::Superseded, MemoryState::Archived, MemoryState::Decayed] {
+            let e = db.set_state("md/L4/ghost", st).unwrap_err();
+            assert!(matches!(e, SgdbError::Invalid(_)), "{st:?}: {e:?}");
+        }
+        assert!(db.validate().is_empty(), "nenhuma side-table órfã");
+        // Active em chave fantasma: remove-only, sem erro nem side-table
+        db.set_state("md/L4/ghost", MemoryState::Active).unwrap();
+        assert!(db.validate().is_empty());
+        // supersede com old fantasma → Err (mesma proteção)
+        assert!(db.supersede("md/L4/ghost-old", "md/L4/ghost-new").is_err());
+        assert!(db.validate().is_empty());
+    }
+
     #[cfg(feature = "file-storage")]
     #[test]
     fn identity_and_meta_persist_across_reopen() {

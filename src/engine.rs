@@ -853,6 +853,14 @@ impl AiosDatabaseEngine {
     /// Seta estado lógico (persiste em `sys/state/`). Estado é metadado de
     /// memória — a deleção FÍSICA continua sendo via `Storage::delete`.
     pub fn set_state(&mut self, sk: &str, st: MemoryState) -> Result<(), SgdbError> {
+        // AUDIT (1.3): estado ≠ Active cria side-table `sys/state/` — recusa
+        // chave fantasma ANTES de gravar, senão `validate()` flagga órfã
+        // (mesma família do bughunt do hot-test via MCP). `Active` é
+        // remove-only e inócuo (supersede marca new→Active antes do new
+        // existir); `import_record` grava o doc antes de setar estado.
+        if st != MemoryState::Active && self.get_by_storage_key(sk)?.is_none() {
+            return Err(SgdbError::Invalid("set_state: no memory at key"));
+        }
         let k = state_key(sk);
         if st == MemoryState::Active {
             // Active = default: remove o registro lateral SOMENTE se existir

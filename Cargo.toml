@@ -44,3 +44,8 @@ required-features = ["file-storage"]
 [[example]]
 name = "mcp_client"
 required-features = ["file-storage"]
+
+# Cognitive QA audit — "retorna memórias, não dados" (attack/corruption/fidelity)
+[[example]]
+name = "audit"
+required-features = ["file-storage"]

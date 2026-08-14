@@ -23,7 +23,7 @@ P2 (committed `feat(v1.0): …P2-*…`): CRDT convergence in random topologies
 signed-transport reference flow (P2-3), central wire-codec fuzz harness
 `src/wire_fuzz.rs` over all 8 wire types (P2-4), layered multi-AI telepathy
 mesh (P2-5). MCP server now exposes `health`/`validate` tools; new p2p
-examples: `mesh_simulation`, `signed_peer`. Matriz: **182+1 / 228+1 / 139+1**,
+examples: `mesh_simulation`, `signed_peer`. Matriz: **185+1 / 231+1 / 140+1**,
 no_std gate ok. `.freebuff/` is tool state — gitignored, never commit.
 
 ## Repository Map
@@ -117,7 +117,7 @@ hash, not a semantic model). Restart opencode after changing the config.
 ## Running tests
 
 ```bash
-cargo test                                 # 182+1 tests (InMemory/FileStorage/TickvFile)
+cargo test                                 # 185+1 tests (InMemory/FileStorage/TickvFile)
 cargo test --features p2p                  # 228+1 (includes CRDT sync + mesh harness)
 cargo test --no-default-features           # 139+1 (no_std core, host test harness)
 cargo check --no-default-features --target x86_64-unknown-none   # no_std gate
@@ -145,7 +145,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-
 - **Wire-codec fuzz harness** (`src/wire_fuzz.rs`, P2-4): the single LCG
   never-panic/roundtrip/truncation gate over ALL 8 wire types — add a new
   wire type there (plus its per-module `prop_tests`), and keep the matrix
-  (182+1 / 228+1 / 139+1) green. `SignedEnvelope::decode` returns
+  (185+1 / 231+1 / 140+1) green. `SignedEnvelope::decode` returns
   `Option<(Self, usize)>` (no magic byte — corrupt via field lengths, not
   byte 0).
 - **TickvFile** (`src/tickv.rs`): 512-aligned records, tombstone `vlen=0` or
@@ -288,6 +288,15 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-
   (`rev/…`) — AMBOS derivados (rebuild reindexa de `sys/rel/`; delete chama
   `remove_relations_for`). `#` é separador reservado (associate rejeita).
   `related_to` devolve o OUTRO lado da aresta (a--causes-->b visto de b = a).
+- **AUDIT set_state (1.1)** (`engine.rs`): `set_state` com estado ≠ Active
+  recusa chave sem doc (`Invalid`) — antes criava side-table `sys/state/`
+  órfã (validate flagga "side-table targets missing doc"; mesma família do
+  bughunt do hot-test via MCP). `Active` é remove-only e inócuo: supersede
+  marca new→Active antes do new existir. `associate` NÃO valida existência
+  (design: relação é afirmada pela camada superior). `merge_memories`/
+  `transfer_to` já validavam via `export_record`. Teste: `set_state_rejects_
+  ghost_key_no_orphan_side_table`; exemplo `examples/audit.rs` (battery 1:
+  attack).
 - **Recall active-only (v0.8)**: o filtro de estado roda DENTRO do
   `recall_impl`/`recall_lexical_impl` (antes do ranking); estado é POR DOC —
   marcar `md/L4/k` não marca o companion `md/L2/k` (testes devem marcar
