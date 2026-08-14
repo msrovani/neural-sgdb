@@ -627,6 +627,31 @@ impl AiosDatabaseEngine {
         }
     }
 
+    /// Batch-get de payloads de TEXTOS (v1.1.3 S3): uma passada por N keys,
+    /// decodifica só o NMD1 e devolve o payload UTF-8 lossy. SEM `attach_meta`
+    /// (cada meta é um `storage.get` extra — texto não precisa de meta) e sem
+    /// RAM L0/L1 (companions L2/L3 vivem no storage). O `recall` usava um
+    /// `get_by_storage_key` por hit para buscar o texto companion — com N hits
+    /// isso era N×(doc + meta) reads. Aqui: N reads, deduplicados.
+    pub fn get_texts_batch(&mut self, keys: &[String]) -> BTreeMap<String, String> {
+        let mut out = BTreeMap::new();
+        for sk in keys {
+            if out.contains_key(sk) {
+                continue;
+            }
+            self.gets += 1;
+            let text = match self.storage.get(sk.as_bytes()) {
+                Ok(Some(bytes)) => MemoryDoc::decode(&bytes)
+                    .ok()
+                    .map(|d| String::from_utf8_lossy(&d.payload).into_owned())
+                    .unwrap_or_default(),
+                _ => String::new(),
+            };
+            out.insert(sk.clone(), text);
+        }
+        out
+    }
+
     /// Anexa meta + overflow do relógio ao doc recém-decodificado.
     fn attach_meta(&mut self, sk: &str, doc: &mut MemoryDoc) {
         if let Some(m) = self.read_meta(sk) {

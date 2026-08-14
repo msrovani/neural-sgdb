@@ -724,6 +724,9 @@ impl Sgdb {
         // p/ escala 0..1 do contrato de `Hit.dist` — bughunt #11).
         let ham_max = (self.engine.bq.words_per_vec.max(1) * 64) as f32;
         let mut out: Vec<(u32, Hit)> = Vec::new();
+        // v1.1.3 S3: companions L2 buscados em BATCH (uma passada por N keys,
+        // sem attach_meta) em vez de um get_by_storage_key por hit (N×2 reads).
+        let mut companion_keys: Vec<String> = Vec::new();
         for (id, ham) in hits {
             let Some(sk) = self.engine.storage_key_of(id).map(String::from) else {
                 continue;
@@ -764,22 +767,23 @@ impl Sgdb {
             };
             // L2 companion text (direct storage key; only the 1st occurrence
             // of the /L4/ prefix — a key containing "/L4/" is not corrupted)
-            let text = self
-                .engine
-                .get_by_storage_key(&sk.replacen("/L4/", "/L2/", 1))
-                .ok()
-                .flatten()
-                .map(|d| String::from_utf8_lossy(&d.payload).into_owned())
-                .unwrap_or_default();
+            companion_keys.push(sk.replacen("/L4/", "/L2/", 1));
             out.push((
                 score,
                 Hit {
                     key: sk,
-                    text,
+                    text: String::new(),
                     dist,
                     provenance,
                 },
             ));
+        }
+        // batch-get dos textos companion (S3) — deduplicado por key
+        let texts = self.engine.get_texts_batch(&companion_keys);
+        for (_, h) in out.iter_mut() {
+            if let Some(t) = texts.get(&h.key.replacen("/L4/", "/L2/", 1)) {
+                h.text = t.clone();
+            }
         }
         // Dedupe por storage key mantendo o MELHOR score: um overwrite em L4
         // re-insere no BQ (append) sem remover o id antigo — sem dedupe, o
@@ -2148,6 +2152,40 @@ mod tests {
         // recall_historical (mesmo caminho) também avisa
         let err2 = db.recall_historical(&wrong, 3).unwrap_err();
         assert!(matches!(err2, SgdbError::Invalid(_)));
+    }
+
+    #[test]
+    fn recall_companion_texts_batch_parity() {
+        // v1.1.3 S3: o recall preenchia `Hit.text` com um `get_by_storage_key`
+        // por hit (N×2 reads: NMD1 + meta). Agora os companions L2 são lidos
+        // em batch (1 passada, sem attach_meta). Paridade de contrato: os
+        // textos devem ser IDÊNTICOS aos docs L2 companions.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let emb = vec![1.0, -1.0, 1.0, -1.0];
+        db.remember_semantic("a", "texto companion A", &emb).unwrap();
+        db.remember_semantic("b", "texto companion B", &emb).unwrap();
+        let r = db.recall(&emb, 3).unwrap();
+        // ambos os companions presentes, sem perder texto nem ordem
+        assert_eq!(r.len(), 2);
+        let by_key: alloc::collections::BTreeMap<&str, &str> =
+            r.iter().map(|h| (h.key.as_str(), h.text.as_str())).collect();
+        assert_eq!(by_key.get("md/L4/a").copied(), Some("texto companion A"));
+        assert_eq!(by_key.get("md/L4/b").copied(), Some("texto companion B"));
+        // companion ausente → texto vazio (nunca panic, paridade com o get antigo)
+        db.remember_semantic("c", "texto C", &emb).unwrap();
+        let mut raw = crate::memory_doc::MemoryDoc::new(
+            crate::memory_doc::MemoryLayer::L4Semantic,
+            "sem-companion",
+            b"x".to_vec(),
+        );
+        raw.bitvec = Some(crate::bq::quantize_f32(&emb));
+        db.engine.put(raw).unwrap();
+        let r2 = db.recall(&emb, 5).unwrap();
+        let h = r2
+            .iter()
+            .find(|h| h.key.contains("sem-companion"))
+            .expect("doc cru presente");
+        assert_eq!(h.text, "", "sem companion L2 → texto vazio");
     }
 
     #[cfg(feature = "file-storage")]

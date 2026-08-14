@@ -23,6 +23,14 @@ using this DB for real.
   `cargo run --release --example embedder_http` → 4/4 PASS, exit 0.
 
 ### Changed
+- **`recall` companion texts load in batch** (S3): `Hit.text` was filled with
+  one `get_by_storage_key` per hit — N×(doc NMD1 + `sys/meta/`) reads, even
+  though the companion text needs no meta. New `Engine::get_texts_batch`
+  reads all companion keys in one deduplicated pass (payload only, no
+  `attach_meta`). Same contract, fewer reads. Regression:
+  `recall_companion_texts_batch_parity`.
+
+### Changed
 - **`recall`/`recall_historical`/`recall_weighted` no longer return hamming
   noise on dimension mismatch** (S1): if the query dims match NONE of the
   indexed embeddings (e.g. 4-dim agent vector vs 256-dim demo), the recall
@@ -33,6 +41,7 @@ using this DB for real.
   `recall_dim_mismatch_is_loud_not_silent`,
   `recall_dim_mismatch_survives_rebuild`.
 - Matrix: 195+1 / 241+1 / 149+1 tests (default / p2p / no-default).
+- Matrix: 196+1 / 242+1 / 150+1 tests (default / p2p / no-default).
 
 ## [1.1.2] — 2026-08-14
 
