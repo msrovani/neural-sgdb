@@ -412,11 +412,15 @@ impl AiosDatabaseEngine {
         }
         let exists = self.ram_l0l1.contains_key(sk) || self.storage.get(sk.as_bytes())?.is_some();
         if !exists {
-            return Err(SgdbError::Invalid("no memory at key"));
+            return Err(SgdbError::Invalid(
+                "no memory at key (use the full canonical storage key, e.g. md/L4/<key> — remember returns it)",
+            ));
         }
         let doc = self
             .get_by_storage_key(sk)?
-            .ok_or(SgdbError::Invalid("no memory at key"))?;
+            .ok_or(SgdbError::Invalid(
+                "no memory at key (use the full canonical storage key, e.g. md/L4/<key> — remember returns it)",
+            ))?;
         let tick = doc.clock.counter_of(self.node_id);
         let mid = generate_memory_id(self.node_id, tick, doc.layer, &doc.key);
         let m = MemoryMeta {

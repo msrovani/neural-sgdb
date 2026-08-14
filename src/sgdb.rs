@@ -154,13 +154,13 @@ impl Sgdb {
     /// física: `superseded`/`archived`/`invalidated` continuam representáveis
     /// na história (maturation P5).
     pub fn get_state(&mut self, key: &str) -> Result<MemoryState, SgdbError> {
-        let sk = self.resolve_storage_key(key);
+        let sk = self.resolve_known_key(key);
         Ok(self.engine.get_state(&sk))
     }
 
     /// Seta estado lógico de uma memória (persiste em `sys/state/`).
     pub fn set_state(&mut self, key: &str, st: MemoryState) -> Result<(), SgdbError> {
-        let sk = self.resolve_storage_key(key);
+        let sk = self.resolve_known_key(key);
         self.engine.set_state(&sk, st)
     }
 
@@ -169,8 +169,8 @@ impl Sgdb {
     /// (Doc 04 §3). Phase 3 (v0.7): registra a VERSÃO corrente de `old` em
     /// `new.parent_ids` (DAG causal — `version_id`, não só o slot).
     pub fn supersede(&mut self, old: &str, new: &str) -> Result<(), SgdbError> {
-        let old_sk = self.resolve_storage_key(old);
-        let new_sk = self.resolve_storage_key(new);
+        let old_sk = self.resolve_known_key(old);
+        let new_sk = self.resolve_known_key(new);
         self.engine.set_state(&old_sk, MemoryState::Superseded)?;
         self.engine.set_state(&new_sk, MemoryState::Active)?;
         if let Some(old_meta) = self.engine.meta(&old_sk)? {
@@ -188,14 +188,14 @@ impl Sgdb {
     /// Identidade estável da memória (v0.6). `None` = sem doc na chave ou
     /// registro pré-v0.6 ainda sem meta (re-put/`ensure_meta` atribui).
     pub fn memory_id(&mut self, key: &str) -> Result<Option<String>, SgdbError> {
-        let sk = self.resolve_storage_key(key);
+        let sk = self.resolve_known_key(key);
         Ok(self.engine.meta(&sk)?.map(|m| m.memory_id))
     }
 
     /// Identidade da VERSÃO corrente (Phase 3): muda a cada overwrite local;
     /// `None` = sem doc/meta.
     pub fn version_of(&mut self, key: &str) -> Result<Option<String>, SgdbError> {
-        let sk = self.resolve_storage_key(key);
+        let sk = self.resolve_known_key(key);
         Ok(self.engine.meta(&sk)?.map(|m| m.version_id))
     }
 
@@ -206,7 +206,7 @@ impl Sgdb {
     /// `parent_ids`. Guarda de ciclos: nunca loopa. Determinística.
     pub fn lineage(&mut self, key: &str) -> Result<Vec<LineageEntry>, SgdbError> {
         use alloc::collections::BTreeSet;
-        let sk = self.resolve_storage_key(key);
+        let sk = self.resolve_known_key(key);
         let mut out: Vec<LineageEntry> = Vec::new();
         let mut visited: BTreeSet<String> = BTreeSet::new();
         let mut cur = self.engine.meta(&sk)?.map(|m| (m, sk.clone()));
@@ -239,7 +239,7 @@ impl Sgdb {
     /// Metadados completos (memory_id, source, confidence, importance,
     /// created_tick, parent_ids, clock_overflow).
     pub fn meta(&mut self, key: &str) -> Result<Option<MemoryMeta>, SgdbError> {
-        let sk = self.resolve_storage_key(key);
+        let sk = self.resolve_known_key(key);
         self.engine.meta(&sk)
     }
 
@@ -250,7 +250,7 @@ impl Sgdb {
         if !importance.is_finite() {
             return Err(SgdbError::Invalid("importance must be finite"));
         }
-        let sk = self.resolve_storage_key(key);
+        let sk = self.resolve_known_key(key);
         let mut m = self.engine.ensure_meta(&sk)?;
         m.importance = importance.clamp(0.0, 1.0);
         self.engine.write_meta(&sk, &m)
@@ -261,7 +261,7 @@ impl Sgdb {
         if !confidence.is_finite() {
             return Err(SgdbError::Invalid("confidence must be finite"));
         }
-        let sk = self.resolve_storage_key(key);
+        let sk = self.resolve_known_key(key);
         let mut m = self.engine.ensure_meta(&sk)?;
         m.confidence = confidence.clamp(0.0, 1.0);
         self.engine.write_meta(&sk, &m)
@@ -271,7 +271,7 @@ impl Sgdb {
     /// usado pela promoção do lifecycle e pela fusão (`merge_memories`,
     /// v0.9). Idempotente; registros pré-v0.6 ganham meta via `ensure_meta`.
     pub fn add_parents(&mut self, key: &str, parents: &[String]) -> Result<(), SgdbError> {
-        let sk = self.resolve_storage_key(key);
+        let sk = self.resolve_known_key(key);
         self.engine.add_parents(&sk, parents)
     }
 
@@ -283,7 +283,7 @@ impl Sgdb {
         if !delta.is_finite() {
             return Err(SgdbError::Invalid("reinforce delta must be finite"));
         }
-        let sk = self.resolve_storage_key(key);
+        let sk = self.resolve_known_key(key);
         let mut m = self.engine.ensure_meta(&sk)?;
         m.importance = (m.importance + delta).clamp(0.0, 1.0);
         m.last_reinforced = self.engine.own_counter();
@@ -294,14 +294,14 @@ impl Sgdb {
     /// nunca deleta. História permanece acessível (`recall_historical`,
     /// `lineage`). Para remoção física, `delete` é o caminho explícito.
     pub fn forget(&mut self, key: &str) -> Result<(), SgdbError> {
-        let sk = self.resolve_storage_key(key);
+        let sk = self.resolve_known_key(key);
         self.engine.set_state(&sk, MemoryState::Archived)
     }
 
     /// Explicação estruturada (roadmap Phase 17): por que a memória está no
     /// estado em que está. Sem registro pré-v0.6 / sem doc → `Err`.
     pub fn explain(&mut self, key: &str) -> Result<MemoryExplanation, SgdbError> {
-        let sk = self.resolve_storage_key(key);
+        let sk = self.resolve_known_key(key);
         let m = self.engine.ensure_meta(&sk)?;
         let doc = self.engine.get_by_storage_key(&sk)?;
         if doc.is_none() {
@@ -342,7 +342,7 @@ impl Sgdb {
     /// fonte]` e relação L6 `derived_from`; a fonte vira `Archived` (história
     /// preservada — nada é deletado). Generaliza a promoção do lifecycle.
     pub fn transfer_to(&mut self, key: &str, to_layer: MemoryLayer) -> Result<String, SgdbError> {
-        let sk = self.resolve_storage_key(key);
+        let sk = self.resolve_known_key(key);
         let Some(rec) = self.engine.export_record(&sk)? else {
             return Err(SgdbError::Invalid("no memory at key"));
         };
@@ -377,8 +377,8 @@ impl Sgdb {
         b: &str,
         target: &str,
     ) -> Result<String, SgdbError> {
-        let sk_a = self.resolve_storage_key(a);
-        let sk_b = self.resolve_storage_key(b);
+        let sk_a = self.resolve_known_key(a);
+        let sk_b = self.resolve_known_key(b);
         let Some(ra) = self.engine.export_record(&sk_a)? else {
             return Err(SgdbError::Invalid("no memory at key a"));
         };
@@ -435,6 +435,38 @@ impl Sgdb {
         } else {
             alloc::format!("md/{key}")
         }
+    }
+
+    /// Resolve uma chave para a storage key CANÔNICA existente (v1.1, AUDIT):
+    /// se `md/{key}` não existe, tenta as camadas por prioridade (L4 semântica
+    /// primeiro — o caso mais comum do agente), devolvendo a canônica
+    /// encontrada. Se nada existe, devolve `md/{key}` puro (o caller decide —
+    /// preserva a semântica de `None`/ghost). Determinístico; nunca inventa.
+    fn resolve_known_key(&self, key: &str) -> String {
+        let sk = self.resolve_storage_key(key);
+        if sk.starts_with("sys/") || self.engine.art.get(&sk).is_some() {
+            return sk;
+        }
+        // chave crua (sem `md/`): procurar nas camadas, prioridade semântica
+        if !key.starts_with("md/") && !key.starts_with("sys/") {
+            const ORDER: [MemoryLayer; 8] = [
+                MemoryLayer::L4Semantic,
+                MemoryLayer::L5Procedural,
+                MemoryLayer::L3EpisodicLong,
+                MemoryLayer::L2EpisodicShort,
+                MemoryLayer::L6Reserved,
+                MemoryLayer::L0Sensory,
+                MemoryLayer::L1Working,
+                MemoryLayer::L7Identity,
+            ];
+            for layer in ORDER {
+                let cand = alloc::format!("md/{}/{key}", layer.as_str());
+                if self.engine.art.get(&cand).is_some() {
+                    return cand;
+                }
+            }
+        }
+        sk
     }
 
     /// Recovery observável (P1): docs reindexados no último open/rebuild.
@@ -749,8 +781,11 @@ impl Sgdb {
     /// Recall com **scoring ponderado** (#3, padrão Mem0/MemGPT):
     /// `score = w_sem·dist + w_rec·recency_penalty + w_imp·importance_penalty`
     /// (menor = melhor). Recency vem do timestamp no storage key (`/ts/<hex>`);
-    /// importance da camada (`md/LX/`). Busca um pool maior (`k·16`) para que
-    /// recência/importância possam puxar candidatos fora do top-k semântico.
+    /// **importance vem da meta do DOC** (`set_importance`/`reinforce` —
+    /// exposta via `Hit.provenance.importance`); registros pré-v0.6 sem meta
+    /// caem para a default da camada (`md/LX/`). Busca um pool maior (`k·16`)
+    /// para que recência/importância possam puxar candidatos fora do top-k
+    /// semântico.
     pub fn recall_weighted(
         &mut self,
         query: &[f32],
@@ -767,9 +802,17 @@ impl Sgdb {
                 Some(t) => (now.saturating_sub(t) as f64 / 1000.0).clamp(0.0, 1.0),
                 None => 0.5, // sem timestamp: neutro
             };
+            // importância no espaço de PENALIDADE (menor = melhor): da meta do
+            // doc (0..1, 1 = mais importante → penalty 1−imp) ou, para
+            // registros pré-v0.6 sem meta, a default da camada via
+            // layer_importance (já é penalty — L4 default importance 1.0 → 0.0)
+            let penalty = match h.provenance.as_ref() {
+                Some(p) => 1.0 - p.importance as f64,
+                None => layer_importance(&h.key),
+            };
             let s = w_sem as f64 * h.dist as f64
                 + w_rec as f64 * rec
-                + w_imp as f64 * layer_importance(&h.key);
+                + w_imp as f64 * penalty;
             scored.push((s, h));
         }
         scored.sort_by(|a, b| {
@@ -782,17 +825,17 @@ impl Sgdb {
     /// `key` = storage key canônica (`md/Lx/...`). Side-table `sys/validity/`;
     /// o doc NUNCA é deletado — só marcado.
     pub fn set_validity(&mut self, key: &str, from: u64, until: u64) -> Result<(), SgdbError> {
-        let sk = self.resolve_storage_key(key);
+        let sk = self.resolve_known_key(key);
         self.engine.set_validity(&sk, from, until)
     }
 
     pub fn validity_at(&mut self, key: &str, now: u64) -> Result<bool, SgdbError> {
-        let sk = self.resolve_storage_key(key);
+        let sk = self.resolve_known_key(key);
         Ok(self.engine.validity_at(&sk, now))
     }
 
     pub fn invalidate(&mut self, key: &str, now: u64) -> Result<(), SgdbError> {
-        let sk = self.resolve_storage_key(key);
+        let sk = self.resolve_known_key(key);
         self.engine.invalidate(&sk, now)
     }
 
@@ -991,7 +1034,7 @@ impl Sgdb {
     /// `sys/validity/`) que o antigo diff/pull doc-a-doc descartava — agora
     /// viajam com o doc.
     pub fn export_record(&mut self, key: &str) -> Result<Option<MemoryRecord>, SgdbError> {
-        let sk = self.resolve_storage_key(key);
+        let sk = self.resolve_known_key(key);
         let r = self.engine.export_record(&sk)?;
         if r.is_some() {
             self.metrics.replication_sent += 1;
@@ -1221,7 +1264,7 @@ impl Sgdb {
     /// text) — `delete` remove exatamente a chave resolvida; delete ambos para
     /// remoção completa da memória.
     pub fn delete(&mut self, key: &str) -> Result<bool, SgdbError> {
-        let sk = self.resolve_storage_key(key);
+        let sk = self.resolve_known_key(key);
         self.engine.delete(&sk)
     }
 
@@ -1240,6 +1283,32 @@ impl Sgdb {
     ) -> Result<(), SgdbError> {
         let a = self.resolve_storage_key(a);
         let b = self.resolve_storage_key(b);
+        self.engine.associate(&a, rel, &b)
+    }
+
+    /// Variante DEFENSIVA de [`Sgdb::associate`] (AUDIT v1.1 P3): valida que
+    /// AMBOS os lados existem (doc vivo na storage key canônica) antes de
+    /// afirmar a relação — chave fantasma → `Err`, nenhuma side-table órfã.
+    /// O `associate` cru continua sem validar (design: a camada superior
+    /// afirma; quem quer segurança usa esta variante).
+    pub fn associate_checked(
+        &mut self,
+        a: &str,
+        rel: crate::memory_doc::RelationKind,
+        b: &str,
+    ) -> Result<(), SgdbError> {
+        let a = self.resolve_known_key(a);
+        let b = self.resolve_known_key(b);
+        if self.engine.art.get(&a).is_none() {
+            return Err(SgdbError::Invalid(
+                "associate_checked: no memory at key a (use the full canonical storage key, e.g. md/L4/<key>)",
+            ));
+        }
+        if self.engine.art.get(&b).is_none() {
+            return Err(SgdbError::Invalid(
+                "associate_checked: no memory at key b (use the full canonical storage key, e.g. md/L4/<key>)",
+            ));
+        }
         self.engine.associate(&a, rel, &b)
     }
 
@@ -1483,7 +1552,7 @@ fn clamp(s: &str, max: usize) -> String {
 
 /// sqrt para no_std (core não expõe `f32::sqrt` no target bare-metal).
 /// Newton–Raphson, 10 iterações, convergência rápida para argumentos > 0.
-fn sqrt_f32(x: f32) -> f32 {
+pub(crate) fn sqrt_f32(x: f32) -> f32 {
     if x <= 0.0 {
         return 0.0;
     }
@@ -1963,6 +2032,67 @@ mod tests {
         assert!(r0.iter().any(|h| h.key.contains("proc/1")));
     }
 
+    #[test]
+    fn recall_weighted_uses_doc_importance_not_layer() {
+        // AUDIT (v1.1 P2): recall_weighted ponderava importância POR CAMADA
+        // (L4=0.0, L5=0.2) mesmo quando o DOC tinha `set_importance`/
+        // `reinforce` explícitos — o nome prometia importância da memória,
+        // o contrato entregava a da camada. Agora usa
+        // `Hit.provenance.importance` (meta do doc); pré-v0.6 sem meta cai
+        // para a default da camada.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let emb = vec![1.0, -1.0, 1.0, -1.0];
+        db.remember_semantic("a", "alvo", &emb).unwrap();
+        db.remember_semantic("b", "alvo", &emb).unwrap();
+        db.set_importance("md/L4/a", 0.9).unwrap();
+        db.set_importance("md/L4/b", 0.1).unwrap();
+        // mesma camada L4 + mesmo embedding → antes EMPATAVAM por camada e o
+        // tie-break de key decidia; agora a importância do doc decide.
+        let r = db.recall_weighted(&emb, 2, 0.0, 0.0, 1.0, 0).unwrap();
+        assert_eq!(r.len(), 2);
+        assert!(
+            r[0].key.contains("/a"),
+            "doc com importância 0.9 deveria vencer 0.1: {}",
+            r[0].key
+        );
+        // hit expõe a importância do doc na provenance
+        assert!((r[0].provenance.as_ref().unwrap().importance - 0.9).abs() < 1e-6);
+        // doc recém-criado (put cru) tem meta default importance 1.0 (v0.6+):
+        // sob w_imp, o doc com importância 0.9 ainda vence o "b" (0.1) e o cru
+        // (1.0) — importância por DOC, não por camada.
+        let mut raw = crate::memory_doc::MemoryDoc::new(
+            crate::memory_doc::MemoryLayer::L4Semantic,
+            "raw/cru",
+            b"alvo".to_vec(),
+        );
+        raw.bitvec = Some(crate::bq::quantize_f32(&emb));
+        db.engine.put(raw).unwrap();
+        let r2 = db.recall_weighted(&emb, 3, 0.0, 0.0, 1.0, 0).unwrap();
+        assert_eq!(r2.len(), 3);
+        // ordenação por importância do DOC (penalty = 1−imp): cru (1.0) >
+        // a (0.9) > b (0.1)
+        assert!(
+            r2[0].key.contains("raw/cru"),
+            "cru (importância default 1.0) deveria vencer: {}",
+            r2[0].key
+        );
+        assert!(
+            r2[1].key.contains("/a"),
+            "a (0.9) deveria vir antes de b (0.1): {}",
+            r2[1].key
+        );
+        assert!(
+            r2[2].key.contains("/b"),
+            "b (0.1) deveria ser o último: {}",
+            r2[2].key
+        );
+        let b = r2.iter().find(|h| h.key.contains("/b")).unwrap();
+        assert!(
+            (b.provenance.as_ref().unwrap().importance - 0.1).abs() < 1e-6,
+            "b mantém importância 0.1 na provenance"
+        );
+    }
+
     #[cfg(feature = "file-storage")]
     #[test]
     fn fact_validity_invalidate_not_delete() {
@@ -2289,6 +2419,35 @@ mod tests {
         // supersede com old fantasma → Err (mesma proteção)
         assert!(db.supersede("md/L4/ghost-old", "md/L4/ghost-new").is_err());
         assert!(db.validate().is_empty());
+    }
+
+    #[test]
+    fn resolve_known_key_finds_layer_for_raw_key() {
+        // AUDIT (v1.1 P1): chave crua "h/imp" resolvia para `md/h/imp`
+        // (inexistente) em vez de `md/L4/h/imp` — meta/set_importance/
+        // reinforce falhavam silenciosamente com a chave certa e forma
+        // errada. `resolve_known_key` faz o fallback determinístico por
+        // prioridade de camada (L4 semântica primeiro).
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("h/imp", "hostilidade importante", &[1.0, -1.0, 1.0, -1.0])
+            .unwrap();
+        // chave crua resolve para o doc L4 (não para `md/h/imp` fantasma)
+        let m = db.meta("h/imp").unwrap().expect("meta via chave crua");
+        assert_eq!(m.importance, 1.0);
+        db.set_importance("h/imp", 0.3).unwrap();
+        assert_eq!(db.meta("h/imp").unwrap().unwrap().importance, 0.3);
+        db.set_confidence("h/imp", 0.7).unwrap();
+        assert_eq!(db.meta("h/imp").unwrap().unwrap().confidence, 0.7);
+        db.reinforce("h/imp", 0.2).unwrap();
+        assert!((db.meta("h/imp").unwrap().unwrap().importance - 0.5).abs() < 1e-6);
+        db.forget("h/imp").unwrap();
+        assert_eq!(
+            db.get_state("h/imp").unwrap(),
+            MemoryState::Archived,
+            "forget via chave crua arquiva o doc L4"
+        );
+        // chave canônica explícita continua funcionando (paridade)
+        assert_eq!(db.meta("md/L4/h/imp").unwrap().unwrap().importance, 0.5);
     }
 
     #[cfg(feature = "file-storage")]
@@ -2662,6 +2821,32 @@ mod tests {
         db.associate("md/L4/sem", RelationKind::DerivedFrom, "md/L3/ep2").unwrap();
         assert_eq!(db.derived_from("md/L4/sem").len(), 2);
         assert_eq!(db.related_to("md/L3/ep1").len(), 1);
+    }
+
+    #[test]
+    fn associate_checked_rejects_ghost_keys_no_orphan_relation() {
+        // AUDIT (v1.1 P3): associate_checked valida existência dos DOIS lados
+        // — chave fantasma → Err, nenhuma `sys/rel/` órfã. O associate cru
+        // continua sem validar (design preservado: relations_do_not_require_docs).
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("a", "lado a", &[1.0, -1.0, 1.0, -1.0]).unwrap();
+        // a existe, b fantasma → Err
+        let e = db
+            .associate_checked("md/L4/a", RelationKind::RelatedTo, "md/L4/ghost")
+            .unwrap_err();
+        assert!(matches!(e, SgdbError::Invalid(_)), "{e:?}");
+        // a fantasma, b existe → Err
+        assert!(db
+            .associate_checked("md/L4/ghost", RelationKind::RelatedTo, "md/L4/a")
+            .is_err());
+        // nenhuma relação órfã gravada
+        assert!(db.validate().is_empty(), "nenhuma side-table órfã");
+        assert_eq!(db.related_to("md/L4/a").len(), 0);
+        // chave crua resolve antes de validar (fallback determinístico P1)
+        db.remember_semantic("b", "lado b", &[1.0, -1.0, 1.0, -1.0]).unwrap();
+        db.associate_checked("a", RelationKind::RelatedTo, "b").unwrap();
+        assert_eq!(db.related_to("md/L4/b").len(), 1);
+        assert_eq!(db.related_to("md/L4/a").len(), 1);
     }
 
     // ── recall active vs historical (v0.8) ────────────────────────────────
