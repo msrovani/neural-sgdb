@@ -207,6 +207,40 @@ fn main() {
     rep.check("recall acha alpha", !is_err && txt.contains("hot test alpha"), txt.clone());
     rep.phase("recall", &t);
 
+    // ---------- fase 4b: embedding FORNECIDO pelo agente (v1.1 P4) ----------
+    // O server aceita `embedding` no payload — a camada superior pluga um
+    // modelo real; o demo é só o fallback. Um vetor explícito de 4 dims deve
+    // ser usado tal-qual (sem trigram do server).
+    let t = Instant::now();
+    let (txt, is_err) = srv.tool("remember", json!({
+        "text": "vetor customizado do agente",
+        "embedding": [1.0, -1.0, 1.0, -1.0]
+    }));
+    rep.check("remember aceita embedding do agente", !is_err && txt.contains("md/L4/mcp/"), txt.clone());
+    let key_emb = txt.rsplit('(').next().unwrap_or("").trim_end_matches(')').to_string();
+    let (txt, is_err) = srv.tool("recall", json!({
+        "query": "vetor customizado do agente",
+        "embedding": [1.0, -1.0, 1.0, -1.0],
+        "k": 3
+    }));
+    rep.check("recall com embedding do agente acha o doc",
+        !is_err && txt.contains("vetor customizado do agente"), txt.clone());
+    // contrato P4: embedding de 4 dims NÃO casa com o demo (256 dims) — quem
+    // fornece embedding usa o MESMO modelo na gravação e na busca
+    let (txt, _) = srv.tool("recall", json!({"query": "vetor customizado do agente", "k": 3}));
+    rep.check("recall sem embedding NÃO acha doc de outra dimensionalidade (contrato)",
+        !txt.contains("vetor customizado do agente"), txt.clone());
+    // caminho do embedder do server (demo): doc gravado SEM embedding acha no
+    // recall sem embedding
+    let (txt, is_err) = srv.tool("remember", json!({"text": "doc demo do servidor com trigram"}));
+    rep.check("remember sem embedding usa o embedder do server", !is_err && txt.contains("md/L4/mcp/"), txt.clone());
+    let (txt, is_err) = srv.tool("recall", json!({"query": "doc demo trigram", "k": 3}));
+    rep.check("recall sem embedding acha doc gravado pelo demo",
+        !is_err && txt.contains("doc demo do servidor com trigram"), txt.clone());
+    let (txt, is_err) = srv.tool("forget", json!({"key": key_emb}));
+    rep.check("forget limpa o doc customizado", !is_err, txt.clone());
+    rep.phase("embedding do agente", &t);
+
     // ---------- fase 5: rag_context + explain ----------
     let t = Instant::now();
     let (txt, is_err) = srv.tool("rag_context", json!({"query": "integridade banco", "k": 2}));

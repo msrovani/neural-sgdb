@@ -71,6 +71,7 @@ pub mod art;
 pub mod arbitration;
 pub mod bq;
 pub mod conflict;
+pub mod embedder;
 pub mod hamming_dispatch;
 pub mod lexical;
 pub mod limits;
@@ -95,6 +96,7 @@ pub use bq::{
     hamming, hamming_path, quantize_f32, quantize_f32_centered, BqFlatIndex, MihIndex,
 };
 pub use conflict::{generate_conflict_id, ConflictRecord, ConflictStatus};
+pub use embedder::{demo_embed, DemoEmbedder, Embedder};
 pub use hamming_dispatch::{
     cpu_caps, cpu_has_avx2, cpu_has_avx512, path_name as hamming_kernel_name,
     select_best_hamming_kernel, CpuCaps,

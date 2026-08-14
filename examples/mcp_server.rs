@@ -10,10 +10,11 @@
 //! (initialize → initialized → tools/list → tools/call), ver spec em
 //! https://modelcontextprotocol.io/specification/2025-11-25/
 //!
-//! ⚠️ Embedding de demonstração: o crate standalone não tem modelo de
-//! embedding (o kernel usa BGE); aqui usamos hash de trigramas → 256-dim para
-//! `recall` funcionar de ponta a ponta. Troque por embeddings reais em
-//! produção.
+//! ⚠️ Embedding de demonstração por default: o crate standalone não tem
+//! modelo de embedding (o kernel usa BGE); aqui usamos hash de trigramas →
+//! 256-dim para `recall` funcionar de ponta a ponta. Plugue um embedder REAL
+//! via env `NEURAL_SGDB_EMBEDDER` (trait `neural_sgdb::Embedder`) ou forneça
+//! `embedding` no payload de `remember`/`recall` (v1.1 P4).
 
 use std::io::{self, BufRead, Write};
 
@@ -22,45 +23,58 @@ use neural_sgdb::Sgdb;
 use neural_sgdb::FileStorage;
 #[cfg(not(feature = "file-storage"))]
 use neural_sgdb::InMemory;
+use neural_sgdb::{DemoEmbedder, Embedder};
 use serde_json::{json, Value};
 
 /// Contador monotônico para chaves de `remember` (fix #10: mesma chave ms
 /// colide — ms*1000 + seq garante unicidade no mesmo milissegundo).
 static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Demo embedding: deterministic character-trigram hash → normalized 256-dim
-/// vector. Good enough for short-text similarity recall; NOT a real semantic
-/// model.
-///
-/// HOT-TEST FIX (2026-08-13): o seed era position-dependent (`seed` mutado a
-/// cada janela) — o mesmo trigrama em posições diferentes caía em bins
-/// diferentes e o recall de palavras-chave falhava (query "integridade banco"
-/// vs doc "...integridade do banco" → d≈1.0). Agora o hash é position-
-/// independent: cada trigrama cai SEMPRE na mesma bin.
-fn demo_embed(text: &str) -> Vec<f32> {
-    const DIM: usize = 256;
-    let mut v = vec![0f32; DIM];
-    let bytes = text.as_bytes();
-    // text < 3 bytes: no trigrams → degenerate zero vector; fallback by
-    // individual bytes (fix #10)
-    let windows: Vec<&[u8]> = if bytes.len() < 3 {
-        bytes.iter().map(std::slice::from_ref).collect()
-    } else {
-        bytes.windows(3).collect()
-    };
-    for w in windows {
-        // FNV-1a sobre o n-grama (sem seed posicional — HOT-TEST FIX)
-        let mut h = 0xcbf2_9ce4_8422_2325u64;
-        for &b in w {
-            h ^= b as u64;
-            h = h.wrapping_mul(0x0000_0100_0000_01B3);
+/// Embedder ativo no server: default `DemoEmbedder` (trigram). O trait
+/// `neural_sgdb::Embedder` permite plugar um modelo real sem tocar no core.
+/// `NEURAL_SGDB_EMBEDDER=demo` → demo; qualquer outro valor atual = demo
+/// (registrado em stderr) — a porta de plug-in real é o trait + embeddings
+/// no payload.
+fn load_embedder() -> Box<dyn Embedder> {
+    match std::env::var("NEURAL_SGDB_EMBEDDER").as_deref() {
+        Ok("demo") | Ok("") => {
+            eprintln!("[neural-sgdb] embedder: demo (trigram hash)");
+            Box::new(DemoEmbedder)
         }
-        let idx = (h % DIM as u64) as usize;
-        v[idx] += if (h >> 8) & 1 == 1 { 1.0 } else { -1.0 };
+        Ok(other) => {
+            eprintln!(
+                "[neural-sgdb] embedder '{other}' desconhecido — usando demo; \
+                 plugue um modelo real via trait Embedder"
+            );
+            Box::new(DemoEmbedder)
+        }
+        Err(_) => {
+            eprintln!("[neural-sgdb] embedder: demo (trigram hash)");
+            Box::new(DemoEmbedder)
+        }
     }
-    let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-8);
-    v.iter_mut().for_each(|x| *x /= norm);
-    v
+}
+
+/// Embedding para um texto: usa o fornecido pelo agente (payload) se
+/// presente/validável, senão o embedder ativo do server.
+fn embed_for(emb: &dyn Embedder, text: &str, payload: &Value) -> Result<Vec<f32>, String> {
+    if let Some(arr) = payload["embedding"].as_array() {
+        if !arr.is_empty() && arr.len() <= neural_sgdb::MAX_EMBEDDING_DIM {
+            let v: Vec<f32> = arr
+                .iter()
+                .filter_map(|x| x.as_f64().map(|f| f as f32))
+                .collect();
+            if v.len() == arr.len() {
+                return Ok(v);
+            }
+            return Err("parametro 'embedding' deve conter apenas numeros".into());
+        }
+        return Err(format!(
+            "parametro 'embedding' deve ter 1..={} dimensoes",
+            neural_sgdb::MAX_EMBEDDING_DIM
+        ));
+    }
+    emb.embed(text).map_err(|e| format!("embedding falhou: {e}"))
 }
 
 /// #8 — parse do URI de resource `memory://{layer}/{key}` (ex: memory://L2/ts/0000).
@@ -132,6 +146,7 @@ fn main() {
         }
     };
     eprintln!("[neural-sgdb] MCP server pronto — db={db_path} backend={}", db.backend());
+    let embedder = load_embedder();
 
     let stdin = io::stdin();
     for line in stdin.lock().lines() {
@@ -174,26 +189,30 @@ fn main() {
             "tools/list" => {
                 send(&json!({"jsonrpc":"2.0","id":id,"result":{"tools":[
                     {"name":"remember",
-                     "description":"Armazena uma memoria de texto no banco neural-sgdb.",
+                     "description":"Armazena uma memoria de texto no banco neural-sgdb. Opcional: forneca `embedding` (array de f32, 1..=256 dims) para usar um modelo real; sem ele, o server usa o embedder configurado (demo trigram).",
                      "inputSchema":{"type":"object",
-                       "properties":{"text":{"type":"string","description":"Conteudo a lembrar"}},
+                       "properties":{
+                         "text":{"type":"string","description":"Conteudo a lembrar"},
+                         "embedding":{"type":"array","items":{"type":"number"},"description":"Embedding fornecido pelo agente (opcional)"}},
                        "required":["text"]},
                      "annotations":{"destructiveHint":true,"idempotentHint":true}},
                     {"name":"recall",
-                     "description":"Busca semantica sobre memorias armazenadas. Retorna as top-k mais similares.",
+                     "description":"Busca semantica sobre memorias armazenadas. Retorna as top-k mais similares. Opcional: forneca `embedding` (consistente com o usado no remember) para busca com modelo real.",
                      "inputSchema":{"type":"object",
                        "properties":{
                          "query":{"type":"string","description":"Texto de busca"},
+                         "embedding":{"type":"array","items":{"type":"number"},"description":"Embedding fornecido pelo agente (opcional)"},
                          "k":{"type":"integer","minimum":1,"maximum":20,"default":5},
                          "cursor":{"type":"string","description":"Cursor de paginacao (opaco, de um resultado anterior)"},
                          "pageSize":{"type":"integer","minimum":1,"maximum":20,"default":5}},
                        "required":["query"]},
                      "annotations":{"readOnlyHint":true}},
                     {"name":"rag_context",
-                     "description":"Busca memorias e monta contexto formatado pronto para prompt RAG.",
+                     "description":"Busca memorias e monta contexto formatado pronto para prompt RAG. Opcional: `embedding` fornecido pelo agente.",
                      "inputSchema":{"type":"object",
                        "properties":{
                          "query":{"type":"string","description":"Texto de busca"},
+                         "embedding":{"type":"array","items":{"type":"number"},"description":"Embedding fornecido pelo agente (opcional)"},
                          "k":{"type":"integer","minimum":1,"maximum":10,"default":3}},
                        "required":["query"]},
                      "annotations":{"readOnlyHint":true}},
@@ -327,7 +346,14 @@ fn main() {
                             let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             ms * 1000 + seq as u128
                         });
-                        let emb = demo_embed(text);
+                        let emb = match embed_for(embedder.as_ref(), text, args) {
+                            Ok(e) => e,
+                            Err(e) => {
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                    "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}}));
+                                continue;
+                            }
+                        };
                         match db.remember_semantic(&key, text, &emb) {
                             Ok(()) => {
                                 // devolve a STORAGE KEY completa (`md/L4/...`) —
@@ -349,7 +375,14 @@ fn main() {
                             send(&error_response(&id, -32602, "parametro 'query' obrigatorio"));
                             continue;
                         }
-                        let emb = demo_embed(query);
+                        let emb = match embed_for(embedder.as_ref(), query, args) {
+                            Ok(e) => e,
+                            Err(e) => {
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                    "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}}));
+                                continue;
+                            }
+                        };
                         let all = db.recall(&emb, 100).unwrap_or_default();
                         // paginação por cursor (offset) + pageSize
                         let size = args["pageSize"].as_u64().unwrap_or(k as u64).max(1) as usize;
@@ -381,7 +414,14 @@ fn main() {
                             send(&error_response(&id, -32602, "parametro 'query' obrigatorio"));
                             continue;
                         }
-                        let emb = demo_embed(query);
+                        let emb = match embed_for(embedder.as_ref(), query, args) {
+                            Ok(e) => e,
+                            Err(e) => {
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                    "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}}));
+                                continue;
+                            }
+                        };
                         match db.rag_context(&emb, k) {
                             Ok(ctx) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":if ctx.is_empty() {
