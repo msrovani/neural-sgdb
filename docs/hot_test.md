@@ -206,3 +206,19 @@ regressão + commit (hot test agora 49/49 exit 0).
 Contrato P4 (quem fornece embedding usa o MESMO modelo na gravação e na
 busca): vetor de 4 dims do agente ≠ 256 dims do demo — não casam, por
 design. Matriz: **193+1 / 239+1 / 148+1**.
+
+---
+
+## Follow-up v1.1.3 — Co-author ergonomics (S1–S5)
+
+Depois do v1.1.2, a cobaia seguiu usando e separou o que a irritaria COMO
+AGENTE usando a DB: 3 dores + 2 sugestões, cada uma com regressão +
+commit (hot test agora 60/60 exit 0; matriz **197+1 / 243+1 / 151+1**).
+
+| # | O que era | Correção | Regressão |
+|---|-----------|----------|-----------|
+| **S1** | recall com dims que não casam devolvia ruído de hamming silencioso | `SgdbError::Invalid` + `Sgdb::indexed_embedding_dims()`; `Engine.indexed_dims` (build no `index_doc`, clear no rebuild) | `recall_dim_mismatch_is_loud_not_silent` / `recall_dim_mismatch_survives_rebuild` |
+| **S2** | trait `Embedder` existia, mas sem exemplo real plugado | `examples/embedder_http.rs`: `HttpEmbedder` + mock server HTTP (zero deps novas) — prova o contrato e o guard S1 | 4/4 PASS no example |
+| **S3** | recall fazia N×(NMD1+meta) reads para os companions L2 | `Engine::get_texts_batch`: 1 passada deduplicada, payload-only | `recall_companion_texts_batch_parity` |
+| **S4** | delete físico deixava órfãos no BQ append-only para sempre | `BqFlatIndex::retain` + `Sgdb::delete` dispara `reclaim_bq_orphans` ao cruzar `DEFAULT_BQ_ORPHAN_THRESHOLD=64`; `0` = sempre | `reclaim_bq_orphans_recompacts_after_delete` |
+| **S5** | recall do MCP paginava top-100 fixo (custo fixo + teto artificial) | lazy: computa só `off+size+1` (sentinela = página cheia reporta `nextCursor`) | `lazy_recall_pages_match_full_topk` + hot test fase 4c (raw `rpc` p/ ver `nextCursor` top-level) |

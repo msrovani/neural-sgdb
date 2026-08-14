@@ -51,6 +51,40 @@ with a regression test, hot test 49/49 exit 0):
 - `sqrt_f32` is now `pub(crate)` (sgdb.rs) — Newton, reused by embedder
   (regra 3 no_std: no `f32::sqrt` in core).
 
+## Post-audit v1.1.3 (co-author ergonomics, 2026-08-14)
+
+The things that would annoy the agent USING the DB (each committed with a
+regression test; hot test 60/60 exit 0; matrix 197+1 / 243+1 / 151+1):
+
+- **`recall` is loud on dimension mismatch (S1)**: query dims matching NONE
+  of the indexed embeddings → `SgdbError::Invalid` (message references
+  `indexed_embedding_dims()`), not silent hamming garbage — the P4 contract
+  ("same model on write and query") is enforced loudly. Text-payload L4/L5
+  (no bitvec) don't feed the detection. New accessor
+  `Sgdb::indexed_embedding_dims()`. Wire-dims live in
+  `Engine::indexed_dims: BTreeSet<usize>` (built in `index_doc`, cleared on
+  rebuild).
+- **`examples/embedder_http.rs` (S2)**: the `Embedder` trait plugged into a
+  real HTTP endpoint (raw HTTP/1.1 + existing `serde_json` dev-dep, zero new
+  deps). `HttpEmbedder` + self-contained mock embedding server; proves the
+  same-model contract and the S1 guard end-to-end. 4/4 PASS.
+- **`recall` companion texts in batch (S3)**: `Engine::get_texts_batch` reads
+  all `/L2/` companions in one deduplicated pass (payload only, no
+  `attach_meta`) — was N×(NMD1 + meta) reads per recall. Contract parity:
+  missing companion → empty `Hit.text`.
+- **Proactive BQ reclamation (S4)**: the BQ flat is append-only — physical
+  `delete` left orphan ids in the index forever (harmless but inflating the
+  candidate pool). `BqFlatIndex::retain` recompacts; `Sgdb::delete` fires
+  `reclaim_bq_orphans(DEFAULT_BQ_ORPHAN_THRESHOLD=64)` on the spot (bounded
+  churn — only recompacts when the payout justifies O(N)); `threshold=0`
+  always recompacts.
+- **MCP `recall` pagination is lazy (S5)**: the server computes only
+  `off+size+1` hits per page (the `+1` sentinel makes a full page report a
+  `nextCursor`) instead of a hard-coded top-100 with an artificial ceiling.
+  Deterministic top-k ⇒ each lazy page slices the same ranking. Hot test
+  phase 4c exercises the real handler (raw `rpc` — `tool()` only returns
+  `content[0].text`, not the top-level `nextCursor`).
+
 ## Repository Map
 
 A full codemap is available at `codemap.md` in the project root.
@@ -142,9 +176,9 @@ hash, not a semantic model). Restart opencode after changing the config.
 ## Running tests
 
 ```bash
-cargo test                                 # 193+1 tests (InMemory/FileStorage/TickvFile)
-cargo test --features p2p                  # 228+1 (includes CRDT sync + mesh harness)
-cargo test --no-default-features           # 139+1 (no_std core, host test harness)
+cargo test                                 # 197+1 tests (InMemory/FileStorage/TickvFile)
+cargo test --features p2p                  # 243+1 (includes CRDT sync + mesh harness)
+cargo test --no-default-features           # 151+1 (no_std core, host test harness)
 cargo check --no-default-features --target x86_64-unknown-none   # no_std gate
 cargo clippy --all-targets --all-features -- -D warnings          # lint gate (P0-5)
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-6/P0-10)
@@ -170,7 +204,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-
 - **Wire-codec fuzz harness** (`src/wire_fuzz.rs`, P2-4): the single LCG
   never-panic/roundtrip/truncation gate over ALL 8 wire types — add a new
   wire type there (plus its per-module `prop_tests`), and keep the matrix
-  (193+1 / 239+1 / 148+1) green. `SignedEnvelope::decode` returns
+  (197+1 / 243+1 / 151+1) green. `SignedEnvelope::decode` returns
   `Option<(Self, usize)>` (no magic byte — corrupt via field lengths, not
   byte 0).
 - **TickvFile** (`src/tickv.rs`): 512-aligned records, tombstone `vlen=0` or

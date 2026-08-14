@@ -21,14 +21,13 @@ using this DB for real.
   gateway. Proves the same-model contract (write+query through HTTP, 8 dims)
   and the S1 guard (a 256-dim demo query against an 8-dim corpus → `Invalid`).
   `cargo run --release --example embedder_http` → 4/4 PASS, exit 0.
-
-### Changed
-- **`recall` companion texts load in batch** (S3): `Hit.text` was filled with
-  one `get_by_storage_key` per hit — N×(doc NMD1 + `sys/meta/`) reads, even
-  though the companion text needs no meta. New `Engine::get_texts_batch`
-  reads all companion keys in one deduplicated pass (payload only, no
-  `attach_meta`). Same contract, fewer reads. Regression:
-  `recall_companion_texts_batch_parity`.
+- **Proactive BQ reclamation** (S4): `Sgdb::reclaim_bq_orphans(threshold)` +
+  `BqFlatIndex::retain`. The BQ flat is append-only — physical `delete`
+  left orphan ids in the index (harmless — recall skips them — but they
+  inflated the candidate pool). `Sgdb::delete` now recompacts on the spot
+  once orphans cross `DEFAULT_BQ_ORPHAN_THRESHOLD` (64) in `limits.rs`;
+  `threshold = 0` always recompacts. Regression:
+  `reclaim_bq_orphans_recompacts_after_delete`.
 
 ### Changed
 - **`recall`/`recall_historical`/`recall_weighted` no longer return hamming
@@ -40,11 +39,12 @@ using this DB for real.
   detection (they're noise, not a dimension). Regressions:
   `recall_dim_mismatch_is_loud_not_silent`,
   `recall_dim_mismatch_survives_rebuild`.
-- Matrix: 195+1 / 241+1 / 149+1 tests (default / p2p / no-default).
-- Matrix: 196+1 / 242+1 / 150+1 tests (default / p2p / no-default).
-- Matrix: 197+1 / 243+1 / 151+1 tests (default / p2p / no-default).
-
-### Changed
+- **`recall` companion texts load in batch** (S3): `Hit.text` was filled with
+  one `get_by_storage_key` per hit — N×(doc NMD1 + `sys/meta/`) reads, even
+  though the companion text needs no meta. New `Engine::get_texts_batch`
+  reads all companion keys in one deduplicated pass (payload only, no
+  `attach_meta`). Same contract, fewer reads. Regression:
+  `recall_companion_texts_batch_parity`.
 - **MCP `recall` pagination is lazy** (S5): the server fetched a hard-coded
   top-100 and paginated over it — fixed cost on every page plus an
   artificial 100-hit ceiling. It now computes only `off+size+1` hits for the
@@ -54,15 +54,8 @@ using this DB for real.
   real handler: page 1 = 2 hits + `nextCursor`, page 2 follows it with no
   repeats. Regressions: `lazy_recall_pages_match_full_topk` (server),
   hot-test phase 4c (client).
-
-### Added
-- **Proactive BQ reclamation** (S4): `Sgdb::reclaim_bq_orphans(threshold)` +
-  `BqFlatIndex::retain`. The BQ flat is append-only — physical `delete`
-  left orphan ids in the index (harmless — recall skips them — but they
-  inflated the candidate pool). `Sgdb::delete` now recompacts on the spot
-  once orphans cross `DEFAULT_BQ_ORPHAN_THRESHOLD` (64) in `limits.rs`;
-  `threshold = 0` always recompacts. Regression:
-  `reclaim_bq_orphans_recompacts_after_delete`.
+- Matrix: 197+1 / 243+1 / 151+1 tests (default / p2p / no-default).
+- Hot test: 60/60 exit 0 (new phase 4c).
 
 ## [1.1.2] — 2026-08-14
 
