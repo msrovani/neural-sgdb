@@ -34,12 +34,13 @@
 
 | Métrica | Via 1 (MCP) | Via 2 (binário) | Via 3 (client) |
 |---------|-------------|-----------------|----------------|
-| startup do server | — (após restart) | ~4–5 ms | 4 ms |
+| startup do server | — (spawnado pelo opencode) | ~4–5 ms | 1–4 ms |
 | nº tools listadas | 15 | 15 | 15 |
-| nº chamadas feitas | — | 4 (handshake+diag) | 30 (10 fases) |
-| tempo total | — | — | 1.6 s (build incluso) |
-| erros encontrados | — | 0 | **2 bugs reais (corrigidos)** |
+| nº chamadas feitas | 15 (sessão real) | 4 (handshake+diag) | 30 (10 fases) |
+| tempo total | — | — | ~30 ms (diálogo) |
+| erros encontrados | 1 (storage: open append — FIX) | 0 | **2 bugs reais (corrigidos)** |
 | asserções passaram | — | — | 45/45 |
+| persistência entre sessões | ✅ (doc_count sobreviveu restart) | ✅ | ✅ (restart do processo) |
 
 ## Execução (transcript resumido)
 
@@ -59,6 +60,21 @@ persistência (restart)=13. Total runtime do diálogo ≈ 30 ms.
 **Via 2 (handshake via shell, PowerShell):** initialize → tools/call remember →
 tools/call recall "integridade banco" → `md/L4/mcp/... | hot test gamma... (d=1.061)`
 → demonstrou o bug do embedding position-dependent ANTES da correção.
+
+**Via 1 — sessão real (pós-restart do opencode):**
+- `health` inicial: backend=file, doc_count=2 (persistidos de sessões anteriores
+  na Via 2). **Persistência real entre reinícios do processo confirmada.**
+- `remember` ×3 → chaves `md/L4/mcp/...` completas (o fix do Bug1 em ação).
+- `recall` "hot_test bugs MCP server chave demo_embed" → top-1 correto d=0.634.
+- `rag_context` "Matriz de testes clippy no_std gates" → top-1 d=0.477.
+- `explain` → memory_id/version_id/source/created_tick (proveniência completa).
+- `reinforce` +0.1 → `last_reinforced: 4` persistido (re-explain confirmou).
+- `associate` + `related_to` → aresta viva (RelatedTo -> outra chave).
+- `supersede` → memória antiga `state: Superseded` (linhagem causal).
+- `validate` final → "banco saudavel". `health` final: doc_count=8, bq_len=4.
+- **Achado de usabilidade**: matar o processo `mcp_server` do opencode derruba o
+  toolset (`neural-sgdb_*` some) e o opencode NÃO re-spawna — precisa reiniciar
+  o opencode. `cargo build` também falha (Acesso negado) com o binário em uso.
 
 ## Erros encontrados
 
@@ -129,6 +145,9 @@ O que aprendi e o que vou fazer diferente na próxima sessão:
 4. **Embedding de demo**: para minhas próprias memórias, escrever textos com
    termos-chave únicos (o trigram separa bem palavras distintas) e queries com
    as MESMAS palavras do documento (sem sinônimos).
-5. Próxima sessão: configurar a Via 1 (MCP nativo em `.opencode/opencode.json`)
-   e usar `remember`/`recall` de verdade como memória persistente do projeto —
-   registrar os resultados no próprio banco (meta!). 
+5. **NÃO matar o processo `mcp_server` em sessão MCP ativa**: o toolset
+   `neural-sgdb_*` some e o opencode não re-spawna — custa um restart. Para
+   rebuild do binário, parar o opencode primeiro (Windows bloqueia arquivo em
+   uso → `Acesso negado` no link).
+6. Via 1 é o caminho real de memória de agente: use `remember`/`recall` em
+   todas as sessões; o banco `.nsgdb/` sobrevive restart e é gitignored.
