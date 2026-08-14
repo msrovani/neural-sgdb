@@ -145,6 +145,33 @@ impl Sgdb {
         &self.metrics
     }
 
+    /// Diário por agente (mempalace): memórias L2 episódicas cujo `source`
+    /// casa com `node_id`, mais recentes primeiro (keys `ts/<hex>` são
+    /// sortable — a ordem lexicográfica do ART é temporal). Devolve
+    /// `(storage_key, payload)`; limita ao agente via side-table `sys/meta/`.
+    pub fn diary(&mut self, node_id: u8, limit: usize) -> Result<Vec<(String, String)>, SgdbError> {
+        let mut matches = Vec::new();
+        for (sk, _) in self.engine.art.scan_prefix("md/L2/") {
+            let src = match self.engine.meta(&sk) {
+                Ok(Some(m)) => m.source,
+                _ => continue,
+            };
+            if src != node_id {
+                continue;
+            }
+            match self.engine.get_by_storage_key(&sk) {
+                Ok(Some(doc)) => {
+                    matches.push((sk.clone(), String::from_utf8_lossy(&doc.payload).into_owned()));
+                }
+                _ => continue,
+            }
+        }
+        // keys ts sortable são asc (antigas→novas) — reverter p/ recentes primeiro
+        matches.reverse();
+        matches.truncate(limit);
+        Ok(matches)
+    }
+
     /// Redefine todos os contadores (ex: antes de um teste de carga).
     pub fn reset_metrics(&mut self) {
         self.metrics = crate::metrics::Metrics::default();
@@ -1677,6 +1704,32 @@ mod tests {
         // episódios distintos não colidem (ts diferentes)
         let (ku2, _) = db.remember_episodic("e a populacao?", "600 mil", 1700000001000u64).unwrap();
         assert_ne!(ku, ku2);
+    }
+
+    #[test]
+    fn diary_filters_by_agent_and_orders_recent_first() {
+        // v1.1.4 item 4 (mempalace): diary(node_id) devolve SÓ as L2 do agente,
+        // mais recentes primeiro (keys ts sortable revertidas).
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_episodic("pergunta antiga", "resposta antiga", 1000).unwrap();
+        db.remember_episodic("pergunta nova", "resposta nova", 2000).unwrap();
+        let me = db.node_id();
+        // todas escritas por mim (source == node_id local); 2 episódios × 2 docs (u+a)
+        let d = db.diary(me, 10).unwrap();
+        assert_eq!(d.len(), 4);
+        // mais recente primeiro
+        assert!(d[0].0.ends_with("/u") || d[0].0.ends_with("/a"));
+        // o par novo (ts 2000) deve vir antes do par antigo (ts 1000)
+        let ts_new: Vec<&String> = d.iter().map(|(k, _)| k).collect();
+        let pos_new = ts_new.iter().position(|k| k.contains("00000000000007d0")).unwrap(); // 2000
+        let pos_old = ts_new.iter().position(|k| k.contains("00000000000003e8")).unwrap(); // 1000
+        assert!(pos_new < pos_old, "mais recente primeiro");
+        // limit respeitado
+        let d1 = db.diary(me, 1).unwrap();
+        assert_eq!(d1.len(), 1);
+        // agente que nunca escreveu → vazio
+        let other = db.diary(me.wrapping_add(1), 10).unwrap();
+        assert!(other.is_empty());
     }
 
     #[test]

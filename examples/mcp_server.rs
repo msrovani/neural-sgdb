@@ -300,6 +300,14 @@ fn main() {
                      "description":"Estado observavel do banco: backend, node_id, sonda de storage, contagens (docs/BQ/RAM) e conflitos abertos.",
                      "inputSchema":{"type":"object","properties":{}},
                      "annotations":{"readOnlyHint":true}},
+                    {"name":"diary",
+                     "description":"Diario por agente (mempalace): memorias L2 episodicas cujo source == node_id, mais recentes primeiro (keys ts sortable revertidas). Devolve (storage_key, payload).",
+                     "inputSchema":{"type":"object",
+                       "properties":{
+                         "node_id":{"type":"integer","description":"ID do agente (source). Omitir = agente local (health.node_id)."},
+                         "limit":{"type":"integer","minimum":1,"maximum":100,"default":10}},
+                       "required":[]},
+                     "annotations":{"readOnlyHint":true}},
                     {"name":"validate",
                      "description":"Integridade: varre storage md/, decodifica NMD1, cruza ART/BQ e detecta side-tables orfas. Vazio = saudavel; cada issue = key + descricao.",
                      "inputSchema":{"type":"object","properties":{}},
@@ -654,6 +662,24 @@ fn main() {
                                 "bq_len": h.bq_len, "ram_len": h.ram_len,
                                 "open_conflicts": h.open_conflicts})).unwrap_or_default()}],
                             "isError":false}}));
+                    }
+                    "diary" => {
+                        let node = args["node_id"].as_u64().map(|n| n as u8).unwrap_or(db.node_id());
+                        let limit = args["limit"].as_u64().unwrap_or(10) as usize;
+                        match db.diary(node, limit) {
+                            Ok(entries) => {
+                                let text = if entries.is_empty() {
+                                    format!("sem episodios L2 do agente {node}")
+                                } else {
+                                    entries.iter().map(|(k, p)| format!("{} | {}", k, p))
+                                        .collect::<Vec<_>>().join("\n")
+                                };
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                    "content":[{"type":"text","text":text}],"isError":false}}));
+                            }
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
+                        }
                     }
                     "validate" => {
                         let issues = db.validate();
