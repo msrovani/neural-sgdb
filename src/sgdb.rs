@@ -545,6 +545,20 @@ impl Sgdb {
         Ok(())
     }
 
+    /// Camada episódica VERBATIM (mempalace): guarda o par user/response cru em
+    /// L2 timestamped, sem extração nem resumo. A contraparte de retrieval é a
+    /// mesma dos L2 — lexical (`recall_lexical`) e recall semântico via
+    /// companions. Útil quando a extração perderia contexto (o banco nunca
+    /// decide o que esquecer). Devolve as storage keys (`md/L2/<ts>/u`, `/a`).
+    pub fn remember_episodic(&mut self, user: &str, response: &str, now: u64) -> Result<(String, String), SgdbError> {
+        let ts = MemoryDoc::sortable_ts_key(now);
+        let ts_u = format!("{ts}/u");
+        let ts_a = format!("{ts}/a");
+        let _ = crate::engine::remember_text(&mut self.engine, MemoryLayer::L2EpisodicShort, &ts_u, user)?;
+        let _ = crate::engine::remember_text(&mut self.engine, MemoryLayer::L2EpisodicShort, &ts_a, response)?;
+        Ok((format!("md/L2/{ts_u}"), format!("md/L2/{ts_a}")))
+    }
+
     /// Indexa embedding L4 (BQ). `emb` vazio = no-op. O texto é armazenado em
     /// L2 (companion `md/L2/<key>`) para recall trazer texto legível.
     /// Grava uma memória semântica (L4 + companion L2). **Política de entrada
@@ -1621,6 +1635,30 @@ mod tests {
         let l2 = db.scan_prefix("md/L2/").unwrap();
         assert!(!l1.is_empty());
         assert!(!l2.is_empty());
+    }
+
+    #[test]
+    fn episodic_verbatim_roundtrip() {
+        // v1.1.4 item 2 (mempalace): remember_episodic guarda o par cru em
+        // L2 timestamped, sem extração — e devolve as storage keys completas
+        // (md/L2/<ts>/u e /a) para follow-up (explain/reinforce/etc).
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let (ku, ka) = db.remember_episodic("qual e o capital?", "e Roma", 1700000000000u64).unwrap();
+        assert!(ku.starts_with("md/L2/"), "chave user deve ser md/L2/<ts>/u");
+        assert!(ku.ends_with("/u"));
+        assert!(ka.starts_with("md/L2/"));
+        assert!(ka.ends_with("/a"));
+        // texto cru recuperável por chave (verbatim — nada foi resumido)
+        let u = db.get(MemoryLayer::L2EpisodicShort, ku.trim_start_matches("md/L2/")).unwrap().unwrap();
+        let a = db.get(MemoryLayer::L2EpisodicShort, ka.trim_start_matches("md/L2/")).unwrap().unwrap();
+        assert_eq!(String::from_utf8_lossy(&u.payload), "qual e o capital?");
+        assert_eq!(String::from_utf8_lossy(&a.payload), "e Roma");
+        // lexical (BM25) sobre L2 encontra o verbatim
+        let lex = db.recall_lexical("capital", 5).unwrap();
+        assert!(lex.iter().any(|h| h.text == "qual e o capital?"), "lexical deve achar episodio verbatim");
+        // episódios distintos não colidem (ts diferentes)
+        let (ku2, _) = db.remember_episodic("e a populacao?", "600 mil", 1700000001000u64).unwrap();
+        assert_ne!(ku, ku2);
     }
 
     #[test]

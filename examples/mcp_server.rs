@@ -196,6 +196,15 @@ fn main() {
                          "embedding":{"type":"array","items":{"type":"number"},"description":"Embedding fornecido pelo agente (opcional)"}},
                        "required":["text"]},
                      "annotations":{"destructiveHint":true,"idempotentHint":true}},
+                    {"name":"remember_episodic",
+                     "description":"Camada episodica VERBATIM (mempalace): guarda o par user/response cru em L2 timestamped, sem extracao nem resumo. Util quando a extracao perderia contexto. Devolve as storage keys (md/L2/<ts>/u e /a).",
+                     "inputSchema":{"type":"object",
+                       "properties":{
+                         "user":{"type":"string","description":"Texto do usuario (verbatim)"},
+                         "response":{"type":"string","description":"Texto do assistente (verbatim)"},
+                         "now":{"type":"integer","description":"Timestamp (ms). Omitir = relogio local."}},
+                       "required":["user","response"]},
+                     "annotations":{"idempotentHint":true}},
                     {"name":"recall",
                      "description":"Busca semantica sobre memorias armazenadas. Retorna as top-k mais similares. Opcional: forneca `embedding` (consistente com o usado no remember) para busca com modelo real.",
                      "inputSchema":{"type":"object",
@@ -364,6 +373,27 @@ fn main() {
                                     "content":[{"type":"text","text":format!("memoria armazenada ({sk})")}],
                                     "isError":false}}))
                             }
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
+                        }
+                    }
+                    "remember_episodic" => {
+                        let user = args["user"].as_str().unwrap_or("");
+                        let response = args["response"].as_str().unwrap_or("");
+                        if user.is_empty() || response.is_empty() {
+                            send(&error_response(&id, -32602, "parametros 'user' e 'response' obrigatorios"));
+                            continue;
+                        }
+                        let now = args["now"].as_u64().unwrap_or_else(|| {
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis() as u64)
+                                .unwrap_or(0)
+                        });
+                        match db.remember_episodic(user, response, now) {
+                            Ok((ku, ka)) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":format!("episodio verbatim armazenado:\nuser: {ku}\nasst: {ka}")}],
+                                "isError":false}})),
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
                         }
