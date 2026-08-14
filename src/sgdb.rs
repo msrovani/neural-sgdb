@@ -639,6 +639,17 @@ impl Sgdb {
         self.recall_impl(query, k, ov, false)
     }
 
+    /// Dimensionalidades (nº de f32) dos embeddings indexados no BQ (v1.1.3 S1).
+    /// A query de recall precisa casar com UMA delas; `recall` avisa com
+    /// `SgdbError::Invalid` se não casar com nenhuma (em vez de devolver ruído
+    /// de hamming). Útil para o caller debugar o contrato "mesmo modelo na
+    /// gravação e na busca" (P4).
+    pub fn indexed_embedding_dims(&self) -> Vec<usize> {
+        let mut dims: Vec<usize> = self.engine.indexed_dims.iter().copied().collect();
+        dims.sort_unstable();
+        dims
+    }
+
     /// Recall com **oversampling** configurável (pesquisa upstream Qdrant/BQ):
     /// busca `oversample*k` candidatos Hamming no filtro grosseiro BQ e rescora
     /// FP32 — ~0.98–0.99 de recall com 2–4x oversample (vs `k*4` fixo). Com
@@ -691,6 +702,19 @@ impl Sgdb {
         }
         if query.len() > crate::bq::MAX_EMBEDDING_DIM {
             return Err(SgdbError::Invalid("query exceeds MAX_EMBEDDING_DIM"));
+        }
+        // v1.1.3 S1: dimensionalidade incompatível NÃO é silêncio. Se o BQ já
+        // indexou embeddings e a query não casa com NENHUMA dim (L4/L5 gravam
+        // o embedding f32 em payload → dim = payload.len()/4), o recall nunca
+        // achará a memória — 4-dim ≠ 256-dim (contrato P4: mesmo modelo na
+        // gravação e na busca). Avisar é melhor que devolver ruído de hamming.
+        if !self.engine.indexed_dims.is_empty()
+            && !self.engine.indexed_dims.contains(&query.len())
+        {
+            return Err(SgdbError::Invalid(
+                "query dimensionality does not match any indexed embedding \
+                 (use the SAME model on write and query — see indexed_embedding_dims)",
+            ));
         }
         self.metrics.recalls += 1;
         let k = k.max(1);
@@ -2091,6 +2115,60 @@ mod tests {
             (b.provenance.as_ref().unwrap().importance - 0.1).abs() < 1e-6,
             "b mantém importância 0.1 na provenance"
         );
+    }
+
+    #[test]
+    fn recall_dim_mismatch_is_loud_not_silent() {
+        // v1.1.3 S1: recall com query de dimensionalidade que NÃO casa com
+        // NENHUMA dim indexada devolvia ruído de hamming (contrato P4: mesmo
+        // modelo na gravação e na busca — 4-dim ≠ 256-dim não casa). Agora
+        // devolve erro auto-explicativo em vez de silêncio.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let emb = vec![1.0, -1.0, 1.0, -1.0];
+        db.remember_semantic("a", "alvo", &emb).unwrap();
+        // query com dim compatível → recall normal, não erro
+        let r = db.recall(&emb, 3).unwrap();
+        assert_eq!(r.len(), 1);
+        assert!(r[0].key.contains("/a"));
+        // query de dim INCOMPATÍVEL (256-dim demo) contra docs 4-dim → erro
+        let wrong: Vec<f32> = (0..256).map(|i| (i as f32 / 256.0) - 0.5).collect();
+        let err = db.recall(&wrong, 3).unwrap_err();
+        match err {
+            SgdbError::Invalid(msg) => {
+                assert!(
+                    msg.contains("dimensionality"),
+                    "mensagem deve citar dimensionalidade: {}",
+                    msg
+                );
+            }
+            other => panic!("esperava Invalid, veio {:?}", other),
+        }
+        // accessor expõe as dims indexadas para o caller debugar
+        assert_eq!(db.indexed_embedding_dims(), vec![4]);
+        // recall_historical (mesmo caminho) também avisa
+        let err2 = db.recall_historical(&wrong, 3).unwrap_err();
+        assert!(matches!(err2, SgdbError::Invalid(_)));
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn recall_dim_mismatch_survives_rebuild() {
+        // v1.1.3 S1 (rebuild): `indexed_dims` é derivado e reconstruído do
+        // storage (não é estado durável) — remontar a DB não perde a detecção.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let emb = vec![1.0, -1.0, 1.0, -1.0];
+        let wrong: Vec<f32> = (0..256).map(|i| (i as f32 / 256.0) - 0.5).collect();
+        let dir = std::env::temp_dir().join(format!("nsgdb_dim_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut db2 = Sgdb::open(crate::FileStorage::open(dir.join("mem.db")).unwrap()).unwrap();
+        db2.remember_semantic("a", "alvo", &emb).unwrap();
+        drop(db2);
+        let mut db3 = Sgdb::open(crate::FileStorage::open(dir.join("mem.db")).unwrap()).unwrap();
+        let err3 = db3.recall(&wrong, 3).unwrap_err();
+        assert!(matches!(err3, SgdbError::Invalid(_)), "rebuild perdeu indexed_dims");
+        assert_eq!(db3.indexed_embedding_dims(), vec![4]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(feature = "file-storage")]

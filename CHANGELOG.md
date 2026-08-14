@@ -4,6 +4,28 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [Unreleased] — v1.1.3 (WIP)
+
+Co-author ergonomics (S1–S5): the things that would annoy me as an agent
+using this DB for real.
+
+### Added
+- **`Sgdb::indexed_embedding_dims()`** (S1): dimensionalities (nº of f32) of
+  the embeddings currently indexed in the BQ — derived from L4/L5 payloads,
+  rebuilt on remount.
+
+### Changed
+- **`recall`/`recall_historical`/`recall_weighted` no longer return hamming
+  noise on dimension mismatch** (S1): if the query dims match NONE of the
+  indexed embeddings (e.g. 4-dim agent vector vs 256-dim demo), the recall
+  returns `SgdbError::Invalid` with an actionable message instead of silently
+  returning garbage — the P4 contract ("same model on write and query") is now
+  enforced loudly. Text-payload L4/L5 docs (no bitvec) don't feed the
+  detection (they're noise, not a dimension). Regressions:
+  `recall_dim_mismatch_is_loud_not_silent`,
+  `recall_dim_mismatch_survives_rebuild`.
+- Matrix: 194+1 / 240+1 / 149+1 tests (default / p2p / no-default).
+
 ## [1.1.2] — 2026-08-14
 
 Guinea-pig plan (v1.1 P1–P4): the fixes for what irritated me using it.

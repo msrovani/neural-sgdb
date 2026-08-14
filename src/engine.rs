@@ -3,7 +3,7 @@
 //! key = `md/Lx/...`. Instance-based (sem global ENGINE) — port do OS mãe.
 
 use alloc::boxed::Box;
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
@@ -141,6 +141,11 @@ pub struct AiosDatabaseEngine {
     pub node_id: u8,
     pub puts: u64,
     pub gets: u64,
+    /// Dimensionalidades (número de f32) dos embeddings indexados no BQ
+    /// (v1.1.3 S1): derivado de `payload.len()/4` dos docs L4/L5 — a fonte da
+    /// verdade da dim. O recall avisa (em vez de silenciar) quando a query não
+    /// casa com NENHUMA dim indexada: 4-dim ≠ 256-dim nunca casa por acidente.
+    pub indexed_dims: BTreeSet<usize>,
     /// Blobs L0/L1 encoded (storage_key → NMD1); não toca Storage até checkpoint.
     ram_l0l1: BTreeMap<String, Vec<u8>>,
     /// Puts L0/L1 que bypassaram Storage (métrica honesty).
@@ -173,6 +178,7 @@ impl AiosDatabaseEngine {
             id_to_sk: BTreeMap::new(),
             clock_index: BTreeMap::new(),
             own_clock_watermark: 0,
+            indexed_dims: BTreeSet::new(),
             storage,
         }
     }
@@ -486,6 +492,14 @@ impl AiosDatabaseEngine {
             MemoryLayer::L4Semantic | MemoryLayer::L5Procedural => {
                 if let Some(ref bv) = doc.bitvec {
                     self.bq.insert(id, bv.clone());
+                    // S1: só embeddings DECLARADOS (bitvec) alimentam a detecção
+                    // de dim. payload.len()/4 = dim f32 (remember_semantic grava
+                    // o embedding no payload). Docs com payload de TEXTO (sem
+                    // bitvec) NÃO contam — texto re-interpretado como f32 é
+                    // ruído, não dimensionalidade.
+                    if doc.payload.len() >= 4 {
+                        self.indexed_dims.insert(doc.payload.len() / 4);
+                    }
                 } else if !doc.payload.is_empty() {
                     let n = doc.payload.len() / 4;
                     if n > 0 {
@@ -520,6 +534,7 @@ impl AiosDatabaseEngine {
         self.lexical = LexicalIndex::new();
         self.id_to_sk.clear();
         self.clock_index.clear();
+        self.indexed_dims.clear();
         // watermark reconstruído do storage (docs = fonte da verdade)
         self.own_clock_watermark = 0;
         // Reindex RAM L0/L1 first (logical ids fresh)
