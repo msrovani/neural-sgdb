@@ -42,7 +42,7 @@ Guinea-pig plan (v1.1 P1–P4): the fixes for what irritated me using it.
 
 ### Added
 - **`examples/audit.rs`** — the Cognitive QA audit, the mission test
-  ("returns MEMORIES, not data"): 3 batteries, 54 assertions, exit 0.
+  ("returns MEMORIES, not data"): 3 batteries, 59 assertions, exit 0.
   - Battery 1 (ATTACK, 23): hostile embeddings (NaN/Inf/empty), malformed
     keys (`/`, `#`, `sys/`, ART prefix-collision), invalid states, side-table
     overwrite, ghost-key relations.
@@ -50,7 +50,7 @@ Guinea-pig plan (v1.1 P1–P4): the fixes for what irritated me using it.
     L4 records → recovery truncates at the first invalid record; corrupted
     docs NEVER resurrect with mangled bytes; tail truncation + physical
     mid-file cut reopen cleanly; `rebuild_indices` reconciles.
-  - Battery 3 (FIDELITY, 20): recall returns text + `HitProvenance` (not
+  - Battery 3 (FIDELITY, 25): recall returns text + `HitProvenance` (not
     bytes); `forget` archives (history via `recall_historical`/`get`/
     `explain`, default recall ignores); `supersede` builds a DAG (lineage +
     `parent_ids`); validity window gates `recall_at`; `invalidate` = validity

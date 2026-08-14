@@ -156,14 +156,14 @@ O que aprendi e o que vou fazer diferente na próxima sessão:
 
 ## Follow-up 2026-08-14 — Audit Cognitivo (`examples/audit.rs`)
 
-O teste da MISSÃO: **"retorna memórias, não dados"** — 3 baterias, 54
+O teste da MISSÃO: **"retorna memórias, não dados"** — 3 baterias, 59
 asserções, exit 0 (`cargo run --release --example audit`).
 
 | Bateria | Asserções | O que prova |
 |---------|-----------|-------------|
 | **1. Attack** | 23 | embeddings hostis (NaN/Inf/vazio) rejeitados; chaves maliciosas (`/`, `#`, `sys/`, prefixo-ART) tratadas; set_state em chave fantasma rejeitado; nenhuma side-table órfã pós-ataque |
 | **2. Corruption** | 11 | bit-rot no record L4 → recovery trunca no 1º record inválido; doc corrompido **nunca ressuscita** com bytes alterados; truncamento físico reabre limpo; `rebuild_indices` reconcilia |
-| **3. Fidelity** | 20 | recall devolve **texto + proveniência** (memory_id/camada/estado), não bytes; forget arquiva (história preservada); supersede constrói DAG; validade temporal gateia `recall_at`; invalidate = validade, não estado; `recall_weighted` rankeia por importância de CAMADA |
+| **3. Fidelity** | 25 | recall devolve **texto + proveniência** (memory_id/camada/estado), não bytes; forget arquiva (história preservada); supersede constrói DAG; validade temporal gateia `recall_at`; invalidate = validade, não estado; `recall_weighted` rankeia por importância de CAMADA |
 
 **2 bugs reais achados e corrigidos pelo audit** (a cobaia atacou o core,
 não só o MCP):
