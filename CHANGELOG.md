@@ -4,6 +4,40 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [1.1.2] — 2026-08-14
+
+Guinea-pig plan (v1.1 P1–P4): the fixes for what irritated me using it.
+
+### Added
+- **`Sgdb::associate_checked`** (P3): defensive variant of `associate` that
+  validates BOTH sides exist (ghost key → `Err`, no orphan `sys/rel/`). The
+  raw `associate` keeps the design (relation affirmed by the upper layer).
+  Regression: `associate_checked_rejects_ghost_keys_no_orphan_relation`.
+- **`neural_sgdb::Embedder` trait + `DemoEmbedder` + `demo_embed`**
+  (P4, `src/embedder.rs`): `no_std`-safe, zero-dep seam for plugging a real
+  embedding model (BGE/OpenAI/ONNX) without touching the core. The MCP server
+  now accepts agent-supplied `embedding` in `remember`/`recall`/`rag_context`
+  payloads (real-model path), falling back to the configured embedder
+  (`NEURAL_SGDB_EMBEDDER`, default demo trigram). Hot test: +4 checks
+  (embedding do agente grava/busca, contrato dimensional, caminho demo) —
+  **49/49 exit 0**.
+
+### Changed
+- **`Sgdb::resolve_known_key`** (P1): raw keys now resolve to the existing
+  canonical storage key by deterministic layer priority (L4 semantic first) —
+  `meta`/`set_importance`/`set_confidence`/`reinforce`/`add_parents`/`forget`/
+  `explain`/`transfer_to`/`merge_memories`/`supersede`/`get_state`/
+  `set_state`/`memory_id`/`version_of`/`lineage`/`set_validity`/`validity_at`/
+  `invalidate`/`delete`/`export_record` no longer silently miss with the right
+  key and wrong form. `ensure_meta` errors now carry the canonical-key hint.
+  Regression: `resolve_known_key_finds_layer_for_raw_key`.
+- **`recall_weighted` now uses DOC importance** (P2): the score uses
+  `Hit.provenance.importance` (from `set_importance`/`reinforce`) converted to
+  the penalty space (`1 − imp`); records without meta fall back to the layer
+  default. The name now tells the truth. Regression:
+  `recall_weighted_uses_doc_importance_not_layer`.
+- Matrix: 193+1 / 239+1 / 148+1 tests (default / p2p / no-default).
+
 ## [1.1.1] — 2026-08-14
 
 ### Added

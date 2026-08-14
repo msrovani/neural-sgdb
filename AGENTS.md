@@ -23,8 +23,33 @@ P2 (committed `feat(v1.0): …P2-*…`): CRDT convergence in random topologies
 signed-transport reference flow (P2-3), central wire-codec fuzz harness
 `src/wire_fuzz.rs` over all 8 wire types (P2-4), layered multi-AI telepathy
 mesh (P2-5). MCP server now exposes `health`/`validate` tools; new p2p
-examples: `mesh_simulation`, `signed_peer`. Matriz: **186+1 / 232+1 / 141+1**,
+examples: `mesh_simulation`, `signed_peer`. Matriz: **193+1 / 239+1 / 148+1**,
 no_std gate ok. `.freebuff/` is tool state — gitignored, never commit.
+
+## Post-audit v1.1.2 (guinea-pig plan, 2026-08-14)
+
+The fixes for what the guinea pig hit using the DB for real (each committed
+with a regression test, hot test 49/49 exit 0):
+
+- **`resolve_known_key` (sgdb.rs)**: raw keys resolve to the existing
+  canonical storage key by deterministic layer priority (L4 semantic first).
+  Side-table reads/writes (meta/set_importance/confidence/reinforce/
+  add_parents/forget/explain/transfer_to/merge_memories/supersede/state/
+  validity/delete/export_record) no longer silently miss with the right key
+  and wrong form. `ensure_meta` errors carry a canonical-key hint.
+- **`recall_weighted` uses DOC importance** (not layer): score =
+  `w_imp·(1−provenance.importance)`; records without meta fall back to the
+  layer default (`layer_importance`). The name now tells the truth.
+- **`associate_checked`** validates both sides exist (ghost → `Err`, no
+  orphan `sys/rel/`); raw `associate` keeps the no-validation design.
+- **`Embedder` trait (`src/embedder.rs`)** + `DemoEmbedder` + `demo_embed`
+  (moved from mcp_server): `no_std`-safe zero-dep seam for a real model. MCP
+  accepts agent-supplied `embedding` in `remember`/`recall`/`rag_context`,
+  falling back to `NEURAL_SGDB_EMBEDDER` (default demo trigram). Contract:
+  whoever supplies embeddings uses the SAME model on write and query (4-dim
+  agent vector ≠ 256-dim demo — they don't cross-match, by design).
+- `sqrt_f32` is now `pub(crate)` (sgdb.rs) — Newton, reused by embedder
+  (regra 3 no_std: no `f32::sqrt` in core).
 
 ## Repository Map
 
@@ -117,7 +142,7 @@ hash, not a semantic model). Restart opencode after changing the config.
 ## Running tests
 
 ```bash
-cargo test                                 # 186+1 tests (InMemory/FileStorage/TickvFile)
+cargo test                                 # 193+1 tests (InMemory/FileStorage/TickvFile)
 cargo test --features p2p                  # 228+1 (includes CRDT sync + mesh harness)
 cargo test --no-default-features           # 139+1 (no_std core, host test harness)
 cargo check --no-default-features --target x86_64-unknown-none   # no_std gate
@@ -145,7 +170,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-
 - **Wire-codec fuzz harness** (`src/wire_fuzz.rs`, P2-4): the single LCG
   never-panic/roundtrip/truncation gate over ALL 8 wire types — add a new
   wire type there (plus its per-module `prop_tests`), and keep the matrix
-  (186+1 / 232+1 / 141+1) green. `SignedEnvelope::decode` returns
+  (193+1 / 239+1 / 148+1) green. `SignedEnvelope::decode` returns
   `Option<(Self, usize)>` (no magic byte — corrupt via field lengths, not
   byte 0).
 - **TickvFile** (`src/tickv.rs`): 512-aligned records, tombstone `vlen=0` or
@@ -202,7 +227,8 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-
   probes); `quantize_f32_centered`/`top_k_f32_centered` (query re-centrada pela
   média — bitvecs armazenados intactos); `recall()` usa auto-oversample por
   dimensionalidade (1 word→16, 2-4→8, senão 4); `recall_weighted` =
-  `w_sem·dist + w_rec·recência(/ts/hex) + w_imp·importância(camada)`.
+  `w_sem·dist + w_rec·recência(/ts/hex) + w_imp·importância(doc, penalty 1−imp)`
+  — v1.1.2 P2.
 - **Lexical dual-path** (`src/lexical.rs`): índice invertido BM25-style sobre
   textos L2/L3 (alloc-only, no_std). `recall_lexical`/`recall_hybrid` no Sgdb.
   **`f32::ln` não existe no core bare-metal** → `ln_f32` (ponteiro: expoente
@@ -304,9 +330,9 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-
   `md/L4/`+`md/L5/` com `bitvec.is_some() || payload.len() >= 4`. Teste:
   `validate_accepts_l5_procedural_embedding`. `invalidate(key, now)` NÃO
   muda o estado (é validade até `now`; `until <= from` APAGA a marcação —
-  usar now > from). `recall_weighted` pondera importância POR CAMADA
-  (penalidade: L4=0.0, L5=0.2), NÃO a importância por doc
-  (`set_importance`/`reinforce` só expõem via provenance).
+  usar now > from). `recall_weighted` pondera a importância do DOC
+  (`Hit.provenance.importance`, penalty `1−imp`); sem meta, cai para a
+  default da camada (`layer_importance`: L4=0.0, L5=0.2) — v1.1.2 P2.
 - **Recall active-only (v0.8)**: o filtro de estado roda DENTRO do
   `recall_impl`/`recall_lexical_impl` (antes do ranking); estado é POR DOC —
   marcar `md/L4/k` não marca o companion `md/L2/k` (testes devem marcar

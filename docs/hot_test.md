@@ -175,13 +175,34 @@ não só o MCP):
    positivo). Regra replicada exata.
 
 **Lições novas para a cobaia**:
-- `remember` com chave crua `h/imp` NÃO resolve para `md/L4/h/imp` —
+- `remember` com chave crua `h/imp` NÃO resolvia para `md/L4/h/imp` —
   seguir SEMPRE com a storage key canônica completa (reforça a lição 3).
+  **FIX (v1.1.2 P1)**: `resolve_known_key` agora resolve a chave crua para a
+  canônica existente por prioridade de camada — a lição virou comportamento.
 - `invalidate(key, now)` é **validade**, não estado; `until <= from` apaga a
   marcação — usar `now > from`.
-- O default de importância é POR CAMADA (L4 = 1.0), e `recall_weighted`
-  pondera por camada (penalidade L4=0.0 vs L5=0.2) — a importância por doc
-  (`set_importance`/`reinforce`) só aparece na proveniência.
+- O default de importância é POR CAMADA (L4 = 1.0). **FIX (v1.1.2 P2)**:
+  `recall_weighted` agora pondera a importância do DOC (`set_importance`/
+  `reinforce`, penalty `1−imp`); sem meta, cai para a default da camada.
 - Corrupção no meio do append-log é **truncada** no open (nunca aceita) —
   o custo da segurança é perder records após o ponto de bit-rot; docs
   anteriores e `rebuild_indices` seguem íntegros.
+
+---
+
+## Follow-up v1.1.2 — Guinea-pig plan (o que a cobaia consertou usando de verdade)
+
+Depois de entregar o veredicto ("memórias, não dados" ✓), a cobaia virou
+corretora: cada coisa que irritou/faltou virou uma entrega com teste de
+regressão + commit (hot test agora 49/49 exit 0).
+
+| P | O que era | Correção | Regressão |
+|---|-----------|----------|-----------|
+| **P1** | chave crua `h/imp` → `md/h/imp` fantasma; `meta`/`set_importance` falhavam **silenciosos** (3×) | `resolve_known_key`: fallback determinístico por camada (L4 1º) + `ensure_meta` com dica da canônica | `resolve_known_key_finds_layer_for_raw_key` |
+| **P2** | `recall_weighted` pesava CAMADA (L4=0.0), não o doc | usa `Hit.provenance.importance` (penalty `1−imp`); sem meta → camada | `recall_weighted_uses_doc_importance_not_layer` |
+| **P3** | `associate` aceitava ghost sem feedback (design) | `associate_checked` valida os 2 lados (ghost → `Err`, sem órfã); `associate` cru preserva o design | `associate_checked_rejects_ghost_keys_no_orphan_relation` |
+| **P4** | demo_embed trigram não entende sinônimo | trait `Embedder` no core (no_std, zero-dep) + MCP aceita `embedding` do agente (`NEURAL_SGDB_EMBEDDER` fallback) | embedder 4 testes + hot test +4 checks |
+
+Contrato P4 (quem fornece embedding usa o MESMO modelo na gravação e na
+busca): vetor de 4 dims do agente ≠ 256 dims do demo — não casam, por
+design. Matriz: **193+1 / 239+1 / 148+1**.

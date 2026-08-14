@@ -14,9 +14,13 @@ for AI agents to consume memory.
 - `cargo run --release --example mcp_server` — connectable to Claude Code/Cursor/OpenCode
 - MCP (Model Context Protocol) over stdio: JSON-RPC 2.0, one message per `\n`
   line, stdout JSON-RPC ONLY (logs → stderr), legacy `2025-11-25` handshake
-- Tools: `remember(text)`, `recall(query, k)`, `rag_context(query, k)`
-- **Demo embedding** (`demo_embed`): trigram hash → 256-dim normalized. NOT a
-  real semantic model — swap in your own embeddings for production
+- Tools: `remember(text[, embedding])`, `recall(query[, embedding], k)`,
+  `rag_context(query[, embedding], k)`
+- **Embedder plugável** (`neural_sgdb::Embedder`): default `DemoEmbedder`
+  (trigram hash → 256-dim normalized, NOT a real semantic model). Agente pode
+  fornecer `embedding` no payload (mesmo modelo na gravação E na busca);
+  fallback = embedder ativo (`NEURAL_SGDB_EMBEDDER`). Contract: dimensões
+  diferentes não casam por design.
 - Persistence: `FileStorage` via env `NEURAL_SGDB_DB` (default `sgdb_memory.db`)
 - Protocol: `initialize` (echo 2025-11-25) → `notifications/initialized`
   (ignore) → `tools/list` → `tools/call` → `ping`; unknown → `-32601`
