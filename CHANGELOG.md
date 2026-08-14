@@ -4,6 +4,19 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [Unreleased] — v1.1.4 (memory landscape, item 1–9)
+
+Ideas ported from the memory-landscape benchmark (mem0/mempalace/Zep/Letta/
+Supermemory/cognee — see `docs/memory-landscape.md`).
+
+### Changed
+- **ADD-only is now an official contract** (item 1, from mem0): the BQ is
+  append-only — new facts accumulate and confront the existing pool via
+  deterministic ranking, never by silent overwrite. Conflict resolution is a
+  retrieval-time concern (`recall_weighted`/`supersede`/`resolve_conflict`),
+  not a write-time mutation. This was the behavior all along; it is now
+  documented so callers can rely on it (see AGENTS.md §ADD-only).
+
 ## [Unreleased] — v1.1.3 (WIP)
 
 Co-author ergonomics (S1–S5): the things that would annoy me as an agent
