@@ -1,8 +1,10 @@
 # Roadmap — neural-sgdb
 
 Status: **v1.0.0 shipped (2026-08-13)** — stable API, zero deps, `no_std` +
-`std`, CI gates green. This roadmap is honest about what is DONE, what is
-NEXT, and what is deliberately NOT planned.
+`std`, CI gates green. **v1.1.0 in preparation** (health/validate API, P2-4
+fuzz harness, P2-5 telepathy simulation, MCP observability tools, signed-peer
+example). This roadmap is honest about what is DONE, what is NEXT, and what is
+deliberately NOT planned.
 
 Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
 
@@ -19,15 +21,24 @@ Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
    documented (evidence is local; content converges).
 ✅ **P2-2 — Governance docs** (this file, `SECURITY.md`, `VERSIONING.md`,
    `MIGRATIONS.md`, `docs/adr/`).
-🔜 **P2-3 — Security-by-backend** (✅ delivered 2026-08-13): the reference
+✅ **P2-3 — Security-by-backend** (delivered 2026-08-13): the reference
    signed-transport flow (sign → envelope → verify → reject tampered/untrusted)
    is proven end-to-end in `trust.rs` via the existing `Signer`/`Transport`/
    `TrustStore`/`SignedEnvelope` seams — the core stays `no_std`-clean and
    crypto-free (ADR-0006); `ready()` replaced by `Sgdb::health()` (observable
-   state) and `Sgdb::validate()` (aggregated integrity checks).
-🔜 **P2-4+ — Post-P2 audit**: re-run the full bughunt oracle pass against the
-   hardened tree; fuzz more codecs (`MDR1`/`CFL1`/`MDLT`/`MSNP`); CI
-   hardening (cross-target checks, examples gate).
+   state) and `Sgdb::validate()` (aggregated integrity checks); MCP server
+   exposes `health`/`validate` tools; `examples/signed_peer.rs` is the
+   "where to plug Ed25519" runnable.
+✅ **P2-4 — Post-P2 audit**: bughunt oracle #1–#11 re-run green; `src/
+   wire_fuzz.rs` fuzzes all 8 wire types (`MDR1`/`CFL1`/`MDLT`/`MSNP`/NMD1/
+   MDM1/`SignedEnvelope`/`CrdtState`) with one deterministic LCG harness.
+✅ **P2-5 — Layered multi-AI telepathy mesh** (delivered 2026-08-13): 8 agents
+   in 5 cognitive layers on a directed mesh; an external AI writes at L1, each
+   layer answers via its own recall, telepathy propagates L1→L5, and a deep
+   layer recovers by semantic recall the exact memory that entered at L1 —
+   `layered_ai_telepathy_mesh` test + `examples/mesh_simulation.rs`.
+🔜 **CI hardening** (remaining tail of P2-4): cross-target checks and an
+   examples gate in `.github/workflows/ci.yml`.
 
 ## Medium-term
 

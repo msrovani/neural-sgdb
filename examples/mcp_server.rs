@@ -159,7 +159,7 @@ fn main() {
                 send(&json!({"jsonrpc":"2.0","id":id,"result":{
                     "protocolVersion":"2025-11-25",
                     "capabilities":{"tools":{}},
-                    "serverInfo":{"name":"neural-sgdb","version":"1.0.0"}
+                    "serverInfo":{"name":"neural-sgdb","version":"1.1.0"}
                 }}));
             }
             "notifications/initialized" | "notifications/cancelled" | "notifications/progress" => {

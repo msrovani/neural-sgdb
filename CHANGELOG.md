@@ -4,7 +4,20 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [1.1.0] — 2026-08-13
+
+### Added
+- **`Sgdb::health()` / `Sgdb::validate()`** (P2-3): `ready()` (hardcoded
+  `true`) replaced by observable `HealthReport` + aggregated integrity checks
+  (see P2-3 entry below). New public types `HealthReport`, `ValidateIssue`.
+- **MCP `health`/`validate` tools** (`examples/mcp_server.rs`).
+- **`examples/signed_peer.rs`** — signed-transport reference flow.
+- **`examples/mesh_simulation.rs`** — layered multi-AI telepathy (P2-5).
+
+### Changed
+- `MemoryDelta`/`MemorySnapshot` now carry `Vec<MemoryRecord>` (v0.6
+  breaking change already documented; kept here for release history).
+- Matrix: 182+1 / 228+1 / 139+1 tests.
 
 ### P2 — Governance & security hardening (2026-08-13)
 - **CRDT convergence in random topologies (P2-1)**: LCG-generated directed

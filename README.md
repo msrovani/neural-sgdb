@@ -36,10 +36,10 @@ filesystem, no external runtime.
 
 ## Status
 
-**v1.0.0** ✅ — dual-mode (`no_std` + `std`, zero dependencies):
+**v1.1.0** ✅ — dual-mode (`no_std` + `std`, zero dependencies):
 
-- `cargo test` on host: **157 tests + doc-test** (192 + doc-test with `p2p`,
- 114 + doc-test with `--no-default-features`)
+- `cargo test` on host: **182 tests + doc-test** (228 + doc-test with `p2p`,
+  139 + doc-test with `--no-default-features`)
 - `cargo check --no-default-features --target x86_64-unknown-none`: **clean**
 - **Recall stack**: BQ coarse → FP32 rescore, SIMD hamming (AVX-512/AVX2/
   scalar), auto-oversample by dimensionality, `recall_oversampled`,
@@ -71,10 +71,11 @@ filesystem, no external runtime.
   **first-class conflict model** (deterministic id, MDR1 evidence per
   candidate, `resolve_conflict` via evidence, `dismiss_conflict`),
   **cognitive API** (`reinforce`/`forget`/`explain`/`transfer_to`/
-  `merge_memories`/`conflicts`/`resolve_conflict`) and **MCP 13 tools**
-  (provenance per hit in recall, ServerInfo v1.0.0)
+  `merge_memories`/`conflicts`/`resolve_conflict`) and **MCP 15 tools**
+  (provenance per hit in recall, `health`/`validate` observability,
+  ServerInfo v1.1.0)
 - **Interfaces**: MCP server with `memory://{layer}/{key}` resources +
-  `nextCursor` pagination + 13 cognitive tools + tool annotations;
+  `nextCursor` pagination + 15 cognitive/observability tools + tool annotations;
   `cargo run --release --example stress` (100k-op stress) and `--example bench`
 - Full API contract in [`docs/api.md`](docs/api.md)
 

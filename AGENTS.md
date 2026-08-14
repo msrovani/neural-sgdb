@@ -5,14 +5,26 @@ repo. **Read `codemap.md` (atlas), `docs/api.md` (contract) and
 `docs/architecture/` (v0.2 design — Memory Model, Lifecycle, Retrieval,
 Distributed, Storage, Cognitive API) before editing code.**
 
-## Post-P0 hardening state (2026-08-13)
+## Post-P2 hardening state (2026-08-13)
 
-P0 (delivered, committed in `feat(v1.0): P0 hardening…`): docs aligned to
-v1.0.0, clippy zero-warnings (13 files), CI gates (clippy/doc/no-default —
-**fmt deliberately NOT gated**), MCP paginate overflow fix, arbitration
-empty-scores fix, FileStorage truncation sweep test, SAFETY comments on all 9
-unsafe sites, differential SIMD test. Matriz: 157+1 / 192+1 / 114+1, no_std
-gate ok. `.freebuff/` is tool state — gitignored, never commit.
+P0 (committed in `feat(v1.0): P0 hardening…`): docs aligned to v1.0.0, clippy
+zero-warnings (13 files), CI gates (clippy/doc/no-default — **fmt deliberately
+NOT gated**), MCP paginate overflow fix, arbitration empty-scores fix,
+FileStorage truncation sweep test, SAFETY comments on all 9 unsafe sites,
+differential SIMD test.
+
+P1 (committed in `feat(v1.0): P1 hardening…`): wire encode safety
+(`try_encode` — no silent truncation), centralized `limits.rs`, deterministic
+LCG property tests (P1-4), honest benchmarks + `BENCHMARKS.md`, scan
+pagination + RAG size caps, ART prefix-key rejection (`has_prefix_conflict`).
+
+P2 (committed `feat(v1.0): …P2-*…`): CRDT convergence in random topologies
+(P2-1), governance docs + ADRs 0001–0006 (P2-2), `health()`/`validate()` +
+signed-transport reference flow (P2-3), central wire-codec fuzz harness
+`src/wire_fuzz.rs` over all 8 wire types (P2-4), layered multi-AI telepathy
+mesh (P2-5). MCP server now exposes `health`/`validate` tools; new p2p
+examples: `mesh_simulation`, `signed_peer`. Matriz: **182+1 / 228+1 / 139+1**,
+no_std gate ok. `.freebuff/` is tool state — gitignored, never commit.
 
 ## Repository Map
 
@@ -84,14 +96,16 @@ let facts = db.scan_prefix("md/L3/")?;                 // ART prefix scan
 ```bash
 cargo run --release --example bench        # benchmarks (ART/BQ/recall vs FP32)
 cargo run --release --example mcp_server   # MCP server for AI agents
+cargo run --release --example mesh_simulation --features p2p  # layered AI telepathy mesh
+cargo run --release --example signed_peer --features p2p      # signed-transport seam flow
 ```
 
 ## Running tests
 
 ```bash
-cargo test                                 # 157+1 tests (InMemory/FileStorage/TickvFile)
-cargo test --features p2p                  # 192+1 (includes CRDT sync + mesh harness)
-cargo test --no-default-features           # 114+1 (no_std core, host test harness)
+cargo test                                 # 182+1 tests (InMemory/FileStorage/TickvFile)
+cargo test --features p2p                  # 228+1 (includes CRDT sync + mesh harness)
+cargo test --no-default-features           # 139+1 (no_std core, host test harness)
 cargo check --no-default-features --target x86_64-unknown-none   # no_std gate
 cargo clippy --all-targets --all-features -- -D warnings          # lint gate (P0-5)
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-6/P0-10)
@@ -111,7 +125,15 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-
   stderr), one message per `\n` line, `2025-11-25` handshake, do not gate tools
   on `notifications/initialized` (Claude Code sends tools/list first), echo the
   id verbatim, `-32601` for unknown methods (modern-client fallback). The
-  `demo_embed` embedding is a trigram hash — NOT a real semantic model.
+  `demo_embed` embedding is a trigram hash — NOT a real semantic model. Now
+  exposes read-only `health`/`validate` tools (P2-3 surface) for agents
+  monitoring the DB.
+- **Wire-codec fuzz harness** (`src/wire_fuzz.rs`, P2-4): the single LCG
+  never-panic/roundtrip/truncation gate over ALL 8 wire types — add a new
+  wire type there (plus its per-module `prop_tests`), and keep the matrix
+  (182+1 / 228+1 / 139+1) green. `SignedEnvelope::decode` returns
+  `Option<(Self, usize)>` (no magic byte — corrupt via field lengths, not
+  byte 0).
 - **TickvFile** (`src/tickv.rs`): 512-aligned records, tombstone `vlen=0` or
   `TKL\0`. **`scan_volume` MUST skip in-place tombstones (`hdr[3]==0`) before
   CRC** — otherwise OS-written deletes resurrect (bughunt #1 CRÍTICO, fixed),

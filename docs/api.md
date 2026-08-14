@@ -1,7 +1,7 @@
 # neural-sgdb — API Contract
 
 > Contract document for the extraction of the SGDB core from neural-os-core.
-> Status: **current public contract (crate v1.0.0)** — this document is the
+> Status: **current public contract (crate v1.1.0)** — this document is the
 > current public contract; roadmap items are explicitly marked as such. The
 > internal API lives in `crates/k_ai/src/sgdb/` of the parent OS; this doc
 > defines the public surface the community crate exposes (and already ships).
