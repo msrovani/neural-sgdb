@@ -383,9 +383,22 @@ fn main() {
                                 continue;
                             }
                         };
-                        let all = db.recall(&emb, 100).unwrap_or_default();
-                        // paginação por cursor (offset) + pageSize
+                        // v1.1.3 S5 — paginação LAZY: computa só o que a página
+                        // pede. Antes buscava top-100 fixo e paginava sobre ele
+                        // (custo fixo + teto artificial de 100 hits). Top-k é
+                        // determinístico (score, key) — top-(off+size) da busca
+                        // completa = os mesmos itens de top-100, então a página
+                        // fatia o prefixo correto sem custo extra.
                         let size = args["pageSize"].as_u64().unwrap_or(k as u64).max(1) as usize;
+                        let off = args["cursor"]
+                            .as_str()
+                            .and_then(|c| c.parse::<usize>().ok())
+                            .unwrap_or(0);
+                        // +1 = hit "sentinela" além da página: sem ele, uma
+                        // página exatamente preenchida pareceria a última
+                        // (paginate usa items.len() como "conjunto inteiro").
+                        let need = off.saturating_add(size).saturating_add(1);
+                        let all = db.recall(&emb, need).unwrap_or_default();
                         let (page, next) = paginate(&all, args["cursor"].as_str(), size);
                         let text = if page.is_empty() {
                             "nenhuma memoria similar encontrada".into()
@@ -661,5 +674,49 @@ mod tests {
         let (p, next) = paginate(&items, None, 2000);
         assert_eq!(p, items);
         assert_eq!(next, None);
+    }
+
+    #[test]
+    fn lazy_recall_pages_match_full_topk() {
+        // v1.1.3 S5: a paginação lazy busca `off+size` hits em vez de top-100
+        // fixo. O contrato é que a página do prefixo lazy == a página do
+        // top-k completo (recall é determinístico por (score, key) — top-(n+1)
+        // é um prefixo de top-N). Pina o invariante contra regressão futura.
+        let mut db = neural_sgdb::Sgdb::open(neural_sgdb::InMemory::new()).unwrap();
+        let mut texts = Vec::new();
+        for i in 0..12 {
+            let t = format!("memoria de teste numero {:02} {}", i, "overlap comum");
+            texts.push(t.clone());
+            db.remember_semantic(&format!("k{:02}", i), &t, &[1.0, -1.0, 1.0, -1.0]).unwrap();
+        }
+        let q = [1.0, -1.0, 1.0, -1.0];
+        // "top-k completo" = o teto antigo (100); lazy = off+size+1 por página
+        // (a sentinela +1 só sonda a próxima página — não muda o conteúdo).
+        let full = db.recall(&q, 100).unwrap();
+        assert_eq!(full.len(), 12);
+        let mut cursor: Option<String> = None;
+        let mut collected = Vec::new();
+        for _ in 0..5 {
+            let off = cursor.as_deref().and_then(|c| c.parse::<usize>().ok()).unwrap_or(0);
+            let size = 3usize;
+            let need = off.saturating_add(size).saturating_add(1);
+            let all = db.recall(&q, need).unwrap();
+            let (page, next) = paginate(&all, cursor.as_deref(), size);
+            assert!(!page.is_empty(), "página vazia antes do fim do conjunto");
+            // cada página lazy == fatia do top-k completo (determinismo)
+            for (i, h) in page.iter().enumerate() {
+                assert_eq!(h.key, full[off + i].key, "página lazy divergiu do top-k");
+            }
+            collected.extend(page.into_iter().map(|h| h.key));
+            cursor = next;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert_eq!(cursor, None, "deve ter iterado o conjunto inteiro");
+        assert_eq!(collected.len(), 12);
+        // sem duplicatas entre páginas
+        let uniq: std::collections::HashSet<_> = collected.iter().collect();
+        assert_eq!(uniq.len(), 12, "paginação repetiu hits");
     }
 }

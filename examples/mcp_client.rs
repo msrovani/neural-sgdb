@@ -241,6 +241,50 @@ fn main() {
     rep.check("forget limpa o doc customizado", !is_err, txt.clone());
     rep.phase("embedding do agente", &t);
 
+    // ---------- fase 4c: paginação LAZY do recall (v1.1.3 S5) ----------
+    // O server computa só off+size+1 hits por página (em vez de top-100 fixo)
+    // e usa cursor opaco de offset. Páginas fatiam o MESMO top-k determinístico
+    // → sem repetição e sem buraco entre páginas. Usamos rpc() cru para ver o
+    // campo `nextCursor` (top-level, o tool() só devolve content[0].text).
+    let t = Instant::now();
+    let mut paged_keys: Vec<String> = Vec::new();
+    for i in 0..4 {
+        let (txt, is_err) = srv.tool("remember", json!({
+            "text": format!("memoria paginada {:02} com embedding do agente", i),
+            "embedding": [1.0, -1.0, 1.0, -1.0]
+        }));
+        rep.check(&format!("remember p4c-{}", i), !is_err, txt.clone());
+    }
+    let r1 = srv.rpc("tools/call", json!({"name": "recall", "arguments": {
+        "query": "memoria paginada embedding do agente",
+        "embedding": [1.0, -1.0, 1.0, -1.0],
+        "k": 8,
+        "pageSize": 2
+    }}));
+    let t1 = r1["result"]["content"][0]["text"].as_str().unwrap_or("").to_string();
+    let cur = r1["result"]["nextCursor"].as_str().unwrap_or("").to_string();
+    rep.check("recall página 1 (pageSize=2) tem nextCursor",
+        !t1.is_empty() && !cur.is_empty(), format!("cur={cur} | {t1}"));
+    for hit_key in t1.split("- ").skip(1).filter_map(|s| s.split(" | ").next().map(|k| k.trim().to_string())) {
+        paged_keys.push(hit_key);
+    }
+    rep.check("página 1 devolve 2 hits", paged_keys.len() == 2, format!("{paged_keys:?}"));
+    let r2 = srv.rpc("tools/call", json!({"name": "recall", "arguments": {
+        "query": "memoria paginada embedding do agente",
+        "embedding": [1.0, -1.0, 1.0, -1.0],
+        "k": 8,
+        "pageSize": 2,
+        "cursor": cur
+    }}));
+    let t2 = r2["result"]["content"][0]["text"].as_str().unwrap_or("").to_string();
+    rep.check("recall página 2 segue o cursor (hits ou fim)",
+        !t2.is_empty() && !t2.contains("nenhuma memoria similar"), t2.clone());
+    for hit_key in t2.split("- ").skip(1).filter_map(|s| s.split(" | ").next().map(|k| k.trim().to_string())) {
+        rep.check(&format!("página 2 não repete hit da página 1: {hit_key}"),
+            !paged_keys.contains(&hit_key), t2.clone());
+    }
+    rep.phase("paginação lazy do recall", &t);
+
     // ---------- fase 5: rag_context + explain ----------
     let t = Instant::now();
     let (txt, is_err) = srv.tool("rag_context", json!({"query": "integridade banco", "k": 2}));

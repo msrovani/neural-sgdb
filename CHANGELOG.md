@@ -44,6 +44,17 @@ using this DB for real.
 - Matrix: 196+1 / 242+1 / 150+1 tests (default / p2p / no-default).
 - Matrix: 197+1 / 243+1 / 151+1 tests (default / p2p / no-default).
 
+### Changed
+- **MCP `recall` pagination is lazy** (S5): the server fetched a hard-coded
+  top-100 and paginated over it — fixed cost on every page plus an
+  artificial 100-hit ceiling. It now computes only `off+size+1` hits for the
+  requested page (the `+1` is a sentinel that makes a full page report a
+  `nextCursor`). Deterministic top-k (score, key) means each lazy page slices
+  the same ranking as the full fetch. Hot test phase 4c (60/60) exercises the
+  real handler: page 1 = 2 hits + `nextCursor`, page 2 follows it with no
+  repeats. Regressions: `lazy_recall_pages_match_full_topk` (server),
+  hot-test phase 4c (client).
+
 ### Added
 - **Proactive BQ reclamation** (S4): `Sgdb::reclaim_bq_orphans(threshold)` +
   `BqFlatIndex::retain`. The BQ flat is append-only — physical `delete`
