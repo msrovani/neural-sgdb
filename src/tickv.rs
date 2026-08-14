@@ -374,6 +374,13 @@ pub struct TickvFile {
 impl TickvFile {
     pub fn open(path: impl AsRef<std::path::Path>) -> std::io::Result<Self> {
         let path = path.as_ref().to_path_buf();
+        // HOT TEST v1.1 (2026-08-13): paridade com FileStorage — criar o
+        // diretório pai para que o append lazy não falhe com volume ausente.
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() && !parent.exists() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
         let (map, offsets, append_off) = if path.exists() {
             let data = std::fs::read(&path)?;
             match try_mount_from_ckpt(&data) {
@@ -714,6 +721,20 @@ mod tests {
     fn fnv1a64_known_vector() {
         // Vetor FNV-1a 64 conhecido: fnv1a64("a") = 0xaf63dc4c8601ec8c
         assert_eq!(fnv1a64(b"a"), 0xaf63_dc4c_8601_ec8c);
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn open_creates_missing_parent_dir() {
+        // HOT TEST v1.1: paridade com FileStorage — o append lazy falhava
+        // quando o diretório pai não existia; `open` deve criá-lo.
+        let dir = std::env::temp_dir().join("neural_sgdb_test").join("tickv_nested_hot");
+        let path = dir.join("sub").join("vol.tk");
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut s = TickvFile::open(&path).unwrap();
+        s.put(b"k", b"v").unwrap();
+        assert_eq!(s.get(b"k").unwrap(), Some(b"v".to_vec()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(feature = "file-storage")]

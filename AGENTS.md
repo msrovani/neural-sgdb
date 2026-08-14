@@ -104,7 +104,7 @@ cargo run --release --example signed_peer --features p2p      # signed-transport
 ## Agent self-memory (hot test, v1.1)
 
 The project agent is a test subject: `.opencode/opencode.json` registers the
-MCP server as a local server (`NEURAL_SGDB_DB=.sgdb/memory.db`, gitignored),
+MCP server as a local server (`NEURAL_SGDB_DB=.nsgdb/memory.db`, gitignored),
 giving the agent `mcp__neural-sgdb__*` tools (15: remember/recall/rag_context/
 explain/reinforce/forget/associate/related_to/contradicts/supersede/conflicts/
 resolve_conflict/merge_memories/health/validate). Audit log in

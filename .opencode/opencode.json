@@ -6,7 +6,7 @@
       "command": ["cargo", "run", "--release", "--example", "mcp_server"],
       "enabled": true,
       "environment": {
-        "NEURAL_SGDB_DB": ".sgdb/memory.db"
+        "NEURAL_SGDB_DB": ".nsgdb/memory.db"
       }
     }
   }

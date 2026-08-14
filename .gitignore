@@ -6,7 +6,7 @@ Cargo.lock
 sgdb_memory.db
 
 # Hot-test MCP memory (Via 1 — agent memory substrate, local-only)
-.sgdb/
+.nsgdb/
 
 # FreeBuff tool state (local-only, not project code)
 .freebuff/

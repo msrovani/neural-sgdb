@@ -210,6 +210,15 @@ pub(crate) fn le32(b: &[u8]) -> Option<u32> {
 impl FileStorage {
     pub fn open(path: impl AsRef<std::path::Path>) -> std::io::Result<Self> {
         let path = path.as_ref().to_path_buf();
+        // HOT TEST v1.1 (2026-08-13): o handle de append é LAZY e o append
+        // falhava com `storage: open append` quando o diretório pai não
+        // existia (`.nsgdb/` no MCP). Criar o pai aqui torna `open` o único
+        // ponto de falha — paridade com TickvFile.
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() && !parent.exists() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
         let mut map = BTreeMap::new();
         if path.exists() {
             let data = std::fs::read(&path)?;
@@ -626,6 +635,21 @@ mod tests {
         let s = FileStorage::open(&p).unwrap();
         assert!(s.map.is_empty());
         let _ = std::fs::remove_file(&p);
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn open_creates_missing_parent_dir() {
+        // HOT TEST v1.1: append lazy falhava (`storage: open append`) quando o
+        // diretório pai não existia (ex: `.nsgdb/` no MCP server). `open` deve
+        // criar o pai — write/append precisam funcionar em subdir novo.
+        let dir = std::env::temp_dir().join("neural_sgdb_test").join("nested_hot");
+        let p = dir.join("sub").join("mem.db");
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut s = FileStorage::open(&p).unwrap();
+        s.put(b"k", b"v").unwrap();
+        assert_eq!(s.get(b"k").unwrap(), Some(b"v".to_vec()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(feature = "file-storage")]
