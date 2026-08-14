@@ -172,6 +172,48 @@ impl Sgdb {
         Ok(matches)
     }
 
+    /// Perfil agregado por agente (supermemory): fatos estáveis do `node_id`
+    /// (L3/L4/L5, onde mora conhecimento de longo prazo), ordenados por
+    /// importância desc e truncados ao `limit`. Devolve `(storage_key,
+    /// importance, confidence, payload)` — pronto para injetar no prompt
+    /// ("o que sabemos sobre este agente"). Filtro via `sys/meta/`. Para L4/L5
+    /// o payload é o embedding — o texto legível é lido do companion L2
+    /// (`md/L2/<key>`, mesma convenção do recall).
+    pub fn profile(&mut self, node_id: u8, limit: usize) -> Result<Vec<(String, f32, f32, String)>, SgdbError> {
+        let mut facts = Vec::new();
+        for layer in ["md/L3/", "md/L4/", "md/L5/"] {
+            for (sk, _) in self.engine.art.scan_prefix(layer) {
+                let m = match self.engine.meta(&sk) {
+                    Ok(Some(m)) => m,
+                    _ => continue,
+                };
+                if m.source != node_id {
+                    continue;
+                }
+                match self.engine.get_by_storage_key(&sk) {
+                    Ok(Some(doc)) => {
+                        // texto: payload legível ou companion L2 (para L4/L5 o
+                        // payload é o embedding — mesmo path do recall)
+                        let mut text = String::from_utf8_lossy(&doc.payload).into_owned();
+                        if doc.bitvec.is_some() || text.is_empty() {
+                            let csk = sk.replacen("/L4/", "/L2/", 1);
+                            if let Ok(Some(cdoc)) = self.engine.get_by_storage_key(&csk) {
+                                text = String::from_utf8_lossy(&cdoc.payload).into_owned();
+                            }
+                        }
+                        facts.push((sk.clone(), m.importance, m.confidence, text));
+                    }
+                    _ => continue,
+                }
+            }
+        }
+        // importância desc (tie-break: chave, determinístico)
+        facts.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.cmp(&b.0)));
+        facts.truncate(limit);
+        Ok(facts)
+    }
+
     /// Redefine todos os contadores (ex: antes de um teste de carga).
     pub fn reset_metrics(&mut self) {
         self.metrics = crate::metrics::Metrics::default();
@@ -1730,6 +1772,30 @@ mod tests {
         // agente que nunca escreveu → vazio
         let other = db.diary(me.wrapping_add(1), 10).unwrap();
         assert!(other.is_empty());
+    }
+
+    #[test]
+    fn profile_aggregates_stable_facts_by_importance() {
+        // v1.1.4 item 5 (supermemory): profile(node_id) agrega fatos L3/L4/L5
+        // do agente, ordenados por importância desc, truncados ao limit.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("kFatoA", "gosta de Rust", &[1.0, -1.0, 1.0, -1.0]).unwrap();
+        db.remember_semantic("kFatoB", "trabalha com IAs", &[1.0, 1.0, 1.0, 1.0]).unwrap();
+        db.reinforce("kFatoA", 0.6).unwrap(); // A mais importante
+        let me = db.node_id();
+        let p = db.profile(me, 10).unwrap();
+        assert_eq!(p.len(), 2, "L4 dos 2 fatos");
+        // importância desc: kFatoA (1.0 após reinforce 0.6 sobre default 1.0... clamp) antes de B
+        assert_eq!(p[0].0, "md/L4/kFatoA");
+        assert_eq!(p[1].0, "md/L4/kFatoB");
+        // payload verbatim
+        assert_eq!(p[0].3, "gosta de Rust");
+        // limit
+        let p1 = db.profile(me, 1).unwrap();
+        assert_eq!(p1.len(), 1);
+        assert_eq!(p1[0].0, "md/L4/kFatoA");
+        // agente desconhecido → vazio
+        assert!(db.profile(me.wrapping_add(5), 10).unwrap().is_empty());
     }
 
     #[test]

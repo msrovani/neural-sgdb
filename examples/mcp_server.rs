@@ -308,6 +308,14 @@ fn main() {
                          "limit":{"type":"integer","minimum":1,"maximum":100,"default":10}},
                        "required":[]},
                      "annotations":{"readOnlyHint":true}},
+                    {"name":"profile",
+                     "description":"Perfil agregado por agente (supermemory): fatos estaveis do node_id (L3/L4/L5) ordenados por importância desc, prontos para injetar no prompt. Devolve (storage_key, importance, confidence, payload).",
+                     "inputSchema":{"type":"object",
+                       "properties":{
+                         "node_id":{"type":"integer","description":"ID do agente (source). Omitir = agente local."},
+                         "limit":{"type":"integer","minimum":1,"maximum":50,"default":10}},
+                       "required":[]},
+                     "annotations":{"readOnlyHint":true}},
                     {"name":"validate",
                      "description":"Integridade: varre storage md/, decodifica NMD1, cruza ART/BQ e detecta side-tables orfas. Vazio = saudavel; cada issue = key + descricao.",
                      "inputSchema":{"type":"object","properties":{}},
@@ -673,6 +681,25 @@ fn main() {
                                 } else {
                                     entries.iter().map(|(k, p)| format!("{} | {}", k, p))
                                         .collect::<Vec<_>>().join("\n")
+                                };
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                    "content":[{"type":"text","text":text}],"isError":false}}));
+                            }
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
+                        }
+                    }
+                    "profile" => {
+                        let node = args["node_id"].as_u64().map(|n| n as u8).unwrap_or(db.node_id());
+                        let limit = args["limit"].as_u64().unwrap_or(10) as usize;
+                        match db.profile(node, limit) {
+                            Ok(facts) => {
+                                let text = if facts.is_empty() {
+                                    format!("sem fatos estaveis do agente {node}")
+                                } else {
+                                    facts.iter().map(|(k, imp, conf, p)| {
+                                        format!("{} [imp={:.2} conf={:.2}] | {}", k, imp, conf, p)
+                                    }).collect::<Vec<_>>().join("\n")
                                 };
                                 send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                     "content":[{"type":"text","text":text}],"isError":false}}));
