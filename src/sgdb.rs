@@ -290,6 +290,24 @@ impl Sgdb {
         self.engine.write_meta(&sk, &m)
     }
 
+    /// Feedback de uso (cognee `improve`): re-pondera a memória pelo resultado
+    /// real — `positive` sobe importância E confiança; `negative` desce ambas.
+    /// `amount` (default 0.1) é a intensidade, aplicada com o mesmo contrato
+    /// de clamp [0,1] + rejeição de não-finita. Não ticka o relógio (metadado
+    /// cognitivo local). É o "a memória melhora com uso, não só cresce".
+    pub fn feedback(&mut self, key: &str, positive: bool, amount: f32) -> Result<(), SgdbError> {
+        if !amount.is_finite() {
+            return Err(SgdbError::Invalid("feedback amount must be finite"));
+        }
+        let sk = self.resolve_known_key(key);
+        let mut m = self.engine.ensure_meta(&sk)?;
+        let d = if positive { amount } else { -amount };
+        m.importance = (m.importance + d).clamp(0.0, 1.0);
+        m.confidence = (m.confidence + d).clamp(0.0, 1.0);
+        m.last_reinforced = self.engine.own_counter();
+        self.engine.write_meta(&sk, &m)
+    }
+
     /// `forget` cognitivo (roadmap §23): ARCHIVA a memória (`Archived`),
     /// nunca deleta. História permanece acessível (`recall_historical`,
     /// `lineage`). Para remoção física, `delete` é o caminho explícito.
@@ -1659,6 +1677,36 @@ mod tests {
         // episódios distintos não colidem (ts diferentes)
         let (ku2, _) = db.remember_episodic("e a populacao?", "600 mil", 1700000001000u64).unwrap();
         assert_ne!(ku, ku2);
+    }
+
+    #[test]
+    fn feedback_reweights_importance_and_confidence() {
+        // v1.1.4 item 3 (cognee improve): feedback positivo sobe importância
+        // E confiança; negativo desce ambas; clamp [0,1]; amount não-finita
+        // rejeitada (mesmo contrato de set_importance).
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("kf", "dica util", &[1.0, -1.0, 1.0, -1.0]).unwrap();
+        let before = db.meta("kf").unwrap().unwrap();
+        assert_eq!(before.importance, 1.0, "L4 default importance = 1.0");
+        assert_eq!(before.confidence, 1.0, "default de confiança é 1.0 (meta_for_import)");
+        db.feedback("kf", true, 0.3).unwrap();
+        let pos = db.meta("kf").unwrap().unwrap();
+        assert_eq!(pos.importance, 1.0, "já no teto — clamp mantém 1.0");
+        assert_eq!(pos.confidence, 1.0, "já no teto — clamp mantém 1.0");
+        // negativo desce ambos
+        db.feedback("kf", false, 0.5).unwrap();
+        let neg = db.meta("kf").unwrap().unwrap();
+        assert_eq!(neg.importance, 0.5, "importância desce com feedback -");
+        assert_eq!(neg.confidence, 0.5, "confiança desce com feedback -");
+        // clamp: feedback + repetido nunca passa de 1.0
+        for _ in 0..10 {
+            db.feedback("kf", true, 0.5).unwrap();
+        }
+        let top = db.meta("kf").unwrap().unwrap();
+        assert_eq!(top.importance, 1.0);
+        assert_eq!(top.confidence, 1.0);
+        assert!(matches!(db.feedback("kf", true, f32::NAN),
+            Err(SgdbError::Invalid(_))));
     }
 
     #[test]

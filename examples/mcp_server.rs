@@ -238,6 +238,14 @@ fn main() {
                          "key":{"type":"string"},
                          "delta":{"type":"number","description":"Aumento de importância (ex: 0.1)"}},
                        "required":["key","delta"]}},
+                    {"name":"feedback",
+                     "description":"Feedback de uso (cognee improve): re-pondera a memoria pelo resultado real — positive sobe importancia E confianca, negative desce ambas. amount (default 0.1) e a intensidade.",
+                     "inputSchema":{"type":"object",
+                       "properties":{
+                         "key":{"type":"string"},
+                         "positive":{"type":"boolean","description":"true = util (sobe), false = errado/inutil (desce)"},
+                         "amount":{"type":"number","default":0.1,"description":"Intensidade (default 0.1)"}},
+                       "required":["key","positive"]}},
                     {"name":"forget",
                      "description":"Esquece (ARCHIVA) uma memoria — historia preservada, recall default passa a ignora-la.",
                      "inputSchema":{"type":"object",
@@ -518,6 +526,24 @@ fn main() {
                         match db.forget(key) {
                             Ok(()) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":format!("arquivada: {key} (historia preservada)")}],"isError":false}})),
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
+                        }
+                    }
+                    "feedback" => {
+                        let key = args["key"].as_str().unwrap_or("");
+                        let positive = args["positive"].as_bool().unwrap_or(true);
+                        let amount = args["amount"].as_f64().unwrap_or(0.1) as f32;
+                        if key.is_empty() {
+                            send(&error_response(&id, -32602, "parametro 'key' obrigatorio"));
+                            continue;
+                        }
+                        match db.feedback(key, positive, amount) {
+                            Ok(()) => {
+                                let verb = if positive { "util (+)" } else { "errado (-)" };
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                    "content":[{"type":"text","text":format!("feedback aplicado ({verb} {amount}): {key}")}],"isError":false}}))
+                            }
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
                         }
