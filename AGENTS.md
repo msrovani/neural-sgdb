@@ -96,9 +96,23 @@ let facts = db.scan_prefix("md/L3/")?;                 // ART prefix scan
 ```bash
 cargo run --release --example bench        # benchmarks (ART/BQ/recall vs FP32)
 cargo run --release --example mcp_server   # MCP server for AI agents
+cargo run --release --example mcp_client   # HOT TEST: drives mcp_server like an IDE (45 checks)
 cargo run --release --example mesh_simulation --features p2p  # layered AI telepathy mesh
 cargo run --release --example signed_peer --features p2p      # signed-transport seam flow
 ```
+
+## Agent self-memory (hot test, v1.1)
+
+The project agent is a test subject: `.opencode/opencode.json` registers the
+MCP server as a local server (`NEURAL_SGDB_DB=.sgdb/memory.db`, gitignored),
+giving the agent `mcp__neural-sgdb__*` tools (15: remember/recall/rag_context/
+explain/reinforce/forget/associate/related_to/contradicts/supersede/conflicts/
+resolve_conflict/merge_memories/health/validate). Audit log in
+`docs/hot_test.md`. Lessons learned (2026-08-13): `remember` returns the FULL
+storage key (`md/L4/...`), always use it for follow-up (`explain`/`reinforce`
+on the raw `mcp/...` key fails — was fixed); recall hits print `h.key | text`;
+use the SAME words in queries as in the stored text (demo_embed is a trigram
+hash, not a semantic model). Restart opencode after changing the config.
 
 ## Running tests
 

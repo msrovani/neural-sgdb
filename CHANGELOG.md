@@ -13,6 +13,16 @@ All notable changes to this project. Format based on
 - **MCP `health`/`validate` tools** (`examples/mcp_server.rs`).
 - **`examples/signed_peer.rs`** — signed-transport reference flow.
 - **`examples/mesh_simulation.rs`** — layered multi-AI telepathy (P2-5).
+- **`examples/mcp_client.rs`** + **`docs/hot_test.md`** — the Hot SGDB Test:
+  the agent as guinea pig driving the MCP server like an IDE (45 assertions,
+  10 phases, cross-process persistence). Found and fixed two real bugs:
+  (1) `remember` returned the raw `mcp/...` key that `resolve_storage_key`
+  mapped to `md/mcp/...` (nonexistent) — side-table orphans were silently
+  created (caught by `validate`!); now returns the full `md/L4/...` key and
+  `recall` prints `h.key | text`. (2) `demo_embed` was position-dependent
+  (seed mutated per n-gram window), so the same trigram at different offsets
+  landed on different bins and keyword recall failed (`d≈1.0`); now
+  position-independent.
 
 ### Changed
 - `MemoryDelta`/`MemorySnapshot` now carry `Vec<MemoryRecord>` (v0.6

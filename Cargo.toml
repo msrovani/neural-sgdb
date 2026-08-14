@@ -38,3 +38,9 @@ required-features = ["file-storage"]
 [[example]]
 name = "stress"
 required-features = ["file-storage"]
+
+# Hot SGDB Test (Via 3) — client cru que dirige o mcp_server como um IDE faria.
+# `file-storage` garante o teste de PERSISTÊNCIA real (cross-process).
+[[example]]
+name = "mcp_client"
+required-features = ["file-storage"]

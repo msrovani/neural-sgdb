@@ -31,11 +31,16 @@ static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Demo embedding: deterministic character-trigram hash → normalized 256-dim
 /// vector. Good enough for short-text similarity recall; NOT a real semantic
 /// model.
+///
+/// HOT-TEST FIX (2026-08-13): o seed era position-dependent (`seed` mutado a
+/// cada janela) — o mesmo trigrama em posições diferentes caía em bins
+/// diferentes e o recall de palavras-chave falhava (query "integridade banco"
+/// vs doc "...integridade do banco" → d≈1.0). Agora o hash é position-
+/// independent: cada trigrama cai SEMPRE na mesma bin.
 fn demo_embed(text: &str) -> Vec<f32> {
     const DIM: usize = 256;
     let mut v = vec![0f32; DIM];
     let bytes = text.as_bytes();
-    let mut seed = 0x9E37_79B9_7F4A_7C15u64;
     // text < 3 bytes: no trigrams → degenerate zero vector; fallback by
     // individual bytes (fix #10)
     let windows: Vec<&[u8]> = if bytes.len() < 3 {
@@ -44,16 +49,14 @@ fn demo_embed(text: &str) -> Vec<f32> {
         bytes.windows(3).collect()
     };
     for w in windows {
-        // FNV-1a sobre o n-grama
+        // FNV-1a sobre o n-grama (sem seed posicional — HOT-TEST FIX)
         let mut h = 0xcbf2_9ce4_8422_2325u64;
         for &b in w {
             h ^= b as u64;
             h = h.wrapping_mul(0x0000_0100_0000_01B3);
         }
-        h ^= seed;
         let idx = (h % DIM as u64) as usize;
         v[idx] += if (h >> 8) & 1 == 1 { 1.0 } else { -1.0 };
-        seed = seed.wrapping_mul(0x9E37_79B9).wrapping_add(1);
     }
     let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-8);
     v.iter_mut().for_each(|x| *x /= norm);
@@ -326,9 +329,15 @@ fn main() {
                         });
                         let emb = demo_embed(text);
                         match db.remember_semantic(&key, text, &emb) {
-                            Ok(()) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("memoria armazenada ({key})")}],
-                                "isError":false}})),
+                            Ok(()) => {
+                                // devolve a STORAGE KEY completa (`md/L4/...`) —
+                                // a chave crua `mcp/...` NÃO resolve em
+                                // explain/reinforce (achado hot-test 2026-08-13)
+                                let sk = format!("md/L4/{key}");
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                    "content":[{"type":"text","text":format!("memoria armazenada ({sk})")}],
+                                    "isError":false}}))
+                            }
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
                         }
@@ -354,7 +363,7 @@ fn main() {
                                 let p = h.provenance.as_ref().map(|p| format!(
                                     " [state={:?} imp={:.2} conf={:.2} src={}]",
                                     p.state, p.importance, p.confidence, p.source)).unwrap_or_default();
-                                format!("- {} (d={:.3}){}", h.text, h.dist, p)
+                                format!("- {} | {} (d={:.3}){}", h.key, h.text, h.dist, p)
                             }).collect::<Vec<_>>().join("\n")
                         };
                         let mut result = json!({

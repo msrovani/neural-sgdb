@@ -1,0 +1,13 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "neural-sgdb": {
+      "type": "local",
+      "command": ["cargo", "run", "--release", "--example", "mcp_server"],
+      "enabled": true,
+      "environment": {
+        "NEURAL_SGDB_DB": ".sgdb/memory.db"
+      }
+    }
+  }
+}
