@@ -23,7 +23,7 @@ P2 (committed `feat(v1.0): …P2-*…`): CRDT convergence in random topologies
 signed-transport reference flow (P2-3), central wire-codec fuzz harness
 `src/wire_fuzz.rs` over all 8 wire types (P2-4), layered multi-AI telepathy
 mesh (P2-5). MCP server now exposes `health`/`validate` tools; new p2p
-examples: `mesh_simulation`, `signed_peer`. Matriz: **185+1 / 231+1 / 140+1**,
+examples: `mesh_simulation`, `signed_peer`. Matriz: **186+1 / 232+1 / 141+1**,
 no_std gate ok. `.freebuff/` is tool state — gitignored, never commit.
 
 ## Repository Map
@@ -117,7 +117,7 @@ hash, not a semantic model). Restart opencode after changing the config.
 ## Running tests
 
 ```bash
-cargo test                                 # 185+1 tests (InMemory/FileStorage/TickvFile)
+cargo test                                 # 186+1 tests (InMemory/FileStorage/TickvFile)
 cargo test --features p2p                  # 228+1 (includes CRDT sync + mesh harness)
 cargo test --no-default-features           # 139+1 (no_std core, host test harness)
 cargo check --no-default-features --target x86_64-unknown-none   # no_std gate
@@ -145,7 +145,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-
 - **Wire-codec fuzz harness** (`src/wire_fuzz.rs`, P2-4): the single LCG
   never-panic/roundtrip/truncation gate over ALL 8 wire types — add a new
   wire type there (plus its per-module `prop_tests`), and keep the matrix
-  (185+1 / 231+1 / 140+1) green. `SignedEnvelope::decode` returns
+  (186+1 / 232+1 / 141+1) green. `SignedEnvelope::decode` returns
   `Option<(Self, usize)>` (no magic byte — corrupt via field lengths, not
   byte 0).
 - **TickvFile** (`src/tickv.rs`): 512-aligned records, tombstone `vlen=0` or
@@ -297,6 +297,16 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-
   `transfer_to` já validavam via `export_record`. Teste: `set_state_rejects_
   ghost_key_no_orphan_side_table`; exemplo `examples/audit.rs` (battery 1:
   attack).
+- **AUDIT validate BQ (1.1)** (`sgdb.rs`): o check de contagem do BQ contava
+  só `md/L4/`, mas o `put_inner` indexa L4 **E** L5 (bitvec ou payload ≥4B
+  reinterpretado como f32) — um doc L5 legítimo com embedding quebrava o
+  `validate()` com falso positivo. Regra replicada: decode e conta docs
+  `md/L4/`+`md/L5/` com `bitvec.is_some() || payload.len() >= 4`. Teste:
+  `validate_accepts_l5_procedural_embedding`. `invalidate(key, now)` NÃO
+  muda o estado (é validade até `now`; `until <= from` APAGA a marcação —
+  usar now > from). `recall_weighted` pondera importância POR CAMADA
+  (penalidade: L4=0.0, L5=0.2), NÃO a importância por doc
+  (`set_importance`/`reinforce` só expõem via provenance).
 - **Recall active-only (v0.8)**: o filtro de estado roda DENTRO do
   `recall_impl`/`recall_lexical_impl` (antes do ranking); estado é POR DOC —
   marcar `md/L4/k` não marca o companion `md/L2/k` (testes devem marcar

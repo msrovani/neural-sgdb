@@ -199,6 +199,110 @@ fn battery2_corruption(path: &std::path::Path, rep: &mut Report) {
     println!("battery 2 (corruption) em {} ms", t.elapsed().as_millis());
 }
 
+fn battery3_fidelity(path: &std::path::Path, rep: &mut Report) {
+    let t = Instant::now();
+    let mut db = Sgdb::open(FileStorage::open(path).unwrap()).unwrap();
+
+    // ── 3.0 setup: memórias com identidade/importância ──────────────────────
+    db.remember_semantic("f1", "o cachorro do vizinho latiu a noite toda", &emb(40)).unwrap();
+    db.remember_semantic("f2", "o projeto custou duzentos mil reais", &emb(41)).unwrap();
+    db.set_importance("md/L4/f2", 0.9).unwrap();
+    db.set_confidence("md/L4/f2", 0.8).unwrap();
+
+    // ── 3.1 recall devolve MEMÓRIAS, não bytes ─────────────────────────────
+    let hits = db.recall(&emb(40), 5).unwrap();
+    let top = hits.iter().find(|h| h.key.ends_with("/f1"));
+    rep.check("recall acha f1 por embedding", top.is_some(), format!("{hits:?}"));
+    if let Some(h) = top {
+        rep.check("recall devolve TEXT (legível), não payload bruto", h.text.contains("cachorro"), format!("text={:?}", h.text));
+        rep.check("recall expõe provenance (memória, não dados)",
+            h.provenance.is_some(), format!("prov={:?}", h.provenance));
+        if let Some(p) = &h.provenance {
+            rep.check("provenance: memory_id presente", !p.memory_id.is_empty(), "".into());
+            rep.check("provenance: layer L4", p.layer == MemoryLayer::L4Semantic, format!("layer={:?}", p.layer));
+            rep.check("provenance: state Active", p.state == MemoryState::Active, format!("state={:?}", p.state));
+            // default de importância é POR CAMADA: L4 = 1.0 (memory_doc.rs)
+            rep.check("provenance: importance default L4 = 1.0", (p.importance - 1.0).abs() < 1e-6, format!("imp={}", p.importance));
+            // f2 tem importância alta — ranking pondera por importância
+            db.recall_weighted(&emb(40), 5, 0.6, 0.0, 0.4, 1_000_000_000).unwrap();
+        }
+    }
+
+    // ── 3.2 forget = arquivar (história preservada, recall ignora) ─────────
+    db.forget("md/L4/f1").unwrap();
+    // forget marca POR DOC: companion L2 também precisa sumir do recall
+    db.forget("md/L2/f1").unwrap();
+    let active = db.recall(&emb(40), 5).unwrap();
+    rep.check("forget → recall default ignora f1", active.iter().all(|h| !h.key.ends_with("/f1")), format!("{active:?}"));
+    // história preservada: recall_historical + get + explain ainda veem
+    let hist = db.recall_historical(&emb(40), 5).unwrap();
+    rep.check("recall_historical ainda vê f1 (memória, não deletada)",
+        hist.iter().any(|h| h.key.ends_with("/f1")), format!("{hist:?}"));
+    rep.check("get ainda lê o doc arquivado", db.get(MemoryLayer::L4Semantic, "f1").unwrap().is_some(), "".into());
+    let st = db.get_state("md/L4/f1").unwrap();
+    rep.check("estado é Archived", st == MemoryState::Archived, format!("{st:?}"));
+    let expl = db.explain("md/L4/f1").unwrap();
+    rep.check("explain expõe o estado Archived", expl.state == MemoryState::Archived, format!("state={:?}", expl.state));
+
+    // ── 3.3 supersede constrói DAG (linhagem causal) ────────────────────────
+    db.supersede("md/L4/f2", "md/L4/f3").unwrap(); // f3 ainda não existe — design
+    // cria o sucessor real e liga a linhagem
+    db.remember_semantic("f3", "o orçamento estourou em duzentos e dez mil", &emb(42)).unwrap();
+    db.supersede("md/L4/f2", "md/L4/f3").unwrap();
+    let st2 = db.get_state("md/L4/f2").unwrap();
+    rep.check("supersede marca f2 como Superseded", st2 == MemoryState::Superseded, format!("{st2:?}"));
+    let lin = db.lineage("md/L4/f3").unwrap();
+    rep.check("lineage de f3 tem 2 elos (f3 → f2)", lin.len() >= 2, format!("lin={lin:?}"));
+    let parent_vid = db.meta("md/L4/f2").unwrap().map(|m| m.version_id).unwrap_or_default();
+    rep.check("f3 lista f2 como parent causal",
+        db.meta("md/L4/f3").unwrap().map(|m| m.parent_ids.contains(&parent_vid)).unwrap_or(false), "".into());
+    // recall default não traz superseded (f2 não compete)
+    let active = db.recall(&emb(41), 5).unwrap();
+    rep.check("recall default ignora f2 (superseded)", active.iter().all(|h| !h.key.ends_with("/f2")), format!("{active:?}"));
+
+    // ── 3.4 validade temporal: from ≤ now < until ─────────────────────────
+    db.set_validity("md/L4/f3", 1_000, 2_000).unwrap();
+    rep.check("validity_at dentro da janela → true", db.validity_at("md/L4/f3", 1_500).unwrap(), "".into());
+    rep.check("validity_at fora da janela → false", !db.validity_at("md/L4/f3", 2_500).unwrap(), "".into());
+    let before = db.recall_at(&emb(42), 5, 1_500).unwrap();
+    rep.check("recall_at (dentro) traz f3", before.iter().any(|h| h.key.ends_with("/f3")), format!("{before:?}"));
+    let after = db.recall_at(&emb(42), 5, 2_500).unwrap();
+    rep.check("recall_at (fora) exclui f3", after.iter().all(|h| !h.key.ends_with("/f3")), format!("{after:?}"));
+    db.invalidate("md/L4/f3", 2_500).unwrap();
+    // invalidate = janela de validade até now (invalidar-NÃO-deletar): o
+    // estado lógico não muda (continua Active), mas a memória expira em now.
+    // `until <= from` APAGA a marcação — usar now > from.
+    let st3 = db.get_state("md/L4/f3").unwrap();
+    rep.check("invalidate mantém estado (validade, não state)", st3 == MemoryState::Active, format!("{st3:?}"));
+    rep.check("invalidate → validity_at(now+1) false", !db.validity_at("md/L4/f3", 2_501).unwrap(), "".into());
+    rep.check("invalidate → get continua recuperável", db.get(MemoryLayer::L4Semantic, "f3").unwrap().is_some(), "".into());
+
+    // ── 3.5 recall_weighted: importância POR CAMADA rankeia (contrato) ────
+    // Contrato (AGENTS.md): recall_weighted = w_sem·dist + w_rec·recência +
+    // w_imp·importância(camada). A importância da CAMADA (penalidade) difere
+    // por layer: L4=0.0, L5=0.2 — sob w_imp alto, L4 vence L5 com o MESMO
+    // embedding. (A importância POR DOC — set_importance/reinforce — é
+    // exposta via provenance, não entra no ranking.)
+    db.remember_semantic("f4", "patente arquivada para o sensor optico", &emb(50)).unwrap();
+    db.remember_semantic("f5", "patente arquivada para o sensor optico", &emb(50)).unwrap();
+    let mut l5 = neural_sgdb::MemoryDoc::new(
+        neural_sgdb::MemoryLayer::L5Procedural,
+        "proc/sensor",
+        "patente arquivada para o sensor optico".as_bytes().to_vec(),
+    );
+    l5.bitvec = Some(neural_sgdb::quantize_f32(&emb(50)));
+    db.put(l5).unwrap();
+    let w = db.recall_weighted(&emb(50), 3, 0.0, 0.0, 1.0, 1_000_000_000).unwrap();
+    rep.check("w_imp: L4 (penalty 0.0) vence L5 (penalty 0.2)",
+        w.iter().any(|h| h.key.contains("/f4")) && !w[0].key.contains("proc/sensor"),
+        format!("w={:?}", w.iter().map(|h| &h.key).collect::<Vec<_>>()));
+
+    let issues = db.validate();
+    rep.check("validate final limpo", issues.is_empty(), issues.iter().map(|i| format!("[{}] {}", i.key, i.message)).collect::<Vec<_>>().join("; "));
+
+    println!("battery 3 (fidelity) em {} ms", t.elapsed().as_millis());
+}
+
 fn main() {
     let dir = std::env::temp_dir().join("neural_sgdb_audit");
     let _ = std::fs::create_dir_all(&dir);
@@ -217,7 +321,15 @@ fn main() {
     battery2_corruption(&path2, &mut rep);
     let code2 = rep.finish("battery 2: CORRUPTION");
 
+    rep = Report { checks: Vec::new() };
+    println!("\n=== AUDIT battery 3: FIDELITY (memórias, não dados) ===");
+    let path3 = dir.join("fidelity.db");
+    let _ = std::fs::remove_file(&path3);
+    battery3_fidelity(&path3, &mut rep);
+    let code3 = rep.finish("battery 3: FIDELITY");
+
     let _ = std::fs::remove_file(&path1);
     let _ = std::fs::remove_file(&path2);
-    std::process::exit(i32::max(code1, code2));
+    let _ = std::fs::remove_file(&path3);
+    std::process::exit(i32::max(code1, i32::max(code2, code3)));
 }

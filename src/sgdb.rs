@@ -1365,14 +1365,23 @@ impl Sgdb {
         }
 
         // 2. índices derivados: contagens BATEM com o storage
-        let l4_count = md
-            .iter()
-            .filter(|(sk, _)| sk.starts_with(b"md/L4/"))
-            .count();
-        if self.engine.bq_len() != l4_count {
+        // O BQ indexa L4 (semântica) E L5 (procedural) — engine.rs put_inner
+        // (AUDIT 3.5: um doc L5 legítimo com embedding quebrava o validate,
+        // que só contava md/L4/). Regra replicada: layer ∈ {L4, L5} E
+        // (bitvec presente OU payload com ≥4 bytes — reinterpretado como f32).
+        let bq_doc_count = md.iter().filter(|(sk, bytes)| {
+            if !(sk.starts_with(b"md/L4/") || sk.starts_with(b"md/L5/")) {
+                return false;
+            }
+            match MemoryDoc::decode(bytes) {
+                Ok(d) => d.bitvec.is_some() || d.payload.len() >= 4,
+                Err(_) => false, // já flaggado em 1 — não conta
+            }
+        }).count();
+        if self.engine.bq_len() != bq_doc_count {
             issues.push(ValidateIssue {
-                key: "md/L4/".into(),
-                message: "BQ index count != L4 doc count",
+                key: "md/L4/L5/".into(),
+                message: "BQ index count != L4+L5 embedding doc count",
             });
         }
 
@@ -2995,6 +3004,29 @@ mod tests {
         db.remember_fact("fato", 100).unwrap();
         db.checkpoint().unwrap();
         assert!(db.validate().is_empty());
+    }
+
+    #[test]
+    fn validate_accepts_l5_procedural_embedding() {
+        // AUDIT (battery 3, 3.5): o BQ indexa L4 E L5 — um doc L5 legítimo
+        // com embedding (bitvec ou payload f32) fazia o validate reportar
+        // "BQ index count != L4 doc count" (falso positivo: contava só L4).
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        // L5 com bitvec explícito (procedural embedding)
+        let mut l5 = MemoryDoc::new(MemoryLayer::L5Procedural, "proc/1", b"rotina de wake".to_vec());
+        l5.bitvec = Some(crate::bq::quantize_f32(&[1.0, -1.0, 1.0, -1.0]));
+        db.put(l5).unwrap();
+        // L5 com payload f32 cru (sem bitvec) — mesma regra do put_inner
+        let l5b = MemoryDoc::new(
+            MemoryLayer::L5Procedural,
+            "proc/2",
+            [1.0f32, -1.0, 1.0, -1.0].iter().flat_map(|x| x.to_le_bytes()).collect(),
+        );
+        db.put(l5b).unwrap();
+        // L4 com embedding (padrão)
+        db.remember_semantic("sem/1", "conceito", &[1.0, -1.0, 1.0, -1.0]).unwrap();
+        assert_eq!(db.bq_len(), 3, "L4 + 2×L5 indexados");
+        assert!(db.validate().is_empty(), "L5 com embedding NÃO é falso positivo");
     }
 
     #[test]
