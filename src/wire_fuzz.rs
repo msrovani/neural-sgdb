@@ -109,6 +109,7 @@ fn sample_meta(state: &mut u64) -> MemoryMeta {
         parent_ids: Vec::new(),
         clock_overflow: Vec::new(),
         last_reinforced: 0,
+        scope: String::new(),
     }
 }
 

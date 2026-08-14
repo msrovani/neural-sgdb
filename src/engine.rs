@@ -340,6 +340,7 @@ impl AiosDatabaseEngine {
                     parent_ids: Vec::new(),
                     clock_overflow: Vec::new(),
                     last_reinforced: 0,
+                    scope: String::new(),
                 }
             }
         };
@@ -439,6 +440,7 @@ impl AiosDatabaseEngine {
             parent_ids: Vec::new(),
             clock_overflow: doc.clock.overflow.clone(),
             last_reinforced: 0,
+            scope: String::new(),
         };
         // índice reverso também é derivado na migração (DAG consultável)
         self.storage
@@ -1111,6 +1113,7 @@ fn meta_for_import(doc: &MemoryDoc) -> MemoryMeta {
         parent_ids: Vec::new(),
         clock_overflow: doc.clock.overflow.clone(),
         last_reinforced: 0,
+        scope: doc.meta.as_ref().map(|m| m.scope.clone()).unwrap_or_default(),
     }
 }
 

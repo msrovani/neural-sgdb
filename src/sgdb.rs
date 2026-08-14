@@ -336,6 +336,25 @@ impl Sgdb {
         self.engine.write_meta(&sk, &m)
     }
 
+    /// Escopo de isolamento (v1.1.4 item 7, mem0 multi-tenancy): namespace
+    /// opcional da memória — particiona recall/recall_scoped por
+    /// user/agent/projeto. Vazio = escopo global (default, não bate filtro de
+    /// scope). Registros pré-v1.1.4 decodificam com `scope = ""` (migração
+    /// MDM1 v4 explícita).
+    pub fn set_scope(&mut self, key: &str, scope: &str) -> Result<(), SgdbError> {
+        let sk = self.resolve_known_key(key);
+        let mut m = self.engine.ensure_meta(&sk)?;
+        m.scope = scope.to_string();
+        self.engine.write_meta(&sk, &m)
+    }
+
+    /// Lê o escopo atual de uma memória (vazio = global). `meta()` já expõe
+    /// o campo — esta é a conveniência explícita para o filtro de scope.
+    pub fn scope_of(&mut self, key: &str) -> Result<String, SgdbError> {
+        let sk = self.resolve_known_key(key);
+        Ok(self.engine.meta(&sk)?.map(|m| m.scope).unwrap_or_default())
+    }
+
     /// Anexa `parent_ids` à meta da memória (linhagem causal do DAG) —
     /// usado pela promoção do lifecycle e pela fusão (`merge_memories`,
     /// v0.9). Idempotente; registros pré-v0.6 ganham meta via `ensure_meta`.
@@ -737,7 +756,7 @@ impl Sgdb {
             2..=4 => 8,
             _ => 4,
         };
-        self.recall_impl(query, k, ov, false)
+        self.recall_impl(query, k, ov, false, None)
     }
 
     /// Dimensionalidades (nº de f32) dos embeddings indexados no BQ (v1.1.3 S1).
@@ -779,7 +798,56 @@ impl Sgdb {
         if query.is_empty() {
             return Ok(Vec::new());
         }
-        self.recall_impl(query, k, oversample, true)
+        self.recall_impl(query, k, oversample, true, None)
+    }
+
+    /// Recall **escopado** (v1.1.4 item 7, mem0 multi-tenancy): mesmo pipeline
+    /// de `recall`, mas o filtro de `scope` corre DENTRO do pool de candidatos
+    /// — memórias de outro user/agent/projeto não competem por vagas do
+    /// top-k. Escopo vazio (`""`) = memórias GLOBAIS (sem scope). Memórias
+    /// sem marcação NUNCA batem um filtro de scope não-vazio (default global
+    /// ≠ escopadas, por design — busca sem scope não vaza de outros scopes).
+    pub fn recall_scoped(
+        &mut self,
+        query: &[f32],
+        k: usize,
+        scope: &str,
+    ) -> Result<Vec<Hit>, SgdbError> {
+        self.recall_scoped_impl(query, k, scope, true, true)
+    }
+
+    /// Recall escopado com histórico explícito (todas as memórias do scope,
+    /// inclusive inativas — mesmo contrato de `recall_historical`).
+    pub fn recall_scoped_historical(
+        &mut self,
+        query: &[f32],
+        k: usize,
+        scope: &str,
+    ) -> Result<Vec<Hit>, SgdbError> {
+        self.recall_scoped_impl(query, k, scope, false, false)
+    }
+
+    fn recall_scoped_impl(
+        &mut self,
+        query: &[f32],
+        k: usize,
+        scope: &str,
+        active_only: bool,
+        auto_oversample: bool,
+    ) -> Result<Vec<Hit>, SgdbError> {
+        if query.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ov = if auto_oversample {
+            match self.engine.bq.words_per_vec {
+                0 | 1 => 16,
+                2..=4 => 8,
+                _ => 4,
+            }
+        } else {
+            1
+        };
+        self.recall_impl(query, k, ov, active_only, Some(scope))
     }
 
     /// Núcleo do recall com modo de estado explícito. `active_only = true`:
@@ -791,6 +859,7 @@ impl Sgdb {
         k: usize,
         oversample: usize,
         active_only: bool,
+        scope: Option<&str>,
     ) -> Result<Vec<Hit>, SgdbError> {
         if query.is_empty() {
             return Ok(Vec::new());
@@ -844,6 +913,17 @@ impl Sgdb {
                     let state = self.engine.get_state(&sk);
                     if active_only && state != MemoryState::Active {
                         continue;
+                    }
+                    // v1.1.4 item 7 — filtro de SCOPE dentro do pool de
+                    // candidatos (memória de outro user/agent/projeto não
+                    // compete por vagas do top-k do scope corrente). None =
+                    // GLOBAL (filtro implícito mem0: busca sem scope não
+                    // vaza de scopes escopados).
+                    let doc_scope = doc.meta.as_ref().map(|m| m.scope.as_str()).unwrap_or("");
+                    match scope {
+                        Some(s) if doc_scope != s => continue,
+                        None if !doc_scope.is_empty() => continue,
+                        _ => {}
                     }
                     // v0.6 — provenance exposta (Phase 9 parcial): quem/quando/
                     // quão confiável/estado — memórias superseded não se fingem
@@ -1853,6 +1933,36 @@ mod tests {
         assert!(at_future.iter().all(|h| h.key != "md/L4/kTemporaria"), "expirada fora do recall_at");
         let hist = db.recall_historical(&q, 10).unwrap();
         assert!(hist.iter().any(|h| h.key == "md/L4/kTemporaria"), "história preservada (recall_historical)");
+    }
+
+    #[test]
+    fn scoped_recall_isolates_tenants() {
+        // v1.1.4 item 7 (mem0 multi-tenancy): scope particiona por
+        // user/agent/projeto. Filtro DENTRO do pool de candidatos — a memória
+        // do tenant A nunca compete por vagas do top-k do tenant B.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("kA", "preferencia da ana: cafe", &[1.0, -1.0, 1.0, -1.0]).unwrap();
+        db.remember_semantic("kB", "preferencia do bruno: cha", &[1.0, -1.0, 1.0, -1.0]).unwrap();
+        db.remember_semantic("kG", "fato global compartilhado", &[1.0, -1.0, 1.0, -1.0]).unwrap();
+        db.set_scope("kA", "user/ana").unwrap();
+        db.set_scope("kB", "user/bruno").unwrap();
+        let q = [1.0, -1.0, 1.0, -1.0];
+        // recall global (sem scope) = só memórias sem marcação (global default)
+        let g = db.recall(&q, 10).unwrap();
+        assert_eq!(g.len(), 1, "recall global não vaza de scopes");
+        assert_eq!(g[0].key, "md/L4/kG");
+        // recall escopado = só o tenant
+        let a = db.recall_scoped(&q, 10, "user/ana").unwrap();
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0].key, "md/L4/kA");
+        let b = db.recall_scoped(&q, 10, "user/bruno").unwrap();
+        assert_eq!(b.len(), 1);
+        assert_eq!(b[0].key, "md/L4/kB");
+        // tenant que nunca escreveu → vazio
+        assert!(db.recall_scoped(&q, 10, "user/carla").unwrap().is_empty());
+        // scope_of / meta expõem o campo
+        assert_eq!(db.scope_of("kA").unwrap(), "user/ana");
+        assert_eq!(db.scope_of("kG").unwrap(), "", "sem marcação = global");
     }
 
     #[test]

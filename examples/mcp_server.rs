@@ -189,11 +189,12 @@ fn main() {
             "tools/list" => {
                 send(&json!({"jsonrpc":"2.0","id":id,"result":{"tools":[
                     {"name":"remember",
-                     "description":"Armazena uma memoria de texto no banco neural-sgdb. Opcional: forneca `embedding` (array de f32, 1..=256 dims) para usar um modelo real; sem ele, o server usa o embedder configurado (demo trigram).",
+                     "description":"Armazena uma memoria de texto no banco neural-sgdb. Opcional: forneca `embedding` (array de f32, 1..=256 dims) para usar um modelo real; sem ele, o server usa o embedder configurado (demo trigram). `scope` (opcional) particiona por user/agent/projeto (mem0 multi-tenancy).",
                      "inputSchema":{"type":"object",
                        "properties":{
                          "text":{"type":"string","description":"Conteudo a lembrar"},
-                         "embedding":{"type":"array","items":{"type":"number"},"description":"Embedding fornecido pelo agente (opcional)"}},
+                         "embedding":{"type":"array","items":{"type":"number"},"description":"Embedding fornecido pelo agente (opcional)"},
+                         "scope":{"type":"string","description":"Escopo de isolamento (ex: 'user/ana', 'project/neural-os'). Vazio = global."}},
                        "required":["text"]},
                      "annotations":{"destructiveHint":true,"idempotentHint":true}},
                     {"name":"remember_episodic",
@@ -206,12 +207,13 @@ fn main() {
                        "required":["user","response"]},
                      "annotations":{"idempotentHint":true}},
                     {"name":"recall",
-                     "description":"Busca semantica sobre memorias armazenadas. Retorna as top-k mais similares. Opcional: forneca `embedding` (consistente com o usado no remember) para busca com modelo real.",
+                     "description":"Busca semantica sobre memorias armazenadas. Retorna as top-k mais similares. Opcional: forneca `embedding` (consistente com o usado no remember) para busca com modelo real. `scope` (opcional) limita a um user/agent/projeto (vazio = busca em TODOS os scopes globais; escopada nao vaza de outros scopes).",
                      "inputSchema":{"type":"object",
                        "properties":{
                          "query":{"type":"string","description":"Texto de busca"},
                          "embedding":{"type":"array","items":{"type":"number"},"description":"Embedding fornecido pelo agente (opcional)"},
                          "k":{"type":"integer","minimum":1,"maximum":20,"default":5},
+                         "scope":{"type":"string","description":"Escopo de isolamento (ex: 'user/ana'). Omitir = global (só memórias sem scope)."},
                          "cursor":{"type":"string","description":"Cursor de paginacao (opaco, de um resultado anterior)"},
                          "pageSize":{"type":"integer","minimum":1,"maximum":20,"default":5}},
                        "required":["query"]},
@@ -395,6 +397,16 @@ fn main() {
                         };
                         match db.remember_semantic(&key, text, &emb) {
                             Ok(()) => {
+                                // scope opcional (v1.1.4 item 7) — aplica após
+                                // o put (a meta nasce no primeiro write)
+                                let scope = args["scope"].as_str().unwrap_or("");
+                                if !scope.is_empty() {
+                                    if let Err(e) = db.set_scope(&format!("md/L4/{key}"), scope) {
+                                        send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                            "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}}));
+                                        continue;
+                                    }
+                                }
                                 // devolve a STORAGE KEY completa (`md/L4/...`) —
                                 // a chave crua `mcp/...` NÃO resolve em
                                 // explain/reinforce (achado hot-test 2026-08-13)
@@ -458,7 +470,14 @@ fn main() {
                         // página exatamente preenchida pareceria a última
                         // (paginate usa items.len() como "conjunto inteiro").
                         let need = off.saturating_add(size).saturating_add(1);
-                        let all = db.recall(&emb, need).unwrap_or_default();
+                        // v1.1.4 item 7 — scope opcional: filtro DENTRO do
+                        // pipeline (candidatos de outro scope não competem).
+                        let scope = args["scope"].as_str().unwrap_or("");
+                        let all = if scope.is_empty() {
+                            db.recall(&emb, need).unwrap_or_default()
+                        } else {
+                            db.recall_scoped(&emb, need, scope).unwrap_or_default()
+                        };
                         let (page, next) = paginate(&all, args["cursor"].as_str(), size);
                         let text = if page.is_empty() {
                             "nenhuma memoria similar encontrada".into()
