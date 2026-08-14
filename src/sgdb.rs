@@ -968,6 +968,40 @@ impl Sgdb {
         self.engine.invalidate(&sk, now)
     }
 
+    /// Esquecimento temporal automático (supermemory): varre `sys/validity/` e
+    /// marca como `Invalidated` as memórias cuja janela já fechou em `now`
+    /// (`until <= now`). Idempotente (segunda passada não re-marca); devolve
+    /// quantas expiraram. Passo periódico — a memória envelhece sem crescer
+    /// sem limite, e o recall default (active-only) passa a ignorá-las sem
+    /// apagá-las (história preservada via `recall_historical`).
+    pub fn expire_old(&mut self, now: u64) -> Result<usize, SgdbError> {
+        let rows = self.engine.scan_prefix_storage(b"sys/validity/")?;
+        let mut expired = 0usize;
+        for (vk, bytes) in rows {
+            if bytes.len() != 16 {
+                continue;
+            }
+            let until = u64::from_le_bytes([
+                bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
+            ]);
+            if until > now {
+                continue; // ainda válida
+            }
+            // sys/validity/<md/...> → storage key
+            let sk = String::from_utf8_lossy(&vk[13..]).into_owned();
+            if self.engine.get_by_storage_key(&sk)?.is_none() {
+                continue; // chave fantasma — sem doc, não marca (AUDIT 1.3)
+            }
+            match self.engine.get_state(&sk) {
+                MemoryState::Invalidated | MemoryState::Archived | MemoryState::Decayed => continue,
+                _ => {}
+            }
+            self.engine.set_state(&sk, MemoryState::Invalidated)?;
+            expired += 1;
+        }
+        Ok(expired)
+    }
+
     /// Recall **lexical contextual** (#7, BM25-style sobre o índice invertido
     /// dos textos L2/L3): recupera casamentos de termos que o BQ perde.
     /// `dist` = 1 − score normalizado (0 = melhor hit lexical). Default =
@@ -1796,6 +1830,29 @@ mod tests {
         assert_eq!(p1[0].0, "md/L4/kFatoA");
         // agente desconhecido → vazio
         assert!(db.profile(me.wrapping_add(5), 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn expire_old_invalidates_expired_windows() {
+        // v1.1.4 item 6 (supermemory): expire_old(now) marca Invalidated as
+        // memórias cuja janela fechou em now — recall default (active-only)
+        // as ignora; história preservada via recall_historical. Idempotente.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("kPermanente", "regra fixa", &[1.0, -1.0, 1.0, -1.0]).unwrap();
+        db.remember_semantic("kTemporaria", "noticia de hoje", &[1.0, 1.0, 1.0, 1.0]).unwrap();
+        // janela da temporária fecha em 2000
+        db.set_validity("kTemporaria", 1000, 2000).unwrap();
+        assert_eq!(db.expire_old(1500).unwrap(), 0, "nada expirou ainda");
+        assert_eq!(db.expire_old(2000).unwrap(), 1, "a temporária expirou em now=2000");
+        assert_eq!(db.expire_old(3000).unwrap(), 0, "idempotente: não re-marca");
+        assert_eq!(db.get_state("kTemporaria").unwrap(), MemoryState::Invalidated);
+        assert_eq!(db.get_state("kPermanente").unwrap(), MemoryState::Active, "sem janela = sempre válida");
+        // recall_at com now após o fim exclui a expirada
+        let q = [1.0, 1.0, 1.0, 1.0];
+        let at_future = db.recall_at(&q, 10, 3000).unwrap();
+        assert!(at_future.iter().all(|h| h.key != "md/L4/kTemporaria"), "expirada fora do recall_at");
+        let hist = db.recall_historical(&q, 10).unwrap();
+        assert!(hist.iter().any(|h| h.key == "md/L4/kTemporaria"), "história preservada (recall_historical)");
     }
 
     #[test]

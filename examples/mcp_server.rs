@@ -316,6 +316,12 @@ fn main() {
                          "limit":{"type":"integer","minimum":1,"maximum":50,"default":10}},
                        "required":[]},
                      "annotations":{"readOnlyHint":true}},
+                    {"name":"expire_old",
+                     "description":"Esquecimento temporal automatico (supermemory): marca como Invalidated as memorias cuja janela de validade ja fechou em `now` (until <= now). Idempotente. Passo periodico — memoria envelhece sem apagar (historia via recall_historical).",
+                     "inputSchema":{"type":"object",
+                       "properties":{
+                         "now":{"type":"integer","description":"Timestamp (ms). Omitir = relogio local."}},
+                       "required":[]}},
                     {"name":"validate",
                      "description":"Integridade: varre storage md/, decodifica NMD1, cruza ART/BQ e detecta side-tables orfas. Vazio = saudavel; cada issue = key + descricao.",
                      "inputSchema":{"type":"object","properties":{}},
@@ -704,6 +710,20 @@ fn main() {
                                 send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                     "content":[{"type":"text","text":text}],"isError":false}}));
                             }
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
+                        }
+                    }
+                    "expire_old" => {
+                        let now = args["now"].as_u64().unwrap_or_else(|| {
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis() as u64)
+                                .unwrap_or(0)
+                        });
+                        match db.expire_old(now) {
+                            Ok(n) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":format!("{n} memorias expiradas em now={now}")}],"isError":false}})),
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
                         }
