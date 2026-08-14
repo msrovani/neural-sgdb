@@ -4,6 +4,40 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [1.1.1] — 2026-08-14
+
+### Added
+- **`examples/audit.rs`** — the Cognitive QA audit, the mission test
+  ("returns MEMORIES, not data"): 3 batteries, 54 assertions, exit 0.
+  - Battery 1 (ATTACK, 23): hostile embeddings (NaN/Inf/empty), malformed
+    keys (`/`, `#`, `sys/`, ART prefix-collision), invalid states, side-table
+    overwrite, ghost-key relations.
+  - Battery 2 (CORRUPTION, 11): deterministic bit-flip inside FileStorage
+    L4 records → recovery truncates at the first invalid record; corrupted
+    docs NEVER resurrect with mangled bytes; tail truncation + physical
+    mid-file cut reopen cleanly; `rebuild_indices` reconciles.
+  - Battery 3 (FIDELITY, 20): recall returns text + `HitProvenance` (not
+    bytes); `forget` archives (history via `recall_historical`/`get`/
+    `explain`, default recall ignores); `supersede` builds a DAG (lineage +
+    `parent_ids`); validity window gates `recall_at`; `invalidate` = validity
+    until `now` (not a state); `recall_weighted` ranks by LAYER importance
+    (L4 penalty 0.0 vs L5 0.2).
+- **Two more real bugs found & fixed by the audit**:
+  1. `engine::set_state` accepted ghost keys for state ≠ Active, creating
+     orphan `sys/state/` side-tables (validate flagged them) — same family
+     as the hot-test MCP bughunt. Now rejects no-doc keys with `Invalid`
+     BEFORE writing; `Active` stays remove-only (supersede marks new→Active
+     before it exists). Regression: `set_state_rejects_ghost_key_no_orphan_
+     side_table`.
+  2. `validate()` BQ count only counted `md/L4/` but `put_inner` indexes
+     L4 **and** L5 (bitvec or payload ≥4B reinterpreted as f32) — a legit
+     L5 procedural embedding broke validate() with a false positive. Rule
+     replicated exactly. Regression: `validate_accepts_l5_procedural_
+     embedding`.
+
+### Changed
+- Matrix: 186+1 / 232+1 / 141+1 tests (default / p2p / no-default).
+
 ## [1.1.0] — 2026-08-13
 
 ### Added

@@ -151,3 +151,37 @@ O que aprendi e o que vou fazer diferente na próxima sessão:
    uso → `Acesso negado` no link).
 6. Via 1 é o caminho real de memória de agente: use `remember`/`recall` em
    todas as sessões; o banco `.nsgdb/` sobrevive restart e é gitignored.
+
+---
+
+## Follow-up 2026-08-14 — Audit Cognitivo (`examples/audit.rs`)
+
+O teste da MISSÃO: **"retorna memórias, não dados"** — 3 baterias, 54
+asserções, exit 0 (`cargo run --release --example audit`).
+
+| Bateria | Asserções | O que prova |
+|---------|-----------|-------------|
+| **1. Attack** | 23 | embeddings hostis (NaN/Inf/vazio) rejeitados; chaves maliciosas (`/`, `#`, `sys/`, prefixo-ART) tratadas; set_state em chave fantasma rejeitado; nenhuma side-table órfã pós-ataque |
+| **2. Corruption** | 11 | bit-rot no record L4 → recovery trunca no 1º record inválido; doc corrompido **nunca ressuscita** com bytes alterados; truncamento físico reabre limpo; `rebuild_indices` reconcilia |
+| **3. Fidelity** | 20 | recall devolve **texto + proveniência** (memory_id/camada/estado), não bytes; forget arquiva (história preservada); supersede constrói DAG; validade temporal gateia `recall_at`; invalidate = validade, não estado; `recall_weighted` rankeia por importância de CAMADA |
+
+**2 bugs reais achados e corrigidos pelo audit** (a cobaia atacou o core,
+não só o MCP):
+1. `set_state` aceitava chave fantasma → side-table `sys/state/` órfã
+   (mesma família do bughunt da Via 1). Agora recusa `Invalid` antes de
+   gravar; `Active` continua remove-only.
+2. `validate()` contava só `md/L4/` no BQ, mas o `put_inner` indexa L4 **e**
+   L5 — um doc L5 legítimo com embedding quebrava o validate (falso
+   positivo). Regra replicada exata.
+
+**Lições novas para a cobaia**:
+- `remember` com chave crua `h/imp` NÃO resolve para `md/L4/h/imp` —
+  seguir SEMPRE com a storage key canônica completa (reforça a lição 3).
+- `invalidate(key, now)` é **validade**, não estado; `until <= from` apaga a
+  marcação — usar `now > from`.
+- O default de importância é POR CAMADA (L4 = 1.0), e `recall_weighted`
+  pondera por camada (penalidade L4=0.0 vs L5=0.2) — a importância por doc
+  (`set_importance`/`reinforce`) só aparece na proveniência.
+- Corrupção no meio do append-log é **truncada** no open (nunca aceita) —
+  o custo da segurança é perder records após o ponto de bit-rot; docs
+  anteriores e `rebuild_indices` seguem íntegros.
