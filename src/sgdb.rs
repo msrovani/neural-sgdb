@@ -2155,7 +2155,6 @@ mod tests {
     fn recall_dim_mismatch_survives_rebuild() {
         // v1.1.3 S1 (rebuild): `indexed_dims` é derivado e reconstruído do
         // storage (não é estado durável) — remontar a DB não perde a detecção.
-        let mut db = Sgdb::open(InMemory::new()).unwrap();
         let emb = vec![1.0, -1.0, 1.0, -1.0];
         let wrong: Vec<f32> = (0..256).map(|i| (i as f32 / 256.0) - 0.5).collect();
         let dir = std::env::temp_dir().join(format!("nsgdb_dim_{}", std::process::id()));

@@ -13,6 +13,14 @@ using this DB for real.
 - **`Sgdb::indexed_embedding_dims()`** (S1): dimensionalities (nº of f32) of
   the embeddings currently indexed in the BQ — derived from L4/L5 payloads,
   rebuilt on remount.
+- **`examples/embedder_http.rs`** (S2): the `Embedder` trait plugged into a
+  real HTTP endpoint, end-to-end, with zero new deps (raw HTTP/1.1 via
+  `std::net` + the existing `serde_json` dev-dep). Ships a self-contained mock
+  embedding server (thread-local) plus an `HttpEmbedder` that POSTs text and
+  parses the JSON response — the stand-in for BGE/OpenAI/ONNX behind an HTTP
+  gateway. Proves the same-model contract (write+query through HTTP, 8 dims)
+  and the S1 guard (a 256-dim demo query against an 8-dim corpus → `Invalid`).
+  `cargo run --release --example embedder_http` → 4/4 PASS, exit 0.
 
 ### Changed
 - **`recall`/`recall_historical`/`recall_weighted` no longer return hamming
@@ -24,7 +32,7 @@ using this DB for real.
   detection (they're noise, not a dimension). Regressions:
   `recall_dim_mismatch_is_loud_not_silent`,
   `recall_dim_mismatch_survives_rebuild`.
-- Matrix: 194+1 / 240+1 / 149+1 tests (default / p2p / no-default).
+- Matrix: 195+1 / 241+1 / 149+1 tests (default / p2p / no-default).
 
 ## [1.1.2] — 2026-08-14
 
