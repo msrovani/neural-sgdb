@@ -42,6 +42,16 @@ using this DB for real.
   `recall_dim_mismatch_survives_rebuild`.
 - Matrix: 195+1 / 241+1 / 149+1 tests (default / p2p / no-default).
 - Matrix: 196+1 / 242+1 / 150+1 tests (default / p2p / no-default).
+- Matrix: 197+1 / 243+1 / 151+1 tests (default / p2p / no-default).
+
+### Added
+- **Proactive BQ reclamation** (S4): `Sgdb::reclaim_bq_orphans(threshold)` +
+  `BqFlatIndex::retain`. The BQ flat is append-only — physical `delete`
+  left orphan ids in the index (harmless — recall skips them — but they
+  inflated the candidate pool). `Sgdb::delete` now recompacts on the spot
+  once orphans cross `DEFAULT_BQ_ORPHAN_THRESHOLD` (64) in `limits.rs`;
+  `threshold = 0` always recompacts. Regression:
+  `reclaim_bq_orphans_recompacts_after_delete`.
 
 ## [1.1.2] — 2026-08-14
 

@@ -44,6 +44,15 @@ pub const MAX_RAG_CONTEXT_BYTES: usize = 8192;
 /// com `offset` crescente (ordem lexicográfica determinística).
 pub const DEFAULT_SCAN_PAGE_SIZE: usize = 100;
 
+/// Limiar de órfãos do BQ para a recuperação proativa (v1.1.3 S4).
+///
+/// O flat do BQ é append-only: `delete` físico deixa o id no índice (inofensivo,
+/// o recall o pula, mas infla o pool de candidatos). Quando os órfãos passam
+/// deste número, `Sgdb::delete` reempacota o índice na hora (`reclaim_bq_orphans`).
+/// `0` = sempre reempacota (chamada manual); o default escolhe um ponto em que
+/// o custo O(N) de reempacotar compensa a poupança de candidatos.
+pub const DEFAULT_BQ_ORPHAN_THRESHOLD: usize = 64;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -59,5 +68,6 @@ mod tests {
         assert_eq!(crate::tickv::MAX_KLEN, MAX_KLEN);
         assert_eq!(crate::tickv::MAX_VLEN, MAX_VLEN);
         assert_eq!(crate::bq::MAX_EMBEDDING_DIM, MAX_EMBEDDING_DIM);
+        assert_eq!(DEFAULT_BQ_ORPHAN_THRESHOLD, 64);
     }
 }

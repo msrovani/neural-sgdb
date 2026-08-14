@@ -1293,7 +1293,22 @@ impl Sgdb {
     /// remoção completa da memória.
     pub fn delete(&mut self, key: &str) -> Result<bool, SgdbError> {
         let sk = self.resolve_known_key(key);
-        self.engine.delete(&sk)
+        let existed = self.engine.delete(&sk)?;
+        // v1.1.3 S4 — recuperação proativa: delete físico deixa o id no BQ
+        // (append-only); quando os órfãos passam do limiar, reempacota na hora.
+        if existed {
+            self.reclaim_bq_orphans(crate::limits::DEFAULT_BQ_ORPHAN_THRESHOLD);
+        }
+        Ok(existed)
+    }
+
+    /// v1.1.3 S4 — recuperação proativa do BQ (índice derivado, append-only):
+    /// remove do flat os ids sem doc vivo (`delete` físico deixa órfãos
+    /// inertes — o recall os pula, mas eles inflam o pool de candidatos).
+    /// Só age quando os órfãos ≥ `threshold` (`0` = sempre). Retorna quantos
+    /// removeu. Idempotente; `Sgdb::delete` chama com o default.
+    pub fn reclaim_bq_orphans(&mut self, threshold: usize) -> usize {
+        self.engine.reclaim_bq_orphans(threshold)
     }
 
     // ── L6 associative memory (v0.8, roadmap Phase 12) ────────────────────
@@ -2319,6 +2334,62 @@ mod tests {
         assert!(db.get(MemoryLayer::L1Working, "last_user").unwrap().is_none());
         // chave nunca existida → false
         assert!(!db.delete("md/L3/ts/nao-existe").unwrap());
+    }
+
+    #[test]
+    fn reclaim_bq_orphans_recompacts_after_delete() {
+        // v1.1.3 S4: o BQ é append-only — delete físico deixa o id no flat
+        // (inofensivo mas infla o pool de candidatos). A recuperação proativa
+        // reempacota acima do limiar; o recall continua correto após.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let emb = [1.0, -1.0, 1.0, -1.0];
+        let mut keys = Vec::new();
+        // mais que o limiar default (64) de órfãos em potencial
+        for i in 0..70 {
+            let k = format!("m{:03}", i); // largura fixa: ART rejeita prefix-keys
+            db.remember_semantic(&k, &format!("texto {}", i), &emb).unwrap();
+            keys.push(format!("md/L4/{}", k));
+        }
+        let before = db.engine.bq_len();
+        assert!(before >= 70, "BQ deveria ter os 70 docs, tem {}", before);
+
+        // deleta TODOS: cada delete remove de id_to_sk; o BQ acumula órfãos.
+        for k in &keys {
+            db.delete(k).unwrap();
+        }
+        // recuperação proativa disparou ao cruzar o limiar (64): reempacotou
+        // na hora, deixando a cauda de 6 órfãos (< limiar, sem novo disparo).
+        // churn delimitado: reempacotar a cada delete seria O(N) sempre.
+        assert_eq!(db.engine.bq_len(), 70 - crate::limits::DEFAULT_BQ_ORPHAN_THRESHOLD);
+        // chamada manual com threshold 0 zera o resto
+        assert_eq!(db.reclaim_bq_orphans(0), 6);
+        assert_eq!(db.engine.bq_len(), 0, "BQ deveria ter sido recompactado");
+        // órfãos zero → método idempotente, devolve 0
+        assert_eq!(db.reclaim_bq_orphans(0), 0);
+        // recall não vê nada (não ressuscita) e não quebra com BQ vazio
+        let hits = db.recall(&emb, 5).unwrap();
+        assert!(hits.is_empty(), "deletados ressuscitaram: {:?}", hits);
+
+        // re-add: id NOVO, índice volta a funcionar
+        db.remember_semantic("novo", "texto novo", &emb).unwrap();
+        let hits = db.recall(&emb, 5).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].key.ends_with("/novo"));
+
+        // abaixo do limiar: não reempacota (0 removidos, pool preservado)
+        let mut db2 = Sgdb::open(InMemory::new()).unwrap();
+        db2.remember_semantic("a", "x", &emb).unwrap();
+        db2.remember_semantic("b", "y", &emb).unwrap();
+        assert!(db2.delete("md/L4/a").unwrap());
+        // 1 órfão < 64 → nada a fazer (delete com limiar alto preserva)
+        assert_eq!(db2.engine.bq_len(), 2);
+        assert_eq!(db2.reclaim_bq_orphans(64), 0);
+        // chamada manual com threshold 0 reempacota mesmo com 1 órfão
+        assert_eq!(db2.reclaim_bq_orphans(0), 1);
+        assert_eq!(db2.engine.bq_len(), 1);
+        let hits = db2.recall(&emb, 5).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].key.ends_with("/b"));
     }
 
     #[cfg(feature = "file-storage")]

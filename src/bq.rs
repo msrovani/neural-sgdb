@@ -247,6 +247,28 @@ impl BqFlatIndex {
         self.words_per_vec = 0;
     }
 
+    /// Remove do índice os ids para os quais `keep(id)` é falso, reempacotando
+    /// o flat sem os blocos órfãos (v1.1.3 S4). O BQ é append-only — `delete`
+    /// físico não reclamava o espaço; ids sem doc vivo ficavam inertes
+    /// (inofensivos, mas mediam pool/candidatos). Invariante preservada:
+    /// `flat.len() == ids.len() * words_per_vec`. Retorna quantos removeu.
+    pub fn retain(&mut self, keep: impl Fn(u64) -> bool) -> usize {
+        let w = self.words_per_vec.max(1);
+        let mut new_ids: Vec<u64> = Vec::with_capacity(self.ids.len());
+        let mut new_flat: Vec<u64> = Vec::with_capacity(self.flat.len());
+        for (i, id) in self.ids.iter().enumerate() {
+            if keep(*id) {
+                new_ids.push(*id);
+                let start = i * w;
+                new_flat.extend_from_slice(&self.flat[start..start + w]);
+            }
+        }
+        let removed = self.ids.len() - new_ids.len();
+        self.ids = new_ids;
+        self.flat = new_flat;
+        removed
+    }
+
     pub fn top_k(&self, query: &[u64], k: usize) -> Vec<(u64, u32)> {
         let w = self.words_per_vec;
         if w == 0 || self.ids.is_empty() || k == 0 {

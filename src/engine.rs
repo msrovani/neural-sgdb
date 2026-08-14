@@ -700,6 +700,29 @@ impl AiosDatabaseEngine {
         self.id_to_sk.get(&id).map(|s| s.as_str())
     }
 
+    /// v1.1.3 S4 — recuperação PROATIVA do BQ: o flat é append-only, então o
+    /// `delete` físico deixa os ids no índice (inofensivos, o recall os pula
+    /// — `storage_key_of` → None — mas medem o pool de candidatos). Quando a
+    /// quantidade de órfãos passa de `threshold`, reempacota o índice
+    /// (`BqFlatIndex::retain`) e devolve quantos removeu. `threshold = 0` =
+    /// sempre reempacota. Idempotente por construção.
+    pub fn reclaim_bq_orphans(&mut self, threshold: usize) -> usize {
+        let orphans = self
+            .bq
+            .ids
+            .iter()
+            .filter(|id| self.id_to_sk.contains_key(id))
+            .count();
+        let orphans = self.bq.len().saturating_sub(orphans);
+        if orphans == 0 {
+            return 0;
+        }
+        if threshold > 0 && orphans < threshold {
+            return 0;
+        }
+        self.bq.retain(|id| self.id_to_sk.contains_key(&id))
+    }
+
     /// Storage keys cujo relógio tem `counter_of(node) == counter` — o
     /// vínculo versão CRDT ↔ docs (anti-entropy, P0-7): quando um peer pede
     /// a versão `counter` do nó `node`, estas são as memórias daquele write.
