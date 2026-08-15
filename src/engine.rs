@@ -4,6 +4,7 @@
 
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
@@ -368,6 +369,28 @@ impl AiosDatabaseEngine {
     /// Meta da memória em `sk` (None = sem doc OU registro pré-v0.6).
     pub fn meta(&mut self, sk: &str) -> Result<Option<MemoryMeta>, SgdbError> {
         Ok(self.read_meta(sk))
+    }
+
+    /// Escopo EFETIVO de uma storage key (v1.1.4 item 8): lê a meta própria;
+    /// se vazia e a key é um companion `/L2/`, resolve o scope do primário
+    /// `/L4/`/`/L5/`/`/L3/` do mesmo id (a meta do companion não carrega
+    /// scope — quem o carrega é o doc dono do conteúdo). `""` = global.
+    pub fn effective_scope(&mut self, sk: &str) -> String {
+        if let Some(m) = self.read_meta(sk) {
+            if !m.scope.is_empty() {
+                return m.scope;
+            }
+        }
+        if let Some(rest) = sk.strip_prefix("md/L2/") {
+            for prim in ["md/L4/", "md/L5/", "md/L3/"] {
+                if let Some(m) = self.read_meta(&format!("{prim}{rest}")) {
+                    if !m.scope.is_empty() {
+                        return m.scope;
+                    }
+                }
+            }
+        }
+        String::new()
     }
 
     /// Resolve um `version_id` à (storage key, meta DAQUELA VERSÃO) — DAG

@@ -17,6 +17,33 @@ Supermemory/cognee — see `docs/memory-landscape.md`).
   not a write-time mutation. This was the behavior all along; it is now
   documented so callers can rely on it (see AGENTS.md §ADD-only).
 
+### Added
+- **`Sgdb::set_scope`/`scope_of` + recall scoping** (item 7, from mem0
+  multi-tenancy): `MemoryMeta.scope: String` (MDM1 v4 — migration is
+  explicit; v1/v2/v3 records decode with `scope = ""`). The scope filter runs
+  INSIDE the candidate pool of `recall_impl`: a scoped memory never competes
+  for top-k slots of another scope, and the unscoped global recall does not
+  leak scoped memories (mem0's implicit null-scoping). New surface:
+  `recall_scoped`/`recall_scoped_historical` + `Sgdb::set_scope`/`scope_of`.
+  MCP `remember` gained `scope=`, `recall` gained `scope=`.
+- **Retrieval modes** (item 8, from cognee `search_type`): `recall` in MCP
+  now accepts `mode` = `semantic` (default, BQ+FP32), `lexical` (BM25 over
+  L2/L3 texts, no embedding required) or `hybrid` (semantic first, then
+  non-duplicated lexical). New core surface:
+  `recall_lexical_scoped(_historical)`/`recall_hybrid_scoped`; the lexical
+  and hybrid paths now honor the same scope filter as `recall` (they leaked
+  scoped memories before). Companion `/L2/` docs resolve their effective
+  scope from the primary `/L4/`/`/L5/`/`/L3/` doc (`Engine::effective_scope`).
+
+### Fixed
+- **MDM1 v4 decode**: the `last_reinforced` branch (v3) never advanced `off`
+  after reading the u64 — harmless while it was the last field, but the v4
+  `scope` field read from the wrong offset. Same discipline as the
+  `metaflag=0` bug: every flag branch must advance `off` (regression:
+  `meta_roundtrip` with non-empty scope).
+- **no_std gate**: `profile` used `std::cmp::Ordering` (pre-existing, item 5)
+  — now `core::cmp::Ordering`.
+
 ## [Unreleased] — v1.1.3 (WIP)
 
 Co-author ergonomics (S1–S5): the things that would annoy me as an agent

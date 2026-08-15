@@ -4,6 +4,7 @@
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
+use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use crate::bq::{quantize_f32, BqFlatIndex};
@@ -208,7 +209,7 @@ impl Sgdb {
             }
         }
         // importância desc (tie-break: chave, determinístico)
-        facts.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+        facts.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(core::cmp::Ordering::Equal)
             .then_with(|| a.0.cmp(&b.0)));
         facts.truncate(limit);
         Ok(facts)
@@ -381,7 +382,7 @@ impl Sgdb {
     /// Feedback de uso (cognee `improve`): re-pondera a memória pelo resultado
     /// real — `positive` sobe importância E confiança; `negative` desce ambas.
     /// `amount` (default 0.1) é a intensidade, aplicada com o mesmo contrato
-    /// de clamp [0,1] + rejeição de não-finita. Não ticka o relógio (metadado
+    /// de clamp `[0,1]` + rejeição de não-finita. Não ticka o relógio (metadado
     /// cognitivo local). É o "a memória melhora com uso, não só cresce".
     pub fn feedback(&mut self, key: &str, positive: bool, amount: f32) -> Result<(), SgdbError> {
         if !amount.is_finite() {
@@ -919,7 +920,7 @@ impl Sgdb {
                     // compete por vagas do top-k do scope corrente). None =
                     // GLOBAL (filtro implícito mem0: busca sem scope não
                     // vaza de scopes escopados).
-                    let doc_scope = doc.meta.as_ref().map(|m| m.scope.as_str()).unwrap_or("");
+                    let doc_scope = self.engine.effective_scope(&sk);
                     match scope {
                         Some(s) if doc_scope != s => continue,
                         None if !doc_scope.is_empty() => continue,
@@ -1088,7 +1089,7 @@ impl Sgdb {
     /// memórias ATIVAS (paridade com `recall`); `recall_lexical_historical`
     /// inclui as inativas com `provenance.state` exposto.
     pub fn recall_lexical(&mut self, query_text: &str, k: usize) -> Result<Vec<Hit>, SgdbError> {
-        self.recall_lexical_impl(query_text, k, true)
+        self.recall_lexical_impl(query_text, k, true, None)
     }
 
     /// Recall lexical incluindo memórias inativas (histórico explícito).
@@ -1097,7 +1098,29 @@ impl Sgdb {
         query_text: &str,
         k: usize,
     ) -> Result<Vec<Hit>, SgdbError> {
-        self.recall_lexical_impl(query_text, k, false)
+        self.recall_lexical_impl(query_text, k, false, None)
+    }
+
+    /// Recall lexical **escopado** (v1.1.4 item 8): mesmo path de
+    /// `recall_lexical`, com o filtro de `scope` dentro do pool de candidatos
+    /// (paridade com `recall_scoped`).
+    pub fn recall_lexical_scoped(
+        &mut self,
+        query_text: &str,
+        k: usize,
+        scope: &str,
+    ) -> Result<Vec<Hit>, SgdbError> {
+        self.recall_lexical_impl(query_text, k, true, Some(scope))
+    }
+
+    /// Recall lexical escopado com histórico explícito.
+    pub fn recall_lexical_scoped_historical(
+        &mut self,
+        query_text: &str,
+        k: usize,
+        scope: &str,
+    ) -> Result<Vec<Hit>, SgdbError> {
+        self.recall_lexical_impl(query_text, k, false, Some(scope))
     }
 
     fn recall_lexical_impl(
@@ -1105,6 +1128,7 @@ impl Sgdb {
         query_text: &str,
         k: usize,
         active_only: bool,
+        scope: Option<&str>,
     ) -> Result<Vec<Hit>, SgdbError> {
         let scored = self.engine.lexical.search(query_text, k.max(1));
         let max = scored.first().map(|(_, s)| *s).unwrap_or(0.0).max(1e-6);
@@ -1114,6 +1138,16 @@ impl Sgdb {
                 let state = self.engine.get_state(&sk);
                 if active_only && state != MemoryState::Active {
                     continue;
+                }
+                // v1.1.4 item 8 — paridade de scope com `recall_impl`: busca
+                // lexical global não vaza de scopes escopados. O doc pode
+                // ser um companion `/L2/` (sem scope na meta própria) — o
+                // scope efetivo vem do primário `/L4/`/`/L5/`/`/L3/`.
+                let doc_scope = self.engine.effective_scope(&sk);
+                match scope {
+                    Some(s) if doc_scope != s => continue,
+                    None if !doc_scope.is_empty() => continue,
+                    _ => {}
                 }
                 let provenance = doc.meta.as_ref().map(|m| HitProvenance {
                     memory_id: m.memory_id.clone(),
@@ -1145,10 +1179,39 @@ impl Sgdb {
         query_text: &str,
         k: usize,
     ) -> Result<Vec<Hit>, SgdbError> {
-        let mut out = self.recall(query_emb, k)?;
+        self.recall_hybrid_impl(query_emb, query_text, k, None)
+    }
+
+    /// Recall híbrido **escopado** (v1.1.4 item 8): semântico + lexical, ambos
+    /// restritos ao `scope` (paridade com `recall_scoped`).
+    pub fn recall_hybrid_scoped(
+        &mut self,
+        query_emb: &[f32],
+        query_text: &str,
+        k: usize,
+        scope: &str,
+    ) -> Result<Vec<Hit>, SgdbError> {
+        self.recall_hybrid_impl(query_emb, query_text, k, Some(scope))
+    }
+
+    fn recall_hybrid_impl(
+        &mut self,
+        query_emb: &[f32],
+        query_text: &str,
+        k: usize,
+        scope: Option<&str>,
+    ) -> Result<Vec<Hit>, SgdbError> {
+        let mut out = match scope {
+            Some(s) => self.recall_scoped(query_emb, k, s)?,
+            None => self.recall(query_emb, k)?,
+        };
         let mut seen: alloc::collections::BTreeSet<String> =
             out.iter().map(|h| h.key.clone()).collect();
-        for h in self.recall_lexical(query_text, k.max(1).saturating_mul(4))? {
+        let lex = match scope {
+            Some(s) => self.recall_lexical_scoped(query_text, k.max(1).saturating_mul(4), s)?,
+            None => self.recall_lexical(query_text, k.max(1).saturating_mul(4))?,
+        };
+        for h in lex {
             if seen.insert(h.key.clone()) {
                 out.push(h);
             }
@@ -1963,6 +2026,47 @@ mod tests {
         // scope_of / meta expõem o campo
         assert_eq!(db.scope_of("kA").unwrap(), "user/ana");
         assert_eq!(db.scope_of("kG").unwrap(), "", "sem marcação = global");
+    }
+
+    #[test]
+    fn retrieval_modes_respect_scope_and_dispatch() {
+        // v1.1.4 item 8 (cognee search_type): lexical e híbrido são expostos
+        // como modos no MCP e honram o mesmo filtro de scope do recall — a
+        // busca global não vaza de scopes em NENHUM path, e o modo escopado
+        // isola o tenant.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let emb = |seed: u64| -> Vec<f32> {
+            let mut s = seed.wrapping_mul(1103515245).wrapping_add(12345);
+            let mut v = Vec::with_capacity(16);
+            for _ in 0..16 {
+                s = s.wrapping_mul(1103515245).wrapping_add(12345);
+                v.push(((s >> 32) as i32 % 200) as f32 / 100.0 - 1.0);
+            }
+            v
+        };
+        db.remember_semantic("kA", "ana prefere cafe", &emb(1)).unwrap();
+        db.remember_semantic("kB", "bruno prefere cha", &emb(2)).unwrap();
+        db.remember_semantic("kG", "fato global: cafe eh bebida", &emb(3)).unwrap();
+        db.set_scope("kA", "user/ana").unwrap();
+        db.set_scope("kB", "user/bruno").unwrap();
+        // lexical global não vaza de scopes
+        let lg = db.recall_lexical("cafe", 10).unwrap();
+        assert!(lg.iter().all(|h| !h.key.contains("/kA") && !h.key.contains("/kB")),
+            "lexical global vazou de scopes: {:?}", lg);
+        assert!(lg.iter().any(|h| h.key.contains("/kG")), "lexical global deveria achar o fato global");
+        // lexical escopado isola o tenant
+        let la = db.recall_lexical_scoped("cafe", 10, "user/ana").unwrap();
+        assert_eq!(la.len(), 1, "só ana tem 'cafe' marcada: {:?}", la);
+        assert!(la[0].key.contains("/kA"));
+        // híbrido global também não vaza
+        let hg = db.recall_hybrid(&emb(1), "cafe", 10).unwrap();
+        assert!(hg.iter().all(|h| !h.key.contains("/kB")), "híbrido global vazou de scopes: {:?}", hg);
+        // híbrido escopado isola
+        let ha = db.recall_hybrid_scoped(&emb(1), "cafe", 10, "user/ana").unwrap();
+        assert!(ha.iter().all(|h| h.key.contains("/kA")), "híbrido escopado vazou: {:?}", ha);
+        // histórico escopado inclui inativas do tenant (não outras)
+        let hist = db.recall_lexical_scoped_historical("cha", 10, "user/bruno").unwrap();
+        assert!(hist.iter().all(|h| h.key.contains("/kB")), "histórico escopado vazou: {:?}", hist);
     }
 
     #[test]

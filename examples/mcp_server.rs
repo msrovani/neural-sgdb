@@ -207,10 +207,11 @@ fn main() {
                        "required":["user","response"]},
                      "annotations":{"idempotentHint":true}},
                     {"name":"recall",
-                     "description":"Busca semantica sobre memorias armazenadas. Retorna as top-k mais similares. Opcional: forneca `embedding` (consistente com o usado no remember) para busca com modelo real. `scope` (opcional) limita a um user/agent/projeto (vazio = busca em TODOS os scopes globais; escopada nao vaza de outros scopes).",
+                     "description":"Busca memorias armazenadas. `mode` seleciona o caminho de retrieval (cognee search_type): 'semantic' (BQ+FP32, precisa de embedding), 'lexical' (BM25 sobre textos L2/L3, nao precisa de embedding) ou 'hybrid' (semantico primeiro, depois lexicais nao-duplicados). Opcional: forneca `embedding` (consistente com o usado no remember) para busca com modelo real. `scope` (opcional) limita a um user/agent/projeto (vazio = busca em TODOS os scopes globais; escopada nao vaza de outros scopes).",
                      "inputSchema":{"type":"object",
                        "properties":{
                          "query":{"type":"string","description":"Texto de busca"},
+                         "mode":{"type":"string","enum":["semantic","lexical","hybrid"],"default":"semantic","description":"Caminho de retrieval (semantic default)"},
                          "embedding":{"type":"array","items":{"type":"number"},"description":"Embedding fornecido pelo agente (opcional)"},
                          "k":{"type":"integer","minimum":1,"maximum":20,"default":5},
                          "scope":{"type":"string","description":"Escopo de isolamento (ex: 'user/ana'). Omitir = global (só memórias sem scope)."},
@@ -447,12 +448,20 @@ fn main() {
                             send(&error_response(&id, -32602, "parametro 'query' obrigatorio"));
                             continue;
                         }
-                        let emb = match embed_for(embedder.as_ref(), query, args) {
-                            Ok(e) => e,
-                            Err(e) => {
-                                send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                    "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}}));
-                                continue;
+                        // v1.1.4 item 8 — modo de retrieval (cognee search_type):
+                        // semantic (default, precisa embedding), lexical (BM25,
+                        // sem embedding), hybrid (semântico + lexical).
+                        let mode = args["mode"].as_str().unwrap_or("semantic");
+                        let emb = if mode == "lexical" {
+                            Vec::new()
+                        } else {
+                            match embed_for(embedder.as_ref(), query, args) {
+                                Ok(e) => e,
+                                Err(e) => {
+                                    send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                        "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}}));
+                                    continue;
+                                }
                             }
                         };
                         // v1.1.3 S5 — paginação LAZY: computa só o que a página
@@ -473,10 +482,17 @@ fn main() {
                         // v1.1.4 item 7 — scope opcional: filtro DENTRO do
                         // pipeline (candidatos de outro scope não competem).
                         let scope = args["scope"].as_str().unwrap_or("");
-                        let all = if scope.is_empty() {
-                            db.recall(&emb, need).unwrap_or_default()
-                        } else {
-                            db.recall_scoped(&emb, need, scope).unwrap_or_default()
+                        let all = match (mode, scope.is_empty()) {
+                            ("lexical", true) => db.recall_lexical(query, need).unwrap_or_default(),
+                            ("lexical", false) => {
+                                db.recall_lexical_scoped(query, need, scope).unwrap_or_default()
+                            }
+                            ("hybrid", true) => db.recall_hybrid(&emb, query, need).unwrap_or_default(),
+                            ("hybrid", false) => {
+                                db.recall_hybrid_scoped(&emb, query, need, scope).unwrap_or_default()
+                            }
+                            (_, true) => db.recall(&emb, need).unwrap_or_default(),
+                            _ => db.recall_scoped(&emb, need, scope).unwrap_or_default(),
                         };
                         let (page, next) = paginate(&all, args["cursor"].as_str(), size);
                         let text = if page.is_empty() {

@@ -207,6 +207,18 @@ fn main() {
     rep.check("recall acha alpha", !is_err && txt.contains("hot test alpha"), txt.clone());
     rep.phase("recall", &t);
 
+    // ---------- fase 4d: modos de retrieval (v1.1.4 item 8, cognee) ----------
+    // lexical (BM25, sem embedding) e hybrid (semântico + lexical) são
+    // selecionáveis por `mode` no mesmo tool `recall`.
+    let t = Instant::now();
+    let (txt, is_err) = srv.tool("recall", json!({"query": "telepatia converge", "k": 3, "mode": "lexical"}));
+    rep.check("recall mode=lexical acha beta sem embedding",
+        !is_err && txt.contains("hot test beta"), txt.clone());
+    let (txt, is_err) = srv.tool("recall", json!({"query": "telepatia converge", "k": 3, "mode": "hybrid"}));
+    rep.check("recall mode=hybrid acha beta (semântico + lexical)",
+        !is_err && txt.contains("hot test beta"), txt.clone());
+    rep.phase("recall modes", &t);
+
     // ---------- fase 4b: embedding FORNECIDO pelo agente (v1.1 P4) ----------
     // O server aceita `embedding` no payload — a camada superior pluga um
     // modelo real; o demo é só o fallback. Um vetor explícito de 4 dims deve
