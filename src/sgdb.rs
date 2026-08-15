@@ -3259,6 +3259,39 @@ mod tests {
 
     #[cfg(feature = "file-storage")]
     #[test]
+    fn scope_persists_across_reopen_and_rebuild() {
+        // v1.1.4 item 7: scope vive em sys/meta/ (MDM1 v4) — precisa
+        // sobreviver a reopen (disk) e a rebuild de índices (reindexa de
+        // sys/meta/, não do NMD1). Sem isso, o filtro de scope do recall
+        // "esqueceria" tenants a cada restart.
+        let dir = std::env::temp_dir().join("neural_sgdb_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("sgdb_scope.db");
+        let _ = std::fs::remove_file(&path);
+        {
+            let mut db = Sgdb::open(crate::storage::FileStorage::open(&path).unwrap()).unwrap();
+            db.remember_semantic("kA", "segredo da ana", &[1.0, -1.0, 1.0, -1.0])
+                .unwrap();
+            db.set_scope("kA", "user/ana").unwrap();
+            db.checkpoint().unwrap();
+        }
+        {
+            let mut db = Sgdb::open(crate::storage::FileStorage::open(&path).unwrap()).unwrap();
+            assert_eq!(db.scope_of("kA").unwrap(), "user/ana", "scope sobrevive a reopen");
+            // rebuild de índices não pode perder o scope (side-table relida)
+            db.rebuild_indices().unwrap();
+            assert_eq!(db.scope_of("kA").unwrap(), "user/ana", "scope sobrevive a rebuild");
+            // filtro continua isolando depois de tudo
+            let g = db.recall(&[1.0, -1.0, 1.0, -1.0], 10).unwrap();
+            assert!(g.is_empty(), "após rebuild, recall global não vaza do scope");
+            let a = db.recall_scoped(&[1.0, -1.0, 1.0, -1.0], 10, "user/ana").unwrap();
+            assert_eq!(a.len(), 1);
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
     fn dynamic_clock_overflow_persists_across_reopen() {
         let dir = std::env::temp_dir().join("neural_sgdb_test");
         let _ = std::fs::create_dir_all(&dir);

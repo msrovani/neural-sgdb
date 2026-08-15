@@ -74,15 +74,19 @@ exigiria atribuição). Fonte do roadmap v0.2 de melhorias.
 
 ## Roadmap por complexidade (aprovado 2026-08)
 
-| # | Item (origem) | Custo | Retorno |
-|---|---|---|---|
-| 1 | Documentar ADD-only como recurso (mem0) | ~0 | clareza de contrato |
-| 2 | Camada episódica explícita (mempalace) | 0.5 dia | antídoto à perda de contexto |
-| 3 | Feedback/`improve` (cognee) | 0.5–1 dia | memória melhora com uso |
-| 4 | Diário por agente (mempalace) | 1 dia | legibilidade multi-agente |
-| 5 | Perfil agregado por scope (supermemory) | 1 dia | 1 chamada = contexto pronto |
-| 6 | Esquecimento temporal automático (supermemory) | 1–2 dias | memória envelhece sem crescer sem limite |
-| 7 | **Scoping multi-agente/projeto** (mem0) | 2–3 dias | **feature #1** (responde o modelo 1-pasta-por-projeto/agente) |
-| 8 | Expor modos de retrieval existentes (cognee) | 2–3 dias | superfície rica sem tocar core |
-| 9 | Retrieval temporal com intenção (mem0/Graphiti) | 3–5 dias | "quando mudou X?" passa a funcionar |
-| 10 | Entidades + grafo semântico (Graphiti/cognee) | 1–2 semanas | multi-hop reasoning (maior risco) |
+Status: itens **1–9 entregues em v1.1.4** (2026-08-14, commits por item com
+regressão; matriz 206+1 / 252+1 / 159+1; hot test MCP 21 tools, exit 0).
+Item 10 (entidades + grafo) fica de fora do escopo — maior risco.
+
+| # | Item (origem) | Custo | Retorno | Status |
+|---|---|---|---|---|
+| 1 | Documentar ADD-only como recurso (mem0) | ~0 | clareza de contrato | ✅ v1.1.4 |
+| 2 | Camada episódica explícita (mempalace) | 0.5 dia | antídoto à perda de contexto | ✅ `remember_episodic` |
+| 3 | Feedback/`improve` (cognee) | 0.5–1 dia | memória melhora com uso | ✅ `feedback` |
+| 4 | Diário por agente (mempalace) | 1 dia | legibilidade multi-agente | ✅ `diary` |
+| 5 | Perfil agregado por scope (supermemory) | 1 dia | 1 chamada = contexto pronto | ✅ `profile` |
+| 6 | Esquecimento temporal automático (supermemory) | 1–2 dias | memória envelhece sem crescer sem limite | ✅ `expire_old` |
+| 7 | **Scoping multi-agente/projeto** (mem0) | 2–3 dias | **feature #1** (responde o modelo 1-pasta-por-projeto/agente) | ✅ `set_scope`/`recall_scoped` |
+| 8 | Expor modos de retrieval existentes (cognee) | 2–3 dias | superfície rica sem tocar core | ✅ `mode` semantic/lexical/hybrid |
+| 9 | Retrieval temporal com intenção (mem0/Graphiti) | 3–5 dias | "quando mudou X?" passa a funcionar | ✅ `recall_temporal` |
+| 10 | Entidades + grafo semântico (Graphiti/cognee) | 1–2 semanas | multi-hop reasoning (maior risco) | ⏳ fora de escopo |

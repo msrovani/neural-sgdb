@@ -54,7 +54,7 @@ with a regression test, hot test 49/49 exit 0):
 ## Post-audit v1.1.3 (co-author ergonomics, 2026-08-14)
 
 The things that would annoy the agent USING the DB (each committed with a
-regression test; hot test 60/60 exit 0; matrix 197+1 / 243+1 / 151+1):
+regression test; hot test 60/60 exit 0; matrix 206+1 / 252+1 / 159+1):
 
 - **`recall` is loud on dimension mismatch (S1)**: query dims matching NONE
   of the indexed embeddings → `SgdbError::Invalid` (message references
@@ -84,6 +84,62 @@ regression test; hot test 60/60 exit 0; matrix 197+1 / 243+1 / 151+1):
   Deterministic top-k ⇒ each lazy page slices the same ranking. Hot test
   phase 4c exercises the real handler (raw `rpc` — `tool()` only returns
   `content[0].text`, not the top-level `nextCursor`).
+
+## Post-audit v1.1.4 (memory landscape, items 1–9)
+
+Ported from the memory-landscape benchmark (mem0/mempalace/Zep/Letta/
+Supermemory/cognee — see `docs/memory-landscape.md`). Matrix: **206+1 /
+252+1 / 159+1**, clippy/no_std/doc gates green, hot test exit 0 (21 MCP
+tools).
+
+- **ADD-only é contrato oficial** (item 1): o BQ é append-only — novos fatos
+  acumulam e confrontam o pool via ranking determinístico, nunca overwrite
+  silencioso. Resolução de conflito é questão de retrieval-time
+  (`recall_weighted`/`supersede`/`resolve_conflict`), não mutação de write.
+- **`remember_episodic` (item 2, mempalace)**: guarda o par user/response
+  CRU em L2 timestamped (`md/L2/<ts>/u` e `/a`), sem extração/resumo — o
+  antídoto à perda de contexto da extração. Devolve as keys. MCP:
+  `remember_episodic`.
+- **`feedback(key, positive, amount)` (item 3, cognee improve)**: re-pondera
+  importance E confidence pelo resultado real (sobe/desce ambas, clamp
+  [0,1], non-finite rejeitado, não ticka relógio). MCP: `feedback`.
+- **`diary(node_id, limit)` (item 4, mempalace)**: episódicos L2 do agente,
+  recentes primeiro (keys `ts/{:016x}` sortable — reverter). MCP: `diary`.
+- **`profile(node_id, limit)` (item 5, supermemory)**: fatos L3/L4/L5 do
+  agente por importância desc; texto via companion L2 quando o payload é
+  embedding. MCP: `profile`.
+- **`expire_old(now)` (item 6, supermemory)**: varre `sys/validity/` e marca
+  `Invalidated` as janelas fechadas em `now`; idempotente; recall default
+  (active-only) ignora; história via recall_historical. MCP: `expire_old`.
+- **Scoping multi-agente (item 7, mem0 multi-tenancy)**: `MemoryMeta.scope:
+  String` = **MDM1 v4** (migração explícita — v1/v2/v3 decodificam com
+  `scope=""`; NMD1/TKLV intocados). O filtro de scope roda DENTRO do pool de
+  candidatos do `recall_impl`: memória escopada nunca compete por vagas de
+  outro scope; o recall global (sem scope) NÃO vaza de scopes (null-scoping
+  implícito mem0). APIs: `set_scope`/`scope_of`/`recall_scoped(_historical)`.
+  MCP `remember(scope=)`/`recall(scope=)`. **BUG FIX**: decode MDM1 não
+  avançava `off` após `last_reinforced` (v3 era último campo; o v4 `scope`
+  lia do offset errado) — disciplina "todo flag avança off".
+- **Modos de retrieval (item 8, cognee `search_type`)**: MCP `recall` ganha
+  `mode` = `semantic` (default, BQ+FP32) | `lexical` (BM25 sobre textos
+  L2/L3, SEM embedding) | `hybrid` (semântico + lexical não-duplicados).
+  Core: `recall_lexical_scoped(_historical)`/`recall_hybrid_scoped`. O path
+  lexical/hybrid agora honra o mesmo filtro de scope do recall (vazava
+  antes). **`Engine::effective_scope(sk)`**: o scope do companion `/L2/`
+  vem do primário `/L4/`/`/L5/`/`/L3/` do mesmo id (a meta do companion não
+  carrega scope). Usar `effective_scope`, NÃO `doc.meta.scope`, em filtros
+  de recall.
+- **Retrieval temporal com intenção (item 9, mem0/Graphiti bi-temporal)**:
+  `recall_temporal(query, k, at, w_sem, w_time)` re-ranqueia o pool
+  semântico pela proximidade ao instante `at` — memórias VÁLIDAS em `at`
+  (janela `from ≤ at < until`) sobem, as que não vigoravam descem, sem
+  janela usa recência relativa a `at`. Responde "quando mudou X?" /
+  "qual era o estado em T?". Escopado: `recall_temporal_scoped`. MCP:
+  `recall_temporal` (`at` obrigatório).
+- **Testes/duração**: regressões por item (6 novos + scoped + temporal +
+  modes + `scope_persists_across_reopen_and_rebuild`). Hot test MCP cobre
+  `recall_temporal` e os modos; tools = 21 (itens 2–6 adicionaram
+  remember_episodic/feedback/diary/profile/expire_old).
 
 ## Repository Map
 
@@ -164,8 +220,9 @@ cargo run --release --example signed_peer --features p2p      # signed-transport
 
 The project agent is a test subject: `.opencode/opencode.json` registers the
 MCP server as a local server (`NEURAL_SGDB_DB=.nsgdb/memory.db`, gitignored),
-giving the agent `mcp__neural-sgdb__*` tools (15: remember/recall/rag_context/
-explain/reinforce/forget/associate/related_to/contradicts/supersede/conflicts/
+giving the agent `mcp__neural-sgdb__*` tools (21: remember/remember_episodic/
+recall/rag_context/recall_temporal/feedback/diary/profile/expire_old/explain/
+reinforce/forget/associate/related_to/contradicts/supersede/conflicts/
 resolve_conflict/merge_memories/health/validate). Audit log in
 `docs/hot_test.md`. Lessons learned (2026-08-13): `remember` returns the FULL
 storage key (`md/L4/...`), always use it for follow-up (`explain`/`reinforce`
@@ -176,9 +233,9 @@ hash, not a semantic model). Restart opencode after changing the config.
 ## Running tests
 
 ```bash
-cargo test                                 # 197+1 tests (InMemory/FileStorage/TickvFile)
-cargo test --features p2p                  # 243+1 (includes CRDT sync + mesh harness)
-cargo test --no-default-features           # 151+1 (no_std core, host test harness)
+cargo test                                 # 206+1 tests (InMemory/FileStorage/TickvFile)
+cargo test --features p2p                  # 252+1 (includes CRDT sync + mesh harness)
+cargo test --no-default-features           # 159+1 (no_std core, host test harness)
 cargo check --no-default-features --target x86_64-unknown-none   # no_std gate
 cargo clippy --all-targets --all-features -- -D warnings          # lint gate (P0-5)
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-6/P0-10)
@@ -204,7 +261,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-
 - **Wire-codec fuzz harness** (`src/wire_fuzz.rs`, P2-4): the single LCG
   never-panic/roundtrip/truncation gate over ALL 8 wire types — add a new
   wire type there (plus its per-module `prop_tests`), and keep the matrix
-  (197+1 / 243+1 / 151+1) green. `SignedEnvelope::decode` returns
+  (206+1 / 252+1 / 159+1) green. `SignedEnvelope::decode` returns
   `Option<(Self, usize)>` (no magic byte — corrupt via field lengths, not
   byte 0).
 - **TickvFile** (`src/tickv.rs`): 512-aligned records, tombstone `vlen=0` or

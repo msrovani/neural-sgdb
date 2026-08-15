@@ -50,6 +50,10 @@ Supermemory/cognee — see `docs/memory-landscape.md`).
   `meta_roundtrip` with non-empty scope).
 - **no_std gate**: `profile` used `std::cmp::Ordering` (pre-existing, item 5)
   — now `core::cmp::Ordering`.
+- **Scope durability** (item 7 hardening): regression
+  `scope_persists_across_reopen_and_rebuild` proves `MemoryMeta.scope` (MDM1
+  v4, `sys/meta/`) survives disk reopen AND index rebuild — the filter never
+  "forgets" tenants after a restart.
 
 ## [Unreleased] — v1.1.3 (WIP)
 
