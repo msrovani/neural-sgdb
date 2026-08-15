@@ -34,6 +34,13 @@ Supermemory/cognee — see `docs/memory-landscape.md`).
   and hybrid paths now honor the same scope filter as `recall` (they leaked
   scoped memories before). Companion `/L2/` docs resolve their effective
   scope from the primary `/L4/`/`/L5/`/`/L3/` doc (`Engine::effective_scope`).
+- **Temporal-intent retrieval** (item 9, from mem0/Graphiti bi-temporal):
+  `Sgdb::recall_temporal(query, k, at, w_sem, w_time)` re-ranks the
+  semantic pool by proximity to the intent instant `at` — memories VALID at
+  `at` (validity window covers it) rank first, memories that did not apply
+  drop out, windowless memories fall back to recency relative to `at`.
+  Answers "quando mudou X?" / "qual era o estado em T?". Scoped variant:
+  `recall_temporal_scoped`. MCP tool `recall_temporal` (with `at`).
 
 ### Fixed
 - **MDM1 v4 decode**: the `last_reinforced` branch (v3) never advanced `off`

@@ -228,6 +228,19 @@ fn main() {
                          "k":{"type":"integer","minimum":1,"maximum":10,"default":3}},
                        "required":["query"]},
                      "annotations":{"readOnlyHint":true}},
+                    {"name":"recall_temporal",
+                     "description":"Retrieval temporal com intencao (mem0/Graphiti bi-temporal): responde 'quando mudou X?' / 'qual era o estado em T?'. `at` = instante (ms) da pergunta; sobem as memorias VALIDAS naquele momento (janela cobre `at`), descem as que nao vigoravam, sem janela usa recorrencia relativa a `at`. `w_time` pondera o fator temporal (default 10), `w_sem` o semantico (default 1.0).",
+                     "inputSchema":{"type":"object",
+                       "properties":{
+                         "query":{"type":"string","description":"Texto de busca"},
+                         "at":{"type":"integer","description":"Instante (ms unix) da intencao temporal"},
+                         "embedding":{"type":"array","items":{"type":"number"},"description":"Embedding fornecido pelo agente (opcional)"},
+                         "k":{"type":"integer","minimum":1,"maximum":20,"default":5},
+                         "scope":{"type":"string","description":"Escopo de isolamento (opcional)"},
+                         "w_sem":{"type":"number","default":1.0,"description":"Peso do fator semantico"},
+                         "w_time":{"type":"number","default":10.0,"description":"Peso do fator temporal"}},
+                       "required":["query","at"]},
+                     "annotations":{"readOnlyHint":true}},
                     {"name":"explain",
                      "description":"Explica ESTRUTURADAMENTE por que uma memoria esta no estado atual (proveniencia, importância, linhagem, validade).",
                      "inputSchema":{"type":"object",
@@ -535,6 +548,44 @@ fn main() {
                                 "content":[{"type":"text","text":if ctx.is_empty() {
                                     "nenhum contexto recuperado".into()} else {ctx}}],
                                 "isError":false}})),
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
+                        }
+                    }
+                    "recall_temporal" => {
+                        let query = args["query"].as_str().unwrap_or("");
+                        let at = args["at"].as_u64().unwrap_or(0);
+                        let k = args["k"].as_u64().unwrap_or(5) as usize;
+                        if query.is_empty() || at == 0 {
+                            send(&error_response(&id, -32602, "parametros 'query' e 'at' obrigatorios"));
+                            continue;
+                        }
+                        let emb = match embed_for(embedder.as_ref(), query, args) {
+                            Ok(e) => e,
+                            Err(e) => {
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                    "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}}));
+                                continue;
+                            }
+                        };
+                        let w_sem = args["w_sem"].as_f64().unwrap_or(1.0) as f32;
+                        let w_time = args["w_time"].as_f64().unwrap_or(10.0) as f32;
+                        let scope = args["scope"].as_str().unwrap_or("");
+                        let hits = if scope.is_empty() {
+                            db.recall_temporal(&emb, k, at, w_sem, w_time)
+                        } else {
+                            db.recall_temporal_scoped(&emb, k, at, w_sem, w_time, scope)
+                        };
+                        match hits {
+                            Ok(hs) if hs.is_empty() => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":"nenhuma memoria valida em at"}],"isError":false}})),
+                            Ok(hs) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":hs.iter().map(|h| {
+                                    let p = h.provenance.as_ref().map(|p| format!(
+                                        " [state={:?} imp={:.2} conf={:.2}]",
+                                        p.state, p.importance, p.confidence)).unwrap_or_default();
+                                    format!("- {} | {} (d={:.3}){}", h.key, h.text, h.dist, p)
+                                }).collect::<Vec<_>>().join("\n")}],"isError":false}})),
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
                         }

@@ -169,14 +169,16 @@ fn main() {
         r["result"]["serverInfo"]["version"] == "1.1.0", r.to_string());
     rep.phase("handshake", &t);
 
-    // ---------- fase 2: tools/list (15 tools) ----------
+    // ---------- fase 2: tools/list (21 tools) ----------
     let t = Instant::now();
     let r = srv.rpc("tools/list", json!({}));
     let tools = r["result"]["tools"].as_array().cloned().unwrap_or_default();
     let names: Vec<&str> = tools.iter().filter_map(|x| x["name"].as_str()).collect();
-    rep.check("tools/list retorna 15 tools", names.len() == 15,
+    rep.check("tools/list retorna 21 tools", names.len() == 21,
         format!("{} tools: {names:?}", names.len()));
-    for want in ["remember", "recall", "rag_context", "explain", "reinforce", "forget",
+    for want in ["remember", "remember_episodic", "recall", "rag_context", "recall_temporal",
+                 "feedback", "diary", "profile", "expire_old",
+                 "explain", "reinforce", "forget",
                  "associate", "related_to", "contradicts", "supersede", "conflicts",
                  "resolve_conflict", "merge_memories", "health", "validate"] {
         rep.check(&format!("tool '{want}' presente"), names.contains(&want), "".into());
@@ -218,6 +220,22 @@ fn main() {
     rep.check("recall mode=hybrid acha beta (semântico + lexical)",
         !is_err && txt.contains("hot test beta"), txt.clone());
     rep.phase("recall modes", &t);
+
+    // ---------- fase 4e: retrieval temporal com intenção (v1.1.4 item 9) ----
+    // recall_temporal(query, at): responde "qual era o estado em T?" — as
+    // memórias VÁLIDAS em `at` sobem. O server indexa a memória de validade
+    // que testamos via remember + set_validity no hot test? Não — aqui só
+    // validamos que o tool existe e responde para um at no passado sem crash.
+    let t = Instant::now();
+    let (txt, is_err) = srv.tool("recall_temporal", json!({
+        "query": "telepatia converge", "at": 1760400000000i64, "k": 3
+    }));
+    rep.check("recall_temporal existe e responde",
+        !is_err && !txt.contains("obrigatorio"), txt.clone());
+    let (txt2, is_err2) = srv.tool("recall_temporal", json!({"query": "telepatia converge"}));
+    rep.check("recall_temporal sem at → -32602 parâmetro obrigatório",
+        is_err2 && txt2.contains("obrigatorio"), txt2.clone());
+    rep.phase("recall temporal", &t);
 
     // ---------- fase 4b: embedding FORNECIDO pelo agente (v1.1 P4) ----------
     // O server aceita `embedding` no payload — a camada superior pluga um

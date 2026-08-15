@@ -1230,6 +1230,87 @@ impl Sgdb {
             .collect())
     }
 
+    /// Recall temporal com intenção (mem0/Graphiti, v1.1.4 item 9): re-ranqueia
+    /// o pool semântico pela proximidade temporal ao instante `at` — a
+    /// pergunta "quando mudou X?" / "qual era o estado em T?" vira busca:
+    /// passando `at` = o momento do evento, sobem as memórias VÁLIDAS naquele
+    /// instante (janela `from ≤ at < until` = penalty 0) e descem as que
+    /// não vigoravam (janela que não cobre `at`). Memória sem janela usa a
+    /// recência relativa a `at` (distância de `ts/`/created, normalizada).
+    /// Mesmo pipeline de `recall_weighted`: pool oversampled → re-rank →
+    /// top-k; `w_sem` pondera o dist semântico (0..1), `w_time` o penalty
+    /// temporal (0 = perfeito em `at`).
+    pub fn recall_temporal(
+        &mut self,
+        query: &[f32],
+        k: usize,
+        at: u64,
+        w_sem: f32,
+        w_time: f32,
+    ) -> Result<Vec<Hit>, SgdbError> {
+        self.recall_temporal_impl(query, k, at, w_sem, w_time, None)
+    }
+
+    /// `recall_temporal` restrito a um `scope` (mesmo contrato de
+    /// `recall_scoped` — o filtro roda dentro do pool de candidatos).
+    pub fn recall_temporal_scoped(
+        &mut self,
+        query: &[f32],
+        k: usize,
+        at: u64,
+        w_sem: f32,
+        w_time: f32,
+        scope: &str,
+    ) -> Result<Vec<Hit>, SgdbError> {
+        self.recall_temporal_impl(query, k, at, w_sem, w_time, Some(scope))
+    }
+
+    fn recall_temporal_impl(
+        &mut self,
+        query: &[f32],
+        k: usize,
+        at: u64,
+        w_sem: f32,
+        w_time: f32,
+        scope: Option<&str>,
+    ) -> Result<Vec<Hit>, SgdbError> {
+        let pool = match scope {
+            Some(s) => self.recall_scoped(query, k.max(1).saturating_mul(16), s)?,
+            None => self.recall_oversampled(query, k.max(1).saturating_mul(16), 1)?,
+        };
+        let mut scored: Vec<(f64, Hit)> = Vec::with_capacity(pool.len());
+        for h in pool {
+            // penalty temporal: janela de validade que cobre `at` → 0;
+            // janela que NÃO cobre → 1 (não vigorava em `at`, memórias
+            // suprimidas não competem); sem janela → recência relativa a `at`.
+            let tpen = match self.engine.validity_window(&h.key) {
+                Some((from, until)) => {
+                    if from <= at && at < until {
+                        0.0
+                    } else {
+                        1.0
+                    }
+                }
+                None => {
+                    let t = h
+                        .provenance
+                        .as_ref()
+                        .and_then(|p| ts_from_key(&h.key).or(Some(p.created_tick)));
+                    match t {
+                        Some(ts) => (at.abs_diff(ts) as f64 / 1000.0).clamp(0.0, 1.0),
+                        None => 0.5, // sem âncora temporal: neutro
+                    }
+                }
+            };
+            let s = w_sem as f64 * h.dist as f64 + w_time as f64 * tpen;
+            scored.push((s, h));
+        }
+        scored.sort_by(|a, b| {
+            a.0.total_cmp(&b.0).then_with(|| a.1.key.cmp(&b.1.key))
+        });
+        Ok(scored.into_iter().take(k).map(|(_, h)| h).collect())
+    }
+
     /// Conveniência RAG com oversample explícito (P1-6: teto de bytes).
     pub fn rag_context_oversampled(
         &mut self,
@@ -2067,6 +2148,38 @@ mod tests {
         // histórico escopado inclui inativas do tenant (não outras)
         let hist = db.recall_lexical_scoped_historical("cha", 10, "user/bruno").unwrap();
         assert!(hist.iter().all(|h| h.key.contains("/kB")), "histórico escopado vazou: {:?}", hist);
+    }
+
+    #[test]
+    fn recall_temporal_ranks_by_intent_time() {
+        // v1.1.4 item 9 (mem0/Graphiti bi-temporal): recall_temporal com `at` =
+        // o momento da pergunta. Memórias VÁLIDAS em `at` (janela cobre o
+        // instante) sobem; as que não vigoravam descem; sem janela = recência.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let q = [1.0, -1.0, 1.0, -1.0];
+        // mesma query, mesma dimensão — só a temporalidade difere
+        db.remember_semantic("cafe-p1", "preco do cafe: 5 reais", &q).unwrap();
+        db.remember_semantic("cafe-p2", "preco do cafe: 6 reais", &q).unwrap();
+        db.set_validity("cafe-p1", 1000, 2000).unwrap();
+        db.set_validity("cafe-p2", 3000, 4000).unwrap();
+        // intenção "qual era o preço em 1500?" → só a primeira janela cobre
+        let hits = db.recall_temporal(&q, 10, 1500, 1.0, 10.0).unwrap();
+        assert!(hits[0].key.ends_with("/cafe-p1"),
+            "em 1500 a memória vigente é cafe-p1, veio {:?}", hits.iter().map(|h| &h.key).collect::<Vec<_>>());
+        // intenção "qual era o preço em 3500?" → vira para cafe-p2
+        let hits2 = db.recall_temporal(&q, 10, 3500, 1.0, 10.0).unwrap();
+        assert!(hits2[0].key.ends_with("/cafe-p2"),
+            "em 3500 a memória vigente é cafe-p2, veio {:?}", hits2.iter().map(|h| &h.key).collect::<Vec<_>>());
+        // sem peso temporal, o pool é só semântico (ambos empatam) — o peso
+        // temporal decide a ordem por intenção
+        let hits0 = db.recall_temporal(&q, 10, 1500, 1.0, 0.0).unwrap();
+        assert_eq!(hits0.len(), 2, "sem peso temporal ambos entram");
+        // escopado: intenção temporal não vaza de scope (item 9 + item 7)
+        db.set_scope("cafe-p2", "user/ana").unwrap();
+        let sc = db.recall_temporal_scoped(&q, 10, 3500, 1.0, 10.0, "user/ana").unwrap();
+        assert!(sc.iter().all(|h| h.key.ends_with("/cafe-p2")), "escopado só cafe-p2: {:?}", sc.iter().map(|h| &h.key).collect::<Vec<_>>());
+        let sc_other = db.recall_temporal_scoped(&q, 10, 1500, 1.0, 10.0, "user/bruno").unwrap();
+        assert!(sc_other.is_empty(), "bruno não tem nada: {:?}", sc_other);
     }
 
     #[test]
