@@ -138,6 +138,12 @@ pub struct AiosDatabaseEngine {
     pub bq: BqFlatIndex,
     /// Índice lexical contextual (#7): textos L2/L3 → termos BM25-style.
     pub lexical: LexicalIndex,
+    /// Índice de entidades nomeadas (v1.1.4 item 10, 1-hop): entidade →
+    /// storage keys dos docs que a declaram (via `MemoryMeta.entities`).
+    /// Derivado (`persist_meta`/`write_meta`/rebuild) — storage `sys/meta/`
+    /// é a fonte da verdade. NUNCA extrai entidade do texto: quem fornece é
+    /// a camada superior (mesmo contrato do `Embedder`).
+    pub entity_index: BTreeMap<String, Vec<String>>,
     /// node_id local para vector clock
     pub node_id: u8,
     pub puts: u64,
@@ -171,6 +177,7 @@ impl AiosDatabaseEngine {
             art: ArtIndex::new(),
             bq: BqFlatIndex::new(),
             lexical: LexicalIndex::new(),
+            entity_index: BTreeMap::new(),
             node_id,
             puts: 0,
             gets: 0,
@@ -342,6 +349,7 @@ impl AiosDatabaseEngine {
                     clock_overflow: Vec::new(),
                     last_reinforced: 0,
                     scope: String::new(),
+                    entities: Vec::new(),
                 }
             }
         };
@@ -351,7 +359,36 @@ impl AiosDatabaseEngine {
         let vid = m.version_id.clone();
         self.storage
             .put(&version_key(&vid), &encode_version_entry(sk, &m))?;
-        self.storage.put(&meta_key(sk), &m.encode())
+        self.storage.put(&meta_key(sk), &m.encode())?;
+        self.reindex_entities(sk, &m);
+        Ok(())
+    }
+
+    /// Re-indexa as entidades de `sk` no `entity_index` (derivado da meta —
+    /// storage `sys/meta/` é a fonte da verdade). Remoção idempotente das
+    /// entradas antigas antes de re-adicionar as atuais.
+    pub fn reindex_entities(&mut self, sk: &str, m: &MemoryMeta) {
+        for keys in self.entity_index.values_mut() {
+            keys.retain(|k| k != sk);
+        }
+        self.entity_index.retain(|_, keys| !keys.is_empty());
+        for e in &m.entities {
+            if e.is_empty() {
+                continue;
+            }
+            let entry = self.entity_index.entry(e.clone()).or_default();
+            if !entry.iter().any(|k| k == sk) {
+                entry.push(String::from(sk));
+            }
+        }
+    }
+
+    /// Remove `sk` de todas as listas do `entity_index` (delete de memória).
+    pub fn remove_entities(&mut self, sk: &str) {
+        for keys in self.entity_index.values_mut() {
+            keys.retain(|k| k != sk);
+        }
+        self.entity_index.retain(|_, keys| !keys.is_empty());
     }
 
     /// Lê `sys/meta/<sk>` (None = sem metadados: registro pré-v0.6).
@@ -363,7 +400,9 @@ impl AiosDatabaseEngine {
     }
 
     pub fn write_meta(&mut self, sk: &str, m: &MemoryMeta) -> Result<(), SgdbError> {
-        self.storage.put(&meta_key(sk), &m.encode())
+        self.storage.put(&meta_key(sk), &m.encode())?;
+        self.reindex_entities(sk, m);
+        Ok(())
     }
 
     /// Meta da memória em `sk` (None = sem doc OU registro pré-v0.6).
@@ -464,6 +503,7 @@ impl AiosDatabaseEngine {
             clock_overflow: doc.clock.overflow.clone(),
             last_reinforced: 0,
             scope: String::new(),
+            entities: Vec::new(),
         };
         // índice reverso também é derivado na migração (DAG consultável)
         self.storage
@@ -557,6 +597,7 @@ impl AiosDatabaseEngine {
         self.art.clear();
         self.bq.clear();
         self.lexical = LexicalIndex::new();
+        self.entity_index.clear();
         self.id_to_sk.clear();
         self.clock_index.clear();
         self.indexed_dims.clear();
@@ -612,6 +653,8 @@ impl AiosDatabaseEngine {
                 let sk = String::from_utf8_lossy(&mk[9..]).into_owned(); // strip sys/meta/
                 self.storage
                     .put(&version_key(&m.version_id), &encode_version_entry(&sk, &m))?;
+                // índice de entidades (derivado, reconstruível)
+                self.reindex_entities(&sk, &m);
             }
         }
         // relações L6 (v0.8): side-table → índice ART forward+reverse
@@ -1046,6 +1089,7 @@ impl AiosDatabaseEngine {
                 self.storage.delete(&version_key(&m.version_id))?;
             }
         }
+        self.remove_entities(sk);
         self.storage.delete(&meta_key(sk))?;
         self.art.delete(sk);
         self.lexical.remove(sk);
@@ -1137,6 +1181,11 @@ fn meta_for_import(doc: &MemoryDoc) -> MemoryMeta {
         clock_overflow: doc.clock.overflow.clone(),
         last_reinforced: 0,
         scope: doc.meta.as_ref().map(|m| m.scope.clone()).unwrap_or_default(),
+        entities: doc
+            .meta
+            .as_ref()
+            .map(|m| m.entities.clone())
+            .unwrap_or_default(),
     }
 }
 

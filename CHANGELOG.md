@@ -4,7 +4,7 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
-## [Unreleased] — v1.1.4 (memory landscape, item 1–9)
+## [Unreleased] — v1.1.4 (memory landscape, item 1–10)
 
 Ideas ported from the memory-landscape benchmark (mem0/mempalace/Zep/Letta/
 Supermemory/cognee — see `docs/memory-landscape.md`).
@@ -41,6 +41,17 @@ Supermemory/cognee — see `docs/memory-landscape.md`).
   drop out, windowless memories fall back to recency relative to `at`.
   Answers "quando mudou X?" / "qual era o estado em T?". Scoped variant:
   `recall_temporal_scoped`. MCP tool `recall_temporal` (with `at`).
+- **1-hop entity recall** (item 10, low-cost/low-risk port): named entities
+  as an explicit, caller-supplied metadata seam — `MemoryMeta.entities:
+  Vec<String>` (MDM1 v5 — migration is explicit; v1–v4 records decode with an
+  empty list). The core NEVER extracts entities from text (same contract as
+  `Embedder`: whoever supplies them uses the SAME strings on write and query).
+  Derived `entity_index` (entity → storage keys, rebuilt from `sys/meta/` on
+  open, maintained by `persist_meta`/`write_meta`, cleaned on `delete`).
+  New surface: `Sgdb::set_entities`/`entities_of`/`recall_entities`
+  (`_historical`/`_scoped`/`_scoped_historical`), ranked by overlap desc →
+  importance desc → key asc. MCP `remember` gained `entities=`, new tool
+  `recall_entities` (with `scope`/`historical`).
 
 ### Fixed
 - **MDM1 v4 decode**: the `last_reinforced` branch (v3) never advanced `off`
@@ -48,6 +59,11 @@ Supermemory/cognee — see `docs/memory-landscape.md`).
   `scope` field read from the wrong offset. Same discipline as the
   `metaflag=0` bug: every flag branch must advance `off` (regression:
   `meta_roundtrip` with non-empty scope).
+- **MDM1 v4 decode (bis)**: the `scope` branch read `off..off+slen` but never
+  advanced `off` past the scope bytes — harmless while v4 was the last field,
+  but the v5 `entities` field read from the wrong offset. Same discipline:
+  every field branch advances `off` (regression: `meta_roundtrip` with
+  entities).
 - **no_std gate**: `profile` used `std::cmp::Ordering` (pre-existing, item 5)
   — now `core::cmp::Ordering`.
 - **Scope durability** (item 7 hardening): regression

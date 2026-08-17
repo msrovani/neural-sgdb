@@ -99,6 +99,12 @@ fn sample_meta(state: &mut u64) -> MemoryMeta {
         let n = 1 + (lcg(state) % 16) as usize;
         (0..n).map(|_| format!("{:x}", lcg(state) % 16)).collect()
     };
+    let nent = (lcg(state) % 4) as usize;
+    let mut entities = Vec::with_capacity(nent);
+    for _ in 0..nent {
+        let elen = 1 + (lcg(state) % 8) as usize;
+        entities.push((0..elen).map(|_| (b'a' + (lcg(state) % 26) as u8) as char).collect());
+    }
     MemoryMeta {
         memory_id: id.clone(),
         version_id: id,
@@ -110,6 +116,7 @@ fn sample_meta(state: &mut u64) -> MemoryMeta {
         clock_overflow: Vec::new(),
         last_reinforced: 0,
         scope: String::new(),
+        entities,
     }
 }
 

@@ -85,12 +85,12 @@ regression test; hot test 60/60 exit 0; matrix 206+1 / 252+1 / 159+1):
   phase 4c exercises the real handler (raw `rpc` — `tool()` only returns
   `content[0].text`, not the top-level `nextCursor`).
 
-## Post-audit v1.1.4 (memory landscape, items 1–9)
+## Post-audit v1.1.4 (memory landscape, items 1–10)
 
 Ported from the memory-landscape benchmark (mem0/mempalace/Zep/Letta/
-Supermemory/cognee — see `docs/memory-landscape.md`). Matrix: **206+1 /
-252+1 / 159+1**, clippy/no_std/doc gates green, hot test exit 0 (21 MCP
-tools).
+Supermemory/cognee — see `docs/memory-landscape.md`). Matrix: **210+1 /
+252+1 → 256+1 / 159+1 → 162+1**, clippy/no_std/doc gates green, hot test
+exit 0 (22 MCP tools).
 
 - **ADD-only é contrato oficial** (item 1): o BQ é append-only — novos fatos
   acumulam e confrontam o pool via ranking determinístico, nunca overwrite
@@ -136,10 +136,26 @@ tools).
   janela usa recência relativa a `at`. Responde "quando mudou X?" /
   "qual era o estado em T?". Escopado: `recall_temporal_scoped`. MCP:
   `recall_temporal` (`at` obrigatório).
-- **Testes/duração**: regressões por item (6 novos + scoped + temporal +
-  modes + `scope_persists_across_reopen_and_rebuild`). Hot test MCP cobre
-  `recall_temporal` e os modos; tools = 21 (itens 2–6 adicionaram
-  remember_episodic/feedback/diary/profile/expire_old).
+- **Entidades 1-hop (item 10, Graphiti/cognee — modo barato)**: entidades são
+  **metadado explícito fornecido pela camada superior** —
+  `MemoryMeta.entities: Vec<String>` = **MDM1 v5** (migração explícita:
+  v1–v4 decodificam com lista vazia; NMD1/TKLV intocados). O core **NUNCA
+  extrai entidade de texto** (mesmo contrato do `Embedder`: quem fornece usa
+  as MESMAS strings na escrita e na busca — 1-hop só casa strings idênticas).
+  Índice derivado `Engine::entity_index` (entidade → storage keys),
+  reconstruído do `sys/meta/` no rebuild, mantido por `persist_meta`/
+  `write_meta`, limpo em `delete` (`remove_entities`). APIs:
+  `set_entities`/`entities_of`/`recall_entities`/`_historical`/`_scoped`/
+  `_scoped_historical` (rank por overlap desc → importância desc → key asc;
+  `dist` = fração de entidades não cobertas). MCP `remember(entities=)` +
+  tool `recall_entities`. **BUG FIX (bis)**: decode MDM1 não avançava `off`
+  após o SCOPE (v4 era último campo; o v5 `entities` lia do offset errado) —
+  disciplina "todo campo avança off", não só flags.
+- **Testes/duração**: regressões por item (10 novos + scoped + temporal +
+  modes + scope/entities reopen+rebuild). Hot test MCP cobre `recall_temporal`,
+  os modos e `recall_entities`; tools = 22 (itens 2–6 adicionaram
+  remember_episodic/feedback/diary/profile/expire_old; item 10 adicionou
+  recall_entities).
 
 ## Repository Map
 
@@ -220,10 +236,11 @@ cargo run --release --example signed_peer --features p2p      # signed-transport
 
 The project agent is a test subject: `.opencode/opencode.json` registers the
 MCP server as a local server (`NEURAL_SGDB_DB=.nsgdb/memory.db`, gitignored),
-giving the agent `mcp__neural-sgdb__*` tools (21: remember/remember_episodic/
-recall/rag_context/recall_temporal/feedback/diary/profile/expire_old/explain/
-reinforce/forget/associate/related_to/contradicts/supersede/conflicts/
-resolve_conflict/merge_memories/health/validate). Audit log in
+giving the agent `mcp__neural-sgdb__*` tools (22: remember/remember_episodic/
+recall/rag_context/recall_temporal/recall_entities/feedback/diary/profile/
+expire_old/explain/reinforce/forget/associate/related_to/contradicts/
+supersede/conflicts/resolve_conflict/merge_memories/health/validate). Audit
+log in
 `docs/hot_test.md`. Lessons learned (2026-08-13): `remember` returns the FULL
 storage key (`md/L4/...`), always use it for follow-up (`explain`/`reinforce`
 on the raw `mcp/...` key fails — was fixed); recall hits print `h.key | text`;
@@ -233,9 +250,9 @@ hash, not a semantic model). Restart opencode after changing the config.
 ## Running tests
 
 ```bash
-cargo test                                 # 206+1 tests (InMemory/FileStorage/TickvFile)
-cargo test --features p2p                  # 252+1 (includes CRDT sync + mesh harness)
-cargo test --no-default-features           # 159+1 (no_std core, host test harness)
+cargo test                                 # 210+1 tests (InMemory/FileStorage/TickvFile)
+cargo test --features p2p                  # 256+1 (includes CRDT sync + mesh harness)
+cargo test --no-default-features           # 162+1 (no_std core, host test harness)
 cargo check --no-default-features --target x86_64-unknown-none   # no_std gate
 cargo clippy --all-targets --all-features -- -D warnings          # lint gate (P0-5)
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-6/P0-10)
@@ -261,7 +278,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-
 - **Wire-codec fuzz harness** (`src/wire_fuzz.rs`, P2-4): the single LCG
   never-panic/roundtrip/truncation gate over ALL 8 wire types — add a new
   wire type there (plus its per-module `prop_tests`), and keep the matrix
-  (206+1 / 252+1 / 159+1) green. `SignedEnvelope::decode` returns
+  (210+1 / 256+1 / 162+1) green. `SignedEnvelope::decode` returns
   `Option<(Self, usize)>` (no magic byte — corrupt via field lengths, not
   byte 0).
 - **TickvFile** (`src/tickv.rs`): 512-aligned records, tombstone `vlen=0` or

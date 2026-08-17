@@ -189,12 +189,13 @@ fn main() {
             "tools/list" => {
                 send(&json!({"jsonrpc":"2.0","id":id,"result":{"tools":[
                     {"name":"remember",
-                     "description":"Armazena uma memoria de texto no banco neural-sgdb. Opcional: forneca `embedding` (array de f32, 1..=256 dims) para usar um modelo real; sem ele, o server usa o embedder configurado (demo trigram). `scope` (opcional) particiona por user/agent/projeto (mem0 multi-tenancy).",
+                     "description":"Armazena uma memoria de texto no banco neural-sgdb. Opcional: forneca `embedding` (array de f32, 1..=256 dims) para usar um modelo real; sem ele, o server usa o embedder configurado (demo trigram). `scope` (opcional) particiona por user/agent/projeto (mem0 multi-tenancy). `entities` (opcional, item 10) declara entidades nomeadas da memoria (lista de strings — use as MESMAS strings na busca `recall_entities`; o core nunca extrai entidade do texto).",
                      "inputSchema":{"type":"object",
                        "properties":{
                          "text":{"type":"string","description":"Conteudo a lembrar"},
                          "embedding":{"type":"array","items":{"type":"number"},"description":"Embedding fornecido pelo agente (opcional)"},
-                         "scope":{"type":"string","description":"Escopo de isolamento (ex: 'user/ana', 'project/neural-os'). Vazio = global."}},
+                         "scope":{"type":"string","description":"Escopo de isolamento (ex: 'user/ana', 'project/neural-os'). Vazio = global."},
+                         "entities":{"type":"array","items":{"type":"string"},"description":"Entidades nomeadas da memoria (opcional). Mesmas strings na busca recall_entities."}},
                        "required":["text"]},
                      "annotations":{"destructiveHint":true,"idempotentHint":true}},
                     {"name":"remember_episodic",
@@ -240,6 +241,16 @@ fn main() {
                          "w_sem":{"type":"number","default":1.0,"description":"Peso do fator semantico"},
                          "w_time":{"type":"number","default":10.0,"description":"Peso do fator temporal"}},
                        "required":["query","at"]},
+                     "annotations":{"readOnlyHint":true}},
+                    {"name":"recall_entities",
+                     "description":"Recall por entidades (item 10, 1-hop): devolve memorias que declaram PELO MENOS UMA das entidades consultadas, ranqueadas por overlap (desc) e importância (desc). NAO extrai entidade de texto — as strings devem casar exatamente com as fornecidas no remember/set_entities. `scope` (opcional) limita a um user/agent/projeto.",
+                     "inputSchema":{"type":"object",
+                       "properties":{
+                         "entities":{"type":"array","items":{"type":"string"},"description":"Entidades para casar (mesmas strings do remember)"},
+                         "k":{"type":"integer","minimum":1,"maximum":20,"default":5},
+                         "scope":{"type":"string","description":"Escopo de isolamento (opcional). Omitir = global (só memórias sem scope)."},
+                         "historical":{"type":"boolean","default":false,"description":"true = inclui memórias inativas (superseded/archived)"}},
+                       "required":["entities"]},
                      "annotations":{"readOnlyHint":true}},
                     {"name":"explain",
                      "description":"Explica ESTRUTURADAMENTE por que uma memoria esta no estado atual (proveniencia, importância, linhagem, validade).",
@@ -421,6 +432,19 @@ fn main() {
                                         continue;
                                     }
                                 }
+                                // entidades opcionais (v1.1.4 item 10) — declaradas
+                                // pela camada superior, nunca extraídas de texto
+                                let entities: Vec<&str> = args["entities"]
+                                    .as_array()
+                                    .map(|a| a.iter().filter_map(|e| e.as_str()).collect())
+                                    .unwrap_or_default();
+                                if !entities.is_empty() {
+                                    if let Err(e) = db.set_entities(&format!("md/L4/{key}"), &entities) {
+                                        send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                            "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}}));
+                                        continue;
+                                    }
+                                }
                                 // devolve a STORAGE KEY completa (`md/L4/...`) —
                                 // a chave crua `mcp/...` NÃO resolve em
                                 // explain/reinforce (achado hot-test 2026-08-13)
@@ -579,6 +603,43 @@ fn main() {
                         match hits {
                             Ok(hs) if hs.is_empty() => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":"nenhuma memoria valida em at"}],"isError":false}})),
+                            Ok(hs) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":hs.iter().map(|h| {
+                                    let p = h.provenance.as_ref().map(|p| format!(
+                                        " [state={:?} imp={:.2} conf={:.2}]",
+                                        p.state, p.importance, p.confidence)).unwrap_or_default();
+                                    format!("- {} | {} (d={:.3}){}", h.key, h.text, h.dist, p)
+                                }).collect::<Vec<_>>().join("\n")}],"isError":false}})),
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
+                        }
+                    }
+                    "recall_entities" => {
+                        let entities: Vec<&str> = args["entities"]
+                            .as_array()
+                            .map(|a| a.iter().filter_map(|e| e.as_str()).collect())
+                            .unwrap_or_default();
+                        if entities.is_empty() {
+                            send(&error_response(&id, -32602, "parametro 'entities' obrigatorio (lista nao-vazia)"));
+                            continue;
+                        }
+                        let k = args["k"].as_u64().unwrap_or(5) as usize;
+                        let scope = args["scope"].as_str().unwrap_or("");
+                        let historical = args["historical"].as_bool().unwrap_or(false);
+                        let hits = if scope.is_empty() {
+                            if historical {
+                                db.recall_entities_historical(&entities, k)
+                            } else {
+                                db.recall_entities(&entities, k)
+                            }
+                        } else if historical {
+                            db.recall_entities_scoped_historical(&entities, k, scope)
+                        } else {
+                            db.recall_entities_scoped(&entities, k, scope)
+                        };
+                        match hits {
+                            Ok(hs) if hs.is_empty() => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":"nenhuma memoria com essas entidades"}],"isError":false}})),
                             Ok(hs) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":hs.iter().map(|h| {
                                     let p = h.provenance.as_ref().map(|p| format!(

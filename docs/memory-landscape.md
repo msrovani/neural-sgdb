@@ -74,9 +74,10 @@ exigiria atribuição). Fonte do roadmap v0.2 de melhorias.
 
 ## Roadmap por complexidade (aprovado 2026-08)
 
-Status: itens **1–9 entregues em v1.1.4** (2026-08-14, commits por item com
-regressão; matriz 206+1 / 252+1 / 159+1; hot test MCP 21 tools, exit 0).
-Item 10 (entidades + grafo) fica de fora do escopo — maior risco.
+Status: itens **1–10 entregues em v1.1.4** (2026-08-14, commits por item com
+regressão; matriz 210+1 / 256+1 / 162+1; hot test MCP 22 tools, exit 0).
+Item 10 foi entregue no modo **custo baixo + risco baixo** (1-hop de
+entidades): o multi-hop (grafo semântico completo) permanece fora de escopo.
 
 | # | Item (origem) | Custo | Retorno | Status |
 |---|---|---|---|---|
@@ -89,4 +90,18 @@ Item 10 (entidades + grafo) fica de fora do escopo — maior risco.
 | 7 | **Scoping multi-agente/projeto** (mem0) | 2–3 dias | **feature #1** (responde o modelo 1-pasta-por-projeto/agente) | ✅ `set_scope`/`recall_scoped` |
 | 8 | Expor modos de retrieval existentes (cognee) | 2–3 dias | superfície rica sem tocar core | ✅ `mode` semantic/lexical/hybrid |
 | 9 | Retrieval temporal com intenção (mem0/Graphiti) | 3–5 dias | "quando mudou X?" passa a funcionar | ✅ `recall_temporal` |
-| 10 | Entidades + grafo semântico (Graphiti/cognee) | 1–2 semanas | multi-hop reasoning (maior risco) | ⏳ fora de escopo |
+| 10 | Entidades + grafo semântico (Graphiti/cognee) | 1–2 semanas | multi-hop reasoning (maior risco) | ✅ 1-hop `recall_entities` (MDM1 v5) |
+
+**Item 10 (modo 1-hop, 2026-08-14)**: entidades como **metadado explícito
+fornecido pela camada superior** — `MemoryMeta.entities: Vec<String>` (MDM1
+v5, migração explícita: v1–v4 decodificam com lista vazia). O core **nunca
+extrai entidade de texto** (mesmo contrato do `Embedder`: quem fornece usa as
+MESMAS strings na escrita e na busca). Índice derivado `entity_index`
+(entidade → storage keys) reconstruído do `sys/meta/` no open e mantido por
+`persist_meta`/`write_meta`; `delete` limpa. Superfície:
+`set_entities`/`entities_of`/`recall_entities` (`_historical`/`_scoped`/
+`_scoped_historical`), rank por overlap desc → importância desc → key asc.
+MCP: `remember(entities=)` + tool `recall_entities`. **Multi-hop (grafo
+semântico real, BFS/DFS em entidades, persistência de arestas) segue fora de
+escopo** — custo 1–2 semanas, maior risco (ver discussão de custo/risco na
+sessão).

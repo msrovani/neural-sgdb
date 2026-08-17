@@ -169,14 +169,15 @@ fn main() {
         r["result"]["serverInfo"]["version"] == "1.1.0", r.to_string());
     rep.phase("handshake", &t);
 
-    // ---------- fase 2: tools/list (21 tools) ----------
+    // ---------- fase 2: tools/list (22 tools) ----------
     let t = Instant::now();
     let r = srv.rpc("tools/list", json!({}));
     let tools = r["result"]["tools"].as_array().cloned().unwrap_or_default();
     let names: Vec<&str> = tools.iter().filter_map(|x| x["name"].as_str()).collect();
-    rep.check("tools/list retorna 21 tools", names.len() == 21,
+    rep.check("tools/list retorna 22 tools", names.len() == 22,
         format!("{} tools: {names:?}", names.len()));
     for want in ["remember", "remember_episodic", "recall", "rag_context", "recall_temporal",
+                 "recall_entities",
                  "feedback", "diary", "profile", "expire_old",
                  "explain", "reinforce", "forget",
                  "associate", "related_to", "contradicts", "supersede", "conflicts",
@@ -236,6 +237,36 @@ fn main() {
     rep.check("recall_temporal sem at → -32602 parâmetro obrigatório",
         is_err2 && txt2.contains("obrigatorio"), txt2.clone());
     rep.phase("recall temporal", &t);
+
+    // ---------- fase 4f: recall por entidades (v1.1.4 item 10, 1-hop) -------
+    // O server aceita `entities` no remember e expõe `recall_entities` — o
+    // core nunca extrai entidade de texto: as strings devem casar exatamente.
+    let t = Instant::now();
+    let (txt, is_err) = srv.tool("remember", json!({
+        "text": "roteiro da reuniao do projeto neural-os",
+        "entities": ["project/neural-os", "org/opencode"]
+    }));
+    rep.check("remember aceita entities", !is_err && txt.contains("md/L4/mcp/"), txt.clone());
+    let (txt, is_err) = srv.tool("remember", json!({
+        "text": "design do agente opencode",
+        "entities": ["org/opencode"]
+    }));
+    rep.check("remember aceita entities (2)", !is_err && txt.contains("md/L4/mcp/"), txt.clone());
+    let (txt, is_err) = srv.tool("recall_entities", json!({
+        "entities": ["project/neural-os", "org/opencode"], "k": 5
+    }));
+    rep.check("recall_entities acha doc com overlap maior primeiro",
+        !is_err && txt.contains("roteiro da reuniao"), txt.clone());
+    let (txt, is_err) = srv.tool("recall_entities", json!({"entities": ["org/opencode"], "k": 5}));
+    rep.check("recall_entities por uma entidade acha os dois docs",
+        !is_err && txt.contains("roteiro") && txt.contains("design do agente"), txt.clone());
+    let (txt, is_err) = srv.tool("recall_entities", json!({"entities": []}));
+    rep.check("recall_entities sem entities → -32602 obrigatório",
+        is_err && txt.contains("obrigatorio"), txt.clone());
+    let (txt, is_err) = srv.tool("recall_entities", json!({"entities": ["entidade/inexistente"]}));
+    rep.check("recall_entities com entidade inexistente → vazio",
+        !is_err && txt.contains("nenhuma"), txt.clone());
+    rep.phase("recall entities", &t);
 
     // ---------- fase 4b: embedding FORNECIDO pelo agente (v1.1 P4) ----------
     // O server aceita `embedding` no payload — a camada superior pluga um

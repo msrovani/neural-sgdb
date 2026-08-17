@@ -356,6 +356,164 @@ impl Sgdb {
         Ok(self.engine.meta(&sk)?.map(|m| m.scope).unwrap_or_default())
     }
 
+    /// Entidades nomeadas da memória (v1.1.4 item 10, 1-hop): lista de strings
+    /// declaradas pela camada superior (`remember`/`set_entities`) — o core
+    /// NUNCA extrai entidade de texto (mesmo contrato do `Embedder`: quem
+    /// fornece o embedding usa o MESMO modelo na escrita e na query; quem
+    /// fornece entidades usa as MESMAS strings). Persistidas em `sys/meta/`
+    /// (MDM1 v5); registros pré-v1.1.4 decodificam com lista vazia (migração
+    /// explícita). A lista vazia removida limpa o índice (memória sem
+    /// entidades não aparece em `recall_entities`).
+    pub fn set_entities(&mut self, key: &str, entities: &[&str]) -> Result<(), SgdbError> {
+        for e in entities {
+            if e.is_empty() {
+                return Err(SgdbError::Invalid("entity must not be empty"));
+            }
+        }
+        let sk = self.resolve_known_key(key);
+        let mut m = self.engine.ensure_meta(&sk)?;
+        m.entities = entities.iter().map(|e| e.to_string()).collect();
+        self.engine.write_meta(&sk, &m)
+    }
+
+    /// Lê as entidades atuais de uma memória (lista vazia = sem entidades).
+    /// Conveniência explícita para o 1-hop (`meta()` já expõe o campo).
+    pub fn entities_of(&mut self, key: &str) -> Result<Vec<String>, SgdbError> {
+        let sk = self.resolve_known_key(key);
+        Ok(self.engine.meta(&sk)?.map(|m| m.entities).unwrap_or_default())
+    }
+
+    /// Recall por entidades (item 10, 1-hop): candidatos = docs que declaram
+    /// PELO MENOS UMA das entidades consultadas, ranqueados por número de
+    /// entidades em comum (desc) e, em empate, por importância (desc) e
+    /// storage key (asc, determinístico). O pool vem do `entity_index`
+    /// derivado — nunca extrai entidade do texto. Texto via companion L2
+    /// (batch, como no recall semântico). Default: active-only, escopo global.
+    pub fn recall_entities(&mut self, entities: &[&str], k: usize) -> Result<Vec<Hit>, SgdbError> {
+        self.recall_entities_impl(entities, k, None, true)
+    }
+
+    /// Recall por entidades histórico (inclui memórias inativas/superseded).
+    pub fn recall_entities_historical(
+        &mut self,
+        entities: &[&str],
+        k: usize,
+    ) -> Result<Vec<Hit>, SgdbError> {
+        self.recall_entities_impl(entities, k, None, false)
+    }
+
+    /// Recall por entidades escopado (item 10 + item 7): `scope` restringe o
+    /// pool a memórias do scope (globais nunca vazam para escopos).
+    pub fn recall_entities_scoped(
+        &mut self,
+        entities: &[&str],
+        k: usize,
+        scope: &str,
+    ) -> Result<Vec<Hit>, SgdbError> {
+        self.recall_entities_impl(entities, k, Some(scope), true)
+    }
+
+    /// Recall por entidades escopado E histórico (item 10): inclui memórias
+    /// inativas do scope.
+    pub fn recall_entities_scoped_historical(
+        &mut self,
+        entities: &[&str],
+        k: usize,
+        scope: &str,
+    ) -> Result<Vec<Hit>, SgdbError> {
+        self.recall_entities_impl(entities, k, Some(scope), false)
+    }
+
+    fn recall_entities_impl(
+        &mut self,
+        entities: &[&str],
+        k: usize,
+        scope: Option<&str>,
+        active_only: bool,
+    ) -> Result<Vec<Hit>, SgdbError> {
+        if entities.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.metrics.recalls += 1;
+        let k = k.max(1);
+        let mut pool: alloc::collections::BTreeMap<String, usize> =
+            alloc::collections::BTreeMap::new();
+        for ent in entities {
+            let Some(keys) = self.engine.entity_index.get(*ent) else {
+                continue;
+            };
+            let keys: Vec<String> = keys.clone();
+            for sk in &keys {
+                // item 7 — scope DENTRO do pool (mesmo contrato do recall semântico)
+                let doc_scope = self.engine.effective_scope(sk);
+                match scope {
+                    Some(s) if doc_scope != s => continue,
+                    None if !doc_scope.is_empty() => continue,
+                    _ => {}
+                }
+                // active-only — estado POR DOC (companions não são indexados)
+                if active_only && self.engine.get_state(sk) != MemoryState::Active {
+                    continue;
+                }
+                *pool.entry(sk.clone()).or_insert(0) += 1;
+            }
+        }
+        let n_ents = entities.len().max(1);
+        // rank: overlap desc → importância desc → key asc (determinístico)
+        let mut ranked: Vec<(usize, f32, String)> = pool
+            .into_iter()
+            .map(|(sk, overlap)| {
+                let imp = self
+                    .engine
+                    .meta(&sk)
+                    .ok()
+                    .flatten()
+                    .map(|m| m.importance)
+                    .unwrap_or(0.0);
+                (overlap, imp, sk)
+            })
+            .collect();
+        ranked.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.total_cmp(&a.1)).then(a.2.cmp(&b.2)));
+        ranked.truncate(k);
+        // companion L2 text em batch (S3 — mesma convenção do recall semântico)
+        let companion_keys: Vec<String> = ranked
+            .iter()
+            .map(|(_, _, sk)| sk.replacen("/L4/", "/L2/", 1))
+            .collect();
+        let texts = self.engine.get_texts_batch(&companion_keys);
+        let mut out = Vec::with_capacity(ranked.len());
+        for (i, (overlap, _imp, sk)) in ranked.into_iter().enumerate() {
+            // dist = fração de entidades NÃO cobertas (0 = casa todas)
+            let dist = 1.0 - (overlap as f32 / n_ents as f32);
+            // provenance: layer do doc + estado + meta
+            let prov = match self.engine.get_by_storage_key(&sk) {
+                Ok(Some(doc)) => {
+                    let st = self.engine.get_state(&sk);
+                    doc.meta.as_ref().map(|m| HitProvenance {
+                        memory_id: m.memory_id.clone(),
+                        version_id: m.version_id.clone(),
+                        layer: doc.layer,
+                        state: st,
+                        source: m.source,
+                        confidence: m.confidence,
+                        importance: m.importance,
+                        created_tick: m.created_tick,
+                        parent_ids: m.parent_ids.clone(),
+                    })
+                }
+                _ => None,
+            };
+            let text = texts.get(&companion_keys[i]).cloned().unwrap_or_default();
+            out.push(Hit {
+                key: sk,
+                text,
+                dist,
+                provenance: prov,
+            });
+        }
+        Ok(out)
+    }
+
     /// Anexa `parent_ids` à meta da memória (linhagem causal do DAG) —
     /// usado pela promoção do lifecycle e pela fusão (`merge_memories`,
     /// v0.9). Idempotente; registros pré-v0.6 ganham meta via `ensure_meta`.
@@ -2180,6 +2338,112 @@ mod tests {
         assert!(sc.iter().all(|h| h.key.ends_with("/cafe-p2")), "escopado só cafe-p2: {:?}", sc.iter().map(|h| &h.key).collect::<Vec<_>>());
         let sc_other = db.recall_temporal_scoped(&q, 10, 1500, 1.0, 10.0, "user/bruno").unwrap();
         assert!(sc_other.is_empty(), "bruno não tem nada: {:?}", sc_other);
+    }
+
+    #[test]
+    fn recall_entities_one_hop_ranks_by_overlap() {
+        // v1.1.4 item 10 (1-hop): recall_entities devolve docs que declaram
+        // PELO MENOS UMA das entidades, ranqueados por overlap desc (e, em
+        // empate, importância desc, key asc). O core nunca extrai entidade
+        // de texto — quem fornece é a camada superior (set_entities).
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("proj-x", "especificacao do projeto x", &[1.0, -1.0, 1.0, -1.0]).unwrap();
+        db.remember_semantic("proj-y", "especificacao do projeto y", &[1.0, -1.0, 1.0, -1.0]).unwrap();
+        db.remember_semantic("gp-xy", "nota da reuniao do grupo xy", &[1.0, -1.0, 1.0, -1.0]).unwrap();
+        db.remember_semantic("outro", "fato sem entidades", &[1.0, -1.0, 1.0, -1.0]).unwrap();
+        db.set_entities("proj-x", &["projeto/x", "empresa/acme"]).unwrap();
+        db.set_entities("proj-y", &["projeto/y", "empresa/acme"]).unwrap();
+        db.set_entities("gp-xy", &["projeto/x", "projeto/y"]).unwrap();
+        // busca por projeto/x → proj-x (1) empata com gp-xy (1); overlap decide
+        let h1 = db.recall_entities(&["projeto/x"], 10).unwrap();
+        assert_eq!(h1.len(), 2, "dois docs declaram projeto/x: {:?}", h1.iter().map(|h| &h.key).collect::<Vec<_>>());
+        assert!(h1.iter().any(|h| h.key.ends_with("/proj-x")));
+        assert!(h1.iter().any(|h| h.key.ends_with("/gp-xy")));
+        // "outro" não aparece (sem entidades declaradas)
+        assert!(h1.iter().all(|h| !h.key.ends_with("/outro")));
+        // busca por 2 entidades → gp-xy casa as duas (overlap 2) > proj-x (1)
+        let h2 = db.recall_entities(&["projeto/x", "projeto/y"], 10).unwrap();
+        assert_eq!(h2[0].key, "md/L4/gp-xy", "overlap 2 vence: {:?}", h2.iter().map(|h| &h.key).collect::<Vec<_>>());
+        assert_eq!(h2[0].dist, 0.0, "casa todas as entidades → dist 0");
+        // dist de quem casa só metade = 0.5
+        assert!((h2[1].dist - 0.5).abs() < 1e-6);
+        // entidade inexistente → vazio
+        assert!(db.recall_entities(&["projeto/z"], 10).unwrap().is_empty());
+        // entities_of / meta expõem o campo
+        assert_eq!(db.entities_of("proj-x").unwrap(), vec!["projeto/x".to_string(), "empresa/acme".to_string()]);
+        assert!(db.entities_of("outro").unwrap().is_empty());
+        // texto vem do companion L2 (payload é embedding)
+        assert!(h1[0].text.contains("projeto") || h1[1].text.contains("projeto"));
+    }
+
+    #[test]
+    fn recall_entities_respects_scope_and_state() {
+        // item 10 + item 7: recall_entities escopado isola tenants e o filtro
+        // active-only esconde memórias inativas (histórico as inclui).
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("ka", "dados da ana", &[1.0, -1.0, 1.0, -1.0]).unwrap();
+        db.remember_semantic("kb", "dados do bruno", &[1.0, -1.0, 1.0, -1.0]).unwrap();
+        db.set_entities("ka", &["empresa/acme"]).unwrap();
+        db.set_entities("kb", &["empresa/acme"]).unwrap();
+        db.set_scope("ka", "user/ana").unwrap();
+        db.set_scope("kb", "user/bruno").unwrap();
+        // recall global não vaza de scopes
+        let g = db.recall_entities(&["empresa/acme"], 10).unwrap();
+        assert!(g.is_empty(), "global não vaza de scopes: {:?}", g);
+        // escopado isola cada tenant
+        let a = db.recall_entities_scoped(&["empresa/acme"], 10, "user/ana").unwrap();
+        assert_eq!(a.len(), 1);
+        assert!(a[0].key.ends_with("/ka"));
+        let b = db.recall_entities_scoped(&["empresa/acme"], 10, "user/bruno").unwrap();
+        assert_eq!(b.len(), 1);
+        assert!(b[0].key.ends_with("/kb"));
+        // inativa some do recall default, aparece no histórico
+        db.set_state("md/L4/kb", MemoryState::Superseded).unwrap();
+        assert!(db.recall_entities_scoped(&["empresa/acme"], 10, "user/bruno").unwrap().is_empty());
+        let hist = db.recall_entities_scoped_historical(&["empresa/acme"], 10, "user/bruno").unwrap();
+        assert!(hist.iter().any(|h| h.key.ends_with("/kb")), "histórico escopado inclui inativas: {:?}", hist.iter().map(|h| &h.key).collect::<Vec<_>>());
+        // histórico GLOBAL não vaza de scopes (mesmo contrato do recall semântico)
+        assert!(db.recall_entities_historical(&["empresa/acme"], 10).unwrap().is_empty());
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn set_entities_rejects_empty_and_persists_v5() {
+        // item 10: entidade vazia rejeitada (contrato de strings nomeadas);
+        // persistência em MDM1 v5 → sobrevive reopen + rebuild (FileStorage).
+        let dir = std::env::temp_dir().join(format!("nsgdb-ent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut db = Sgdb::open(crate::storage::FileStorage::open(&dir).unwrap()).unwrap();
+        db.remember_semantic("k1", "memoria com entidades", &[1.0, -1.0, 1.0, -1.0]).unwrap();
+        // entidade vazia → Invalid (mesmo contrato de scope/importância)
+        assert!(matches!(db.set_entities("k1", &[""]), Err(SgdbError::Invalid(_))));
+        db.set_entities("k1", &["ent/alpha", "ent/beta"]).unwrap();
+        // reescrever a lista substitui (não acumula)
+        db.set_entities("k1", &["ent/gamma"]).unwrap();
+        assert_eq!(db.entities_of("k1").unwrap(), vec!["ent/gamma".to_string()]);
+        // sobrevive reopen + rebuild (índice derivado reconstruído da meta)
+        drop(db);
+        let mut db2 = Sgdb::open(crate::storage::FileStorage::open(&dir).unwrap()).unwrap();
+        assert_eq!(db2.entities_of("k1").unwrap(), vec!["ent/gamma".to_string()]);
+        let hits = db2.recall_entities(&["ent/gamma"], 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].key.ends_with("/k1"));
+        // lista vazia limpa o índice (memory sem entidades não é recallável)
+        db2.set_entities("k1", &[]).unwrap();
+        assert!(db2.recall_entities(&["ent/gamma"], 10).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn delete_removes_entity_index_entries() {
+        // item 10: delete físico remove o doc do entity_index (o recall por
+        // entidade nunca devolve memória deletada).
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("kd", "dado com entidade", &[1.0, -1.0, 1.0, -1.0]).unwrap();
+        db.set_entities("kd", &["ent/alpha"]).unwrap();
+        assert_eq!(db.recall_entities(&["ent/alpha"], 10).unwrap().len(), 1);
+        db.delete("md/L4/kd").unwrap();
+        assert!(db.recall_entities(&["ent/alpha"], 10).unwrap().is_empty(), "delete limpa o índice de entidades");
     }
 
     #[test]
