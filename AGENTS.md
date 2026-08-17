@@ -157,6 +157,21 @@ exit 0 (22 MCP tools).
   remember_episodic/feedback/diary/profile/expire_old; item 10 adicionou
   recall_entities).
 
+## Agent decision protocol (v1.1.4, exemplo `agent_protocol.rs`)
+
+O core NÃO decide — ele dá o MATERIAL da decisão. O exemplo
+`examples/agent_protocol.rs` codifica a disciplina de uso da camada superior
+(itens 2–6, 12 auto-checks): **ontologia de entidades** (strings canônicas
+`kind/name` — mesmas na escrita e na busca; 1-hop só casa strings idênticas),
+**fato estruturado** (`Fact {subject, predicate, object}` + entities + scope;
+verbatim via `remember_episodic`), **evidência ponderada por provenance**
+(`recall_weighted` com w_imp forte puxa memória confiável antes de legada),
+**ciclo de vida** (`learn_fact` supersede o antigo, feedback positivo, 
+`expire_old` periódico) e **protocolo de duas passadas** (`gather_evidence`
+coleta SEM escrever; passada 2 registra o aprendizado). Regra de ouro do
+protocolo: memória de outro scope NUNCA vira evidência (filtro em todos os
+recalls).
+
 ## Repository Map
 
 A full codemap is available at `codemap.md` in the project root.
@@ -227,7 +242,8 @@ let facts = db.scan_prefix("md/L3/")?;                 // ART prefix scan
 ```bash
 cargo run --release --example bench        # benchmarks (ART/BQ/recall vs FP32)
 cargo run --release --example mcp_server   # MCP server for AI agents
-cargo run --release --example mcp_client   # HOT TEST: drives mcp_server like an IDE (45 checks)
+cargo run --release --example mcp_client   # HOT TEST: drives mcp_server like an IDE (77 checks)
+cargo run --release --example agent_protocol  # DECISION PROTOCOL (itens 2–6): como o agente USA o DB
 cargo run --release --example mesh_simulation --features p2p  # layered AI telepathy mesh
 cargo run --release --example signed_peer --features p2p      # signed-transport seam flow
 ```

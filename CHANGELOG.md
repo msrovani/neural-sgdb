@@ -70,6 +70,17 @@ Supermemory/cognee — see `docs/memory-landscape.md`).
   `scope_persists_across_reopen_and_rebuild` proves `MemoryMeta.scope` (MDM1
   v4, `sys/meta/`) survives disk reopen AND index rebuild — the filter never
   "forgets" tenants after a restart.
+- **Agent decision protocol** (`examples/agent_protocol.rs`): the discipline
+  of using the DB for decisions, encoded as reusable functions + 12
+  self-checks. Ontology of entities (canonical `kind/name` strings, same on
+  write and query), structured `Fact {subject, predicate, object}` +
+  verbatim via `remember_episodic`, provenance-weighted evidence
+  (`recall_weighted` with strong w_imp pulls the trustworthy memory ahead of
+  the legacy one), memory lifecycle (`learn_fact` supersedes the old fact,
+  positive feedback, periodic `expire_old`) and a two-pass protocol
+  (`gather_evidence` collects without writing; pass 2 records the learning).
+  Golden rule: a memory from another scope is NEVER evidence (filtered in
+  every recall). Exit code 0 iff all checks pass.
 
 ## [Unreleased] — v1.1.3 (WIP)
 

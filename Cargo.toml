@@ -54,3 +54,9 @@ required-features = ["file-storage"]
 # (raw HTTP/1.1 via std::net + serde_json; zero deps novas no crate)
 [[example]]
 name = "embedder_http"
+
+# Protocolo do agente (v1.1.4, itens 2–6) — disciplina de uso para DECISÃO:
+# ontologia de entidades, fato estruturado, evidência por provenance, ciclo
+# de vida (supersede/feedback/expire_old) e protocolo de duas passadas.
+[[example]]
+name = "agent_protocol"
