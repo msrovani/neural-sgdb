@@ -21,13 +21,38 @@
 //!   ANTES de responder e registra o aprendizado DEPOIS (fato novo ou
 //!   supersede), sem nunca reaproveitar memória de outro scope.
 //!
+//! Protocolo v2 (P1–P6) — o que a pesquisa de 2026 (SmartSearch, MemoryArena,
+//! survey "Memory for Autonomous LLM Agents", FSFM) diz sobre o USO da memória:
+//!
+//! - **P1/P5 — rerank gate + verbatim**: o gargalo não é achar, é ESCOLHER o
+//!   que entra no prompt ("compilation bottleneck" do SmartSearch: sem rerank,
+//!   só ~22% da evidência dourada sobrevive ao truncamento). Pool HÍBRIDO
+//!   (semântico BQ ∪ lexical) + rerank por ancoragem (tokens do query no texto
+//!   do hit) antes de compilar. Fato EXATO (passo 7 = 42) fica VERBATIM em L2:
+//!   o BQ só indexa L4/L5, a via lexical o recupera (verbatim > abstração,
+//!   achado MemoryArena).
+//! - **P2 — write-path filter**: antes de escrever, checa se `subject predicate`
+//!   já existe (prova pelo 1-hop de entidades). Objeto igual → DEDUP (sem
+//!   version bump, sem churn de manutenção); objeto mudou → escreve (version
+//!   bump, identidade estável) — a "memória management" do unified framework.
+//! - **P3 — reflection grounding**: toda lição cita ≥1 evidência episódica
+//!   (`DerivedFrom` do hit + `Supports` da evidência — trilha auditável).
+//!   Re-check ADVERSARIAL: procurar ativamente evidência CONTRA a crença e
+//!   marcá-la (`Contradicts`) — anti "erro auto-reforçado".
+//! - **P4 — esquecimento + bi-temporal**: `expire_old` na abertura de sessão
+//!   (FSFM/Ebbinghaus); "qual era o estado em T?" vira `recall_temporal`
+//!   (janela que cobre `at` = penalty 0; que não cobre = penalty 1).
+//! - **P6 — checkpoint multi-sessão**: abrir sessão carregando as restrições
+//!   LATENTES do scope via `recall_scoped` (o ambiente não as reestateia —
+//!   MemoryArena); recall global não vaza de scopes.
+//!
 //! Uso:
 //! ```text
 //! cargo run --release --example agent_protocol
 //! ```
 //! Exit code 0 sse todas as asserções passaram.
 
-use neural_sgdb::{Hit, InMemory, Sgdb, SgdbError};
+use neural_sgdb::{Hit, InMemory, MemoryLayer, RelationKind, Sgdb, SgdbError};
 
 // ── reporter minimal (PASS/FAIL) ────────────────────────────────────────────
 struct Rep {
@@ -181,6 +206,115 @@ fn learn_fact(
     Ok(())
 }
 
+// ── protocolo v2 (P1–P6) ─────────────────────────────────────────────────────
+// P1/P5: rerank gate — pool híbrido (semântico ∪ lexical) + rerank por
+// ancoragem lexical ANTES de compilar o prompt (SmartSearch: 98.6% de recall
+// de retrieval, mas só 22.5% da evidência dourada sobrevive ao truncamento).
+// O verbatim L2 não está no BQ (L4/L5 only) — só a via lexical o recupera.
+fn tokens(s: &str) -> Vec<String> {
+    s.split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_ascii_lowercase())
+        .collect()
+}
+
+fn grounding_score(hit_text: &str, query: &str) -> usize {
+    let qt = tokens(query);
+    let ht = tokens(hit_text);
+    qt.iter().filter(|q| ht.contains(q)).count()
+}
+
+fn rerank_gate(db: &mut Sgdb, query: &str, k: usize) -> Result<Vec<Hit>, SgdbError> {
+    let q = emb(seed_from(query));
+    let mut pool = db.recall_oversampled(&q, k.max(1).saturating_mul(4), 4)?;
+    let lex = db.recall_lexical(query, k.max(1).saturating_mul(4))?;
+    for h in lex {
+        if !pool.iter().any(|p| p.key == h.key) {
+            pool.push(h);
+        }
+    }
+    pool.sort_by(|a, b| {
+        grounding_score(&b.text, query)
+            .cmp(&grounding_score(&a.text, query))
+            .then_with(|| a.dist.total_cmp(&b.dist))
+            .then_with(|| {
+                let ia = a.provenance.as_ref().map(|p| p.importance).unwrap_or(0.0);
+                let ib = b.provenance.as_ref().map(|p| p.importance).unwrap_or(0.0);
+                ib.partial_cmp(&ia).unwrap_or(core::cmp::Ordering::Equal)
+            })
+            .then_with(|| a.key.cmp(&b.key))
+    });
+    Ok(pool.into_iter().take(k).collect())
+}
+
+// P2: write-path filter — não escrever sem checar. Prova pelo 1-hop (mesmas
+// strings canônicas): já existe `subject predicate` com o MESMO objeto →
+// dedup (sem version bump); objeto mudou → escreve (version bump, identidade
+// estável). Devolve (storage key, escreveu?).
+fn remember_fact_checked(db: &mut Sgdb, f: &Fact) -> Result<(String, bool), SgdbError> {
+    let probe = format!("{} {}", f.subject, f.predicate);
+    let ents: Vec<&str> = f.entities.iter().map(|e| e.as_str()).collect();
+    if !ents.is_empty() {
+        let hits = if f.scope.is_empty() {
+            db.recall_entities(&ents, 16)?
+        } else {
+            db.recall_entities_scoped(&ents, 16, &f.scope)?
+        };
+        for h in hits {
+            let t = h.text.trim_start();
+            if t.starts_with(&probe) {
+                if t[probe.len()..].trim() == f.object {
+                    return Ok((h.key, false)); // dedup: já existe idêntico
+                }
+                break; // objeto mudou → seguir e escrever (novo version)
+            }
+        }
+    }
+    remember_fact(db, f)?;
+    Ok((format!("md/L4/{}", f.key), true))
+}
+
+// P3: reflection grounding — toda lição referencia evidências episódicas
+// (DerivedFrom do hit + Supports da evidência: trilha auditável, mitiga
+// generalização sem base) e re-check adversarial — procurar ATIVAMENTE
+// evidência contra a crença e marcá-la (anti erro auto-reforçado).
+fn store_reflection(db: &mut Sgdb, lesson: &Fact, evidence: &[&str]) -> Result<String, SgdbError> {
+    remember_fact(db, lesson)?;
+    let lk = format!("md/L4/{}", lesson.key);
+    for ev in evidence {
+        db.associate_checked(&lk, RelationKind::DerivedFrom, ev)?;
+        db.associate_checked(ev, RelationKind::Supports, &lk)?;
+    }
+    Ok(lk)
+}
+
+fn recheck_for_contradiction(
+    db: &mut Sgdb,
+    belief_key: &str,
+    opposite_query: &str,
+) -> Result<Vec<String>, SgdbError> {
+    let mut found = Vec::new();
+    for h in db.recall_lexical(opposite_query, 8)? {
+        if h.key == belief_key {
+            continue;
+        }
+        db.associate(belief_key, RelationKind::Contradicts, &h.key)?;
+        found.push(h.key);
+    }
+    Ok(found)
+}
+
+// P4 (esquecimento) + P6 (checkpoint): abrir sessão = expire_old periódico
+// (FSFM/Ebbinghaus) + carregar as restrições LATENTES do scope via
+// `recall_scoped` (o ambiente não as reestateia — MemoryArena). O "qual era o
+// estado em T?" fica com `recall_temporal` (janela que cobre `at` = penalty
+// 0; que não cobre = penalty 1).
+fn open_session(db: &mut Sgdb, scope: &str, now: u64) -> Result<Vec<Hit>, SgdbError> {
+    db.expire_old(now)?; // forgetting cadence na abertura
+    let q = emb(seed_from(scope));
+    db.recall_scoped(&q, 8, scope)
+}
+
 fn main() {
     let mut rep = Rep::new();
     let mut db = Sgdb::open(InMemory::new()).unwrap();
@@ -315,6 +449,128 @@ fn main() {
         "item 6: passada 2 registra o aprendizado (fato estruturado)",
         decided.is_ok(),
         format!("{:?}", decided.err()),
+    );
+
+    // ── P1/P5: rerank gate + verbatim (compilation bottleneck) ─────────────
+    // resultado intermediário EXATO guardado verbatim (L2 episódico): o BQ
+    // só indexa L4/L5 — recall semântico NÃO o vê; a via lexical sim.
+    let (_, akey) = db
+        .remember_episodic("passo 7", "o passo 7 deu 42", now)
+        .unwrap();
+    let sem_only = evidence_for(&mut db, "qual o valor do passo 7?", 3, now).unwrap();
+    rep.check(
+        "P1: recall semântico NÃO vê o verbatim L2 (fora do BQ)",
+        !sem_only.iter().any(|h| h.key == akey),
+        format!("{:?}", sem_only.iter().map(|h| &h.key).collect::<Vec<_>>()),
+    );
+    let gated = rerank_gate(&mut db, "qual o valor do passo 7?", 3).unwrap();
+    rep.check(
+        "P1: rerank gate (híbrido sem∪lex + ancoragem) recupera o verbatim",
+        gated.first().map(|h| h.key.as_str()) == Some(akey.as_str()),
+        format!("top-1={:?}", gated.first().map(|h| &h.key)),
+    );
+
+    // ── P6: checkpoint multi-sessão (restrições latentes escopadas) ────────
+    db.remember_semantic("constraints/ana", "ana nao come lactose", &emb(seed_from("ana-lactose")))
+        .unwrap();
+    let sk_con = "md/L4/constraints/ana";
+    db.set_scope(sk_con, "user/ana").unwrap();
+    db.set_entities(sk_con, &[&person("ana"), &topic("dieta")]).unwrap();
+    let chk = open_session(&mut db, "user/ana", now).unwrap();
+    rep.check(
+        "P6: abertura de sessão carrega o checkpoint escopado (restrição latente)",
+        chk.iter().any(|h| h.key == sk_con),
+        format!("{:?}", chk.iter().map(|h| &h.key).collect::<Vec<_>>()),
+    );
+    let leak = db.recall(&emb(seed_from("lactose")), 8).unwrap();
+    rep.check(
+        "P6: recall global não vaza o checkpoint de outro scope",
+        !leak.iter().any(|h| h.key == sk_con),
+        format!("{:?}", leak.iter().map(|h| &h.key).collect::<Vec<_>>()),
+    );
+
+    // ── P2: write-path filter (dedup antes de escrever) ────────────────────
+    let f_ok = Fact::new("build", "status", "ok").with(&[project("neural-sgdb"), topic("build")], "");
+    let (k1, w1) = remember_fact_checked(&mut db, &f_ok).unwrap();
+    let v1 = db.version_of(&k1).unwrap();
+    let (k2, w2) = remember_fact_checked(&mut db, &f_ok).unwrap();
+    let v2 = db.version_of(&k2).unwrap();
+    rep.check(
+        "P2: fato idêntico re-apresentado é dedup (sem version bump)",
+        k1 == k2 && !w2 && v1 == v2,
+        format!("w1={w1} w2={w2} v1={v1:?} v2={v2:?}"),
+    );
+    let f_broken = Fact::new("build", "status", "broken")
+        .with(&[project("neural-sgdb"), topic("build")], "");
+    let (k3, w3) = remember_fact_checked(&mut db, &f_broken).unwrap();
+    let v3 = db.version_of(&k3).unwrap();
+    let cur = db
+        .get(MemoryLayer::L2EpisodicShort, &k1["md/L4/".len()..])
+        .unwrap()
+        .expect("companion L2 do fato build/status");
+    let cur_text = String::from_utf8_lossy(&cur.payload).into_owned();
+    rep.check(
+        "P2: objeto mudou → version bump e o doc corrente reflete o novo objeto",
+        k3 == k1 && w3 && v3 != v1 && cur_text.contains("status broken"),
+        format!("w3={w3} v3={v3:?} cur={cur_text:?}"),
+    );
+
+    // ── P3: reflection grounding + re-check adversarial ────────────────────
+    let (_, aev) = db
+        .remember_episodic(
+            "api x falhou 3 vezes hoje",
+            "erros: timeout, timeout, 503",
+            now,
+        )
+        .unwrap();
+    let lesson = Fact::new("api/x", "e", "instavel").with(&[topic("api"), topic("confiabilidade")], "");
+    let lk = store_reflection(&mut db, &lesson, &[&aev]).unwrap();
+    rep.check(
+        "P3: lição citada à evidência (DerivedFrom do hit, Supports da evidência)",
+        db.derived_from(&lk) == vec![aev.clone()] && db.supports(&aev).contains(&lk),
+        format!("derived={:?} supports={:?}", db.derived_from(&lk), db.supports(&aev)),
+    );
+    // anti auto-reforço: busca ativa de evidência CONTRA a crença
+    db.remember_episodic("api x saudavel", "api x respondeu ok em 5 requisições", now)
+        .unwrap();
+    let contra = recheck_for_contradiction(&mut db, &lk, "api x saudavel e estavel").unwrap();
+    rep.check(
+        "P3: re-check adversarial registra contradição explícita",
+        !contra.is_empty() && !db.contradicts(&lk).is_empty(),
+        format!("contra={contra:?} contradicts={:?}", db.contradicts(&lk)),
+    );
+
+    // ── P4: esquecimento (expire_old) + bi-temporal (recall_temporal) ─────
+    db.remember_semantic("versao/rust", "neural-sgdb usa rust em 2026", &emb(seed_from("rust2026")))
+        .unwrap();
+    db.set_validity("md/L4/versao/rust", 0, 1500).unwrap();
+    db.remember_semantic("versao/zig", "neural-sgdb usa zig em 2027", &emb(seed_from("zig2027")))
+        .unwrap();
+    db.set_validity("md/L4/versao/zig", 1500, u64::MAX).unwrap();
+    let at_t1 = db
+        .recall_temporal(&emb(seed_from("linguagem do neural-sgdb")), 5, 1000, 1.0, 2.0)
+        .unwrap();
+    rep.check(
+        "P4: recall_temporal em 1000 responde o estado VIGENTE (rust)",
+        at_t1.first().map(|h| h.key.as_str()) == Some("md/L4/versao/rust"),
+        format!("{:?}", at_t1.iter().map(|h| &h.key).collect::<Vec<_>>()),
+    );
+    let at_t2 = db
+        .recall_temporal(&emb(seed_from("linguagem do neural-sgdb")), 5, 2000, 1.0, 2.0)
+        .unwrap();
+    rep.check(
+        "P4: recall_temporal em 2000 responde o estado NOVO (zig)",
+        at_t2.first().map(|h| h.key.as_str()) == Some("md/L4/versao/zig"),
+        format!("{:?}", at_t2.iter().map(|h| &h.key).collect::<Vec<_>>()),
+    );
+    let expired = db.expire_old(2000).unwrap();
+    let def = db.recall(&emb(seed_from("linguagem do neural-sgdb")), 16).unwrap();
+    rep.check(
+        "P4: expire_old arquiva a janela fechada e o recall default só vê a vigente",
+        expired >= 1
+            && !def.iter().any(|h| h.key.contains("versao/rust"))
+            && def.iter().any(|h| h.key.contains("versao/zig")),
+        format!("expired={expired} def={:?}", def.iter().map(|h| &h.key).collect::<Vec<_>>()),
     );
 
     // fecha com o veredito do exemplo (exit code)

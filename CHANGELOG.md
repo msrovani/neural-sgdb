@@ -52,6 +52,37 @@ Supermemory/cognee — see `docs/memory-landscape.md`).
   (`_historical`/`_scoped`/`_scoped_historical`), ranked by overlap desc →
   importance desc → key asc. MCP `remember` gained `entities=`, new tool
   `recall_entities` (with `scope`/`historical`).
+- **Agent decision protocol v2 (P1–P6)** (`examples/agent_protocol.rs`, now 23
+  self-checks): the research-backed discipline for USING memory (SmartSearch
+  2603.15599, MemoryArena 2602.16313, "Memory for Autonomous LLM Agents"
+  2603.07670, FSFM 2604.20300). P1/P5 — `rerank_gate`: hybrid pool
+  (semantic BQ ∪ lexical) re-ranked by lexical grounding BEFORE compiling the
+  prompt (the "compilation bottleneck": recall 98.6% but only ~22% of gold
+  evidence survives truncation without reranking); exact facts stay VERBATIM
+  in L2 (`remember_episodic`) because the BQ only indexes L4/L5 — the lexical
+  path recovers them (verbatim > abstraction, MemoryArena). P2 —
+  `remember_fact_checked`: write-path filter that proves via the 1-hop entity
+  index whether `subject predicate` already exists — identical object → DEDUP
+  (no version bump, no maintenance churn), changed object → write (version
+  bump, stable identity). P3 — `store_reflection` grounds every lesson in ≥1
+  episodic evidence (`DerivedFrom` + `Supports`, auditable trail) and
+  `recheck_for_contradiction` actively searches for evidence AGAINST the
+  belief (`Contradicts` — anti self-reinforcing-error). P4 — `open_session`
+  runs `expire_old` on open (FSFM/Ebbinghaus) and `recall_temporal` answers
+  "qual era o estado em T?" (window covering `at` = penalty 0). P6 —
+  `open_session` loads the scope's LATENT constraints via `recall_scoped`
+  (the environment does not restate them — MemoryArena); global recall never
+  leaks scoped memory.
+- **`examples/memory_arena_eval.rs` (P7)**: a MemoryArena-style evaluation of
+  memory UTILITY (not recall): a memory–agent–environment loop over
+  interdependent multi-session subtasks measuring SR (binary success rate)
+  and sPS (soft progress). Config A (naive hoarder: global, semantic-only,
+  append with timestamps) vs Config B (protocol v2). Section 1 — static
+  recall quiz: BOTH saturate 3/3 (memorization alone does not discriminate,
+  the LoCoMo effect). Section 2 — three agentic tasks: B 3/3, A 0/3 (scoped
+  shopping constraint, exact verbatim intermediate value, current state after
+  lifecycle update). Deterministic (InMemory, no LLM); exit 0 iff the quiz
+  ties AND SR(B) > SR(A) AND sPS(B) > sPS(A).
 
 ### Fixed
 - **MDM1 v4 decode**: the `last_reinforced` branch (v3) never advanced `off`

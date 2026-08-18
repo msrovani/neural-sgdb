@@ -172,6 +172,45 @@ coleta SEM escrever; passada 2 registra o aprendizado). Regra de ouro do
 protocolo: memória de outro scope NUNCA vira evidência (filtro em todos os
 recalls).
 
+## Agent decision protocol v2 (P1–P7, exemplo `memory_arena_eval.rs`)
+
+Protocolo v2 = o que a pesquisa de 2026 (SmartSearch 2603.15599, MemoryArena
+2602.16313, survey "Memory for Autonomous LLM Agents" 2603.07670, FSFM
+2604.20300) diz sobre o USO da memória. `agent_protocol.rs` agora tem **23
+auto-checks** (itens 2–6 + P1–P6):
+
+- **P1/P5 — rerank gate + verbatim**: o gargalo não é achar, é ESCOLHER o que
+  entra no prompt (SmartSearch: recall 98.6% mas só 22.5% da evidência dourada
+  sobrevive ao truncamento sem rerank). `rerank_gate` = pool HÍBRIDO
+  (`recall_oversampled` semântico ∪ `recall_lexical`) + rerank por ancoragem
+  lexical (tokens do query no texto do hit) ANTES de compilar. Fato EXATO fica
+  VERBATIM em L2 (`remember_episodic`): o BQ só indexa L4/L5 — a via lexical
+  recupera (verbatim > abstração, achado MemoryArena).
+- **P2 — write-path filter**: `remember_fact_checked` prova pelo 1-hop de
+  entidades se `subject predicate` já existe; objeto igual → DEDUP (sem version
+  bump, sem churn de manutenção), mudou → escreve (version bump, identidade
+  estável) — o estágio de "memory management" do unified framework.
+- **P3 — reflection grounding**: `store_reflection` cita ≥1 evidência
+  episódica (`DerivedFrom` do hit + `Supports` da evidência — trilha
+  auditável); `recheck_for_contradiction` busca ATIVAMENTE evidência contra a
+  crença e marca `Contradicts` (anti erro auto-reforçado).
+- **P4 — esquecimento + bi-temporal**: `open_session` roda `expire_old` na
+  abertura (FSFM/Ebbinghaus); "qual era o estado em T?" vira
+  `recall_temporal` (janela que cobre `at` = penalty 0; não cobre = penalty 1).
+- **P6 — checkpoint multi-sessão**: `open_session` carrega as restrições
+  LATENTES do scope via `recall_scoped` (o ambiente não as reestateia —
+  MemoryArena); recall global não vaza de scopes.
+
+**P7 — `memory_arena_eval.rs`**: avaliação da UTILIDADE (não do recall) da
+memória, estilo MemoryArena: loop memória–agente–ambiente com subtarefas
+INTERDEPENDENTES em múltiplas sessões, medindo SR (success rate binário) e sPS
+(soft progress). Config A (naive hoarder: global, semântico puro, append com
+timestamp) vs Config B (protocolo v2). Seção 1: quiz de recall estático —
+AMBOS saturam 3/3 (memorização não distingue). Seção 2: 3 tarefas agênticas —
+B 3/3, A 0/3 (shopping/restrição escopada, formal/verbatim exato,
+lifecycle/estado corrente). Determinístico (InMemory, sem LLM), exit 0 sse
+quiz empata E SR(B) > SR(A) E sPS(B) > sPS(A).
+
 ## Repository Map
 
 A full codemap is available at `codemap.md` in the project root.
@@ -243,7 +282,8 @@ let facts = db.scan_prefix("md/L3/")?;                 // ART prefix scan
 cargo run --release --example bench        # benchmarks (ART/BQ/recall vs FP32)
 cargo run --release --example mcp_server   # MCP server for AI agents
 cargo run --release --example mcp_client   # HOT TEST: drives mcp_server like an IDE (77 checks)
-cargo run --release --example agent_protocol  # DECISION PROTOCOL (itens 2–6): como o agente USA o DB
+cargo run --release --example agent_protocol  # DECISION PROTOCOL (itens 2–6 + P1–P6): como o agente USA o DB
+cargo run --release --example memory_arena_eval # MEMORY-ARENA EVAL (P7): utilidade da memória em tarefas interdependentes
 cargo run --release --example mesh_simulation --features p2p  # layered AI telepathy mesh
 cargo run --release --example signed_peer --features p2p      # signed-transport seam flow
 ```

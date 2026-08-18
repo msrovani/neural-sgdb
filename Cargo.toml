@@ -60,3 +60,8 @@ name = "embedder_http"
 # de vida (supersede/feedback/expire_old) e protocolo de duas passadas.
 [[example]]
 name = "agent_protocol"
+
+# MemoryArena-style eval (P7): utilidade da memória em tarefas multi-sessão
+# interdependentes (SR/sPS) — protocolo v2 (B) vs naive hoarder (A), sem LLM.
+[[example]]
+name = "memory_arena_eval"
