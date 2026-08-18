@@ -8,6 +8,7 @@ that aren't reproduced here.
 
 ```bash
 cargo run --release --example bench
+cargo run --release --example era_migration_bench   # ADR-0007 era migration
 ```
 
 - All inputs are **deterministic** (LCG-seeded pseudo-random; same run on the
@@ -107,6 +108,34 @@ re-measured here.
 
 Includes L1+L2 doc creation, ART insert, and (in release) no checkpoint
 (InMemory). Not a microbenchmark — a sanity end-to-end number.
+
+### Era migration (ADR-0007) — N=2000 docs, FileStorage, 3 runs
+
+Methodology: build an era-OLD corpus (DemoEmbedder 256-dim), migrate to
+era-NEW (EraEmbedder 384-dim, simulated model) by re-embedding the preserved
+L2 text and rewriting payload+bitvec, then `rebuild_indices()` (BQ width
+reset). The re-embed cost measured here is the **crate-side floor** (trait
+invocation + allocation); a real model's inference/network cost is external
+(`Embedder` seam, `examples/embedder_http.rs`). All correctness invariants
+asserted: width-lock trap reproduced, `memory_id` stable across overwrite,
+40/40 resurrected recalls (dist ≈ 0), era-OLD queries fail **loudly** (S1),
+lexical still recovers old-era text, `validate()` clean.
+
+| phase | run 1 | run 2 | run 3 |
+|---|---|---|---|
+| write era OLD total (2000 docs) | 82.9 ms | 86.0 ms | 86.3 ms |
+| write per doc | 41.5 µs | 43.0 µs | 43.2 µs |
+| scan `md/L4/` (2000 keys) | 960.7 µs | 659.7 µs | 716.2 µs |
+| read L2 companions | 1.22 µs/doc | 1.11 µs/doc | 1.07 µs/doc |
+| re-embed (sim, crate-side) P50 | 900 ns | 1 µs | 900 ns |
+| rewrite payload+bitvec P50 | 71.6 µs | 73.0 µs | 73.2 µs |
+| rewrite payload+bitvec P99 | 145.1 µs | 195.2 µs | 173.8 µs |
+| `rebuild_indices()` (4000 docs) | 51.7 ms | 52.3 ms | 49.2 ms |
+
+Migration cost is dominated by the **payload rewrite** (~72 µs/doc: FileStorage
+append + meta + index) and the **index rebuild** (~50 ms flat); scanning and
+text reads are negligible. Wall-clock scaling ≈ `O(N · rewrite) + O(rebuild)`.
+The append-only FileStorage keeps the old-era blobs until `compact()`.
 
 ## What is deliberately NOT benchmarked
 

@@ -25,6 +25,7 @@ decisions MUST add an ADR in the same commit as the code.
 | 0004 | Formats are byte-contracts with the OS | NMD1/TKLV pinned by golden tests; never diverge |
 | 0005 | ART rejects prefix keys at the API boundary | No silent loss — `has_prefix_conflict` guard |
 | 0006 | No crypto in the core | Transport seam + `SignedEnvelope`; production plugs a real signer |
+| 0007 | Embedding model = era invariant | Model swaps are era transitions; migrate via re-embed + BQ rebuild, never mixed dims in a live BQ |
 
 ## Retrospective history
 

@@ -27,6 +27,20 @@ for AI agents to consume memory.
   (modern-client fallback)
 - Requires dev-dep `serde_json` (does not pollute the lib's zero-dep)
 
+## era_migration_bench.rs
+- `cargo run --release --example era_migration_bench` (requires `file-storage`)
+- ADR-0007: analytical benchmark of the **re-embed era migration** — scans the
+  era-OLD `md/L4/` keys, reads the preserved L2 companion texts, re-embeds with
+  the era-NEW model (simulated `EraEmbedder` 384-dim via the same `Embedder`
+  trait), rewrites payload+bitvec (overwrite keeps `memory_id`), then
+  `rebuild_indices()` to reset the BQ width.
+- Reproduces the **width-lock trap** (bughunt #11): a different-dim vector
+  inserted into a locked BQ is silently truncated — v1 is returned as
+  distance 0 for v2. Asserts resurrection (40/40 self-recalls), loud S1 for
+  era-OLD queries, lexical recovery net, clean `validate()`.
+- Measured numbers: `BENCHMARKS.md` §Era migration (rewrite ~72µs/doc,
+  rebuild ~50ms/4k docs).
+
 ## Integration
 - Depends on: `neural_sgdb` (lib), `serde_json` (dev-dep, mcp_server only)
 - MCP gotchas: do not gate tools on `initialized` (Claude Code sends tools/list

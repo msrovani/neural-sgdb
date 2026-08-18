@@ -83,6 +83,18 @@ Supermemory/cognee — see `docs/memory-landscape.md`).
   shopping constraint, exact verbatim intermediate value, current state after
   lifecycle update). Deterministic (InMemory, no LLM); exit 0 iff the quiz
   ties AND SR(B) > SR(A) AND sPS(B) > sPS(A).
+- **Model eras + era migration (ADR-0007)** (`examples/era_migration_bench.rs`):
+  the embedding model is an **era invariant per corpus** — the S1 guard checks
+  DIMENSIONS, not model identity, so same-dim model swaps are silently
+  undetectable, and `BqFlatIndex` locks `words_per_vec` on the first insert
+  (bughunt #11) — writing a different-dim embedding into a live BQ silently
+  truncates it. The ADR codifies the switch policy (new DB file per era, or an
+  explicit re-embed migration) and the benchmark measures the migration cost
+  (N=2000, FileStorage): payload rewrite ~72 µs/doc, `rebuild_indices()` ~50 ms,
+  scan/text-read negligible, all invariants asserted (width-lock trap
+  reproduced, `memory_id` stable across overwrite, 40/40 resurrected recalls,
+  era-OLD queries now fail loudly via S1, lexical still recovers old text,
+  `validate()` clean).
 
 ### Fixed
 - **MDM1 v4 decode**: the `last_reinforced` branch (v3) never advanced `off`

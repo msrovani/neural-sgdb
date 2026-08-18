@@ -392,7 +392,18 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-
   média — bitvecs armazenados intactos); `recall()` usa auto-oversample por
   dimensionalidade (1 word→16, 2-4→8, senão 4); `recall_weighted` =
   `w_sem·dist + w_rec·recência(/ts/hex) + w_imp·importância(doc, penalty 1−imp)`
-  — v1.1.2 P2.
+— v1.1.2 P2.
+- **Model = era invariant (ADR-0007)**: o S1 checa DIMENSÃO, não identidade do
+  modelo — trocar para outro modelo de MESMA dim degrada silenciosamente (sem
+  cross-match). E o BQ trava `words_per_vec` no primeiro insert (bughunt #11):
+  **escrever dim diferente num BQ vivo TRUNCA silenciosamente o vetor novo**.
+  Troca de modelo = era: base nova por era, OU migração explícita (re-embed do
+  texto preservado em `/L2/` + `remember_semantic` no mesmo id — overwrite
+  preserva memory_id — + `rebuild_indices()` para resetar a largura do BQ).
+  Custos medidos em `examples/era_migration_bench.rs` (BENCHMARKS.md):
+  rewrite ~72µs/doc, rebuild ~50ms/4k docs. `recall_lexical`/`recall_entities`
+  são a rede embedding-free do passado; `recall_temporal` NÃO é (re-ranqueia o
+  pool semântico). `compact()` reclama os blobs antigos (FileStorage append-only).
 - **Lexical dual-path** (`src/lexical.rs`): índice invertido BM25-style sobre
   textos L2/L3 (alloc-only, no_std). `recall_lexical`/`recall_hybrid` no Sgdb.
   **`f32::ln` não existe no core bare-metal** → `ln_f32` (ponteiro: expoente

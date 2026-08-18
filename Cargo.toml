@@ -65,3 +65,10 @@ name = "agent_protocol"
 # interdependentes (SR/sPS) — protocolo v2 (B) vs naive hoarder (A), sem LLM.
 [[example]]
 name = "memory_arena_eval"
+
+# Era migration (ADR-0007): benchmark analítico do custo da migração por
+# re-embed (scan → texto L2 → re-embed → reescrita payload → rebuild do BQ),
+# com a demonstração do width-lock trap e a prova da ressureição semântica.
+[[example]]
+name = "era_migration_bench"
+required-features = ["file-storage"]
