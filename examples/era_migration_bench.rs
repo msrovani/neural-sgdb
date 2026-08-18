@@ -27,9 +27,9 @@
 
 use std::time::{Duration, Instant};
 
-use neural_sgdb::bq::BqFlatIndex;
+use neural_sgdb::bq::{quantize_f32, BqFlatIndex};
 use neural_sgdb::embedder::demo_embed;
-use neural_sgdb::{Embedder, FileStorage, MemoryLayer, Sgdb, SgdbError};
+use neural_sgdb::{Embedder, FileStorage, MemoryDoc, MemoryLayer, Sgdb, SgdbError};
 
 /// "Novo modelo": trigram FNV com offset basis DIFERENTE do `demo_embed` e
 /// 384 dims (6 words × 64 bits). Só simula o outro modelo — um modelo real
@@ -210,11 +210,34 @@ fn main() {
         .unwrap()
         .memory_id;
 
+    // ── Guard de escrita (ADR-0007): remember_semantic é LOUD ─────────────
+    // O write-side era guard rejeita dim nova num corpus vivo (width-lock
+    // truncaria em silêncio). A migração deliberada usa o put cru + rebuild.
+    let guarded = db.remember_semantic(&format!("mem-{k0:06}"), &texts[0], &new_embs[0]);
+    assert!(matches!(guarded, Err(SgdbError::Invalid(_))), "guard rejeita dim nova: {guarded:?}");
+    assert_eq!(
+        db.indexed_embedding_dims(),
+        vec![256],
+        "nada foi escrito pelo caminho guarded"
+    );
+    println!("guard de escrita: remember_semantic com dim nova → SgdbError::Invalid (nada escrito; migração = put cru + rebuild)");
+
     // ── Fase 4 — reescrita payload+bitvec (overwrite preserva identidade) ─
+    // Caminho CRU (engine.put): o put em chave existente preserva memory_id/
+    // source/created e bumpeia a versão (overwrite = nova versão da MESMA
+    // memória). remember_semantic (guarded) NÃO é usado de propósito.
     let mut t_rewrite = Vec::with_capacity(N);
     for (i, id) in ids.iter().enumerate() {
         let t0 = Instant::now();
-        db.remember_semantic(id, &texts[i], &new_embs[i]).unwrap();
+        let mut payload = Vec::with_capacity(new_embs[i].len() * 4);
+        for x in &new_embs[i] {
+            payload.extend_from_slice(&x.to_le_bytes());
+        }
+        let mut doc = MemoryDoc::new(MemoryLayer::L4Semantic, id, payload);
+        doc.bitvec = Some(quantize_f32(&new_embs[i]));
+        db.put(doc).unwrap();
+        let tdoc = MemoryDoc::new(MemoryLayer::L2EpisodicShort, id, texts[i].as_bytes().to_vec());
+        db.put(tdoc).unwrap();
         t_rewrite.push(t0.elapsed());
     }
     let (p50, p99) = percentiles(t_rewrite);
@@ -228,6 +251,13 @@ fn main() {
     println!(
         "  mid-state: indexed_dims={mid_dims:?} — BQ ainda na largura da era antiga (width-lock); queries 384 SÓ serão íntegras após o rebuild"
     );
+
+    // era_report (mid-state): detecção da era mista + custo estimado
+    let rep_mid = db.era_report().unwrap();
+    assert_eq!(rep_mid.verdict, "mixed_dims", "era_report detecta a mistura de dims");
+    println!("era_report (mid-state): verdict={} — docs={} text={} bytes est. db-side={:.1} ms",
+        rep_mid.verdict, rep_mid.estimate.docs_to_reembed, rep_mid.text_bytes,
+        rep_mid.estimate.db_side_ns as f64 / 1e6);
 
     let mid_after = db
         .get(MemoryLayer::L4Semantic, &format!("mem-{k0:06}"))
@@ -249,6 +279,20 @@ fn main() {
         "fase 5 — rebuild BQ    : {t_rebuild:?} ({n} docs reindexados) indexed_dims={:?}",
         db.indexed_embedding_dims()
     );
+
+    // era_report (pós-rebuild): corpus íntegro numa era só + custo estimado
+    let rep = db.era_report().unwrap();
+    assert_eq!(rep.verdict, "ok", "após o rebuild o corpus volta a ser uma era única");
+    assert_eq!(rep.docs_per_dim, vec![(384, 2000)]);
+    assert!((rep.companion_coverage - 1.0).abs() < 1e-9, "100%% de texto preservado");
+    println!(
+        "era_report (final): verdict={} docs_per_dim={:?} coverage={:.3} est. db-side={:.1} ms (N={} docs) — a LLM multiplica pelo custo do modelo externo",
+        rep.verdict, rep.docs_per_dim, rep.companion_coverage,
+        rep.estimate.db_side_ns as f64 / 1e6, rep.estimate.docs_to_reembed
+    );
+    for l in db.era_report_lines().unwrap() {
+        println!("    {l}");
+    }
 
     // ── Ressurreição: semântica real de volta ao passado ──────────────────
     let mut hits_ok = 0usize;

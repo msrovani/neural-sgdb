@@ -352,6 +352,10 @@ fn main() {
                     {"name":"validate",
                      "description":"Integridade: varre storage md/, decodifica NMD1, cruza ART/BQ e detecta side-tables orfas. Vazio = saudavel; cada issue = key + descricao.",
                      "inputSchema":{"type":"object","properties":{}},
+                     "annotations":{"readOnlyHint":true}},
+                    {"name":"era_report",
+                     "description":"Relatorio da ERA do corpus (ADR-0007): dims indexadas, contagem por dim, largura do BQ, cobertura de texto preservado para re-embed, veredito (empty/ok/mixed_dims), plano de migracao e CUSTO ESTIMADO (formula aplicada ao total de registros; o custo do MODELO e externo — multiplique docs/text pelos numeros do seu modelo). Chamar apos um erro de dimensionalidade (S1/guard de escrita) para decidir migrar/esperar/base nova.",
+                     "inputSchema":{"type":"object","properties":{}},
                      "annotations":{"readOnlyHint":true}}
                 ]}}));
             }
@@ -885,6 +889,14 @@ fn main() {
                         };
                         send(&json!({"jsonrpc":"2.0","id":id,"result":{
                             "content":[{"type":"text","text":text}],"isError":false}}));
+                    }
+                    "era_report" => {
+                        match db.era_report_lines() {
+                            Ok(lines) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":lines.join("\n")}],"isError":false}})),
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
+                        }
                     }
                     _ => send(&error_response(&id, -32602, "Unknown tool")),
                 }

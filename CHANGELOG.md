@@ -4,6 +4,37 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [Unreleased] — v1.1.5 (era guard + era_report)
+
+The write side of ADR-0007 hardened (guinea-pig path: the agent hits S1 on
+query; now the WRITE is loud too and the DB tells the managing LLM exactly
+what to do + how much it costs).
+
+### Added
+- **Write-side era guard (ADR-0007)**: `remember_semantic` rejects an
+  embedding whose dimension is outside `indexed_dims` on a LIVE corpus with
+  `SgdbError::Invalid` (message cites the era + `era_report()`; NOTHING is
+  written — the BQ width-lock would truncate the new vector silently,
+  bughunt #11). The first write of an EMPTY DB defines the era (a fresh DB
+  per era remains the free path). Deliberate migration uses the raw path
+  (`db.put(MemoryDoc)` + `quantize_f32` + `rebuild_indices()`) — the guarded
+  API deliberately does NOT serve it.
+- **`Sgdb::era_report()`/`era_report_lines()`** (`src/era.rs`, no_std-safe):
+  read-only diagnostic that reports the corpus era state — indexed dims,
+  per-dim doc counts (L4+L5 embedding-declared, same rule as `index_doc`),
+  BQ width lock, `/L2/` companion coverage + text bytes (migration
+  viability), verdict `empty`/`ok`/`mixed_dims`, the ADR plan, and the
+  ESTIMATED db-side migration cost (`estimate_era_migration`: the measured
+  formula from BENCHMARKS.md §Era applied to the real totals, ~86 µs/doc).
+  The MODEL-side cost is external: the report hands over
+  `docs_to_reembed`×`text_bytes` for the LLM to multiply by its own model's
+  throughput/price. The core does not decide — it reports.
+- **MCP `era_report` tool**: read-only (tool 23); the manager LLM calls it
+  after an S1/write-guard error to decide migrate/keep/new-base.
+
+### Changed
+- S1 query error message now points at `era_report()`.
+
 ## [Unreleased] — v1.1.4 (memory landscape, item 1–10)
 
 Ideas ported from the memory-landscape benchmark (mem0/mempalace/Zep/Letta/

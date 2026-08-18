@@ -9,6 +9,7 @@ use alloc::vec::Vec;
 
 use crate::bq::{quantize_f32, BqFlatIndex};
 use crate::engine::AiosDatabaseEngine;
+use crate::era::{estimate_era_migration, era_report_lines, EraReport};
 use crate::memory_doc::{
     LineageEntry, MemoryDoc, MemoryLayer, MemoryMeta, MemoryRecord, MemoryState, RelationKind,
 };
@@ -836,6 +837,20 @@ impl Sgdb {
         emb: &[f32],
     ) -> Result<(), SgdbError> {
         crate::bq::check_embedding(emb)?;
+        // ADR-0007 write-side era guard: `BqFlatIndex` locks `words_per_vec` on
+        // the first insert — a different-dim embedding in a live BQ is silently
+        // truncated (bughunt #11). The FIRST write of an empty corpus defines
+        // the era; after that only matching dims are accepted. A deliberate era
+        // migration goes through the raw `put` + `rebuild_indices()` path (see
+        // `examples/era_migration_bench.rs`) — this high-level API stays loud.
+        if !self.engine.indexed_dims.is_empty() && !self.engine.indexed_dims.contains(&emb.len())
+        {
+            return Err(SgdbError::Invalid(
+                "embedding dim does not match the indexed corpus era (BQ width-lock would \
+                 truncate it silently); run era_report() for the migration plan + cost \
+                 estimate, or write to a fresh DB (new era)",
+            ));
+        }
         let mut payload = Vec::with_capacity(emb.len() * 4);
         for x in emb {
             payload.extend_from_slice(&x.to_le_bytes());
@@ -927,6 +942,100 @@ impl Sgdb {
         let mut dims: Vec<usize> = self.engine.indexed_dims.iter().copied().collect();
         dims.sort_unstable();
         dims
+    }
+
+    /// ADR-0007: relatório estruturado da ERA do corpus para a LLM gestora.
+    ///
+    /// Detecta o estado de modelo do banco (dims indexadas, contagem por dim,
+    /// trava de largura do BQ, cobertura de texto preservado `/L2/` para o
+    /// re-embed) e estima o custo da migração por re-embed aplicando a fórmula
+    /// medida (BENCHMARKS.md §Era migration) ao total real de registros.
+    /// O core NÃO decide — reporta; a camada superior decide migrar / esperar /
+    /// abrir base nova.
+    ///
+    /// O custo do lado do MODELO (inferência/API) é externo: o relatório entrega
+    /// `docs_to_reembed` + `text_bytes` e a fórmula — a LLM multiplica pelo
+    /// throughput/preço do próprio modelo.
+    ///
+    /// Custo do próprio relatório: uma passada de leitura sobre os docs L4/L5
+    /// (para contar dims) + os companions L2 (para `text_bytes`/cobertura) —
+    /// O(N) leituras de diagnóstico, não hot-path.
+    pub fn era_report(&mut self) -> Result<EraReport, SgdbError> {
+        use alloc::collections::BTreeMap;
+        use alloc::collections::BTreeSet;
+        use alloc::vec;
+
+        let indexed_dims = self.indexed_embedding_dims();
+        let bq_words = self.engine.bq.words_per_vec;
+
+        // docs por dim: só docs L4/L5 embedding-declarados (bitvec ou payload ≥4B,
+        // mesma regra do `index_doc` / guard S1) — texto re-interpretado é ruído.
+        let mut docs_per_dim: BTreeMap<usize, usize> = BTreeMap::new();
+        let mut total_embed = 0usize;
+        let mut companion_keys: BTreeSet<String> = BTreeSet::new();
+        for layer in [MemoryLayer::L4Semantic, MemoryLayer::L5Procedural] {
+            let prefix = alloc::format!("md/{}/", layer.as_str());
+            for (sk, _) in self.engine.art.scan_prefix(&prefix) {
+                let Some(doc) = self.engine.get_by_storage_key(&sk)? else {
+                    continue;
+                };
+                if doc.bitvec.is_some() || doc.payload.len() >= 4 {
+                    let dim = doc.payload.len() / 4;
+                    *docs_per_dim.entry(dim).or_insert(0) += 1;
+                    total_embed += 1;
+                    let raw = sk.trim_start_matches(&prefix);
+                    companion_keys.insert(alloc::format!("md/L2/{raw}"));
+                }
+            }
+        }
+        let docs_per_dim: Vec<(usize, usize)> = docs_per_dim.into_iter().collect();
+
+        // passada dos companions: text_bytes (para a estimativa do lado do modelo)
+        // + cobertura (viabilidade da migração por re-embed)
+        let mut covered = 0usize;
+        let mut text_bytes = 0usize;
+        for sk in &companion_keys {
+            if let Some(doc) = self.engine.get_by_storage_key(sk)? {
+                covered += 1;
+                text_bytes += doc.payload.len();
+            }
+        }
+        let companion_coverage = if total_embed > 0 {
+            covered as f64 / total_embed as f64
+        } else {
+            1.0
+        };
+
+        let (verdict, plan): (&'static str, Vec<&'static str>) = match indexed_dims.len() {
+            0 => ("empty", Vec::new()),
+            1 => ("ok", Vec::new()),
+            _ => (
+                "mixed_dims",
+                vec![
+                    "re-embed the preserved /L2/ text with the new model",
+                    "rewrite payload+bitvec on the same id (identity preserved)",
+                    "rebuild_indices() to reset the BQ width",
+                ],
+            ),
+        };
+
+        let estimate = estimate_era_migration(total_embed, text_bytes);
+
+        Ok(EraReport {
+            indexed_dims,
+            docs_per_dim,
+            bq_words_per_vec: bq_words,
+            companion_coverage,
+            text_bytes,
+            verdict,
+            plan,
+            estimate,
+        })
+    }
+
+    /// Versão formatada do relatório de era para MCP/CLI (uma linha por campo).
+    pub fn era_report_lines(&mut self) -> Result<Vec<String>, SgdbError> {
+        Ok(era_report_lines(&self.era_report()?))
     }
 
     /// Recall com **oversampling** configurável (pesquisa upstream Qdrant/BQ):
@@ -1042,7 +1151,8 @@ impl Sgdb {
         {
             return Err(SgdbError::Invalid(
                 "query dimensionality does not match any indexed embedding \
-                 (use the SAME model on write and query — see indexed_embedding_dims)",
+                 (use the SAME model on write and query — see indexed_embedding_dims; \
+                 run era_report() for the migration plan + cost estimate)",
             ));
         }
         self.metrics.recalls += 1;
@@ -4269,8 +4379,17 @@ mod tests {
         // com embedding (bitvec ou payload f32) fazia o validate reportar
         // "BQ index count != L4 doc count" (falso positivo: contava só L4).
         let mut db = Sgdb::open(InMemory::new()).unwrap();
-        // L5 com bitvec explícito (procedural embedding)
-        let mut l5 = MemoryDoc::new(MemoryLayer::L5Procedural, "proc/1", b"rotina de wake".to_vec());
+        // L5 com bitvec explícito + payload f32 consistente (procedural
+        // embedding: bitvec DERIVADO do payload — mesma dim 4, senão o
+        // write-guard ADR-0007 vê dims mistas).
+        let mut l5 = MemoryDoc::new(
+            MemoryLayer::L5Procedural,
+            "proc/1",
+            [1.0f32, -1.0, 1.0, -1.0]
+                .iter()
+                .flat_map(|x| x.to_le_bytes())
+                .collect(),
+        );
         l5.bitvec = Some(crate::bq::quantize_f32(&[1.0, -1.0, 1.0, -1.0]));
         db.put(l5).unwrap();
         // L5 com payload f32 cru (sem bitvec) — mesma regra do put_inner
@@ -4358,5 +4477,97 @@ mod tests {
         let _ = a.merge_remote(rec_b).unwrap();
         let _ = b.merge_remote(rec_a).unwrap();
         assert_eq!(a.health().open_conflicts, 1);
+    }
+
+    #[test]
+    fn write_guard_rejects_different_dim_in_live_corpus() {
+        // ADR-0007: escrever dim diferente num corpus vivo é REJEITADO alto
+        // (width-lock truncaria em silêncio) — nada é escrito, nada se perde.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let emb = vec![1.0, -1.0, 1.0, -1.0]; // primeira escrita define a era 4-dim
+        db.remember_semantic("a", "texto era fundadora", &emb).unwrap();
+        let emb2: Vec<f32> = (0..8).map(|i| (i as f32 / 8.0) - 0.5).collect();
+        let err = db.remember_semantic("b", "outra dim", &emb2).unwrap_err();
+        match err {
+            SgdbError::Invalid(msg) => {
+                assert!(msg.contains("era"), "mensagem cita era: {msg}");
+                assert!(msg.contains("era_report"), "mensagem aponta o relatório: {msg}");
+            }
+            other => panic!("esperava Invalid, veio {other:?}"),
+        }
+        assert_eq!(db.indexed_embedding_dims(), vec![4], "nada foi escrito");
+        assert_eq!(db.recall(&emb, 3).unwrap().len(), 1, "docs íntegros");
+    }
+
+    #[test]
+    fn write_guard_allows_first_write_and_same_dim() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let emb = vec![1.0, -1.0, 1.0, -1.0];
+        // DB vazio aceita QUALQUER dim (a primeira escrita define a era —
+        // cobre a "base nova por era" sem falso positivo)
+        db.remember_semantic("a", "era fundadora", &emb).unwrap();
+        // mesma dim depois → ok
+        db.remember_semantic("b", "mesma era", &emb).unwrap();
+        assert_eq!(db.indexed_embedding_dims(), vec![4]);
+    }
+
+    #[test]
+    fn era_report_empty_then_ok() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let r0 = db.era_report().unwrap();
+        assert_eq!(r0.verdict, "empty");
+        assert!(r0.plan.is_empty());
+        assert_eq!(r0.estimate.docs_to_reembed, 0);
+
+        let emb = vec![1.0, -1.0, 1.0, -1.0];
+        db.remember_semantic("a", "texto A", &emb).unwrap();
+        db.remember_semantic("b", "texto B", &emb).unwrap();
+        let r = db.era_report().unwrap();
+        assert_eq!(r.verdict, "ok");
+        assert_eq!(r.indexed_dims, vec![4]);
+        assert_eq!(r.docs_per_dim, vec![(4, 2)]);
+        assert_eq!(r.bq_words_per_vec, 1);
+        assert!(
+            (r.companion_coverage - 1.0).abs() < 1e-9,
+            "companions preservados (coverage={})",
+            r.companion_coverage
+        );
+        assert_eq!(r.text_bytes, ("texto A".len() + "texto B".len()));
+        assert_eq!(r.estimate.docs_to_reembed, 2);
+        assert!(r.plan.is_empty(), "era única não precisa de plano");
+    }
+
+    #[test]
+    fn era_report_detects_mixed_dims_and_estimates_cost() {
+        // corpus pré-existente misto (simula uma base pré-guard): 4-dim ×2
+        // (L4+L5) e 8-dim ×1 (L4 cru), sem companion para b/p.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let emb4 = vec![1.0, -1.0, 1.0, -1.0];
+        db.remember_semantic("a", "era A", &emb4).unwrap();
+        let emb8: Vec<f32> = (0..8).map(|i| (i as f32 / 8.0) - 0.5).collect();
+        let mut doc = MemoryDoc::new(
+            MemoryLayer::L4Semantic,
+            "b",
+            emb8.iter().flat_map(|x| x.to_le_bytes()).collect(),
+        );
+        doc.bitvec = Some(quantize_f32(&emb8));
+        db.put(doc).unwrap();
+        let mut doc2 = MemoryDoc::new(
+            MemoryLayer::L5Procedural,
+            "p",
+            emb4.iter().flat_map(|x| x.to_le_bytes()).collect(),
+        );
+        doc2.bitvec = Some(quantize_f32(&emb4));
+        db.put(doc2).unwrap();
+
+        let r = db.era_report().unwrap();
+        assert_eq!(r.verdict, "mixed_dims");
+        assert_eq!(r.docs_per_dim, vec![(4, 2), (8, 1)]);
+        assert_eq!(r.estimate.docs_to_reembed, 3);
+        assert_eq!(r.plan.len(), 3, "plano ADR-0007 exposto à LLM");
+        assert!((r.companion_coverage - 1.0 / 3.0).abs() < 1e-9, "só 'a' tem companion");
+        // fórmula linear: 3 docs × 86µs ≈ 0.258 ms db-side
+        let ms = r.estimate.db_side_ns as f64 / 1e6;
+        assert!((ms - 0.258).abs() < 0.05, "estimativa db-side = {ms} ms");
     }
 }

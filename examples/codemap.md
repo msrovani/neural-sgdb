@@ -37,9 +37,20 @@ for AI agents to consume memory.
 - Reproduces the **width-lock trap** (bughunt #11): a different-dim vector
   inserted into a locked BQ is silently truncated — v1 is returned as
   distance 0 for v2. Asserts resurrection (40/40 self-recalls), loud S1 for
-  era-OLD queries, lexical recovery net, clean `validate()`.
+  era-OLD queries, the **write-side era guard** (`remember_semantic` → Invalid,
+  nothing written), `era_report()` mid-state `mixed_dims` → final `ok`, lexical
+  recovery net, clean `validate()`.
 - Measured numbers: `BENCHMARKS.md` §Era migration (rewrite ~72µs/doc,
   rebuild ~50ms/4k docs).
+
+## mcp_server.rs (tool surface)
+- 23 tools (22 historical + `era_report`): remember/remember_episodic/recall/
+  rag_context/recall_temporal/recall_entities/feedback/diary/profile/expire_old/
+  explain/reinforce/forget/associate/related_to/contradicts/supersede/conflicts/
+  resolve_conflict/merge_memories/health/validate/era_report.
+- `era_report` (read-only): ADR-0007 diagnostics — dims indexadas, contagem por
+  dim, largura do BQ, cobertura `/L2/`, veredito empty/ok/mixed_dims + custo
+  estimado de migração. A LLM gestora chama após um erro de era.
 
 ## Integration
 - Depends on: `neural_sgdb` (lib), `serde_json` (dev-dep, mcp_server only)

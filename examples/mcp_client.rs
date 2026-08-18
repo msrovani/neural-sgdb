@@ -22,6 +22,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::Instant;
 
 use serde_json::{json, Value};
+use neural_sgdb::demo_embed;
 
 /// Cliente JSON-RPC mínimo: uma linha = uma mensagem; id ecoado verbatim.
 struct Mcp {
@@ -169,19 +170,19 @@ fn main() {
         r["result"]["serverInfo"]["version"] == "1.1.0", r.to_string());
     rep.phase("handshake", &t);
 
-    // ---------- fase 2: tools/list (22 tools) ----------
+    // ---------- fase 2: tools/list (23 tools) ----------
     let t = Instant::now();
     let r = srv.rpc("tools/list", json!({}));
     let tools = r["result"]["tools"].as_array().cloned().unwrap_or_default();
     let names: Vec<&str> = tools.iter().filter_map(|x| x["name"].as_str()).collect();
-    rep.check("tools/list retorna 22 tools", names.len() == 22,
+    rep.check("tools/list retorna 23 tools", names.len() == 23,
         format!("{} tools: {names:?}", names.len()));
     for want in ["remember", "remember_episodic", "recall", "rag_context", "recall_temporal",
                  "recall_entities",
                  "feedback", "diary", "profile", "expire_old",
                  "explain", "reinforce", "forget",
                  "associate", "related_to", "contradicts", "supersede", "conflicts",
-                 "resolve_conflict", "merge_memories", "health", "validate"] {
+                 "resolve_conflict", "merge_memories", "health", "validate", "era_report"] {
         rep.check(&format!("tool '{want}' presente"), names.contains(&want), "".into());
     }
     rep.phase("tools/list", &t);
@@ -270,27 +271,38 @@ fn main() {
 
     // ---------- fase 4b: embedding FORNECIDO pelo agente (v1.1 P4) ----------
     // O server aceita `embedding` no payload — a camada superior pluga um
-    // modelo real; o demo é só o fallback. Um vetor explícito de 4 dims deve
-    // ser usado tal-qual (sem trigram do server).
+    // modelo real; o demo é só o fallback. ADR-0007: o vetor do agente deve
+    // pertencer à ERA do corpus (mesma dim) — dim estrangeira é REJEITADA no
+    // write (width-lock truncaria em silêncio); quem fornece embedding usa o
+    // MESMO modelo na gravação e na busca (contrato P4, agora enforced).
     let t = Instant::now();
-    let (txt, is_err) = srv.tool("remember", json!({
+    let foreign = srv.tool("remember", json!({
         "text": "vetor customizado do agente",
         "embedding": [1.0, -1.0, 1.0, -1.0]
     }));
-    rep.check("remember aceita embedding do agente", !is_err && txt.contains("md/L4/mcp/"), txt.clone());
+    rep.check("era guard: embedding de outra dim → Invalid + hint era_report",
+        foreign.1 && foreign.0.contains("era_report"), foreign.0.clone());
+    let agent_emb: Vec<f32> = demo_embed("vetor customizado do agente");
+    let agent_emb_json: Vec<f64> = agent_emb.iter().map(|x| *x as f64).collect();
+    let (txt, is_err) = srv.tool("remember", json!({
+        "text": "vetor customizado do agente",
+        "embedding": agent_emb_json
+    }));
+    rep.check("remember aceita embedding do agente (mesma dim da era)", !is_err && txt.contains("md/L4/mcp/"), txt.clone());
     let key_emb = txt.rsplit('(').next().unwrap_or("").trim_end_matches(')').to_string();
     let (txt, is_err) = srv.tool("recall", json!({
         "query": "vetor customizado do agente",
-        "embedding": [1.0, -1.0, 1.0, -1.0],
+        "embedding": agent_emb_json,
         "k": 3
     }));
     rep.check("recall com embedding do agente acha o doc",
         !is_err && txt.contains("vetor customizado do agente"), txt.clone());
-    // contrato P4: embedding de 4 dims NÃO casa com o demo (256 dims) — quem
-    // fornece embedding usa o MESMO modelo na gravação e na busca
-    let (txt, _) = srv.tool("recall", json!({"query": "vetor customizado do agente", "k": 3}));
-    rep.check("recall sem embedding NÃO acha doc de outra dimensionalidade (contrato)",
-        !txt.contains("vetor customizado do agente"), txt.clone());
+    // contrato P4: MESMO modelo nos dois caminhos — o recall sem embedding
+    // (fallback demo) casa com o doc gravado com o embedding do agente, pois
+    // ambos derivam do mesmo modelo da era (consistência de era, ADR-0007)
+    let (txt, is_err) = srv.tool("recall", json!({"query": "vetor customizado do agente", "k": 3}));
+    rep.check("recall sem embedding acha doc do agente (mesmo modelo, mesma era)",
+        !is_err && txt.contains("vetor customizado do agente"), txt.clone());
     // caminho do embedder do server (demo): doc gravado SEM embedding acha no
     // recall sem embedding
     let (txt, is_err) = srv.tool("remember", json!({"text": "doc demo do servidor com trigram"}));
@@ -310,15 +322,18 @@ fn main() {
     let t = Instant::now();
     let mut paged_keys: Vec<String> = Vec::new();
     for i in 0..4 {
+        let text = format!("memoria paginada {:02} com embedding do agente", i);
+        let emb: Vec<f64> = demo_embed(&text).iter().map(|x| *x as f64).collect();
         let (txt, is_err) = srv.tool("remember", json!({
-            "text": format!("memoria paginada {:02} com embedding do agente", i),
-            "embedding": [1.0, -1.0, 1.0, -1.0]
+            "text": text,
+            "embedding": emb
         }));
         rep.check(&format!("remember p4c-{}", i), !is_err, txt.clone());
     }
+    let q_emb: Vec<f64> = demo_embed("memoria paginada embedding do agente").iter().map(|x| *x as f64).collect();
     let r1 = srv.rpc("tools/call", json!({"name": "recall", "arguments": {
         "query": "memoria paginada embedding do agente",
-        "embedding": [1.0, -1.0, 1.0, -1.0],
+        "embedding": q_emb,
         "k": 8,
         "pageSize": 2
     }}));
@@ -332,7 +347,7 @@ fn main() {
     rep.check("página 1 devolve 2 hits", paged_keys.len() == 2, format!("{paged_keys:?}"));
     let r2 = srv.rpc("tools/call", json!({"name": "recall", "arguments": {
         "query": "memoria paginada embedding do agente",
-        "embedding": [1.0, -1.0, 1.0, -1.0],
+        "embedding": q_emb,
         "k": 8,
         "pageSize": 2,
         "cursor": cur
@@ -376,6 +391,13 @@ fn main() {
         !is_err && txt.contains("doc_count"), txt.clone());
     let (txt, is_err) = srv.tool("validate", json!({}));
     rep.check("validate: banco saudável", !is_err && txt.contains("saudavel"), txt.clone());
+    // era_report (ADR-0007): veredito de era + custo estimado aplicando a
+    // fórmula ao total de registros — a LLM gestora decide migrar/esperar.
+    let (txt, is_err) = srv.tool("era_report", json!({}));
+    rep.check("era_report: verdict ok (era única 256-dim)",
+        !is_err && txt.contains("verdict: ok"), txt.clone());
+    rep.check("era_report: estimativa de custo exposta (formula + db-side)",
+        txt.contains("estimated db-side") && txt.contains("formula"), txt.clone());
     rep.phase("health/validate", &t);
 
     // ---------- fase 8: resources + paginação ----------

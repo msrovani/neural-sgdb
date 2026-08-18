@@ -90,7 +90,7 @@ regression test; hot test 60/60 exit 0; matrix 206+1 / 252+1 / 159+1):
 Ported from the memory-landscape benchmark (mem0/mempalace/Zep/Letta/
 Supermemory/cognee — see `docs/memory-landscape.md`). Matrix: **210+1 /
 252+1 → 256+1 / 159+1 → 162+1**, clippy/no_std/doc gates green, hot test
-exit 0 (22 MCP tools).
+exit 0 (23 MCP tools).
 
 - **ADD-only é contrato oficial** (item 1): o BQ é append-only — novos fatos
   acumulam e confrontam o pool via ranking determinístico, nunca overwrite
@@ -295,7 +295,7 @@ MCP server as a local server (`NEURAL_SGDB_DB=.nsgdb/memory.db`, gitignored),
 giving the agent `mcp__neural-sgdb__*` tools (22: remember/remember_episodic/
 recall/rag_context/recall_temporal/recall_entities/feedback/diary/profile/
 expire_old/explain/reinforce/forget/associate/related_to/contradicts/
-supersede/conflicts/resolve_conflict/merge_memories/health/validate). Audit
+supersede/conflicts/resolve_conflict/merge_memories/health/validate/era_report). Audit
 log in
 `docs/hot_test.md`. Lessons learned (2026-08-13): `remember` returns the FULL
 storage key (`md/L4/...`), always use it for follow-up (`explain`/`reinforce`
@@ -398,12 +398,23 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-
   cross-match). E o BQ trava `words_per_vec` no primeiro insert (bughunt #11):
   **escrever dim diferente num BQ vivo TRUNCA silenciosamente o vetor novo**.
   Troca de modelo = era: base nova por era, OU migração explícita (re-embed do
-  texto preservado em `/L2/` + `remember_semantic` no mesmo id — overwrite
-  preserva memory_id — + `rebuild_indices()` para resetar a largura do BQ).
-  Custos medidos em `examples/era_migration_bench.rs` (BENCHMARKS.md):
+  texto preservado em `/L2/` + put cru no mesmo id — overwrite preserva
+  memory_id — + `rebuild_indices()` para resetar a largura do BQ). Custos
+  medidos em `examples/era_migration_bench.rs` (BENCHMARKS.md):
   rewrite ~72µs/doc, rebuild ~50ms/4k docs. `recall_lexical`/`recall_entities`
   são a rede embedding-free do passado; `recall_temporal` NÃO é (re-ranqueia o
   pool semântico). `compact()` reclama os blobs antigos (FileStorage append-only).
+- **Write-side era guard (ADR-0007, v1.1.5)**: `remember_semantic` agora é
+  LOUD no WRITE também — dim fora de `indexed_dims` num corpus vivo →
+  `SgdbError::Invalid` (mensagem cita era + `era_report()`, nada é escrito);
+  a primeira escrita de um DB vazio DEFINE a era (base nova por era continua
+  livre). Migração deliberada = put cru (`MemoryDoc` + `quantize_f32`) +
+  `rebuild_indices()` — o caminho guarded NÃO serve. `Sgdb::era_report()`
+  (MCP `era_report`, read-only) reporta dims indexadas, contagem por dim,
+  largura do BQ, cobertura `/L2/` e o CUSTO ESTIMADO (fórmula BENCHMARKS §Era
+  aplicada ao total real: ~86µs/doc db-side; o custo do MODELO é externo — a
+  LLM multiplica `docs_to_reembed`×`text_bytes` pelo próprio modelo). Veredito:
+  `empty`/`ok`/`mixed_dims`. O core NÃO decide — reporta.
 - **Lexical dual-path** (`src/lexical.rs`): índice invertido BM25-style sobre
   textos L2/L3 (alloc-only, no_std). `recall_lexical`/`recall_hybrid` no Sgdb.
   **`f32::ln` não existe no core bare-metal** → `ln_f32` (ponteiro: expoente
