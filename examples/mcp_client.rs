@@ -240,6 +240,22 @@ fn main() {
             && arr.is_some_and(|a| a[0]["type"].as_str().is_some())
             && arr.is_some_and(|a| a[0]["dist"].is_number()),
         txt.clone());
+    // v1.1.6 item 3: payload_type/payload_dim — o datum REAL do primário
+    // (Embedding(dim)) vs a projeção (type=Text do companion). A linha 206
+    // mostrou key=/L4/ (primário sem companion) → payload_type=embedding.
+    let (txt, is_err) = srv.tool("recall", json!({"query": "telepatia converge", "k": 3, "format": "json", "mode": "lexical"}));
+    let parsed: Value = serde_json::from_str(&txt).unwrap_or(Value::Null);
+    let arr = parsed.as_array();
+    rep.check("recall lexical format=json expoe payload_type Embedding(dim)",
+        !is_err
+            && arr.is_some_and(|a| !a.is_empty())
+            && arr.is_some_and(|a| a[0]["payload_type"].as_str().is_some())
+            && arr.is_some_and(|a| a[0]["payload_type"] == "embedding"),
+        txt.clone());
+    // v1.1.6 item 4: rerank por ancoragem lexical no rag_context (P1/P5).
+    let (txt, is_err) = srv.tool("rag_context", json!({"query": "telepatia converge", "k": 2, "rerank": true}));
+    rep.check("rag_context rerank=true ancorado e auditavel (anchors=)",
+        !is_err && txt.contains("anchors=") && !txt.contains("erro:"), txt.clone());
     rep.phase("recall modes", &t);
 
     // ---------- fase 4e: retrieval temporal com intenção (v1.1.4 item 9) ----

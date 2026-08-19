@@ -103,6 +103,12 @@ pub struct Hit {
     /// Tipo do datum (v1.1.6) — Text/Json/Code renderizam verbatim na projeção
     /// prosa; Embedding/Binary NÃO são prosa (nunca `from_utf8_lossy`).
     pub content_type: ContentType,
+    /// Tipo do payload do doc PRIMÁRIO que o hit representa (v1.1.6 item 3) —
+    /// para um hit semântico L4/L5 (com ou sem companion) é `Embedding(dim)`:
+    /// o consumidor re-usa o vetor com o MESMO modelo (era ADR-0007). Para um
+    /// companion `/L2/` (lexical/entities), é o tipo do primário resolvido via
+    /// `rel`; sem primário, o tipo do próprio payload.
+    pub payload_type: ContentType,
     /// Score bruto (BM25 p/ lexical; rescore u32 p/ semântico) — ranking
     /// auditable além do `dist` normalizado.
     pub score: f32,
@@ -564,10 +570,15 @@ impl Sgdb {
                 detect_content_type(text.as_bytes(), None)
             };
             let validity = self.engine.validity_window(&sk);
-            let rel = if sk.starts_with("md/L2/") {
-                self.primary_of(&sk)
+            // item 3 — primário L4/L5/L3: payload_type = Embedding(dim);
+            // companion `/L2/` (raro no índice de entidades): tipo do primário.
+            let (rel, payload_type) = if sk.starts_with("md/L2/") {
+                match self.primary_of(&sk) {
+                    Some((pk, pct)) => (Some(pk), pct),
+                    None => (None, ct_fallback),
+                }
             } else {
-                None
+                (None, ct_fallback)
             };
             out.push(Hit {
                 key: sk,
@@ -576,6 +587,7 @@ impl Sgdb {
                 provenance: prov,
                 path: RecallPath::Entities,
                 content_type,
+                payload_type,
                 score: overlap as f32,
                 matched_terms: Vec::new(),
                 validity,
@@ -1309,6 +1321,7 @@ impl Sgdb {
                     provenance,
                     path: RecallPath::Semantic,
                     content_type: ct_fallback,
+                    payload_type: ct_fallback,
                     score: score as f32,
                     matched_terms: Vec::new(),
                     validity,
@@ -1525,15 +1538,21 @@ impl Sgdb {
                     scope: m.scope.clone(),
                     entities: m.entities.clone(),
                 });
+                let own_ct = detect_content_type(&doc.payload, None);
                 // v1.1.6 — datum TIPADO: projeção prosa só para Text/Json/Code;
                 // Binário/Embedding NUNCA passam por from_utf8_lossy.
-                let text = match detect_content_type(&doc.payload, None) {
+                let text = match own_ct {
                     ContentType::Text | ContentType::Json | ContentType::Code => {
                         String::from_utf8_lossy(&doc.payload).into_owned()
                     }
                     ContentType::Embedding(_) | ContentType::Binary => String::new(),
                 };
-                let rel = self.primary_of(&sk);
+                // item 3 — o primário (via rel) carrega o datum REAL (Embedding
+                // dim p/ L4/L5); o companion é a projeção de texto.
+                let (rel, payload_type) = match self.primary_of(&sk) {
+                    Some((pk, pct)) => (Some(pk), pct),
+                    None => (None, own_ct),
+                };
                 let validity = self.engine.validity_window(&sk);
                 out.push(Hit {
                     key: sk,
@@ -1541,7 +1560,8 @@ impl Sgdb {
                     dist: (1.0 - score / max).clamp(0.0, 1.0),
                     provenance,
                     path: RecallPath::Lexical,
-                    content_type: detect_content_type(&doc.payload, None),
+                    content_type: own_ct,
+                    payload_type,
                     score,
                     matched_terms,
                     validity,
@@ -1555,12 +1575,17 @@ impl Sgdb {
     /// Resolve o doc PRIMÁRIO de um companion `/L2/` (v1.1.6): para
     /// follow-ups (`explain`/`supersede`) o alvo é o `md/L4|L5|L3/<id>`, não o
     /// companion. `None` para keys não-L2 ou sem primário existente.
-    fn primary_of(&mut self, sk: &str) -> Option<String> {
+    fn primary_of(&mut self, sk: &str) -> Option<(String, ContentType)> {
         let rest = sk.strip_prefix("md/L2/")?;
         for prim in ["md/L4/", "md/L5/", "md/L3/"] {
             let cand = alloc::format!("{prim}{rest}");
-            if let Ok(Some(_)) = self.engine.get_by_storage_key(&cand) {
-                return Some(cand);
+            if let Ok(Some(doc)) = self.engine.get_by_storage_key(&cand) {
+                // tipo do payload do primário (Embedding(dim) p/ L4/L5)
+                let ct = detect_content_type(
+                    &doc.payload,
+                    embedding_dim_of(&doc.payload, doc.bitvec.is_some()),
+                );
+                return Some((cand, ct));
             }
         }
         None
@@ -1762,6 +1787,78 @@ impl Sgdb {
         }
         // tetos minúsculos: o próprio header pode exceder max_bytes (ex: 1).
         // Garante o contrato "nunca excede" truncando em fronteira de char.
+        if max_bytes != 0 && out.len() > max_bytes {
+            let cut = out
+                .char_indices()
+                .take_while(|(i, _)| *i < max_bytes)
+                .map(|(i, _)| i)
+                .last()
+                .unwrap_or(0);
+            out.truncate(cut);
+        }
+        if out.len() <= "[SGDB-RAG top-".len() {
+            return Ok(String::new());
+        }
+        Ok(out)
+    }
+
+    /// RAG context com **rerank por ancoragem lexical** (v1.1.6 item 4 — a
+    /// lição P1/P5: o gargalo não é achar, é ESCOLHER o que entra no prompt).
+    ///
+    /// Pega um pool AMPLIADO (`recall_oversampled` com oversample 8, top-4k)
+    /// e re-ordena por quantos tokens do QUERY aparecem no texto do hit
+    /// (substring lowercased — ancoragem barata), depois score desc e dist
+    /// asc. Hits ancorados sobem mesmo se o cosseno não os colocou no top-k;
+    /// os sem âncora ficam no final (ordenados pelo score). Cada linha expõe
+    /// `anchors=N` — o "porquê" da escolha é auditável pelo consumidor.
+    /// Mesmo teto de bytes do `rag_context_limited`.
+    pub fn rag_context_reranked(
+        &mut self,
+        query_emb: &[f32],
+        query_text: &str,
+        k: usize,
+    ) -> Result<String, SgdbError> {
+        let max_bytes = crate::limits::MAX_RAG_CONTEXT_BYTES;
+        let pool_k = k.saturating_mul(4).max(16);
+        let pool = self.recall_oversampled(query_emb, pool_k, 8)?;
+        if pool.is_empty() {
+            return Ok(String::new());
+        }
+        let toks = crate::lexical::tokenize(query_text);
+        let mut ranked: Vec<(Hit, usize)> = pool
+            .into_iter()
+            .map(|h| {
+                let low = h.text.to_ascii_lowercase();
+                let anchors = toks.iter().filter(|t| low.contains(t.as_str())).count();
+                (h, anchors)
+            })
+            .collect();
+        ranked.sort_by(|a, b| {
+            b.1.cmp(&a.1)
+                .then_with(|| {
+                    b.0.score
+                        .partial_cmp(&a.0.score)
+                        .unwrap_or(core::cmp::Ordering::Equal)
+                })
+                .then_with(|| {
+                    a.0.dist
+                        .partial_cmp(&b.0.dist)
+                        .unwrap_or(core::cmp::Ordering::Equal)
+                })
+        });
+        let shown = ranked.iter().take(k).filter(|(h, _)| !h.text.is_empty()).count();
+        let mut out = alloc::format!("[SGDB-RAG top-{}]\n", shown);
+        for (i, (h, anchors)) in ranked.iter().take(k).enumerate() {
+            if h.text.is_empty() {
+                continue;
+            }
+            let line =
+                alloc::format!("  #{}) d={:.4} anchors={} {}\n", i + 1, h.dist, anchors, clamp(&h.text, 200));
+            if max_bytes != 0 && out.len() + line.len() > max_bytes {
+                break;
+            }
+            out.push_str(&line);
+        }
         if max_bytes != 0 && out.len() > max_bytes {
             let cut = out
                 .char_indices()
@@ -4728,6 +4825,10 @@ mod tests {
         let prim = db.engine.get_by_storage_key(rel).unwrap().unwrap();
         assert!(!h.text.is_empty(), "texto do companion projetado");
         assert!(prim.payload.len() == 16, "payload L4 = embedding 4-dim");
+        // item 3 — o companion carrega o datum do PRIMÁRIO (Embedding(4)),
+        // não o da própria projeção (Text): o consumidor re-usa o vetor.
+        assert_eq!(h.content_type, ContentType::Text);
+        assert_eq!(h.payload_type, ContentType::Embedding(4));
     }
 
     #[test]
@@ -4740,6 +4841,10 @@ mod tests {
         let h = &hits[0];
         assert_eq!(h.path, RecallPath::Semantic);
         assert_eq!(h.content_type, ContentType::Text, "companion → tipo do texto");
+        // item 3 — payload_type = Embedding(4): o datum REAL do primário
+        // (o companion é a projeção); o consumidor re-usa o vetor com o
+        // MESMO modelo (era ADR-0007).
+        assert_eq!(h.payload_type, ContentType::Embedding(4));
         assert!(!h.text.is_empty());
         assert!(h.validity.is_none());
         assert!(h.rel.is_none(), "doc primário não tem rel");
@@ -4795,5 +4900,56 @@ mod tests {
         // recall_temporal carrega o Hit com validade intacta (penaliza/sobe)
         let t = db.recall_temporal(&emb, 5, 150, 1.0, 10.0).unwrap();
         assert_eq!(t[0].validity, Some((100, 200)));
+    }
+
+    #[test]
+    fn rag_context_reranked_prefers_lexical_anchor() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let bytes_of = |f: &[f32]| {
+            f.iter()
+                .flat_map(|x| x.to_le_bytes())
+                .collect::<Vec<u8>>()
+        };
+        // cosseno exato controlado: q e A no eixo X (cos ≈ 0.995); B no eixo
+        // Y (cos ≈ 0) mas com o TEXTO ancorado na query.
+        let q = vec![1.0f32, 0.0, 0.0, 0.0];
+        let emb_a = vec![1.0f32, 0.1, 0.0, 0.0];
+        let emb_b = vec![0.0f32, 1.0, 0.0, 0.0];
+        let mut a = MemoryDoc::new(MemoryLayer::L4Semantic, "a", bytes_of(&emb_a));
+        a.bitvec = Some(quantize_f32(&emb_a));
+        db.put(a).unwrap();
+        db.engine
+            .put_companion(MemoryDoc::new(
+                MemoryLayer::L2EpisodicShort,
+                "a",
+                b"protocolo entre agentes".to_vec(),
+            ))
+            .unwrap();
+        let mut b = MemoryDoc::new(MemoryLayer::L4Semantic, "b", bytes_of(&emb_b));
+        b.bitvec = Some(quantize_f32(&emb_b));
+        db.put(b).unwrap();
+        db.engine
+            .put_companion(MemoryDoc::new(
+                MemoryLayer::L2EpisodicShort,
+                "b",
+                b"anaconda radar".to_vec(),
+            ))
+            .unwrap();
+        // sem rerank: top-1 = A (cosseno alto)
+        let plain = db.rag_context(&q, 1).unwrap();
+        assert!(
+            plain.contains("protocolo") && plain.contains("#1)"),
+            "top-1 semântico = A: {plain}"
+        );
+        // com rerank: a âncora lexical (anaconda + radar) sobe B pro top-1
+        let reranked = db.rag_context_reranked(&q, "anaconda radar", 1).unwrap();
+        assert!(
+            reranked.contains("anaconda radar"),
+            "rerank puxou a âncora pro topo: {reranked}"
+        );
+        assert!(
+            reranked.contains("anchors="),
+            "âncoras auditáveis no contexto: {reranked}"
+        );
     }
 }

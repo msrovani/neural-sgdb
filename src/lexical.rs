@@ -8,7 +8,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 /// Tokeniza em termos alfanuméricos lowercased (sem stopwords/deps).
-fn tokenize(text: &str) -> Vec<String> {
+/// `pub(crate)` — o rerank por ancoragem lexical (v1.1.6 item 4) reusa.
+pub(crate) fn tokenize(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
     for c in text.chars() {

@@ -144,6 +144,10 @@ fn fmt_hit(h: &neural_sgdb::Hit) -> String {
     }
     tags.push(format!("path={:?}", h.path));
     tags.push(format!("type={:?}", h.content_type));
+    if h.payload_type != h.content_type {
+        // datum real do primário (Embedding(dim) p/ L4/L5) vs projeção
+        tags.push(format!("payload={:?}", h.payload_type));
+    }
     if !h.matched_terms.is_empty() {
         tags.push(format!(
             "terms={}",
@@ -197,6 +201,10 @@ fn hit_json(h: &neural_sgdb::Hit) -> Value {
     let ct = content_type_json(h.content_type);
     obj["type"] = ct["type"].clone();
     obj["dim"] = ct.get("dim").cloned().unwrap_or(Value::Null);
+    // item 3 — datum real do primário (Embedding(dim)) vs projeção (type)
+    let pct = content_type_json(h.payload_type);
+    obj["payload_type"] = pct["type"].clone();
+    obj["payload_dim"] = pct.get("dim").cloned().unwrap_or(Value::Null);
     obj["provenance"] = match h.provenance.as_ref() {
         Some(p) => json!({
             "memory_id": p.memory_id,
@@ -331,12 +339,13 @@ fn main() {
                        "required":["query"]},
                      "annotations":{"readOnlyHint":true}},
                     {"name":"rag_context",
-                     "description":"Busca memorias e monta contexto formatado pronto para prompt RAG. `mode` (v1.1.6) seleciona o caminho de retrieval como no recall: 'semantic' (default, core rag_context), 'lexical' (BM25, sem embedding) ou 'hybrid' (semantico + lexical). `format=json` (v1.1.6) devolve os hits ESTRUTURADOS em vez da prosa compacta. Opcional: `embedding` fornecido pelo agente.",
+                     "description":"Busca memorias e monta contexto formatado pronto para prompt RAG. `mode` (v1.1.6) seleciona o caminho de retrieval como no recall: 'semantic' (default, core rag_context), 'lexical' (BM25, sem embedding) ou 'hybrid' (semantico + lexical). `rerank=true` (v1.1.6 item 4) re-ordena o pool ampliado por ancoragem lexical (tokens do query no texto — o gargalo e escolher o que entra no prompt, P1/P5). `format=json` (v1.1.6) devolve os hits ESTRUTURADOS em vez da prosa compacta. Opcional: `embedding` fornecido pelo agente.",
                      "inputSchema":{"type":"object",
                        "properties":{
                          "query":{"type":"string","description":"Texto de busca"},
                          "embedding":{"type":"array","items":{"type":"number"},"description":"Embedding fornecido pelo agente (opcional)"},
                          "mode":{"type":"string","enum":["semantic","lexical","hybrid"],"default":"semantic"},
+                         "rerank":{"type":"boolean","default":false,"description":"Rerank por ancoragem lexical no pool ampliado"},
                          "format":{"type":"string","enum":["json"],"description":"'json' = hits estruturados; omitir = prosa"},
                          "k":{"type":"integer","minimum":1,"maximum":10,"default":3}},
                        "required":["query"]},
@@ -718,12 +727,17 @@ fn main() {
                             }
                             _ => {
                                 // format=json: hits estruturados; default: core
-                                // rag_context (prosa compacta p/ prompt).
+                                // rag_context (prosa compacta p/ prompt);
+                                // rerank=true (item 4): ancoragem lexical no
+                                // pool ampliado (lição P1/P5).
                                 let hits = db.recall(&emb, k).unwrap_or_default();
                                 if json_fmt {
                                     hits_json(&hits)
                                 } else if hits.is_empty() {
                                     "nenhum contexto recuperado".into()
+                                } else if args["rerank"].as_bool().unwrap_or(false) {
+                                    db.rag_context_reranked(&emb, query, k)
+                                        .unwrap_or_else(|e| format!("erro: {e}"))
                                 } else {
                                     db.rag_context(&emb, k).unwrap_or_else(|e| format!("erro: {e}"))
                                 }

@@ -199,10 +199,26 @@ verdes, hot test 84/0 exit 0.
   da query que casaram, deduplicados por doc.
 - **`Sgdb::primary_of`**: `md/L2/<id>` → primário existente (`/L4/`→`/L5/`→
   `/L3/`) para follow-ups (`explain`/`supersede` miram o primário).
+- **`Hit.payload_type` (v1.1.6 item 3)**: o datum REAL do primário — para um
+  hit semântico L4/L5 (com ou sem companion) é `Embedding(dim)` do payload; o
+  consumidor re-usa o vetor com o MESMO modelo (era ADR-0007), mesmo quando a
+  projeção `content_type` é Text (companion). Para um companion `/L2/` via
+  lexical/entities, `primary_of` agora devolve `Option<(String, ContentType)>`
+  (tipo do payload do primário) — 3 sites de construção (recall_impl,
+  recall_lexical_impl, recall_entities_impl) preenchem `payload_type`.
+- **`rag_context_reranked` (v1.1.6 item 4 — lição P1/P5)**: o gargalo é
+  ESCOLHER o que entra no prompt. `Sgdb::rag_context_reranked(emb, query_text,
+  k)` = pool AMPLIADO (`recall_oversampled` oversample 8, top-4k) + rerank por
+  ancoragem lexical (tokens do query — `lexical::tokenize`, agora `pub(crate)`
+  — presentes no texto do hit, substring lowercased) → score desc → dist asc.
+  Linha expõe `anchors=N` (o "porquê" é auditável); mesmo teto de bytes do
+  `rag_context_limited`. MCP `rag_context` ganhou `rerank=true` (só no mode
+  semantic default).
 - **MCP `fmt_hit`** (unificado p/ recall todos os modes + recall_temporal +
   recall_entities): `- {key} | {text} (d=..) [state=.. imp=.. conf=.. src=..
   path=.. type=.. terms=.. rel=.. valid=..]` — invariantes preservadas
   (prefixo `- {key} | ` = paginação `split(" | ")`; sufixo abre ` [state=`).
+  `payload=..` só aparece quando difere de `type` (datum real ≠ projeção).
   `rag_context` ganhou `mode` (semantic/lexical/hybrid) devolvendo hits
   tipados no lexical/hybrid. Nenhum tool NOVO (22 permanece).
 - **MCP `format=json`** (v1.1.6 item 1): recall, recall_temporal,
