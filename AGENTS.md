@@ -172,9 +172,13 @@ verdes, hot test 84/0 exit 0.
   `RecallPath` = Semantic | Lexical | Entities (o campo `dist` tem escala
   DIFERENTE por path — cosseno 0..1 vs BM25 normalizado; em `hybrid` o
   consumidor precisa saber qual é qual); `detect_content_type` (JSON =
-  `{…}`/`[…]` delimitado; código = heurística conservadora `fn `→`-> ` ou
-  braces≥2 + semis/arrows; não-UTF8 → Binary), `embedding_dim_of` (len%4==0
-  e ≥4 — mesma regra do `index_doc`/S1).
+  `{…}`/`[…]` delimitado; código = keyword (`fn `/`impl `/`return `/`=> `…) +
+  UM segundo sinal estrutural (chave/semicolon/arrow/outra keyword) ou
+  braces≥2 + semis/arrows — um `-> ` isolado em prosa ("L5 -> md/L2") NÃO vira
+  code, o custo de rotular prosa como code (consumidor com menos contexto pode
+  tentar parsear o texto) é maior que o de rotular code como text (verbatim);
+  não-UTF8 → Binary), `embedding_dim_of` (len%4==0 e ≥4 — mesma regra do
+  `index_doc`/S1).
 - **`Hit` (v1.1.6)**: + `path`, `content_type`, `score` (bruto, ranking
   auditável), `matched_terms` (grounding BM25 — o "porquê" do casamento),
   `validity: Option<(u64,u64)>` (janela bi-temporal por hit), `rel: Option<

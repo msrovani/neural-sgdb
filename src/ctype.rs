@@ -61,21 +61,27 @@ pub fn detect_content_type(payload: &[u8], embedding_dim: Option<u32>) -> Conten
     }
 }
 
-/// Heurística conservadora de código (HINT, não classificação): símbolos
-/// estruturais que prosa normal quase nunca tem juntos.
+/// Heurística conservadora de código (HINT, não classificação): exige UM
+/// sinal estrutural (keyword) MAIS um segundo sinal (outra keyword, chave,
+/// semicolon ou arrow). Um `-> ` isolado em prosa ("L5 -> md/L2") NÃO vira
+/// code — o custo de rotular prosa como código (consumidor com menos
+/// contexto pode tentar executar/parsear o texto) é maior que o de rotular
+/// código como texto (que continua verbatim).
 fn looks_like_code(s: &str) -> bool {
     let low = s.to_ascii_lowercase();
-    for kw in [
+    let kws = [
         "fn ", "impl ", "struct ", "enum ", "trait ", "def ", "class ", "func ", "function ",
-        "return ", "=> ", " -> ",
-    ] {
-        if low.contains(kw) {
-            return true;
-        }
-    }
+        "return ", "=> ",
+    ];
+    let kw_hits = kws.iter().filter(|kw| low.contains(**kw)).count();
     let braces = s.bytes().filter(|b| *b == b'{' || *b == b'}').count();
     let semis = s.bytes().filter(|b| *b == b';').count();
     let arrows = s.matches("->").count();
+    // keyword só + um segundo sinal estrutural
+    if kw_hits >= 1 && (kw_hits >= 2 || braces >= 1 || semis >= 1 || arrows >= 1) {
+        return true;
+    }
+    // sem keyword: estrutura forte de bloco
     braces >= 2 && (semis >= 1 || arrows >= 1)
 }
 
@@ -131,6 +137,25 @@ mod tests {
         assert_eq!(
             detect_content_type(&[0u8; 16], Some(4)),
             ContentType::Embedding(4)
+        );
+    }
+
+    #[test]
+    fn prose_with_arrow_is_not_code() {
+        // prosa descrevendo mapeamento com ` -> ` (memória v1.1.6): NÃO é
+        // código — o custo de rotular prosa como code > o de code como text.
+        assert_eq!(
+            detect_content_type(
+                b"o companion L5 -> md/L2/<id> quando o doc nao tem texto",
+                None
+            ),
+            ContentType::Text
+        );
+        assert_eq!(detect_content_type(b"clima -> ensolarado hoje", None), ContentType::Text);
+        // código real continua code: keyword + segundo sinal estrutural
+        assert_eq!(
+            detect_content_type(b"fn f(x) { return x + 1; }", None),
+            ContentType::Code
         );
     }
 
