@@ -228,6 +228,18 @@ fn main() {
     // TIPADO no retorno (path=...) e a renderização não regrediu.
     rep.check("hits híbridos exibem path/type (v1.1.6)",
         !is_err && txt.contains("path=Semantic") && txt.contains("type=Text"), txt.clone());
+    // v1.1.6 item 1: format=json — hits ESTRUTURADOS para consumo máquina.
+    let (txt, is_err) = srv.tool("recall", json!({"query": "telepatia converge", "k": 3, "format": "json"}));
+    let parsed: Value = serde_json::from_str(&txt).unwrap_or(Value::Null);
+    let arr = parsed.as_array();
+    rep.check("recall format=json devolve array com hits tipados",
+        !is_err
+            && arr.is_some_and(|a| !a.is_empty())
+            && arr.is_some_and(|a| a[0]["key"].as_str().is_some())
+            && arr.is_some_and(|a| a[0]["path"].as_str().is_some())
+            && arr.is_some_and(|a| a[0]["type"].as_str().is_some())
+            && arr.is_some_and(|a| a[0]["dist"].is_number()),
+        txt.clone());
     rep.phase("recall modes", &t);
 
     // ---------- fase 4e: retrieval temporal com intenção (v1.1.4 item 9) ----
@@ -377,6 +389,12 @@ fn main() {
     let (txt, is_err) = srv.tool("rag_context", json!({"query": "telepatia converge", "k": 2, "mode": "lexical"}));
     rep.check("rag_context mode=lexical acha beta sem embedding",
         !is_err && txt.contains("hot test beta") && txt.contains("path=Lexical"), txt.clone());
+    // v1.1.6 item 1: rag_context format=json devolve hits estruturados.
+    let (txt, is_err) = srv.tool("rag_context", json!({"query": "telepatia converge", "k": 2, "mode": "lexical", "format": "json"}));
+    let parsed: Value = serde_json::from_str(&txt).unwrap_or(Value::Null);
+    rep.check("rag_context format=json devolve hits estruturados",
+        !is_err && parsed.as_array().is_some_and(|a| !a.is_empty() && a[0]["type"].as_str().is_some() && a[0]["matched_terms"].is_array()),
+        txt.clone());
     let (txt, is_err) = srv.tool("explain", json!({"key": key_a}));
     rep.check("explain retorna metadados", !is_err && txt.contains("memory_id") && txt.contains("version_id"), txt.clone());
     let (txt, is_err) = srv.tool("explain", json!({"key": "md/L4/nao-existe"}));

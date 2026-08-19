@@ -18,12 +18,11 @@
 
 use std::io::{self, BufRead, Write};
 
-use neural_sgdb::Sgdb;
+use neural_sgdb::{ContentType, DemoEmbedder, Embedder, RecallPath, Sgdb};
 #[cfg(feature = "file-storage")]
 use neural_sgdb::FileStorage;
 #[cfg(not(feature = "file-storage"))]
 use neural_sgdb::InMemory;
-use neural_sgdb::{DemoEmbedder, Embedder};
 use serde_json::{json, Value};
 
 /// Contador monotônico para chaves de `remember` (fix #10: mesma chave ms
@@ -160,6 +159,70 @@ fn fmt_hit(h: &neural_sgdb::Hit) -> String {
     format!("- {} | {} (d={:.3}) [{}]", h.key, h.text, h.dist, tags.join(" "))
 }
 
+/// Strings ESTÁVEIS (machine-parseable) para o `format=json` — o consumidor
+/// casa por valor, não por `Debug` (que pode mudar entre versões).
+fn path_str(p: RecallPath) -> &'static str {
+    match p {
+        RecallPath::Semantic => "semantic",
+        RecallPath::Lexical => "lexical",
+        RecallPath::Entities => "entities",
+    }
+}
+
+fn content_type_json(ct: ContentType) -> Value {
+    match ct {
+        ContentType::Text => json!({"type": "text"}),
+        ContentType::Json => json!({"type": "json"}),
+        ContentType::Code => json!({"type": "code"}),
+        ContentType::Embedding(d) => json!({"type": "embedding", "dim": d}),
+        ContentType::Binary => json!({"type": "binary"}),
+    }
+}
+
+/// Hit estruturado (v1.1.6+) — o retorno primário para consumo máquina→
+/// máquina: o consumidor parseia JSON e vê o datum (`type`), o caminho
+/// (`path`), o grounding (`matched_terms`) e a proveniência, sem depender
+/// da projeção prosa.
+fn hit_json(h: &neural_sgdb::Hit) -> Value {
+    let mut obj = json!({
+        "key": h.key,
+        "text": h.text,
+        "dist": h.dist,
+        "score": h.score,
+        "path": path_str(h.path),
+        "matched_terms": h.matched_terms,
+        "validity": h.validity.map(|(f, u)| json!([f, u])),
+        "rel": h.rel,
+    });
+    let ct = content_type_json(h.content_type);
+    obj["type"] = ct["type"].clone();
+    obj["dim"] = ct.get("dim").cloned().unwrap_or(Value::Null);
+    obj["provenance"] = match h.provenance.as_ref() {
+        Some(p) => json!({
+            "memory_id": p.memory_id,
+            "version_id": p.version_id,
+            "layer": format!("{:?}", p.layer),
+            "state": format!("{:?}", p.state),
+            "source": p.source,
+            "confidence": p.confidence,
+            "importance": p.importance,
+            "created_tick": p.created_tick,
+            "parent_ids": p.parent_ids,
+            "last_reinforced": p.last_reinforced,
+            "scope": p.scope,
+            "entities": p.entities,
+        }),
+        None => Value::Null,
+    };
+    obj
+}
+
+/// Serializa hits como array JSON (param `format=json`).
+fn hits_json(hits: &[neural_sgdb::Hit]) -> String {
+    let arr: Vec<Value> = hits.iter().map(hit_json).collect();
+    serde_json::to_string(&arr).unwrap_or_else(|_| "[]".into())
+}
+
 fn error_response(id: &Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
 }
@@ -254,11 +317,12 @@ fn main() {
                        "required":["user","response"]},
                      "annotations":{"idempotentHint":true}},
                     {"name":"recall",
-                     "description":"Busca memorias armazenadas. `mode` seleciona o caminho de retrieval (cognee search_type): 'semantic' (BQ+FP32, precisa de embedding), 'lexical' (BM25 sobre textos L2/L3, nao precisa de embedding) ou 'hybrid' (semantico primeiro, depois lexicais nao-duplicados). Opcional: forneca `embedding` (consistente com o usado no remember) para busca com modelo real. `scope` (opcional) limita a um user/agent/projeto (vazio = busca em TODOS os scopes globais; escopada nao vaza de outros scopes).",
+                     "description":"Busca memorias armazenadas. `mode` seleciona o caminho de retrieval (cognee search_type): 'semantic' (BQ+FP32, precisa de embedding), 'lexical' (BM25 sobre textos L2/L3, nao precisa de embedding) ou 'hybrid' (semantico primeiro, depois lexicais nao-duplicados). `format=json` (v1.1.6) devolve hits ESTRUTURADOS para consumo maquina (key/text/dist/path/type/dim/matched_terms/validity/rel/provenance) em vez da projecao prosa. Opcional: forneca `embedding` (consistente com o usado no remember) para busca com modelo real. `scope` (opcional) limita a um user/agent/projeto (vazio = busca em TODOS os scopes globais; escopada nao vaza de outros scopes).",
                      "inputSchema":{"type":"object",
                        "properties":{
                          "query":{"type":"string","description":"Texto de busca"},
                          "mode":{"type":"string","enum":["semantic","lexical","hybrid"],"default":"semantic","description":"Caminho de retrieval (semantic default)"},
+                         "format":{"type":"string","enum":["json"],"description":"'json' = hits estruturados (maquina); omitir = prosa"},
                          "embedding":{"type":"array","items":{"type":"number"},"description":"Embedding fornecido pelo agente (opcional)"},
                          "k":{"type":"integer","minimum":1,"maximum":20,"default":5},
                          "scope":{"type":"string","description":"Escopo de isolamento (ex: 'user/ana'). Omitir = global (só memórias sem scope)."},
@@ -267,22 +331,24 @@ fn main() {
                        "required":["query"]},
                      "annotations":{"readOnlyHint":true}},
                     {"name":"rag_context",
-                     "description":"Busca memorias e monta contexto formatado pronto para prompt RAG. `mode` (v1.1.6) seleciona o caminho de retrieval como no recall: 'semantic' (default, core rag_context), 'lexical' (BM25, sem embedding) ou 'hybrid' (semantico + lexical). Opcional: `embedding` fornecido pelo agente.",
+                     "description":"Busca memorias e monta contexto formatado pronto para prompt RAG. `mode` (v1.1.6) seleciona o caminho de retrieval como no recall: 'semantic' (default, core rag_context), 'lexical' (BM25, sem embedding) ou 'hybrid' (semantico + lexical). `format=json` (v1.1.6) devolve os hits ESTRUTURADOS em vez da prosa compacta. Opcional: `embedding` fornecido pelo agente.",
                      "inputSchema":{"type":"object",
                        "properties":{
                          "query":{"type":"string","description":"Texto de busca"},
                          "embedding":{"type":"array","items":{"type":"number"},"description":"Embedding fornecido pelo agente (opcional)"},
                          "mode":{"type":"string","enum":["semantic","lexical","hybrid"],"default":"semantic"},
+                         "format":{"type":"string","enum":["json"],"description":"'json' = hits estruturados; omitir = prosa"},
                          "k":{"type":"integer","minimum":1,"maximum":10,"default":3}},
                        "required":["query"]},
                      "annotations":{"readOnlyHint":true}},
                     {"name":"recall_temporal",
-                     "description":"Retrieval temporal com intencao (mem0/Graphiti bi-temporal): responde 'quando mudou X?' / 'qual era o estado em T?'. `at` = instante (ms) da pergunta; sobem as memorias VALIDAS naquele momento (janela cobre `at`), descem as que nao vigoravam, sem janela usa recorrencia relativa a `at`. `w_time` pondera o fator temporal (default 10), `w_sem` o semantico (default 1.0).",
+                     "description":"Retrieval temporal com intencao (mem0/Graphiti bi-temporal): responde 'quando mudou X?' / 'qual era o estado em T?'. `at` = instante (ms) da pergunta; sobem as memorias VALIDAS naquele momento (janela cobre `at`), descem as que nao vigoravam, sem janela usa recorrencia relativa a `at`. `w_time` pondera o fator temporal (default 10), `w_sem` o semantico (default 1.0). `format=json` devolve hits estruturados.",
                      "inputSchema":{"type":"object",
                        "properties":{
                          "query":{"type":"string","description":"Texto de busca"},
                          "at":{"type":"integer","description":"Instante (ms unix) da intencao temporal"},
                          "embedding":{"type":"array","items":{"type":"number"},"description":"Embedding fornecido pelo agente (opcional)"},
+                         "format":{"type":"string","enum":["json"],"description":"'json' = hits estruturados; omitir = prosa"},
                          "k":{"type":"integer","minimum":1,"maximum":20,"default":5},
                          "scope":{"type":"string","description":"Escopo de isolamento (opcional)"},
                          "w_sem":{"type":"number","default":1.0,"description":"Peso do fator semantico"},
@@ -290,10 +356,11 @@ fn main() {
                        "required":["query","at"]},
                      "annotations":{"readOnlyHint":true}},
                     {"name":"recall_entities",
-                     "description":"Recall por entidades (item 10, 1-hop): devolve memorias que declaram PELO MENOS UMA das entidades consultadas, ranqueadas por overlap (desc) e importância (desc). NAO extrai entidade de texto — as strings devem casar exatamente com as fornecidas no remember/set_entities. `scope` (opcional) limita a um user/agent/projeto.",
+                     "description":"Recall por entidades (item 10, 1-hop): devolve memorias que declaram PELO MENOS UMA das entidades consultadas, ranqueadas por overlap (desc) e importância (desc). NAO extrai entidade de texto — as strings devem casar exatamente com as fornecidas no remember/set_entities. `scope` (opcional) limita a um user/agent/projeto. `format=json` devolve hits estruturados.",
                      "inputSchema":{"type":"object",
                        "properties":{
                          "entities":{"type":"array","items":{"type":"string"},"description":"Entidades para casar (mesmas strings do remember)"},
+                         "format":{"type":"string","enum":["json"],"description":"'json' = hits estruturados; omitir = prosa"},
                          "k":{"type":"integer","minimum":1,"maximum":20,"default":5},
                          "scope":{"type":"string","description":"Escopo de isolamento (opcional). Omitir = global (só memórias sem scope)."},
                          "historical":{"type":"boolean","default":false,"description":"true = inclui memórias inativas (superseded/archived)"}},
@@ -583,7 +650,13 @@ fn main() {
                             _ => db.recall_scoped(&emb, need, scope).unwrap_or_default(),
                         };
                         let (page, next) = paginate(&all, args["cursor"].as_str(), size);
-                        let text = if page.is_empty() {
+                        // v1.1.6: `format=json` devolve hits ESTRUTURADOS para
+                        // consumo máquina→máquina (parseável, datum tipado);
+                        // default = projeção prosa (invariantes preservadas).
+                        let json_fmt = args["format"].as_str().unwrap_or("") == "json";
+                        let text = if json_fmt {
+                            hits_json(&page)
+                        } else if page.is_empty() {
                             "nenhuma memoria similar encontrada".into()
                         } else {
                             // v1.1.6 — hits TIPADOS (path/type/terms/valid/rel):
@@ -621,10 +694,13 @@ fn main() {
                                 }
                             }
                         };
+                        let json_fmt = args["format"].as_str().unwrap_or("") == "json";
                         let result_text = match mode {
                             "lexical" => {
                                 let hits = db.recall_lexical(query, k).unwrap_or_default();
-                                if hits.is_empty() {
+                                if json_fmt {
+                                    hits_json(&hits)
+                                } else if hits.is_empty() {
                                     "nenhum contexto recuperado".into()
                                 } else {
                                     hits.iter().map(fmt_hit).collect::<Vec<_>>().join("\n")
@@ -632,17 +708,26 @@ fn main() {
                             }
                             "hybrid" => {
                                 let hits = db.recall_hybrid(&emb, query, k).unwrap_or_default();
-                                if hits.is_empty() {
+                                if json_fmt {
+                                    hits_json(&hits)
+                                } else if hits.is_empty() {
                                     "nenhum contexto recuperado".into()
                                 } else {
                                     hits.iter().map(fmt_hit).collect::<Vec<_>>().join("\n")
                                 }
                             }
-                            _ => match db.rag_context(&emb, k) {
-                                Ok(ctx) if ctx.is_empty() => "nenhum contexto recuperado".into(),
-                                Ok(ctx) => ctx,
-                                Err(e) => format!("erro: {e}"),
-                            },
+                            _ => {
+                                // format=json: hits estruturados; default: core
+                                // rag_context (prosa compacta p/ prompt).
+                                let hits = db.recall(&emb, k).unwrap_or_default();
+                                if json_fmt {
+                                    hits_json(&hits)
+                                } else if hits.is_empty() {
+                                    "nenhum contexto recuperado".into()
+                                } else {
+                                    db.rag_context(&emb, k).unwrap_or_else(|e| format!("erro: {e}"))
+                                }
+                            }
                         };
                         let is_err = result_text.starts_with("erro: ");
                         send(&json!({"jsonrpc":"2.0","id":id,"result":{
@@ -676,8 +761,16 @@ fn main() {
                         match hits {
                             Ok(hs) if hs.is_empty() => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":"nenhuma memoria valida em at"}],"isError":false}})),
-                            Ok(hs) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":hs.iter().map(fmt_hit).collect::<Vec<_>>().join("\n")}],"isError":false}})),
+                            Ok(hs) => {
+                                let json_fmt = args["format"].as_str().unwrap_or("") == "json";
+                                let text = if json_fmt {
+                                    hits_json(&hs)
+                                } else {
+                                    hs.iter().map(fmt_hit).collect::<Vec<_>>().join("\n")
+                                };
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                    "content":[{"type":"text","text":text}],"isError":false}}))
+                            }
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
                         }
@@ -708,8 +801,16 @@ fn main() {
                         match hits {
                             Ok(hs) if hs.is_empty() => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":"nenhuma memoria com essas entidades"}],"isError":false}})),
-                            Ok(hs) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":hs.iter().map(fmt_hit).collect::<Vec<_>>().join("\n")}],"isError":false}})),
+                            Ok(hs) => {
+                                let json_fmt = args["format"].as_str().unwrap_or("") == "json";
+                                let text = if json_fmt {
+                                    hits_json(&hs)
+                                } else {
+                                    hs.iter().map(fmt_hit).collect::<Vec<_>>().join("\n")
+                                };
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                    "content":[{"type":"text","text":text}],"isError":false}}))
+                            }
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
                         }

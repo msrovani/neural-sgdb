@@ -205,6 +205,14 @@ verdes, hot test 84/0 exit 0.
   (prefixo `- {key} | ` = paginação `split(" | ")`; sufixo abre ` [state=`).
   `rag_context` ganhou `mode` (semantic/lexical/hybrid) devolvendo hits
   tipados no lexical/hybrid. Nenhum tool NOVO (22 permanece).
+- **MCP `format=json`** (v1.1.6 item 1): recall, recall_temporal,
+  recall_entities e rag_context aceitam `format=json` → hits ESTRUTURADOS
+  (`[{key,text,dist,score,path,type,dim,matched_terms,validity,rel,provenance}]`)
+  com strings ESTÁVEIS (`path= semantic|lexical|entities`, `type=
+  text|json|code|embedding(bin)`) — o consumidor máquina parseia sem depender
+  da projeção prosa nem do `Debug`. Default continua a prosa (invariantes).
+  Em `rag_context` semantic + `format=json` usa `recall` (hits) em vez do
+  core `rag_context` (string). Hot test 86/0 (2 novos: recall json + rag json).
 
 ## Agent decision protocol (v1.1.4, exemplo `agent_protocol.rs`)
 
