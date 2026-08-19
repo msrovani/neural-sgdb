@@ -157,6 +157,51 @@ exit 0 (23 MCP tools).
   remember_episodic/feedback/diary/profile/expire_old; item 10 adicionou
   recall_entities).
 
+## Post-audit v1.1.6 (hits TIPADOS para o consumidor máquina, 2026-08-19)
+
+O retorno de recall é lido por OUTRA inteligência (não por humano) — e o canal
+carrega dados que NÃO são palavras humanas (JSON de intenção máquina→máquina,
+embeddings da era, código, binários). Antes, tudo passava por
+`String::from_utf8_lossy` e o consumidor não sabia nem QUE datum era nem COMO
+parseá-lo. Cada item com regressão; matrix **225+1 / 271+1 / 177+1**, gates
+verdes, hot test 84/0 exit 0.
+
+- **`src/ctype.rs` (no_std-safe)**: `ContentType` = Text | Json | Code |
+  Embedding(dim) | Binary — HINT derivado na LEITURA (nunca persistido; o
+  writer pode declarar via seam, mesmo contrato de `entities`/`Embedder`);
+  `RecallPath` = Semantic | Lexical | Entities (o campo `dist` tem escala
+  DIFERENTE por path — cosseno 0..1 vs BM25 normalizado; em `hybrid` o
+  consumidor precisa saber qual é qual); `detect_content_type` (JSON =
+  `{…}`/`[…]` delimitado; código = heurística conservadora `fn `→`-> ` ou
+  braces≥2 + semis/arrows; não-UTF8 → Binary), `embedding_dim_of` (len%4==0
+  e ≥4 — mesma regra do `index_doc`/S1).
+- **`Hit` (v1.1.6)**: + `path`, `content_type`, `score` (bruto, ranking
+  auditável), `matched_terms` (grounding BM25 — o "porquê" do casamento),
+  `validity: Option<(u64,u64)>` (janela bi-temporal por hit), `rel: Option<
+  String>` (companion `/L2/` → key do primário `/L4|L5|L3/`). `HitProvenance`
+  + `last_reinforced`/`scope`/`entities`. **`Hit` NÃO é tipo wire** (MDR1 é)
+  → sem quebra de formato. `recall_weighted`/`recall_temporal` CARREGAM o Hit
+  (novos campos fluem de graça).
+- **Projeção prosa só para Text/Json/Code**: Embedding/Binary → `text`
+  vazio; o consumidor vê `type=Embedding(4)` e sabe que o datum é o payload
+  binário (era ADR-0007), nunca `from_utf8_lossy`.
+- **BUGFIX companion L5 (bughunt #13)**: o lookup do texto companion fazia
+  `sk.replacen("/L4/","/L2/",1)` — no-op para keys `md/L5/` → o batch lia o
+  PRÓPRIO doc L5 e projetava floats como prosa lossy (o bug exato que o
+  pedido apontou). Agora `companion_key()` mapeia L4 E L5 → `md/L2/<id>`;
+  sem companion, o tipo cai para o payload (Embedding/Binary) e o texto fica
+  vazio (batch com texto vazio NÃO sobrescreve o tipo).
+- **`LexicalIndex::search`** retorna `(key, score, matched_terms)` — termos
+  da query que casaram, deduplicados por doc.
+- **`Sgdb::primary_of`**: `md/L2/<id>` → primário existente (`/L4/`→`/L5/`→
+  `/L3/`) para follow-ups (`explain`/`supersede` miram o primário).
+- **MCP `fmt_hit`** (unificado p/ recall todos os modes + recall_temporal +
+  recall_entities): `- {key} | {text} (d=..) [state=.. imp=.. conf=.. src=..
+  path=.. type=.. terms=.. rel=.. valid=..]` — invariantes preservadas
+  (prefixo `- {key} | ` = paginação `split(" | ")`; sufixo abre ` [state=`).
+  `rag_context` ganhou `mode` (semantic/lexical/hybrid) devolvendo hits
+  tipados no lexical/hybrid. Nenhum tool NOVO (22 permanece).
+
 ## Agent decision protocol (v1.1.4, exemplo `agent_protocol.rs`)
 
 O core NÃO decide — ele dá o MATERIAL da decisão. O exemplo

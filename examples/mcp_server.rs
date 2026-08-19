@@ -114,6 +114,52 @@ fn send(msg: &Value) {
     let _ = out.flush();
 }
 
+/// Projeção PROSA de um hit (v1.1.6) — o consumidor é outra inteligência
+/// (máquina), então o sufixo é parseável e TIPADO, não só prosa, no formato
+/// `- {key} | {text} (d=..) [state=.. imp=.. conf=.. src=.. path=.. type=..
+/// terms=.. rel=.. valid=..]`.
+/// Invariantes preservadas do formato anterior (hot test): prefixo `- {key} | `
+/// (a paginação fatia `split(" | ").next()`) e sufixo que abre em ` [state=`
+/// (assert `txt.contains("[state=")`).
+/// Datum não-prosa (Embedding/Binary): `text` vazio no core — o consumidor
+/// vê `type=Embedding(256)` e sabe que o datum é o payload binário do doc,
+/// nunca prosa lossy.
+fn fmt_hit(h: &neural_sgdb::Hit) -> String {
+    let mut tags = Vec::new();
+    if let Some(p) = h.provenance.as_ref() {
+        tags.push(format!(
+            "state={:?} imp={:.2} conf={:.2} src={}",
+            p.state, p.importance, p.confidence, p.source
+        ));
+        if !p.scope.is_empty() {
+            tags.push(format!("scope={}", p.scope));
+        }
+        if !p.entities.is_empty() {
+            tags.push(format!(
+                "ents={}",
+                p.entities.iter().take(6).cloned().collect::<Vec<_>>().join(",")
+            ));
+        }
+    } else {
+        tags.push("state=none".into());
+    }
+    tags.push(format!("path={:?}", h.path));
+    tags.push(format!("type={:?}", h.content_type));
+    if !h.matched_terms.is_empty() {
+        tags.push(format!(
+            "terms={}",
+            h.matched_terms.iter().take(8).cloned().collect::<Vec<_>>().join(",")
+        ));
+    }
+    if let Some(rel) = h.rel.as_ref() {
+        tags.push(format!("rel={rel}"));
+    }
+    if let Some((f, u)) = h.validity {
+        tags.push(format!("valid=[{f},{u})"));
+    }
+    format!("- {} | {} (d={:.3}) [{}]", h.key, h.text, h.dist, tags.join(" "))
+}
+
 fn error_response(id: &Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
 }
@@ -221,11 +267,12 @@ fn main() {
                        "required":["query"]},
                      "annotations":{"readOnlyHint":true}},
                     {"name":"rag_context",
-                     "description":"Busca memorias e monta contexto formatado pronto para prompt RAG. Opcional: `embedding` fornecido pelo agente.",
+                     "description":"Busca memorias e monta contexto formatado pronto para prompt RAG. `mode` (v1.1.6) seleciona o caminho de retrieval como no recall: 'semantic' (default, core rag_context), 'lexical' (BM25, sem embedding) ou 'hybrid' (semantico + lexical). Opcional: `embedding` fornecido pelo agente.",
                      "inputSchema":{"type":"object",
                        "properties":{
                          "query":{"type":"string","description":"Texto de busca"},
                          "embedding":{"type":"array","items":{"type":"number"},"description":"Embedding fornecido pelo agente (opcional)"},
+                         "mode":{"type":"string","enum":["semantic","lexical","hybrid"],"default":"semantic"},
                          "k":{"type":"integer","minimum":1,"maximum":10,"default":3}},
                        "required":["query"]},
                      "annotations":{"readOnlyHint":true}},
@@ -539,14 +586,9 @@ fn main() {
                         let text = if page.is_empty() {
                             "nenhuma memoria similar encontrada".into()
                         } else {
-                            // v0.9: hits expõem proveniência (roadmap §13) —
-                            // estado/importância/confiança/fonte por hit
-                            page.iter().map(|h| {
-                                let p = h.provenance.as_ref().map(|p| format!(
-                                    " [state={:?} imp={:.2} conf={:.2} src={}]",
-                                    p.state, p.importance, p.confidence, p.source)).unwrap_or_default();
-                                format!("- {} | {} (d={:.3}){}", h.key, h.text, h.dist, p)
-                            }).collect::<Vec<_>>().join("\n")
+                            // v1.1.6 — hits TIPADOS (path/type/terms/valid/rel):
+                            // o consumidor sabe o datum + o porquê do casamento.
+                            page.iter().map(fmt_hit).collect::<Vec<_>>().join("\n")
                         };
                         let mut result = json!({
                             "content":[{"type":"text","text":text}],"isError":false
@@ -563,22 +605,49 @@ fn main() {
                             send(&error_response(&id, -32602, "parametro 'query' obrigatorio"));
                             continue;
                         }
-                        let emb = match embed_for(embedder.as_ref(), query, args) {
-                            Ok(e) => e,
-                            Err(e) => {
-                                send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                    "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}}));
-                                continue;
+                        // v1.1.6 — mode = caminho de retrieval (mesmo contrato do
+                        // recall): semantic (default, core rag_context), lexical
+                        // (BM25, sem embedding) e hybrid (semântico + lexical).
+                        let mode = args["mode"].as_str().unwrap_or("semantic");
+                        let emb = if mode == "lexical" {
+                            Vec::new()
+                        } else {
+                            match embed_for(embedder.as_ref(), query, args) {
+                                Ok(e) => e,
+                                Err(e) => {
+                                    send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                        "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}}));
+                                    continue;
+                                }
                             }
                         };
-                        match db.rag_context(&emb, k) {
-                            Ok(ctx) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":if ctx.is_empty() {
-                                    "nenhum contexto recuperado".into()} else {ctx}}],
-                                "isError":false}})),
-                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
-                        }
+                        let result_text = match mode {
+                            "lexical" => {
+                                let hits = db.recall_lexical(query, k).unwrap_or_default();
+                                if hits.is_empty() {
+                                    "nenhum contexto recuperado".into()
+                                } else {
+                                    hits.iter().map(fmt_hit).collect::<Vec<_>>().join("\n")
+                                }
+                            }
+                            "hybrid" => {
+                                let hits = db.recall_hybrid(&emb, query, k).unwrap_or_default();
+                                if hits.is_empty() {
+                                    "nenhum contexto recuperado".into()
+                                } else {
+                                    hits.iter().map(fmt_hit).collect::<Vec<_>>().join("\n")
+                                }
+                            }
+                            _ => match db.rag_context(&emb, k) {
+                                Ok(ctx) if ctx.is_empty() => "nenhum contexto recuperado".into(),
+                                Ok(ctx) => ctx,
+                                Err(e) => format!("erro: {e}"),
+                            },
+                        };
+                        let is_err = result_text.starts_with("erro: ");
+                        send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                            "content":[{"type":"text","text":result_text}],
+                            "isError":is_err}}));
                     }
                     "recall_temporal" => {
                         let query = args["query"].as_str().unwrap_or("");
@@ -608,12 +677,7 @@ fn main() {
                             Ok(hs) if hs.is_empty() => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":"nenhuma memoria valida em at"}],"isError":false}})),
                             Ok(hs) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":hs.iter().map(|h| {
-                                    let p = h.provenance.as_ref().map(|p| format!(
-                                        " [state={:?} imp={:.2} conf={:.2}]",
-                                        p.state, p.importance, p.confidence)).unwrap_or_default();
-                                    format!("- {} | {} (d={:.3}){}", h.key, h.text, h.dist, p)
-                                }).collect::<Vec<_>>().join("\n")}],"isError":false}})),
+                                "content":[{"type":"text","text":hs.iter().map(fmt_hit).collect::<Vec<_>>().join("\n")}],"isError":false}})),
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
                         }
@@ -645,12 +709,7 @@ fn main() {
                             Ok(hs) if hs.is_empty() => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":"nenhuma memoria com essas entidades"}],"isError":false}})),
                             Ok(hs) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":hs.iter().map(|h| {
-                                    let p = h.provenance.as_ref().map(|p| format!(
-                                        " [state={:?} imp={:.2} conf={:.2}]",
-                                        p.state, p.importance, p.confidence)).unwrap_or_default();
-                                    format!("- {} | {} (d={:.3}){}", h.key, h.text, h.dist, p)
-                                }).collect::<Vec<_>>().join("\n")}],"isError":false}})),
+                                "content":[{"type":"text","text":hs.iter().map(fmt_hit).collect::<Vec<_>>().join("\n")}],"isError":false}})),
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
                         }

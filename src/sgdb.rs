@@ -8,6 +8,7 @@ use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use crate::bq::{quantize_f32, BqFlatIndex};
+use crate::ctype::{detect_content_type, embedding_dim_of, ContentType, RecallPath};
 use crate::engine::AiosDatabaseEngine;
 use crate::era::{estimate_era_migration, era_report_lines, EraReport};
 use crate::memory_doc::{
@@ -30,6 +31,13 @@ pub struct HitProvenance {
     pub importance: f32,
     pub created_tick: u64,
     pub parent_ids: Vec<String>,
+    /// Último tick de reforço (v0.9 — `reinforce`); 0 = nunca reforçada.
+    /// Consultável pela política de decay da camada gestora.
+    pub last_reinforced: u64,
+    /// Escopo de isolamento (v1.1.4 item 7) — tenant do datum.
+    pub scope: String,
+    /// Entidades nomeadas declaradas (v1.1.4 item 10).
+    pub entities: Vec<String>,
 }
 
 /// Estado observável de uma instância `Sgdb` (P2-3, substitui o `ready()`
@@ -63,6 +71,20 @@ pub struct ValidateIssue {
     pub message: &'static str,
 }
 
+/// Mapeia um doc L4/L5 para o seu companion de texto `md/L2/<id>` (S3).
+/// O replacen SÓ em `/L4/` era no-op para keys L5 — o batch lia o PRÓPRIO
+/// doc L5 e projetava o payload (floats/binário) como prosa lossy (bugfix
+/// v1.1.6). Keys não-L4/L5 retornam a própria key (sem companion).
+fn companion_key(sk: &str) -> String {
+    if sk.starts_with("md/L4/") {
+        sk.replacen("/L4/", "/L2/", 1)
+    } else if sk.starts_with("md/L5/") {
+        sk.replacen("/L5/", "/L2/", 1)
+    } else {
+        sk.to_string()
+    }
+}
+
 /// Resultado de recall semântico.
 #[derive(Clone, Debug)]
 pub struct Hit {
@@ -74,6 +96,27 @@ pub struct Hit {
     /// pré-v0.6 ainda não re-escritos) e para recalls puramente lexicais
     /// quando o doc não tem meta.
     pub provenance: Option<HitProvenance>,
+    /// Caminho de retrieval (v1.1.6) — `dist` tem escala DIFERENTE por path
+    /// (cosseno 0..1 vs BM25 normalizado); o consumidor máquina precisa saber
+    /// qual é qual antes de comparar.
+    pub path: RecallPath,
+    /// Tipo do datum (v1.1.6) — Text/Json/Code renderizam verbatim na projeção
+    /// prosa; Embedding/Binary NÃO são prosa (nunca `from_utf8_lossy`).
+    pub content_type: ContentType,
+    /// Score bruto (BM25 p/ lexical; rescore u32 p/ semântico) — ranking
+    /// auditable além do `dist` normalizado.
+    pub score: f32,
+    /// Termos da query que casaram (só lexical; vazio nos demais paths) —
+    /// o "porquê" do casamento (grounding BM25).
+    pub matched_terms: Vec<String>,
+    /// Janela de validade bi-temporal `[from, until)` (side-table `sys/validity/`;
+    /// `None` = sem janela). O consumidor decide se o datum VIGORAVA no instante
+    /// da pergunta (recall_temporal) ou se é histórico.
+    pub validity: Option<(u64, u64)>,
+    /// Para um companion `/L2/`: o storage key do doc PRIMÁRIO (`md/L4|L5|L3/<id>`)
+    /// — follow-ups (`explain`/`supersede`) miram o primário, não o companion.
+    /// `None` para docs primários.
+    pub rel: Option<String>,
 }
 
 /// Explicação ESTRUTURADA do estado corrente de uma memória (v0.9,
@@ -479,37 +522,64 @@ impl Sgdb {
         // companion L2 text em batch (S3 — mesma convenção do recall semântico)
         let companion_keys: Vec<String> = ranked
             .iter()
-            .map(|(_, _, sk)| sk.replacen("/L4/", "/L2/", 1))
+            .map(|(_, _, sk)| companion_key(sk))
             .collect();
         let texts = self.engine.get_texts_batch(&companion_keys);
         let mut out = Vec::with_capacity(ranked.len());
         for (i, (overlap, _imp, sk)) in ranked.into_iter().enumerate() {
             // dist = fração de entidades NÃO cobertas (0 = casa todas)
             let dist = 1.0 - (overlap as f32 / n_ents as f32);
-            // provenance: layer do doc + estado + meta
-            let prov = match self.engine.get_by_storage_key(&sk) {
+            // provenance: layer do doc + estado + meta (v1.1.6: + reinforce/scope/entities)
+            let (prov, ct_fallback) = match self.engine.get_by_storage_key(&sk) {
                 Ok(Some(doc)) => {
                     let st = self.engine.get_state(&sk);
-                    doc.meta.as_ref().map(|m| HitProvenance {
-                        memory_id: m.memory_id.clone(),
-                        version_id: m.version_id.clone(),
-                        layer: doc.layer,
-                        state: st,
-                        source: m.source,
-                        confidence: m.confidence,
-                        importance: m.importance,
-                        created_tick: m.created_tick,
-                        parent_ids: m.parent_ids.clone(),
-                    })
+                    let ct = detect_content_type(
+                        &doc.payload,
+                        embedding_dim_of(&doc.payload, doc.bitvec.is_some()),
+                    );
+                    (
+                        doc.meta.as_ref().map(|m| HitProvenance {
+                            memory_id: m.memory_id.clone(),
+                            version_id: m.version_id.clone(),
+                            layer: doc.layer,
+                            state: st,
+                            source: m.source,
+                            confidence: m.confidence,
+                            importance: m.importance,
+                            created_tick: m.created_tick,
+                            parent_ids: m.parent_ids.clone(),
+                            last_reinforced: m.last_reinforced,
+                            scope: m.scope.clone(),
+                            entities: m.entities.clone(),
+                        }),
+                        ct,
+                    )
                 }
-                _ => None,
+                _ => (None, ContentType::Binary),
             };
             let text = texts.get(&companion_keys[i]).cloned().unwrap_or_default();
+            let content_type = if text.is_empty() {
+                ct_fallback
+            } else {
+                detect_content_type(text.as_bytes(), None)
+            };
+            let validity = self.engine.validity_window(&sk);
+            let rel = if sk.starts_with("md/L2/") {
+                self.primary_of(&sk)
+            } else {
+                None
+            };
             out.push(Hit {
                 key: sk,
                 text,
                 dist,
                 provenance: prov,
+                path: RecallPath::Entities,
+                content_type,
+                score: overlap as f32,
+                matched_terms: Vec::new(),
+                validity,
+                rel,
             });
         }
         Ok(out)
@@ -1171,7 +1241,7 @@ impl Sgdb {
                 continue;
             };
             // score bruto u32: fp32 rescore OU hamming (mesma escala de ordenação do OS)
-            let (score, dist, provenance) = match self.engine.get_by_storage_key(&sk) {
+            let (score, dist, provenance, ct_fallback) = match self.engine.get_by_storage_key(&sk) {
                 Ok(Some(doc)) => {
                     let (score, dist) = match Self::fp32_dist_u32(query, &doc.payload) {
                         Some(d) => (d, d as f32 / 10_000.0),
@@ -1196,7 +1266,8 @@ impl Sgdb {
                     }
                     // v0.6 — provenance exposta (Phase 9 parcial): quem/quando/
                     // quão confiável/estado — memórias superseded não se fingem
-                    // de ativas no resultado.
+                    // de ativas no resultado. v1.1.6: + last_reinforced/scope/
+                    // entities (o "protocolo" entre IAs está em `meta`).
                     let prov = doc.meta.as_ref().map(|m| HitProvenance {
                         memory_id: m.memory_id.clone(),
                         version_id: m.version_id.clone(),
@@ -1207,17 +1278,28 @@ impl Sgdb {
                         importance: m.importance,
                         created_tick: m.created_tick,
                         parent_ids: m.parent_ids.clone(),
+                        last_reinforced: m.last_reinforced,
+                        scope: m.scope.clone(),
+                        entities: m.entities.clone(),
                     });
-                    (score, dist, prov)
+                    // v1.1.6 — tipo do datum: o payload L4/L5 é o embedding
+                    // (floats NÃO viram prosa); o companion fornece o texto
+                    // (projeção prosa) e então o tipo é o do TEXTO.
+                    let ct_fallback =
+                        detect_content_type(&doc.payload, embedding_dim_of(&doc.payload, doc.bitvec.is_some()));
+                    (score, dist, prov, ct_fallback)
                 }
                 // doc sumiu (delete físico) ou corrompeu: o BQ é índice
                 // DERIVADO — candidato sem doc vivo NUNCA vira hit (não
                 // ressuscita memória deletada nem mostra lixo, item 17/21)
                 Ok(None) | Err(_) => continue,
             };
-            // L2 companion text (direct storage key; only the 1st occurrence
-            // of the /L4/ prefix — a key containing "/L4/" is not corrupted)
-            companion_keys.push(sk.replacen("/L4/", "/L2/", 1));
+            // v1.1.6 — janela de validade bi-temporal (antes de mover `sk`)
+            let validity = self.engine.validity_window(&sk);
+            // L2 companion text: L4 E L5 apontam para o companion `md/L2/<id>`
+            // (o replacen só /L4/ era no-op para L5 — o batch lia o PRÓPRIO doc
+            // L5 e projetava floats como prosa lossy; bugfix v1.1.6).
+            companion_keys.push(companion_key(&sk));
             out.push((
                 score,
                 Hit {
@@ -1225,14 +1307,26 @@ impl Sgdb {
                     text: String::new(),
                     dist,
                     provenance,
+                    path: RecallPath::Semantic,
+                    content_type: ct_fallback,
+                    score: score as f32,
+                    matched_terms: Vec::new(),
+                    validity,
+                    rel: None,
                 },
             ));
         }
-        // batch-get dos textos companion (S3) — deduplicado por key
+        // batch-get dos textos companion (S3) — deduplicado por key; quando o
+        // texto existe (companion real), o datum é o TEXTO (tipo re-detectado
+        // sobre ele); sem companion → o datum é o payload (Embedding/Binary),
+        // nunca prosa lossy.
         let texts = self.engine.get_texts_batch(&companion_keys);
         for (_, h) in out.iter_mut() {
-            if let Some(t) = texts.get(&h.key.replacen("/L4/", "/L2/", 1)) {
-                h.text = t.clone();
+            if let Some(t) = texts.get(&companion_key(&h.key)) {
+                if !t.is_empty() {
+                    h.text = t.clone();
+                    h.content_type = detect_content_type(t.as_bytes(), None);
+                }
             }
         }
         // Dedupe por storage key mantendo o MELHOR score: um overwrite em L4
@@ -1399,9 +1493,9 @@ impl Sgdb {
         scope: Option<&str>,
     ) -> Result<Vec<Hit>, SgdbError> {
         let scored = self.engine.lexical.search(query_text, k.max(1));
-        let max = scored.first().map(|(_, s)| *s).unwrap_or(0.0).max(1e-6);
+        let max = scored.first().map(|(_, s, _)| *s).unwrap_or(0.0).max(1e-6);
         let mut out = Vec::with_capacity(scored.len());
-        for (sk, score) in scored {
+        for (sk, score, matched_terms) in scored {
             if let Ok(Some(doc)) = self.engine.get_by_storage_key(&sk) {
                 let state = self.engine.get_state(&sk);
                 if active_only && state != MemoryState::Active {
@@ -1427,16 +1521,49 @@ impl Sgdb {
                     importance: m.importance,
                     created_tick: m.created_tick,
                     parent_ids: m.parent_ids.clone(),
+                    last_reinforced: m.last_reinforced,
+                    scope: m.scope.clone(),
+                    entities: m.entities.clone(),
                 });
+                // v1.1.6 — datum TIPADO: projeção prosa só para Text/Json/Code;
+                // Binário/Embedding NUNCA passam por from_utf8_lossy.
+                let text = match detect_content_type(&doc.payload, None) {
+                    ContentType::Text | ContentType::Json | ContentType::Code => {
+                        String::from_utf8_lossy(&doc.payload).into_owned()
+                    }
+                    ContentType::Embedding(_) | ContentType::Binary => String::new(),
+                };
+                let rel = self.primary_of(&sk);
+                let validity = self.engine.validity_window(&sk);
                 out.push(Hit {
                     key: sk,
-                    text: String::from_utf8_lossy(&doc.payload).into_owned(),
+                    text,
                     dist: (1.0 - score / max).clamp(0.0, 1.0),
                     provenance,
+                    path: RecallPath::Lexical,
+                    content_type: detect_content_type(&doc.payload, None),
+                    score,
+                    matched_terms,
+                    validity,
+                    rel,
                 });
             }
         }
         Ok(out)
+    }
+
+    /// Resolve o doc PRIMÁRIO de um companion `/L2/` (v1.1.6): para
+    /// follow-ups (`explain`/`supersede`) o alvo é o `md/L4|L5|L3/<id>`, não o
+    /// companion. `None` para keys não-L2 ou sem primário existente.
+    fn primary_of(&mut self, sk: &str) -> Option<String> {
+        let rest = sk.strip_prefix("md/L2/")?;
+        for prim in ["md/L4/", "md/L5/", "md/L3/"] {
+            let cand = alloc::format!("{prim}{rest}");
+            if let Ok(Some(_)) = self.engine.get_by_storage_key(&cand) {
+                return Some(cand);
+            }
+        }
+        None
     }
 
     /// Recall **híbrido** semântico + lexical (Anthropic dual-path): semantic
@@ -4569,5 +4696,104 @@ mod tests {
         // fórmula linear: 3 docs × 86µs ≈ 0.258 ms db-side
         let ms = r.estimate.db_side_ns as f64 / 1e6;
         assert!((ms - 0.258).abs() < 0.05, "estimativa db-side = {ms} ms");
+    }
+
+    // ---------- v1.1.6: hits TIPADOS (o consumidor é outra inteligência) ----------
+
+    #[test]
+    fn lexical_hits_typed_path_terms_and_rel() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let emb = vec![1.0, -1.0, 1.0, -1.0];
+        db.remember_semantic("alpha", "protocolo de handshake maquina a maquina", &emb)
+            .unwrap();
+        db.remember_semantic("beta", "clima ensolarado em recife", &emb).unwrap();
+        let hits = db.recall_lexical("handshake protocolo", 5).unwrap();
+        assert!(!hits.is_empty());
+        let h = &hits[0];
+        assert_eq!(h.path, RecallPath::Lexical);
+        assert!(!h.matched_terms.is_empty(), "grounding BM25 presente");
+        assert!(
+            h.matched_terms.iter().any(|t| t == "handshake"),
+            "termos = {:?}",
+            h.matched_terms
+        );
+        assert_eq!(h.content_type, ContentType::Text);
+        assert!(h.score > 0.0);
+        assert!((0.0..=1.0).contains(&h.dist), "dist = {}", h.dist);
+        // o lexical indexa o COMPANION /L2/ → rel resolve o primário /L4/
+        assert!(h.key.starts_with("md/L2/"), "key = {}", h.key);
+        let rel = h.rel.as_deref().unwrap_or("");
+        assert!(rel.starts_with("md/L4/"), "rel = {rel}");
+        // o payload do primário (floats f32) NUNCA vira prosa
+        let prim = db.engine.get_by_storage_key(rel).unwrap().unwrap();
+        assert!(!h.text.is_empty(), "texto do companion projetado");
+        assert!(prim.payload.len() == 16, "payload L4 = embedding 4-dim");
+    }
+
+    #[test]
+    fn semantic_hits_typed_and_no_prose_for_embedding() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let emb = vec![1.0, -1.0, 1.0, -1.0];
+        db.remember_semantic("k", "texto com companion", &emb).unwrap();
+        let hits = db.recall(&emb, 5).unwrap();
+        assert!(!hits.is_empty());
+        let h = &hits[0];
+        assert_eq!(h.path, RecallPath::Semantic);
+        assert_eq!(h.content_type, ContentType::Text, "companion → tipo do texto");
+        assert!(!h.text.is_empty());
+        assert!(h.validity.is_none());
+        assert!(h.rel.is_none(), "doc primário não tem rel");
+
+        // doc L5 cru (payload f32) SEM companion: o recall NUNCA projeta os
+        // floats como prosa lossy — o consumidor vê Embedding(4) e texto vazio.
+        let mut db2 = Sgdb::open(InMemory::new()).unwrap();
+        let f: Vec<f32> = (0..4).map(|i| i as f32 * 0.5 - 1.0).collect();
+        let payload: Vec<u8> = f.iter().flat_map(|x| x.to_le_bytes()).collect();
+        let mut doc = MemoryDoc::new(MemoryLayer::L5Procedural, "raw", payload);
+        doc.bitvec = Some(quantize_f32(&f));
+        db2.put(doc).unwrap();
+        let q = vec![0.5, 0.5, 0.5, 0.5];
+        let h2 = &db2.recall(&q, 5).unwrap()[0];
+        assert_eq!(h2.content_type, ContentType::Embedding(4));
+        assert!(h2.text.is_empty(), "floats nunca viram prosa");
+    }
+
+    #[test]
+    fn hybrid_hits_paths_distinguishable() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let emb = vec![1.0, -1.0, 1.0, -1.0];
+        db.remember_semantic("exata", "o termo exato cacatua mora aqui", &emb)
+            .unwrap();
+        db.remember_semantic("outra", "protocolo de sync entre agentes", &emb)
+            .unwrap();
+        let q = vec![1.0, -1.0, 1.0, -1.0];
+        let hits = db.recall_hybrid(&q, "cacatua exato", 10).unwrap();
+        assert!(hits.len() >= 2, "semântico + lexical não-duplicado: {}", hits.len());
+        for h in &hits {
+            assert!(
+                h.path == RecallPath::Semantic || h.path == RecallPath::Lexical,
+                "path = {:?}",
+                h.path
+            );
+        }
+        assert!(
+            hits.iter().any(|h| h.path == RecallPath::Lexical && !h.matched_terms.is_empty()),
+            "pelo menos um hit lexical com grounding"
+        );
+    }
+
+    #[test]
+    fn validity_window_exposed_per_hit() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let emb = vec![1.0, -1.0, 1.0, -1.0];
+        db.remember_semantic("k", "texto com janela temporal", &emb).unwrap();
+        let keys = db.scan_prefix("md/L4/").unwrap();
+        assert_eq!(keys.len(), 1);
+        db.set_validity(&keys[0].0, 100, 200).unwrap();
+        let hits = db.recall(&emb, 5).unwrap();
+        assert_eq!(hits[0].validity, Some((100, 200)));
+        // recall_temporal carrega o Hit com validade intacta (penaliza/sobe)
+        let t = db.recall_temporal(&emb, 5, 150, 1.0, 10.0).unwrap();
+        assert_eq!(t[0].validity, Some((100, 200)));
     }
 }

@@ -105,11 +105,14 @@ impl LexicalIndex {
         self.n_docs == 0
     }
 
-    /// BM25-ish: log-tf × idf, soma por termo da query. Retorna (key, score)
-    /// desc (determinístico por key no empate).
-    pub fn search(&self, query: &str, k: usize) -> Vec<(String, f32)> {
+    /// BM25-ish: log-tf × idf, soma por termo da query. Retorna (key, score,
+    /// termos da query que casaram) desc (determinístico por key no empate).
+    /// Os termos casados são o grounding do hit (v1.1.6) — o consumidor vê o
+    /// "porquê" do casamento sem re-tokenizar.
+    pub fn search(&self, query: &str, k: usize) -> Vec<(String, f32, Vec<String>)> {
         let toks = tokenize(query);
         let mut scores: BTreeMap<String, f32> = BTreeMap::new();
+        let mut matched: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let n = self.n_docs.max(1) as f32;
         for t in &toks {
             let Some(plist) = self.postings.get(t) else {
@@ -120,9 +123,17 @@ impl LexicalIndex {
             for (key, f) in plist {
                 let tf = 1.0 + ln_f32(*f as f32);
                 *scores.entry(key.clone()).or_insert(0.0) += tf * idf;
+                // termo casado, deduplicado por doc (query pode repetir termo)
+                let m = matched.entry(key.clone()).or_default();
+                if !m.contains(t) {
+                    m.push(t.clone());
+                }
             }
         }
-        let mut out: Vec<(String, f32)> = scores.into_iter().collect();
+        let mut out: Vec<(String, f32, Vec<String>)> = scores
+            .into_iter()
+            .map(|(k, s)| (k.clone(), s, matched.remove(&k).unwrap_or_default()))
+            .collect();
         out.sort_by(|a, b| {
             b.1.partial_cmp(&a.1)
                 .unwrap_or(core::cmp::Ordering::Equal)
