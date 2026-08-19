@@ -97,6 +97,42 @@ pub fn embedding_dim_of(payload: &[u8], has_bitvec: bool) -> Option<u32> {
     Some((payload.len() / 4) as u32)
 }
 
+/// Rótulo ESTÁVEL do tipo (v1.1.6 item 2 — seam de WRITE): o writer declara
+/// `remember(..., type="json")` persistido em `MemoryMeta` (MDM1 v6); o
+/// consumidor parseia o rótulo sem depender do detector nem do `Debug`.
+/// `embedding` NÃO carrega a dim — ela vem do payload (`len/4`); o rótulo
+/// só diz a FAMÍLIA do datum.
+pub fn stable_label(ct: ContentType) -> &'static str {
+    match ct {
+        ContentType::Text => "text",
+        ContentType::Json => "json",
+        ContentType::Code => "code",
+        ContentType::Embedding(_) => "embedding",
+        ContentType::Binary => "binary",
+    }
+}
+
+/// Parse do rótulo estável → `ContentType`. `Embedding(0)` é um placeholder:
+/// a dim REAL vem do payload (resolve quem constrói o hit). `None` = rótulo
+/// desconhecido (declaração inválida — `set_content_type` valida na escrita).
+pub fn parse_stable_label(s: &str) -> Option<ContentType> {
+    match s {
+        "text" => Some(ContentType::Text),
+        "json" => Some(ContentType::Json),
+        "code" => Some(ContentType::Code),
+        "embedding" => Some(ContentType::Embedding(0)),
+        "binary" => Some(ContentType::Binary),
+        _ => None,
+    }
+}
+
+/// Renderiza verbatim na projeção prosa (v1.1.6): Text/Json/Code sim;
+/// Embedding/Binary NUNCA viram prosa (`from_utf8_lossy` proíbe). O campo
+/// `Hit.text` é não-vazio ⟺ `content_type` rende prosa.
+pub fn renders_prose(ct: ContentType) -> bool {
+    matches!(ct, ContentType::Text | ContentType::Json | ContentType::Code)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

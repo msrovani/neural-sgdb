@@ -117,6 +117,13 @@ fn sample_meta(state: &mut u64) -> MemoryMeta {
         last_reinforced: 0,
         scope: String::new(),
         entities,
+        // v6: declaração determinística (só rótulos estáveis; 1/4 vazia)
+        content_type: match lcg(state) % 4 {
+            0 => None,
+            1 => Some("text".into()),
+            2 => Some("json".into()),
+            _ => Some("embedding".into()),
+        },
     }
 }
 

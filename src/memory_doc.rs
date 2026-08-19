@@ -333,6 +333,14 @@ pub struct MemoryMeta {
     /// 1-hop, sem multi-hop). Side-table MDM1 v5 — NMD1 intacto. v1–v4
     /// decodificam com lista vazia.
     pub entities: Vec<String>,
+    /// Tipo de conteúdo DECLARADO pelo writer (v1.1.6 item 2 — seam): rótulo
+    /// estável (`text`/`json`/`code`/`embedding`/`binary`). Quem fornece
+    /// declara (mesmo contrato de `entities`/`Embedder`); o consumidor para
+    /// de depender do detector heurístico (`ContentType::stable_label`/
+    /// `parse_stable_label`). `None` = não declarado (detector decide).
+    /// Side-table MDM1 v6 — NMD1 intacto; v1–v5 decodificam com `None`
+    /// (migração explícita, nunca reinterpreta bytes antigos).
+    pub content_type: Option<String>,
 }
 
 /// Um elo da linhagem causal (Phase 3, v0.7): a versão corrente e seus
@@ -350,9 +358,10 @@ pub struct LineageEntry {
 
 const META_MAGIC: &[u8; 4] = b"MDM1";
 /// v1 (v0.6): memória + proveniência · v2 (v0.7): version_id · v3 (v0.9):
-/// last_reinforced · v4 (v1.1.4): scope · v5 (v1.1.4): entities. `decode`
-/// aceita as cinco — migração explícita, nunca reinterpreta bytes antigos.
-const META_VERSION: u8 = 5;
+/// last_reinforced · v4 (v1.1.4): scope · v5 (v1.1.4): entities · v6
+/// (v1.1.6): content_type declarado. `decode` aceita as seis — migração
+/// explícita, nunca reinterpreta bytes antigos.
+const META_VERSION: u8 = 6;
 
 impl MemoryMeta {
     pub fn encode(&self) -> Vec<u8> {
@@ -388,6 +397,14 @@ impl MemoryMeta {
             out.extend_from_slice(&(e.len() as u16).to_le_bytes());
             out.extend_from_slice(e.as_bytes());
         }
+        // v6: tipo de conteúdo declarado (len 0 = não declarado → detector)
+        match &self.content_type {
+            Some(s) => {
+                out.extend_from_slice(&(s.len() as u16).to_le_bytes());
+                out.extend_from_slice(s.as_bytes());
+            }
+            None => out.extend_from_slice(&0u16.to_le_bytes()),
+        }
         out
     }
 
@@ -396,7 +413,7 @@ impl MemoryMeta {
             return Err("bad meta magic");
         }
         let ver = data[4];
-        if !(1..=5).contains(&ver) {
+        if !(1..=6).contains(&ver) {
             return Err("bad meta version");
         }
         let mut off = 5;
@@ -492,6 +509,22 @@ impl MemoryMeta {
         } else {
             Vec::new()
         };
+        // v6: tipo de conteúdo declarado (v1–v5 = não declarado)
+        let content_type = if ver >= 6 {
+            let clen = rd_u16(data, off).ok_or("trunc ctlen")? as usize;
+            off += 2;
+            if clen == 0 {
+                None
+            } else {
+                if off + clen > data.len() {
+                    return Err("trunc content_type");
+                }
+                let s = core::str::from_utf8(&data[off..off + clen]).map_err(|_| "utf8 ct")?;
+                Some(String::from(s))
+            }
+        } else {
+            None
+        };
         Ok(MemoryMeta {
             memory_id,
             version_id,
@@ -504,6 +537,7 @@ impl MemoryMeta {
             last_reinforced,
             scope,
             entities,
+            content_type,
         })
     }
 }
@@ -1278,6 +1312,7 @@ mod tests {
                 String::from("Brasil"),
                 String::from("neural-sgdb"),
             ],
+            content_type: Some(String::from("json")),
         }
     }
 
@@ -1312,11 +1347,12 @@ mod tests {
         // = memory_id (a 1ª versão de um slot é o próprio slot). O v1 não
         // é reinterpretado silenciosamente: o decode conhece os dois layouts.
         let enc_full = sample_meta().encode();
-        // o corte v1 remove: v5 (nentities u16 + ents) + v4 (scopelen u16 +
-        // scope) + v3 (last_reinforced u64) + v2 (vidlen u16 + vid)
+        // campos por versão (sufixos que cada corte remove)
         let scope = sample_meta().scope;
         let ents: usize = sample_meta().entities.iter().map(|e| 2 + e.len()).sum();
-        let cut = enc_full.len() - 2 - ents - 2 - scope.len() - 8 - 2 - sample_meta().version_id.len();
+        let ct: usize = 2 + sample_meta().content_type.as_ref().unwrap().len();
+        // v1: remove v6 (ct) + v5 (entities) + v4 (scope) + v3 (lr) + v2 (vid)
+        let cut = enc_full.len() - ct - ents - 2 - scope.len() - 8 - 2 - sample_meta().version_id.len();
         let mut enc = enc_full.clone();
         enc.truncate(cut);
         enc[4] = 1;
@@ -1326,36 +1362,48 @@ mod tests {
         assert_eq!(dec.last_reinforced, 0, "v1 nunca reforçada");
         assert_eq!(dec.scope, "", "v1 = escopo global");
         assert!(dec.entities.is_empty(), "v1 = sem entidades");
-        // v2 (sem last_reinforced, sem scope) também decodifica
+        assert!(dec.content_type.is_none(), "v1 = tipo não declarado");
+        // v2 (sem lr/scope/entities/ct) também decodifica
         let mut enc2 = enc_full.clone();
-        let cut2 = enc2.len() - 2 - ents - 8 - 2 - scope.len();
+        let cut2 = enc2.len() - ct - ents - 2 - scope.len() - 8;
         enc2.truncate(cut2);
         enc2[4] = 2;
         let dec2 = MemoryMeta::decode(&enc2).unwrap();
         assert_eq!(dec2.last_reinforced, 0);
         assert_eq!(dec2.scope, "");
         assert!(dec2.entities.is_empty());
+        assert!(dec2.content_type.is_none());
         assert_eq!(dec2.version_id, sample_meta().version_id);
-        // v3 (sem scope) decodifica com scope=""
+        // v3 (sem scope/entities/ct) decodifica com scope=""
         let mut enc3 = enc_full.clone();
-        let cut3 = enc3.len() - 2 - ents - 2 - scope.len();
+        let cut3 = enc3.len() - ct - ents - 2 - scope.len();
         enc3.truncate(cut3);
         enc3[4] = 3;
         let dec3 = MemoryMeta::decode(&enc3).unwrap();
         assert_eq!(dec3.last_reinforced, sample_meta().last_reinforced);
         assert_eq!(dec3.scope, "", "v3 = escopo global (migração v4 explícita)");
         assert!(dec3.entities.is_empty(), "v3 = sem entidades");
-        // v4 (sem entities) decodifica com lista vazia
+        assert!(dec3.content_type.is_none());
+        // v4 (sem entities/ct) decodifica com lista vazia
         let mut enc4 = enc_full.clone();
-        let cut4 = enc4.len() - 2 - ents;
+        let cut4 = enc4.len() - ct - ents;
         enc4.truncate(cut4);
         enc4[4] = 4;
         let dec4 = MemoryMeta::decode(&enc4).unwrap();
         assert_eq!(dec4.scope, sample_meta().scope, "v4 preserva o scope");
         assert!(dec4.entities.is_empty(), "v4 = sem entidades (migração v5 explícita)");
+        assert!(dec4.content_type.is_none());
+        // v5 (sem ct) decodifica com tipo não declarado — migração v6 explícita
+        let mut enc5 = enc_full.clone();
+        let cut5 = enc5.len() - ct;
+        enc5.truncate(cut5);
+        enc5[4] = 5;
+        let dec5 = MemoryMeta::decode(&enc5).unwrap();
+        assert_eq!(dec5.entities, sample_meta().entities, "v5 preserva entidades");
+        assert!(dec5.content_type.is_none(), "v5 = tipo não declarado");
         // versão desconhecida → Err
         let mut bad = enc_full.clone();
-        bad[4] = 6;
+        bad[4] = 7;
         assert!(MemoryMeta::decode(&bad).is_err());
         // truncado no vid → Err, nunca panic
         let full = enc_full;
@@ -1590,6 +1638,7 @@ mod prop_tests {
                 last_reinforced: 0,
                 scope: String::new(),
                 entities: Vec::new(),
+                content_type: None,
             };
             let dec = MemoryMeta::decode(&m.encode()).unwrap();
             assert_eq!(dec, m);

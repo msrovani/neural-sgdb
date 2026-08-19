@@ -163,8 +163,8 @@ O retorno de recall é lido por OUTRA inteligência (não por humano) — e o ca
 carrega dados que NÃO são palavras humanas (JSON de intenção máquina→máquina,
 embeddings da era, código, binários). Antes, tudo passava por
 `String::from_utf8_lossy` e o consumidor não sabia nem QUE datum era nem COMO
-parseá-lo. Cada item com regressão; matrix **225+1 / 271+1 / 177+1**, gates
-verdes, hot test 84/0 exit 0.
+parseá-lo. Cada item com regressão; matrix **229+1 / 181+1 / 275+1**, gates
+verdes, hot test 90/0 exit 0.
 
 - **`src/ctype.rs` (no_std-safe)**: `ContentType` = Text | Json | Code |
   Embedding(dim) | Binary — HINT derivado na LEITURA (nunca persistido; o
@@ -229,6 +229,29 @@ verdes, hot test 84/0 exit 0.
   da projeção prosa nem do `Debug`. Default continua a prosa (invariantes).
   Em `rag_context` semantic + `format=json` usa `recall` (hits) em vez do
   core `rag_context` (string). Hot test 86/0 (2 novos: recall json + rag json).
+- **Seam de WRITE — `set_content_type` (v1.1.6 item 2)**: `MemoryMeta.
+  content_type: Option<String>` = **MDM1 v6** (migração explícita: v1–v5
+  decodificam com `None`; NMD1/TKLV intocados). Quem fornece declara o rótulo
+  ESTÁVEL (`text`/`json`/`code`/`embedding`/`binary` — `stable_label`/
+  `parse_stable_label` em `ctype.rs`); o consumidor deixa de depender do
+  detector heurístico (a saga type=Code era adivinhação). Rótulo inválido →
+  `SgdbError::Invalid` na escrita. A declaração PROPAGA para o companion
+  `/L2/` do primário (L4/L5) — semântico e lexical tipam igual. **declared
+  wins** nos 3 sites de construção do Hit (`resolve_content_type` em sgdb.rs):
+  Embedding declarado absorve a dim do payload; Embedding/Binary declarado
+  NUNCA rende prosa (`renders_prose` guarda `Hit.text`). MCP `remember(type=)`.
+  `content_type_of(key)` lê a declaração. `meta_for_import` carrega a
+  declaração na replicação (o tipo viaja no MDR1).
+- **`examples/two_ai_protocol.rs` (v1.1.6 item 5)**: o contrato COMPLETO
+  máquina→máquina, ponta a ponta (16 auto-checks): IA-A (writer) grava JSON de
+  intenção, JSON NÚMERO `"42"` (o detector diria Text — o seam remove a
+  adivinhação), binário não-UTF8 (L3 + entidade `datum/checksum`) e vetor da
+  era — todos DECLARADOS via `set_content_type`; IA-B (reader) consome os hits
+  TIPADOS: `content_type` (declarado vence), `payload_type` (Embedding(dim) do
+  primário), `rel` (companion → primário), `matched_terms`; parseia JSON
+  verbatim, segue `rel=` e re-lê o payload do primário, consome o binário cru
+  pela key (bytes idênticos, nunca `from_utf8_lossy`). Determinístico
+  (InMemory, sem LLM, embedding LCG do exemplo). Exit 0 sse 16/16.
 
 ## Agent decision protocol (v1.1.4, exemplo `agent_protocol.rs`)
 
@@ -356,6 +379,7 @@ cargo run --release --example bench        # benchmarks (ART/BQ/recall vs FP32)
 cargo run --release --example mcp_server   # MCP server for AI agents
 cargo run --release --example mcp_client   # HOT TEST: drives mcp_server like an IDE (77 checks)
 cargo run --release --example agent_protocol  # DECISION PROTOCOL (itens 2–6 + P1–P6): como o agente USA o DB
+cargo run --release --example two_ai_protocol # PROTOCOLO MÁQUINA→MÁQUINA (v1.1.6 itens 1–5): IA-A grava datum declarado, IA-B lê tipado
 cargo run --release --example memory_arena_eval # MEMORY-ARENA EVAL (P7): utilidade da memória em tarefas interdependentes
 cargo run --release --example mesh_simulation --features p2p  # layered AI telepathy mesh
 cargo run --release --example signed_peer --features p2p      # signed-transport seam flow

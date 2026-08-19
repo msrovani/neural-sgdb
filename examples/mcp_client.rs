@@ -256,6 +256,19 @@ fn main() {
     let (txt, is_err) = srv.tool("rag_context", json!({"query": "telepatia converge", "k": 2, "rerank": true}));
     rep.check("rag_context rerank=true ancorado e auditavel (anchors=)",
         !is_err && txt.contains("anchors=") && !txt.contains("erro:"), txt.clone());
+    // v1.1.6 item 2: seam de WRITE — remember(type=json) declara o datum; o
+    // consumidor vê type=json SEM depender do detector ("42" não é delimitado
+    // {…}/[…], o detector diria text — a declaração vence).
+    let (txt, is_err) = srv.tool("remember", json!({"text": "42", "type": "json"}));
+    rep.check("remember type=json aceita a declaracao",
+        !is_err && txt.contains("md/L4/mcp/"), txt.clone());
+    let (txt, is_err) = srv.tool("recall", json!({"query": "42", "k": 3, "format": "json"}));
+    let parsed: Value = serde_json::from_str(&txt).unwrap_or(Value::Null);
+    let arr = parsed.as_array();
+    rep.check("recall json expoe type=json declarado (seam vence o detector)",
+        !is_err
+            && arr.is_some_and(|a| a.iter().any(|h| h["type"] == "json" && h["text"] == "42")),
+        txt.clone());
     rep.phase("recall modes", &t);
 
     // ---------- fase 4e: retrieval temporal com intenção (v1.1.4 item 9) ----

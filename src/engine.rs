@@ -350,6 +350,7 @@ impl AiosDatabaseEngine {
                     last_reinforced: 0,
                     scope: String::new(),
                     entities: Vec::new(),
+                    content_type: None,
                 }
             }
         };
@@ -504,6 +505,7 @@ impl AiosDatabaseEngine {
             last_reinforced: 0,
             scope: String::new(),
             entities: Vec::new(),
+            content_type: None,
         };
         // índice reverso também é derivado na migração (DAG consultável)
         self.storage
@@ -1186,6 +1188,10 @@ fn meta_for_import(doc: &MemoryDoc) -> MemoryMeta {
             .as_ref()
             .map(|m| m.entities.clone())
             .unwrap_or_default(),
+        content_type: doc
+            .meta
+            .as_ref()
+            .and_then(|m| m.content_type.clone()),
     }
 }
 

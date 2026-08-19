@@ -306,13 +306,14 @@ fn main() {
             "tools/list" => {
                 send(&json!({"jsonrpc":"2.0","id":id,"result":{"tools":[
                     {"name":"remember",
-                     "description":"Armazena uma memoria de texto no banco neural-sgdb. Opcional: forneca `embedding` (array de f32, 1..=256 dims) para usar um modelo real; sem ele, o server usa o embedder configurado (demo trigram). `scope` (opcional) particiona por user/agent/projeto (mem0 multi-tenancy). `entities` (opcional, item 10) declara entidades nomeadas da memoria (lista de strings — use as MESMAS strings na busca `recall_entities`; o core nunca extrai entidade do texto).",
+                     "description":"Armazena uma memoria de texto no banco neural-sgdb. Opcional: forneca `embedding` (array de f32, 1..=256 dims) para usar um modelo real; sem ele, o server usa o embedder configurado (demo trigram). `scope` (opcional) particiona por user/agent/projeto (mem0 multi-tenancy). `entities` (opcional, item 10) declara entidades nomeadas da memoria (lista de strings — use as MESMAS strings na busca `recall_entities`; o core nunca extrai entidade do texto). `type` (v1.1.6 item 2) declara o tipo de conteudo do datum (`text`/`json`/`code`/`embedding`/`binary`) — o consumidor para de depender do detector heuristico (mesmo contrato de entities: quem fornece declara).",
                      "inputSchema":{"type":"object",
                        "properties":{
                          "text":{"type":"string","description":"Conteudo a lembrar"},
                          "embedding":{"type":"array","items":{"type":"number"},"description":"Embedding fornecido pelo agente (opcional)"},
                          "scope":{"type":"string","description":"Escopo de isolamento (ex: 'user/ana', 'project/neural-os'). Vazio = global."},
-                         "entities":{"type":"array","items":{"type":"string"},"description":"Entidades nomeadas da memoria (opcional). Mesmas strings na busca recall_entities."}},
+                         "entities":{"type":"array","items":{"type":"string"},"description":"Entidades nomeadas da memoria (opcional). Mesmas strings na busca recall_entities."},
+                         "type":{"type":"string","enum":["text","json","code","embedding","binary"],"description":"Tipo de conteudo declarado (v1.1.6 item 2)"}},
                        "required":["text"]},
                      "annotations":{"destructiveHint":true,"idempotentHint":true}},
                     {"name":"remember_episodic",
@@ -567,6 +568,16 @@ fn main() {
                                     .unwrap_or_default();
                                 if !entities.is_empty() {
                                     if let Err(e) = db.set_entities(&format!("md/L4/{key}"), &entities) {
+                                        send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                            "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}}));
+                                        continue;
+                                    }
+                                }
+                                // tipo declarado (v1.1.6 item 2 — seam de WRITE):
+                                // o writer declara, o consumidor não depende do
+                                // detector (propaga para o companion /L2/).
+                                if let Some(ct) = args["type"].as_str() {
+                                    if let Err(e) = db.set_content_type(&format!("md/L4/{key}"), ct) {
                                         send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                             "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}}));
                                         continue;

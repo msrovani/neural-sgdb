@@ -8,13 +8,42 @@ use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use crate::bq::{quantize_f32, BqFlatIndex};
-use crate::ctype::{detect_content_type, embedding_dim_of, ContentType, RecallPath};
+use crate::ctype::{
+    detect_content_type, embedding_dim_of, parse_stable_label, renders_prose, ContentType, RecallPath,
+};
 use crate::engine::AiosDatabaseEngine;
 use crate::era::{estimate_era_migration, era_report_lines, EraReport};
 use crate::memory_doc::{
     LineageEntry, MemoryDoc, MemoryLayer, MemoryMeta, MemoryRecord, MemoryState, RelationKind,
 };
 use crate::storage::{Storage, SgdbError};
+
+/// Resolve o tipo de conteúdo do hit (v1.1.6 item 2 — seam de WRITE): a
+/// DECLARAÇÃO do writer (MDM1 v6, `set_content_type`) vence o detector
+/// heurístico; sem declaração, detecta o texto do companion (projeção) ou
+/// cai para o detector do payload. `Embedding` declarado absorve a dim do
+/// payload (o rótulo estável não carrega dim). O chamador aplica
+/// `renders_prose` no campo `Hit.text` (Embedding/Binary nunca viram prosa).
+fn resolve_content_type(
+    declared: Option<ContentType>,
+    text: &str,
+    ct_fallback: ContentType,
+) -> ContentType {
+    match declared {
+        Some(ContentType::Embedding(_)) => match ct_fallback {
+            ContentType::Embedding(d) => ContentType::Embedding(d),
+            _ => ContentType::Embedding(0),
+        },
+        Some(other) => other,
+        None => {
+            if text.is_empty() {
+                ct_fallback
+            } else {
+                detect_content_type(text.as_bytes(), None)
+            }
+        }
+    }
+}
 
 /// Proveniência de um hit (v0.6 — Phase 9 parcial): epistemologia exposta ao
 /// caller — memórias com estados diferentes NÃO se parecem iguais no recall.
@@ -433,6 +462,44 @@ impl Sgdb {
         Ok(self.engine.meta(&sk)?.map(|m| m.entities).unwrap_or_default())
     }
 
+    /// Tipo de conteúdo DECLARADO da memória (v1.1.6 item 2 — seam de WRITE):
+    /// o writer declara o rótulo estável (`text`/`json`/`code`/`embedding`/
+    /// `binary`) e o consumidor deixa de depender do detector heurístico —
+    /// mesmo contrato de `entities`/`Embedder`: quem fornece declara, o core
+    /// sugere. Persistido em `sys/meta/` (MDM1 v6); registros pré-v1.1.6
+    /// decodificam com `None` (migração explícita). Em primários `/L4/`/`/L5/`
+    /// com companion `/L2/`, a declaração PROPAGA para o companion (o texto
+    /// que ele carrega é o mesmo datum) — os dois caminhos de recall (semântico
+    /// e lexical) tipam igual. Rótulo desconhecido → `SgdbError::Invalid`.
+    pub fn set_content_type(&mut self, key: &str, ct: &str) -> Result<(), SgdbError> {
+        if parse_stable_label(ct).is_none() {
+            return Err(SgdbError::Invalid(
+                "unknown content_type label (use text|json|code|embedding|binary)",
+            ));
+        }
+        let sk = self.resolve_known_key(key);
+        let mut m = self.engine.ensure_meta(&sk)?;
+        m.content_type = Some(ct.to_string());
+        self.engine.write_meta(&sk, &m)?;
+        // propaga para o companion `/L2/` do primário, se existir (o mesmo
+        // datum, só que na forma de texto — o lexical indexa a /L2/).
+        if sk.starts_with("md/L4/") || sk.starts_with("md/L5/") {
+            let ck = companion_key(&sk);
+            if let Ok(Some(_)) = self.engine.get_by_storage_key(&ck) {
+                let mut cm = self.engine.ensure_meta(&ck)?;
+                cm.content_type = Some(ct.to_string());
+                self.engine.write_meta(&ck, &cm)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Lê o tipo de conteúdo declarado (None = não declarado → detector).
+    pub fn content_type_of(&mut self, key: &str) -> Result<Option<String>, SgdbError> {
+        let sk = self.resolve_known_key(key);
+        Ok(self.engine.meta(&sk)?.and_then(|m| m.content_type))
+    }
+
     /// Recall por entidades (item 10, 1-hop): candidatos = docs que declaram
     /// PELO MENOS UMA das entidades consultadas, ranqueados por número de
     /// entidades em comum (desc) e, em empate, por importância (desc) e
@@ -536,13 +603,18 @@ impl Sgdb {
             // dist = fração de entidades NÃO cobertas (0 = casa todas)
             let dist = 1.0 - (overlap as f32 / n_ents as f32);
             // provenance: layer do doc + estado + meta (v1.1.6: + reinforce/scope/entities)
-            let (prov, ct_fallback) = match self.engine.get_by_storage_key(&sk) {
+            let (prov, ct_fallback, declared) = match self.engine.get_by_storage_key(&sk) {
                 Ok(Some(doc)) => {
                     let st = self.engine.get_state(&sk);
                     let ct = detect_content_type(
                         &doc.payload,
                         embedding_dim_of(&doc.payload, doc.bitvec.is_some()),
                     );
+                    let declared = doc
+                        .meta
+                        .as_ref()
+                        .and_then(|m| m.content_type.as_deref())
+                        .and_then(parse_stable_label);
                     (
                         doc.meta.as_ref().map(|m| HitProvenance {
                             memory_id: m.memory_id.clone(),
@@ -559,16 +631,14 @@ impl Sgdb {
                             entities: m.entities.clone(),
                         }),
                         ct,
+                        declared,
                     )
                 }
-                _ => (None, ContentType::Binary),
+                _ => (None, ContentType::Binary, None),
             };
             let text = texts.get(&companion_keys[i]).cloned().unwrap_or_default();
-            let content_type = if text.is_empty() {
-                ct_fallback
-            } else {
-                detect_content_type(text.as_bytes(), None)
-            };
+            let content_type = resolve_content_type(declared, &text, ct_fallback);
+            let text = if renders_prose(content_type) { text } else { String::new() };
             let validity = self.engine.validity_window(&sk);
             // item 3 — primário L4/L5/L3: payload_type = Embedding(dim);
             // companion `/L2/` (raro no índice de entidades): tipo do primário.
@@ -1244,7 +1314,7 @@ impl Sgdb {
         // Distância Hamming máxima de um vetor indexado (normaliza o fallback
         // p/ escala 0..1 do contrato de `Hit.dist` — bughunt #11).
         let ham_max = (self.engine.bq.words_per_vec.max(1) * 64) as f32;
-        let mut out: Vec<(u32, Hit)> = Vec::new();
+        let mut out: Vec<(u32, Hit, Option<ContentType>)> = Vec::new();
         // v1.1.3 S3: companions L2 buscados em BATCH (uma passada por N keys,
         // sem attach_meta) em vez de um get_by_storage_key por hit (N×2 reads).
         let mut companion_keys: Vec<String> = Vec::new();
@@ -1253,7 +1323,7 @@ impl Sgdb {
                 continue;
             };
             // score bruto u32: fp32 rescore OU hamming (mesma escala de ordenação do OS)
-            let (score, dist, provenance, ct_fallback) = match self.engine.get_by_storage_key(&sk) {
+            let (score, dist, provenance, ct_fallback, declared) = match self.engine.get_by_storage_key(&sk) {
                 Ok(Some(doc)) => {
                     let (score, dist) = match Self::fp32_dist_u32(query, &doc.payload) {
                         Some(d) => (d, d as f32 / 10_000.0),
@@ -1299,7 +1369,14 @@ impl Sgdb {
                     // (projeção prosa) e então o tipo é o do TEXTO.
                     let ct_fallback =
                         detect_content_type(&doc.payload, embedding_dim_of(&doc.payload, doc.bitvec.is_some()));
-                    (score, dist, prov, ct_fallback)
+                    // v1.1.6 item 2 — seam de WRITE: a declaração do writer
+                    // (MDM1 v6) vence o detector na hora de tipar o hit.
+                    let declared = doc
+                        .meta
+                        .as_ref()
+                        .and_then(|m| m.content_type.as_deref())
+                        .and_then(parse_stable_label);
+                    (score, dist, prov, ct_fallback, declared)
                 }
                 // doc sumiu (delete físico) ou corrompeu: o BQ é índice
                 // DERIVADO — candidato sem doc vivo NUNCA vira hit (não
@@ -1327,6 +1404,7 @@ impl Sgdb {
                     validity,
                     rel: None,
                 },
+                declared,
             ));
         }
         // batch-get dos textos companion (S3) — deduplicado por key; quando o
@@ -1334,12 +1412,18 @@ impl Sgdb {
         // sobre ele); sem companion → o datum é o payload (Embedding/Binary),
         // nunca prosa lossy.
         let texts = self.engine.get_texts_batch(&companion_keys);
-        for (_, h) in out.iter_mut() {
+        for (_, h, declared) in out.iter_mut() {
             if let Some(t) = texts.get(&companion_key(&h.key)) {
                 if !t.is_empty() {
                     h.text = t.clone();
-                    h.content_type = detect_content_type(t.as_bytes(), None);
                 }
+            }
+            // v1.1.6 item 2: declaração vence; senão o texto do companion
+            // (projeção) ou o detector do payload. Embedding/Binary declarado
+            // NUNCA rende prosa — o campo text fica vazio.
+            h.content_type = resolve_content_type(*declared, &h.text, h.content_type);
+            if !renders_prose(h.content_type) {
+                h.text = String::new();
             }
         }
         // Dedupe por storage key mantendo o MELHOR score: um overwrite em L4
@@ -1347,7 +1431,7 @@ impl Sgdb {
         // recall devolveria a mesma memória 2x (ids → mesma key → mesmo doc).
         let mut best: alloc::collections::BTreeMap<String, (u32, Hit)> =
             alloc::collections::BTreeMap::new();
-        for (score, h) in out {
+        for (score, h, _declared) in out {
             match best.get(&h.key) {
                 Some((s0, _)) if *s0 <= score => continue, // mantém o melhor
                 _ => {
@@ -1541,12 +1625,23 @@ impl Sgdb {
                 let own_ct = detect_content_type(&doc.payload, None);
                 // v1.1.6 — datum TIPADO: projeção prosa só para Text/Json/Code;
                 // Binário/Embedding NUNCA passam por from_utf8_lossy.
-                let text = match own_ct {
+                let mut text = match own_ct {
                     ContentType::Text | ContentType::Json | ContentType::Code => {
                         String::from_utf8_lossy(&doc.payload).into_owned()
                     }
                     ContentType::Embedding(_) | ContentType::Binary => String::new(),
                 };
+                // v1.1.6 item 2 — seam de WRITE: a declaração (MDM1 v6) vence
+                // o detector; Embedding/Binary declarado suprime a projeção.
+                let declared = doc
+                    .meta
+                    .as_ref()
+                    .and_then(|m| m.content_type.as_deref())
+                    .and_then(parse_stable_label);
+                let content_type = resolve_content_type(declared, &text, own_ct);
+                if !renders_prose(content_type) {
+                    text = String::new();
+                }
                 // item 3 — o primário (via rel) carrega o datum REAL (Embedding
                 // dim p/ L4/L5); o companion é a projeção de texto.
                 let (rel, payload_type) = match self.primary_of(&sk) {
@@ -1560,7 +1655,7 @@ impl Sgdb {
                     dist: (1.0 - score / max).clamp(0.0, 1.0),
                     provenance,
                     path: RecallPath::Lexical,
-                    content_type: own_ct,
+                    content_type,
                     payload_type,
                     score,
                     matched_terms,
@@ -4951,5 +5046,65 @@ mod tests {
             reranked.contains("anchors="),
             "âncoras auditáveis no contexto: {reranked}"
         );
+    }
+
+    #[test]
+    fn declared_content_type_wins_over_detector() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let emb = vec![1.0, -1.0, 1.0, -1.0];
+        // "42" é JSON válido mas NÃO delimitado → o detector diz Text
+        db.remember_semantic("j", "42", &emb).unwrap();
+        let sk = db.scan_prefix("md/L4/").unwrap()[0].0.clone();
+        // sem declaração: detector decide
+        let h = db.recall(&emb, 5).unwrap();
+        assert_eq!(h[0].content_type, ContentType::Text, "detector: Text");
+        // seam (v1.1.6 item 2): writer declara json → o consumidor para de
+        // depender do detector; o datum real (Embedding) fica intacto.
+        db.set_content_type(&sk, "json").unwrap();
+        assert_eq!(db.content_type_of(&sk).unwrap().as_deref(), Some("json"));
+        let h = db.recall(&emb, 5).unwrap();
+        assert_eq!(h[0].content_type, ContentType::Json, "declarado json");
+        assert_eq!(h[0].text, "42");
+        assert_eq!(h[0].payload_type, ContentType::Embedding(4), "datum real intacto");
+        // propaga para o companion `/L2/` — o recall lexical também tipa json
+        assert_eq!(db.content_type_of("md/L2/j").unwrap().as_deref(), Some("json"));
+        let hl = db.recall_lexical("42", 5).unwrap();
+        assert!(!hl.is_empty());
+        assert_eq!(hl[0].content_type, ContentType::Json, "lexical do companion tipa igual");
+        // rótulo desconhecido é rejeitado na escrita (nunca persiste lixo)
+        assert!(db.set_content_type(&sk, "YAML").is_err());
+        assert_eq!(db.content_type_of(&sk).unwrap().as_deref(), Some("json"));
+    }
+
+    #[test]
+    fn declared_binary_and_text_override_detector() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        // payload que o detector rotularia Code; o writer declara text (prosa
+        // com fragmento de código — o seam remove a adivinhação)
+        db.put(MemoryDoc::new(
+            MemoryLayer::L3EpisodicLong,
+            "c",
+            b"fn main() { e isso e prosa ".to_vec(),
+        ))
+        .unwrap();
+        let h = db.recall_lexical("fn main", 5).unwrap();
+        assert_eq!(h[0].content_type, ContentType::Code, "detector: Code");
+        db.set_content_type("md/L3/c", "text").unwrap();
+        let h = db.recall_lexical("fn main", 5).unwrap();
+        assert_eq!(h[0].content_type, ContentType::Text, "declarado text vence");
+        assert!(h[0].text.contains("prosa"), "prosa projetada verbatim");
+        // declaração embedding num payload não-embedding: NUNCA projeta prosa
+        // (mesmo se o detector visse Text — o seam é a fonte da verdade)
+        db.put(MemoryDoc::new(
+            MemoryLayer::L3EpisodicLong,
+            "b",
+            b"dado binario declarado".to_vec(),
+        ))
+        .unwrap();
+        db.set_content_type("md/L3/b", "binary").unwrap();
+        let h = db.recall_lexical("dado binario", 5).unwrap();
+        let hb = h.iter().find(|x| x.key == "md/L3/b").expect("hit do datum binário");
+        assert_eq!(hb.content_type, ContentType::Binary, "declarado binary");
+        assert!(hb.text.is_empty(), "Binary NUNCA rende prosa");
     }
 }
