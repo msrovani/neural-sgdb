@@ -61,12 +61,14 @@ pub fn detect_content_type(payload: &[u8], embedding_dim: Option<u32>) -> Conten
     }
 }
 
-/// Heurística conservadora de código (HINT, não classificação): exige UM
-/// sinal estrutural (keyword) MAIS um segundo sinal (outra keyword, chave,
-/// semicolon ou arrow). Um `-> ` isolado em prosa ("L5 -> md/L2") NÃO vira
-/// code — o custo de rotular prosa como código (consumidor com menos
-/// contexto pode tentar executar/parsear o texto) é maior que o de rotular
-/// código como texto (que continua verbatim).
+/// Heurística conservadora de código (HINT, não classificação): exige UMA
+/// keyword (`fn `/`return `/`=> `…) MAIS um segundo sinal estrutural (outra
+/// keyword, chave, semicolon ou arrow). Prosa sem keyword NUNCA vira code —
+/// mesmo com `{key}`/`{text}` (placeholders de formato) + `;`/`->` (pontuação
+/// normal: "BM25; em hybrid", "L5 -> md/L2"). Código real quase sempre tem
+/// keyword (`fn main()`, `return x;`, `x => y`); o custo de rotular prosa
+/// como code (consumidor com menos contexto pode tentar executar/parsear) é
+/// maior que o de rotular code como text (que continua verbatim).
 fn looks_like_code(s: &str) -> bool {
     let low = s.to_ascii_lowercase();
     let kws = [
@@ -74,15 +76,13 @@ fn looks_like_code(s: &str) -> bool {
         "return ", "=> ",
     ];
     let kw_hits = kws.iter().filter(|kw| low.contains(**kw)).count();
+    if kw_hits == 0 {
+        return false;
+    }
     let braces = s.bytes().filter(|b| *b == b'{' || *b == b'}').count();
     let semis = s.bytes().filter(|b| *b == b';').count();
     let arrows = s.matches("->").count();
-    // keyword só + um segundo sinal estrutural
-    if kw_hits >= 1 && (kw_hits >= 2 || braces >= 1 || semis >= 1 || arrows >= 1) {
-        return true;
-    }
-    // sem keyword: estrutura forte de bloco
-    braces >= 2 && (semis >= 1 || arrows >= 1)
+    kw_hits >= 2 || braces >= 1 || semis >= 1 || arrows >= 1
 }
 
 /// Detector de payload de embedding: L4/L5 com bitvec OU payload f32
@@ -152,10 +152,25 @@ mod tests {
             ContentType::Text
         );
         assert_eq!(detect_content_type(b"clima -> ensolarado hoje", None), ContentType::Text);
+        // placeholders de formato (`{key}`/`{text}`) + arrow de prosa: ainda
+        // NÃO é código (sem `;`, sem keyword) — documentação de formato.
+        assert_eq!(
+            detect_content_type(
+                b"o formato e '- {key} | {text} (d=..)' e o companion -> md/L2",
+                None
+            ),
+            ContentType::Text
+        );
         // código real continua code: keyword + segundo sinal estrutural
         assert_eq!(
             detect_content_type(b"fn f(x) { return x + 1; }", None),
             ContentType::Code
+        );
+        // sem keyword NUNCA code, mesmo com chaves/`;`/`->` (prosa de
+        // documentação de formato)
+        assert_eq!(
+            detect_content_type(b"x = { a: 1 }; y = { b: 2 };", None),
+            ContentType::Text
         );
     }
 
