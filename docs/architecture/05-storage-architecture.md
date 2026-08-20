@@ -1,143 +1,107 @@
 # 05 — Storage Architecture
 
-> Status: **v0.2 design target**. Today (v0.2.0): `Storage` trait with
-> `InMemory` (RAM), `FileStorage` (CRC32 append-log, crash-safe) and
-> `TickvFile` (byte-exact TKLV/TKCK interop with neural-os-core). This doc
-> defines storage v0.2: explicit durability levels, WAL → checkpoint →
-> immutable segments → compaction, and GC over lifecycle states. All English
-> per repo policy.
+> Status: **current (v1.1.6)** — `Storage` trait + three backends + durability
+> levels ship in production code. **implemented** = code + tests; **remaining**
+> = honest gap. All English per repo policy.
 
-## 1. Durability ≠ persistence (the review's key point)
+## 1. Durability levels (implemented)
 
-Current `FileStorage::append` does `write_all` + `flush`:
-
-```rust
-f.write_all(&rec)?;
-f.flush()?;
-```
-
-`flush` moves data to the OS, **not** to the platter. On sudden power loss,
-"write returned OK" ≠ "data survived". The fix is explicit **durability
-levels**, chosen by the embedder:
+Explicit levels — embedder chooses cost vs safety:
 
 ```text
-VOLATILE        RAM only (InMemory)                     — no survival
-WRITE_BUFFERED  OS buffer (write, no flush)             — survives process crash
-FLUSHED         OS page cache (write + flush)           — survives process crash, not power loss
-DURABLE         device (write + flush + fsync/fdatasync) — survives power loss
+VOLATILE        InMemory                    — no survival
+WRITE_BUFFERED  write, no flush             — process crash may lose
+FLUSHED         write + flush (default)       — survives process crash
+DURABLE         write + flush + fsync         — survives power loss
 ```
 
-Design:
+`FileStorage` and `TickvFile` expose `sync_durable()`. Checkpoint records
+should use `Durable`; per-turn remember can stay `Flushed`.
+
+## 2. Storage trait (implemented)
 
 ```rust
-pub enum Durability { Volatile, WriteBuffered, Flushed, Durable }
-
 pub trait Storage {
-    fn durability(&self) -> Durability;   // what this backend guarantees
-    fn put(&mut self, key: &[u8], val: &[u8], d: Durability) -> Result<(), SgdbError>;
-    // ...
+    fn put(&mut self, key: &[u8], val: &[u8]) -> Result<(), SgdbError>;
+    fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, SgdbError>;
+    fn scan_prefix(&mut self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, SgdbError>;
+    fn delete(&mut self, key: &[u8]) -> Result<(), SgdbError>;
 }
 ```
 
-- Default: `Flushed` (fast, process-crash safe). `Durable` is opt-in per
-  write — fsync is expensive; the caller decides (checkpoint = Durable,
-  per-turn remember = Flushed).
-- Honest reporting: `backend()` / docs must state the level; a "persistent"
-  backend at `WriteBuffered` is *not* power-loss safe and must say so.
+Semantics: append-log, idempotent put, tombstone delete, CRC recovery.
+Implement over flash/NVMe by providing these four methods.
 
-## 2. Append-only today, WAL tomorrow
+### Backends
 
-### 2.1 Current (exists, correct for v0.1)
+| Backend | Role |
+|---------|------|
+| `InMemory` | tests, prototyping |
+| `FileStorage` | CRC32 append-log, lazy persistent handle (~38×), atomic compaction |
+| `TickvFile` | byte-exact TKLV/TKCK — OS-readable volume |
 
-- `FileStorage`: `[klen u32][vlen u32][crc u32][key‖val]` records, tombstone
-  `vlen=u32::MAX`, crash-tail truncation on open (validate CRC → truncate).
-- `TickvFile`: byte-exact TKLV (512-aligned, CRC over key‖val, in-place
-  `TKL\0` + `vlen=0` tombstones, EOF all-0x00/0xFF) — **interop contract**.
-- Problem: append-only grows forever.
+## 3. Append-log and recovery (implemented)
+
+**FileStorage record:** `[klen][vlen][crc32][key‖val]`, tombstone `vlen=MAX`.
+
+**TickvFile record:** 512-aligned TKLV header, CRC over key‖val, in-place
+invalidation (`TKL\0` / magic[3]=0) before append.
+
+Recovery: validate CRC → truncate corrupt tail; `scan_volume` skips tombstones
+and checkpoint record; last-wins for duplicate keys.
+
+Fault-injection tests: truncated tail, bit rot, reopen parity across backends.
+
+## 4. Checkpoint and fast-mount (implemented)
+
+**TickvFile:**
+- `checkpoint()` writes TKCK as **last** record.
+- `open()` tries `try_mount_from_ckpt` (FNV-1a index + per-entry CRC + stale
+  check); falls back to full `scan_volume`.
+- `compact()` rewrites live set + ckpt + atomic rename.
+
+**FileStorage:** compaction drops tombstones and duplicate keys; must drop
+lazy append handle before rename (bughunt: inode reuse).
+
+## 5. Index rebuild discipline (implemented)
+
+ART, BQ, lexical, and entity indexes are **derived state**:
 
 ```text
-put A, put A, put A, put A, put A  →  5 live copies of A on disk
+open → scan md/ + sys/meta/ + sys/rel/ → rebuild_indices
 ```
 
-### 2.2 v0.2 storage pipeline (design)
+Any Storage impl that preserves bytes can remount indices deterministically.
+`Sgdb::validate()` cross-checks counts and side-table integrity.
 
-```text
-active log (WAL)
-     ↓ checkpoint
-immutable segments
-     ↓ compaction (merge live set, drop dead)
-GC (decayed/archived past retention)
-```
+## 6. Physical delete vs logical state
 
-- **WAL**: append-only, Durable for checkpoint records, Flushed for normal
-  writes. Crash recovery = replay WAL (already the FileStorage/TickvFile
-  model — formalized).
-- **Checkpoint**: periodic snapshot of the live index (`sys/tickv_ckpt` in
-  TKLV already exists as the OS contract; FileStorage gets an equivalent).
-  After a checkpoint, the WAL segment it covers is sealed.
-- **Immutable segments**: sealed WAL chunks; reads consult segment map
-  (newest wins). Segments are never mutated in place — compaction creates new
-  segments.
-- **Compaction**: rewrite the live set (state=active + archived within
-  retention) into a fresh segment; old segments become GC candidates. The OS
-  TickvLite `compact()` (zero-fill + rewrite live set) is the reference
-  behavior — port the discipline, keep the byte format.
+| Operation | Effect |
+|-----------|--------|
+| `set_state` / `supersede` / `forget` | logical — side-table `sys/state/` |
+| `invalidate` / `expire_old` | temporal — `sys/validity/` |
+| `delete` | physical tombstone + index removal + side-table cleanup |
 
-## 3. GC over lifecycle states
+BQ orphans after delete are inert at recall (skipped) until `reclaim_bq_orphans`.
 
-GC is driven by memory **state**, not just tombstones:
+## 7. Remaining gaps
 
-| State | GC policy |
-|-------|-----------|
-| active | never |
-| superseded | keep (audit) until `retention_superseded` |
-| archived | keep until `retention_archive` |
-| decayed | candidate — removed when importance stays 0 past `gc_grace` |
+- **Sealed WAL segments** — single append file today; segment manifest model
+  is medium-term (compaction discipline already ports OS TickvLite behavior).
+- **Automatic compaction trigger** — explicit `compact()` / `checkpoint()`;
+  no background GC thread (no_std-friendly).
+- **State-driven retention GC** — decay/archive mark state; no automatic
+  purge of aged superseded records by retention policy yet.
 
-- Tombstones (`vlen=0` / `TKL\0`) are compacted away during compaction (the
-  live set has no dead keys).
-- **Order discipline** (from the OS's own lessons, SESSION_252): data first →
-  commit → only then reclaim old segments. Never reclaim before the new data
-  is durable.
+## 8. Interop constraints (immutable)
 
-## 4. Interop constraints (TKLV/TKCK)
+- NMD1 / TKLV / TKCK byte layouts — golden tests pin them.
+- Any layout change = format version bump + OS negotiation + MIGRATIONS.md +
+  same-commit golden update (ADR-0004).
 
-- The byte-exact TKLV/TKCK format is a **contract with neural-os-core** —
-  compaction must produce the same byte format the OS reads (golden tests
-  pin it: `golden_record_bytes`, `fnv1a64_known_vector`).
-- `TickvFile` writes TKCK checkpoints (`checkpoint()` — TKCK record as the
-  LAST record) so a crate volume can fast-mount (`try_mount_from_ckpt`, FNV-1a
-  index check, per-entry CRC + stale check, ckpt-must-be-last) instead of full
-  scan; `open()` falls back to `scan_volume`. GC/compaction (`compact()`)
-  rewrites the live set + ckpt with an atomic rename.
-- Any NMD1/TKLV layout change (Doc 01 §4 variable clock, Doc 04 §2.1 value
-  lists) is a **format version bump**, negotiated with the OS, golden tests
-  updated in the same commit.
+## 9. Relationship to other docs
 
-## 5. Scope guard (v0.2)
-
-| Item | Scope |
-|------|-------|
-| `Durability` enum + per-write level on `Storage` | ✅ core |
-| `FileStorage` fsync path (`Durable`) | ✅ core |
-| `TickvFile` TKCK checkpoint writes | ✅ core |
-| Segment model (sealed WAL chunks) | ⚠️ staged after durability lands |
-| Compaction (rewrite live set) | ⚠️ v0.2 (port OS discipline) |
-| State-driven GC | ✅ core (tied to lifecycle Doc 02) |
-| Automatic compaction trigger | ⚠️ explicit call first, auto later |
-
-## 6. Open questions
-
-- [ ] `Durable` per-write vs per-batch (fsync cost: batch checkpoints, flush
-      per remember)
-- [ ] Segment file naming/layout — plain appended files with a MANIFEST, or
-      directory-per-segment?
-- [ ] TKCK write cadence (every checkpoint, not every write)
-
-## 7. Relationship to other docs
-
-- Doc 01 — Memory Model: state fields drive GC
-- Doc 02 — Lifecycle: decay/archive → GC input
-- Doc 03 — Retrieval: indexes rebuilt from storage on open
-- Doc 04 — Distributed: replication deltas persist via Storage
-- Doc 06 — Cognitive API: `checkpoint()`, `gc()` exposure
+- Doc 01 — Memory Model: what gets stored
+- Doc 02 — Lifecycle: state drives logical retention
+- Doc 04 — Distributed: side-table bytes replicate via Storage
+- Doc 06 — Cognitive API: `checkpoint`, `health`, `validate`

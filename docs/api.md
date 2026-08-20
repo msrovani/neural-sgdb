@@ -30,7 +30,7 @@
 | L3 | Long-term episodic | persistent facts and episodes |
 | L4 | Semantic | BQ embeddings + vector recall |
 | L5 | Procedural | skills / procedures |
-| L6 | (reserved) | — |
+| L6 | Associative | relations (`sys/rel/`), `associate`/`related_to`/… |
 | L7 | Identity | persona, preferences, global state |
 
 ## `Storage` trait (the central contract)

@@ -2,8 +2,9 @@
 
 Guide for AI agents (OpenCode, Cursor, Windsurf, Claude Code) working in this
 repo. **Read `codemap.md` (atlas), `docs/api.md` (contract) and
-`docs/architecture/` (v0.2 design — Memory Model, Lifecycle, Retrieval,
-Distributed, Storage, Cognitive API) before editing code.**
+`docs/architecture/` (v1.1.6 — Memory Model, Lifecycle, Retrieval,
+Distributed, Storage, Cognitive API) and
+`docs/implementation-status.md` before editing code.**
 
 ## Post-P2 hardening state (2026-08-13)
 

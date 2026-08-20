@@ -1,179 +1,122 @@
 # 02 — Memory Lifecycle
 
-> Status: **v0.2 design target**. Today (v0.2.0) the crate is a *memory storage
-> engine*: layers are storage classes. This doc defines the *memory lifecycle
-> engine*: how a memory is born, moves between layers, consolidates, decays and
-> dies. All English per repo policy.
+> Status: **current (v1.1.6)** — the lifecycle engine ships in `src/lifecycle.rs`.
+> **implemented** = code + tests; **remaining** = honest gap. All English per
+> repo policy.
 
 ## 1. Why a lifecycle?
 
-The current system answers "where is this memory stored?" (layer) but not:
-
-> **why is this memory in this layer, and when should it move?**
-
-A cognitive memory system needs explicit transitions. Without them, layers are
-just namespaces — which is exactly the v0.1 limitation the architectural
-review identified.
+The system answers both "where is this stored?" (layer) and "what state is it
+in?" (active/superseded/decayed/…). Explicit transitions prevent layers from
+being mere namespaces.
 
 ## 2. Canonical lifecycle
 
 ```text
                     ┌────────────┐
-   sensor/input ──► │ L0 Sensory │  (volatile, RAW)
+   sensor/input ──► │ L0 Sensory │  (volatile)
                     └─────┬──────┘
-                          │ attention (salience filter)
+                          │ attention (upper layer)
                           ▼
                     ┌────────────┐
-                    │ L1 Working │  (current context, RAM)
+                    │ L1 Working │  (RAM)
                     └─────┬──────┘
-                          │ turn ends → checkpoint
+                          │ checkpoint / remember_exchange
                           ▼
                     ┌────────────┐
                     │ L2 Episodic│  (short-term, timestamped)
                     └─────┬──────┘
-                          │ consolidation (repetition/importance)
+                          │ MemoryLifecycle::tick (promote)
                           ▼
                     ┌────────────┐
                     │ L3 Episodic│  (long-term)
                     └─────┬──────┘
-                          │ regularity extraction
+                          │ heuristic semanticization
                           ▼
                     ┌────────────┐
-                    │ L4 Semantic│  (generalized fact, embedding)
+                    │ L4 Semantic│  (embedding + fact)
                     └─────┬──────┘
-                          │ proceduralization
+                          │ manual / HITL
                           ▼
                     ┌────────────┐
-                    │ L5 Procedural│ (skill, procedure)
+                    │ L5 Procedural│
                     └────────────┘
 
-   ── orthogonal: L6 Associative (relations), L7 Identity (persona/state)
+   ── orthogonal: L6 relations (sys/rel/), L7 identity
 ```
 
-## 3. Transitions (design)
+## 3. Transitions (implemented)
 
-Each transition is a **trigger + policy**. No hardcoded magic numbers in the
-core — policy lives in a `MemoryLifecycle` config the embedder tunes (hardware
-is never ideal on paper; leave the calibration knob).
+| Transition | Trigger | Implementation |
+|------------|---------|----------------|
+| L1 → L2 | `remember_exchange` / tick commit | exists; tick promotes working set |
+| L2 → L3 | `MemoryLifecycle::tick` | importance + age threshold |
+| L3 → L4 | tick semanticization | creates L4 **without** bitvec — embedding is upper layer's job |
+| L4 → L5 | agent/HITL | `transfer_to` — not automatic |
+| any → Decayed | tick decay | importance below threshold → `Decayed` |
+| superseded chain | `supersede(old, new)` | state flip + `parent_ids` |
 
-### 3.1 L0 → L1 (attention)
+`MemoryLifecycle::tick(db, now)` is **deterministic and idempotent** — `now`
+is injected (no hidden wall clock). Returns `LifecycleReport`.
 
-- Trigger: salience filter (e.g. novelty, user-directed, task-relevant).
-- Policy: `attention_threshold` — only salient input enters Working.
-
-### 3.2 L1 → L2 (turn commit)
-
-- Trigger: end of turn / `checkpoint()` (already exists).
-- Policy: `remember_exchange` writes L1 user + L2 assistant — **exists today**;
-  lifecycle adds automatic promotion of the whole working set, not just the
-  last pair.
-
-### 3.3 L2 → L3 (consolidation)
-
-- Trigger: periodic (`SleepCycle`-like, or explicit `consolidate()`).
-- Policy: promote L2 docs with
-  `importance = f(repetition, reinforcement, recency, attention)` above
-  `consolidation_threshold`. Prune L2 below `retention_threshold` (→ archived
-  or decayed, never silent drop).
-
-### 3.4 L3 → L4 (semanticization)
-
-- Trigger: regularity detection.
-- Policy: repeated episodes with high similarity (BQ neighbor density) are
-  summarized into an L4 semantic doc with `derived_from = [episode ids]`.
-  The episodes stay at L3 (history preserved); the L4 doc is the generalized
-  fact.
-
-### 3.5 L4 → L5 (proceduralization)
-
-- Trigger: "this became a procedure" (agent-level decision, HITL for
-  high-stakes).
-- Policy: promote a semantic recipe to L5 skill, indexed by name (ART) +
-  description embedding (BQ). `index_skill` exists today — lifecycle wires it
-  to the promotion path.
-
-### 3.6 L5/L4 → L6 (association)
-
-- Trigger: relation observed (e.g. "X causes Y", "A contradicts B").
-- Policy: write an L6 relation MemoryDoc (`payload = (a, rel, b)`); see Doc 01
-  §5. No automatic inference in v0.2 — associations are asserted by the agent
-  (or LLM) and stored; inference is v0.3+ (needs BitNet).
-
-## 4. Decay, reinforcement, supersede (design)
+## 4. Decay, reinforcement, supersede (implemented)
 
 ### Decay
-- `importance -= decay_rate * Δt` on each lifecycle tick (configurable per
-  layer: L2 decays fast, L4/L5 slow, L7 never).
-- Below `decay_threshold` → `decayed` state → GC candidate (Doc 05).
+- Lifecycle tick reduces importance per layer rates (`LifecycleConfig`).
+- Below threshold → `Decayed` — never silent physical delete.
 
 ### Reinforcement
-- `recall()` hit → `importance += reinforce_gain` (recency boost).
-- Repeated semantic matches (BQ top-k overlap) → consolidation signal (3.3).
-- API: `reinforce(key, delta)` (Doc 06).
+- `reinforce(key, delta)` — bumps importance + `last_reinforced` (MDM1 v3).
+- `feedback(key, positive, amount)` — adjusts importance **and** confidence
+  (v1.1.4).
 
-### Supersede (history-preserving update)
+### Supersede
 ```text
-Memory A: "user lives at X"     → state=superseded, valid_until=T
-Memory B: "user moved to Y"     → state=active,    valid_from=T
+Memory A: "user lives at X"  → Superseded
+Memory B: "user moved to Y"  → Active, parent_ids link to A
 ```
-- `supersede(a, b)` writes B as active and flips A to superseded **without
-  deleting A** — the audit trail and the causal chain survive (CRDT-friendly,
-  Doc 04).
-- `delete` remains for HITL/security only.
+History preserved for audit and CRDT merge.
 
-## 5. Consolidation engine (design)
+### Temporal validity (implemented)
+- `set_validity` / `invalidate` / `expire_old(now)` — bi-temporal windows.
+- Default recall ignores expired; `recall_historical*` / `recall_temporal` opt in.
 
-A `MemoryLifecycle` component (feature `lifecycle`, off by default):
+## 5. Consolidation engine (implemented)
 
-```text
-pub struct MemoryLifecycle {
-    cfg: LifecycleConfig,        // thresholds, rates (tunable knob)
-}
-
-pub fn tick(&mut self, db: &mut Sgdb, now: u64) -> LifecycleReport {
-    // 1. promote L1 → L2 (working set commit)
-    // 2. consolidate L2 → L3 (importance above threshold)
-    // 3. semanticize L3 → L4 (regularity: BQ neighbor density)
-    // 4. decay all layers (importance -= rate*Δt)
-    // 5. supersede detection (optional, agent-asserted)
-    // 6. GC candidates (decayed/archived past retention)
-}
+```rust
+pub struct MemoryLifecycle { cfg: LifecycleConfig }
+pub fn tick(&mut self, db: &mut Sgdb, now: u64) -> LifecycleReport;
 ```
 
-- **Idempotent** — re-running a tick must not double-promote (guard by
-  `(layer, key)` + transition log).
-- **Deterministic** given the same inputs (no wall-clock inside; `now` passed
-  in, like the rest of the crate).
-- **Observable** — `LifecycleReport { promoted, consolidated, decayed, gc }`
-  for logging/telemetry.
+Report fields: promoted, consolidated, semanticized, decayed, archived counts.
+Every promotion wires `parent_ids` + `derived_from` relation.
 
-## 6. What ships in v0.2 (scope guard)
+## 6. Cognitive lifecycle verbs (implemented)
 
-| Item | Scope |
-|------|-------|
-| `MemoryLifecycle` component + `LifecycleConfig` | ✅ core deliverable |
-| L1→L2 commit, L2→L3 consolidation, decay, reinforcement | ✅ core |
-| L3→L4 semanticization (regularity via BQ) | ✅ core (heuristic) |
-| L4→L5 proceduralization wiring | ⚠️ agent/HITL trigger only |
-| L6 associations (relation writes) | ⚠️ asserted, no inference |
-| Automatic semantic inference | ❌ v0.3 (needs BitNet) |
-| Memory Graph queries | ❌ v0.3 (Doc 03 §4) |
+| Verb | Role |
+|------|------|
+| `supersede` | history-preserving update |
+| `forget` | archive (logical) |
+| `delete` | physical removal |
+| `reinforce` / `feedback` | importance/confidence signals |
+| `expire_old` | sweep closed validity windows |
+| `transfer_to` | layer move with lineage |
+| `merge_memories` | fusion with parent_ids=[A,B] |
 
-## 7. Open questions
+## 7. Remaining gaps
 
-- [ ] Where does the lifecycle tick run? (explicit `tick()` call in app loop
-      vs background task — prefer explicit: no_std friendly, deterministic)
-- [ ] Importance decay rates: expose as `LifecycleConfig` with sane defaults;
-      document "hardware never ideal" — embedders tune.
-- [ ] Does `supersede` belong in core `Sgdb` or in `MemoryLifecycle`?
-      (prefer lifecycle: core stays primitive, lifecycle adds cognition)
+- **Automatic tick scheduling** — explicit `tick()` only (no_std-friendly;
+  embedder runs in app loop or session open — see `agent_protocol.rs`).
+- **L3→L4 embedding backfill** — core creates L4 doc; upper layer must
+  `remember_semantic` or raw put + bitvec.
+- **L4→L5 auto proceduralization** — manual/HITL by design.
+- **State-driven physical GC** — decay/archive mark state; compaction reclaims
+  tombstones; no automatic purge of old superseded blobs by retention policy yet.
 
 ## 8. Relationship to other docs
 
-- Doc 01 — Memory Model: states (`active/superseded/archived/decayed`),
-  `importance`, `valid_from/until`
-- Doc 03 — Retrieval: recall boost = reinforcement input
-- Doc 04 — Distributed: supersede chain = causal DAG for CRDT merge
-- Doc 05 — Storage: decayed/archived → GC
-- Doc 06 — Cognitive API: `consolidate()`, `reinforce()`, `supersede()`,
-  `forget()`
+- Doc 01 — Memory Model: states, side-tables
+- Doc 03 — Retrieval: active-only default recall
+- Doc 04 — Distributed: supersede chain in merge DAG
+- Doc 05 — Storage: compaction vs lifecycle state
+- Doc 06 — Cognitive API: verb surface + MCP

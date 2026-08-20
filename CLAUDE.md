@@ -1,7 +1,8 @@
 # CLAUDE.md — neural-sgdb
 
 Guide for Claude Code working in this repo. **Read `AGENTS.md` (rules + quick
-API), `codemap.md` (atlas) and `docs/api.md` (contract) before editing code.**
+API), `codemap.md` (atlas), `docs/api.md` (contract) and
+`docs/architecture/README.md` (system design) before editing code.**
 
 ## Repository Map
 

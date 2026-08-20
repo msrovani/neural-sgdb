@@ -85,8 +85,9 @@ Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
 
 ## Documentation / interop
 
-✅ Architecture v0.2 design docs (`docs/architecture/`), API contract
-   (`docs/api.md`), arXiv preprint draft (`docs/paper/`).
+✅ Architecture docs aligned to v1.1.6 (`docs/architecture/`), API contract
+   (`docs/api.md`), implementation status (`docs/implementation-status.md`),
+   arXiv preprint draft (`docs/paper/`).
 🔜 True bidirectional format test with the OS's own reader — blocked on
    `neural-os-core` publishing its TickvLite reader as a crate.
 

@@ -3,7 +3,8 @@
 Análise de projetos concorrentes de memória persistente para agentes de IA,
 feita para extrair ideias copiáveis (licenças compatíveis: MIT / Apache-2.0;
 o neural-sgdb é MIT OR Apache-2.0 — **ideias são copiáveis livremente**, código
-exigiria atribuição). Fonte do roadmap v0.2 de melhorias.
+exigiria atribuição). Fonte das melhorias v1.1.4 (itens 1–10, concluídos);
+v1.1.5–v1.1.6 acrescentaram era guard e hits tipados — ver `CHANGELOG.md`.
 
 ## Panorama
 
@@ -75,7 +76,9 @@ exigiria atribuição). Fonte do roadmap v0.2 de melhorias.
 ## Roadmap por complexidade (aprovado 2026-08)
 
 Status: itens **1–10 entregues em v1.1.4** (2026-08-14, commits por item com
-regressão; matriz 210+1 / 256+1 / 162+1; hot test MCP 22 tools, exit 0).
+regressão; na época: matriz 210+1 / 256+1 / 162+1; hot test 22 tools).
+**Estado corrente (v1.1.6):** matriz 229+1 / 181+1 / 275+1; hot test 90/0;
+MCP 23 tools (`era_report` + hits tipados).
 Item 10 foi entregue no modo **custo baixo + risco baixo** (1-hop de
 entidades): o multi-hop (grafo semântico completo) permanece fora de escopo.
 

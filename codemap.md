@@ -21,7 +21,7 @@ O(k) ART index, pluggable storage, CRDT sync (`p2p` feature), MCP server.
 |-----------|------------------------|--------------|
 | `src/` | Memory DB core: MemoryDoc NMD1 + MemoryMeta MDM1 v6, ART, BQ + Hamming SIMD, ctype (payload typing), engine, Sgdb facade, Embedder/era seams, Storage trait, TKLV codec, CRDT p2p | [View Map](src/codemap.md) |
 | `examples/` | Showcase: bench (P50/P99 latency, recall vs FP32), MCP server (23 tools, typed hits), stress/audit, hot test client, agent/decision + memory-arena eval, machine→machine protocol, p2p mesh/signed | [View Map](examples/codemap.md) |
-| `docs/` | API contract (`api.md`), ADRs, architecture design, release notes | — |
+| `docs/` | API contract (`api.md`), architecture (v1.1.6), implementation status, ADRs, release notes | — |
 
 ## Format Contracts (interop with neural-os-core)
 - **NMD1** (`src/memory_doc.rs`): memory document — magic `NMD1`, layer u8,

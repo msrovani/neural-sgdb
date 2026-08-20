@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "neural-sgdb": {
+      "type": "stdio",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}${/}scripts${/}mcp-server.ps1"
+      ],
+      "env": {
+        "NEURAL_SGDB_EMBEDDER": "demo"
+      }
+    }
+  }
+}

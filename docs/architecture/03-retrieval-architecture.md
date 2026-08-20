@@ -1,13 +1,10 @@
 # 03 — Retrieval Architecture
 
-> Status: **v0.2 design target**. Today (v0.2.0): ART (symbolic) + BQ flat
-> scan + FP32 rescore exist and are tested. This doc defines the retrieval
-> architecture v0.2: three retrieval mechanisms, honest performance framing,
-> and the bounded top-k / hierarchical path. All English per repo policy.
+> Status: **current (v1.1.6)** — ART + BQ + lexical + entities + typed hits
+> ship in production code. **implemented** = code + tests; **remaining** =
+> honest gap. All English per repo policy.
 
-## 1. Three retrieval mechanisms
-
-Cognitive memory needs **two** (and v0.2 adds a third) retrieval modes:
+## 1. Retrieval mechanisms
 
 ```text
                     MEMORY RETRIEVAL
@@ -15,147 +12,124 @@ Cognitive memory needs **two** (and v0.2 adds a third) retrieval modes:
            ┌──────────────┼──────────────┐
            ▼              ▼              ▼
       SYMBOLIC        SEMANTIC        COGNITIVE
-      exact/key       similarity      relations
+      exact/key       similarity      entities + relations
            │              │              │
-          ART             BQ          Graph (L6, v0.2)
+          ART             BQ          entity_index + L6 rels
            │              │              │
-      scan_prefix     top-k +       relation lookup
-                      FP32 rescore
+      scan_prefix     recall*        recall_entities
+      get             hybrid         related_to / contradicts
+                      temporal
+                      lexical (BM25)
 ```
 
-| Mechanism | Index | Query | Use case |
-|-----------|-------|-------|----------|
-| Symbolic | ART (O(k)) | `scan_prefix("md/L3/")`, exact get | facts, timestamps, keys |
-| Semantic | BQ (O(N·D/64)) | `recall(&emb, k)` | similarity over L4/L5 |
-| Cognitive | Graph (L6, v0.2) | `related(a)`, `causes(a)` | associations, contradictions |
+| Mechanism | Index | Entry points | Use case |
+|-----------|-------|--------------|----------|
+| Symbolic | ART O(k) | `scan_prefix`, `get` | facts, keys, timestamps |
+| Semantic | BQ + FP32 | `recall`, `recall_weighted`, `recall_temporal` | similarity L4/L5 |
+| Lexical | inverted BM25 | `recall_lexical`, `recall_hybrid` | L2/L3 text, no embedding |
+| Entities | entity_index | `recall_entities` | 1-hop overlap (exact strings) |
+| Relations | `sys/rel/` + ART | `related_to`, `contradicts`, … | graph adjacency |
 
-They are **complementary, not competing**: ART answers "what did I store
-under this key", BQ answers "what is most similar to this", Graph answers
-"what is connected to this".
+Modes are **complementary**: ART = "what's under this prefix", BQ = "what's
+similar", lexical = "which words match", entities = "which declared entities overlap".
 
-## 2. Symbolic retrieval (ART) — exists, frozen
+## 2. Symbolic retrieval (ART) — implemented
 
-- `ArtIndex` Node4/16/48/256, prefix scan, tombstone delete, O(k) lookup.
-- Keys are hierarchical (`md/L1/last_user`, `md/L3/ts/…`) → `scan_prefix`
-  becomes a layer/namespace query. This is correct and **should not change**
-  (review P0: don't touch ART).
-- Inherited limitation: prefix keys unsupported (fixed-width suffixes).
-  **Hardened (P1-7)**: `ArtIndex::has_prefix_conflict` + guards in
-  `engine::put` / `engine::associate` reject a key that is a prefix of (or
-  whose prefix is) an existing key with `SgdbError::Invalid` BEFORE writing —
-  the silent corruption (short key becomes unreachable) is now a loud error.
+- `ArtIndex` Node4/16/48/256, prefix scan, node reclamation on delete.
+- **Prefix-key guard (P1-7):** `has_prefix_conflict` rejects keys where one
+  is a prefix of another **before** write — loud `Invalid`, not silent loss.
+- `scan_prefix_page` — deterministic lexicographic pagination (P1-6).
 
-## 3. Semantic retrieval (BQ) — honest framing
+## 3. Semantic retrieval (BQ) — implemented
 
-### 3.1 Current pipeline (exists)
+### Pipeline
 
 ```text
-embedding FP32
+query FP32
       ↓ sign quantization (x > 0 → bit 1)
 binary vector (u64 words)
       ↓ Hamming distance (SIMD AVX-512/AVX2/scalar)
-top-k candidates (flat scan + full sort)
-      ↓ FP32 rescore (1−cos over original payload)
-final ranking
+top-k candidates (bounded heap + auto-oversample)
+      ↓ FP32 rescore (1−cosine over payload)
+final ranking → Hit { path=Semantic, content_type, payload_type, … }
 ```
 
-- `BqFlatIndex`: `ids[]`, `flat[]`, `words_per_vec` — contiguous, cache-friendly.
-- Complexity: **O(N·D/64) scan + O(N log N) sort** per query.
+- **ADD-only contract (v1.1.4):** BQ flat is append-only; new facts accumulate;
+  conflict resolution is retrieval-time (`supersede`, `recall_weighted`), not
+  silent overwrite.
+- **Orphan reclamation:** `BqFlatIndex::retain` + `reclaim_bq_orphans` on
+  delete (threshold 64 by default).
+- **Era guard (ADR-0007):** S1 on read (dim mismatch → `Invalid`); write-side
+  guard on `remember_semantic`; `era_report()` for migration planning.
+- **MihIndex:** multi-index hashing for sub-linear candidate generation
+  (study/advanced API).
 
-### 3.2 Honest positioning
+### Honest positioning
 
-| Vectors | Verdict |
-|---------|---------|
-| 10k | excellent |
-| 100k | viable (SIMD + FP32 rescore) |
-| 1M+ | inadequate as-is |
+| Corpus size | Verdict |
+|-------------|---------|
+| ~10k vectors | excellent (see BENCHMARKS.md) |
+| ~100k | viable with SIMD + oversample |
+| 1M+ | not a vector DB — revisit only on benchmark evidence |
 
-**Do not market this as a "vector database".** It is a *cognitive memory
-database with compact semantic retrieval* — the accurate, and more
-interesting, framing.
+## 4. Lexical retrieval (BM25) — implemented
 
-### 3.3 v0.2: bounded top-k (review P1)
+- Inverted index over L2/L3 tokenized text (`src/lexical.rs`).
+- `search` returns `(key, score, matched_terms)` — grounding for typed hits.
+- Scoped: `recall_lexical_scoped` honors same scope filter as semantic recall.
+- Companion `/L2/` scope comes from primary via `Engine::effective_scope`.
 
-Replace full sort with a bounded top-k (binary heap of size k):
+## 5. Hybrid, temporal, weighted — implemented
+
+| API | Behavior |
+|-----|----------|
+| `recall_hybrid` | semantic ∪ lexical, deduplicated |
+| `recall_temporal` | semantic pool re-ranked by proximity to `at` |
+| `recall_weighted` | `w_sem·dist + w_rec·recency + w_imp·(1−importance)` |
+| `recall_scoped` | scope filter inside candidate pool (null-scoping) |
+| `rag_context_reranked` | oversampled pool + lexical anchor rerank (`anchors=N`) |
+
+Default recall: **active memories only**. Historical variants opt in.
+
+## 6. Typed hits (v1.1.6 — implemented)
+
+Machine consumers parse structured hits, not lossy prose:
 
 ```text
-for each vector: d = hamming(query, vec)
-    if heap.len() < k: push
-    else if d < heap.max(): replace-max
-→ O(N·D/64 + N log k)   (k << N)
+Hit {
+  key, text, dist, score, path, content_type, payload_type,
+  matched_terms, validity, rel, provenance
+}
 ```
 
-Isolated change in `BqFlatIndex::top_k`; no API change. Falls back to sort for
-small N (heap overhead not worth it under ~256 vectors).
+- Prose projection only for Text/Json/Code.
+- Embedding/Binary → empty `text`; consumer reads `content_type`/`payload_type`.
+- MCP `format=json` — stable string labels.
+- `rel` links companion `/L2/` → primary `/L4|L5|L3/`.
 
-### 3.4 v0.2: hierarchical retrieval (review P3, staged)
+## 7. Relations and entities — implemented
 
-```text
-coarse binary index (all vectors, cheap)
-      ↓ candidate set (e.g. top 4k by Hamming)
-compact residual / scalar representation (design)
-      ↓
-final FP32 ranking on candidates
-```
+- **Entities:** declared in `MemoryMeta.entities` (MDM1 v5); index rebuilt
+  from `sys/meta/`; 1-hop recall by exact string overlap.
+- **Relations:** `sys/rel/` + ART; no embedding, no inference.
 
-Enables millions of memories without full FP32 scans. **Residual
-representation is v0.3+** (needs a compact residual encoder; BitNet-affine:
-low-bit residual + integer ops). v0.2 ships only the bounded heap.
+## 8. RAG assembly — implemented
 
-### 3.5 Semantic sharding (review P2, v0.3)
+- `rag_context` / `rag_context_limited` — recall + companion text + byte cap.
+- `rag_context_reranked` — lexical anchor gate before truncation (P1/P5).
+- MCP supports `mode`, `rerank`, `format=json`.
 
-Shard BQ by content locality (e.g. coarse hash of the first 2 words) and query
-only relevant shards. Deferred — no measurable need below ~1M vectors.
+## 9. Remaining gaps
 
-## 4. Cognitive retrieval — Memory Graph (v0.2)
+- **Residual / hierarchical BQ** — coarse→fine beyond heap+oversample (v1.x
+  medium-term, benchmark-driven).
+- **Semantic sharding** — deferred until measurable need (~1M+ vectors).
+- **Relation-aware retrieval fusion** — relations exist; recall does not yet
+  re-rank semantic hits by graph distance (upper layer can compose).
 
-Relations are L6 MemoryDocs (Doc 01 §5): `payload = (a, rel, b)`, key
-`md/L6/rel/a→b`. Query surface:
+## 10. Relationship to other docs
 
-```rust
-// v0.2 (design)
-db.related_to(a)      -> Vec<MemoryDoc>   // any rel touching a
-db.rel_lookup(a, rel) -> Vec<MemoryDoc>   // "what causes a", "what a supports"
-db.contradicts(a)     -> Vec<MemoryDoc>   // conflict surface for CRDT
-```
-
-- **No inference in v0.2** — relations are asserted (agent/LLM/HITL) and
-  stored. Inference needs BitNet (v0.3+).
-- Bounded fan-out: relations are edges, not re-embeddings — cheap to scan via
-  ART prefix.
-
-## 5. RAG assembly
-
-Current: `rag_context(query, k)` — recall → fetch companion L2 text → format
-`[SGDB-RAG top-k]` block. v0.2 additions:
-
-- **Provenance in the block**: `(layer, source, confidence, state)` per hit —
-  lets the prompt say "this memory is superseded" instead of silently using it.
-- **Layer-aware assembly**: `rag_context` can restrict to `active` memories
-  (skip superseded/decayed) via the lifecycle state (Doc 02).
-
-## 6. Scope guard (v0.2)
-
-| Item | Scope |
-|------|-------|
-| Bounded top-k heap in `BqFlatIndex` | ✅ core (P1) |
-| `related_to`/`rel_lookup`/`contradicts` (Graph over L6) | ✅ core |
-| Provenance-aware `rag_context` | ✅ core |
-| Residual representation + reranking | ❌ v0.3 |
-| Semantic sharding | ❌ v0.3 |
-| Relation inference | ❌ v0.3 (needs BitNet) |
-
-## 7. Open questions
-
-- [ ] Heap vs sort threshold (empirical; keep both paths, bench in
-      `examples/bench.rs`)
-- [ ] Relation direction encoding in ART key (a→b vs b→a both indexable?)
-- [ ] Does `rag_context` filter by `state=active` by default or opt-in?
-
-## 8. Relationship to other docs
-
-- Doc 01 — Memory Model: L6 relations, NMD1 impact
-- Doc 02 — Lifecycle: state filters for retrieval
-- Doc 04 — Distributed: contradictions = CRDT conflict surface
-- Doc 05 — Storage: indexes rebuild from storage on open
-- Doc 06 — Cognitive API: `recall`, `rag_context`, `associate`
+- Doc 01 — Memory Model: layers, content types
+- Doc 02 — Lifecycle: active-only recall
+- Doc 04 — Distributed: replication does not change recall local semantics
+- Doc 06 — Cognitive API: MCP recall modes + `format=json`

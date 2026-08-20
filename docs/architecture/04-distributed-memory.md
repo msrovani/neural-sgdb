@@ -1,141 +1,96 @@
 # 04 — Distributed Memory
 
-> Status: **v0.2 design target**. Today (v0.2.0): symmetric LWW version sync
-> (`CrdtMemorySync`, `Transport` trait, `UdpTransport` demo) and a fixed
-> 8-node VectorClock. This doc defines distributed memory v0.2: dynamic node
-> identity, per-layer CRDT policy, causal merge, provenance and full memory
-> replication (not just version sync). All English per repo policy.
+> Status: **current (v1.1.6)** — CRDT sync, full record replication, and
+> anti-entropy ship behind feature `p2p`. **implemented** = code + tests;
+> **remaining** = honest gap. All English per repo policy.
 
-## 1. Honest current state (v0.2.0)
+## 1. What ships today
 
-What ships today is **memory version synchronization**, not full cognitive
-memory replication:
+Full **cognitive memory replication**, not just version gossip:
 
 ```text
-wire format: [node_id u8][version u64 LE]   (9 bytes)
-semantics:   LWW — higher version wins
+Replication unit: MemoryRecord (MDR1)
+  = NMD1 doc + MemoryState + validity window + MemoryMeta
+
+Wire: MemoryDelta (MDLT) / MemorySnapshot (MSNP) / ConflictRecord (CFL1)
+Transport: Transport trait + UdpTransport (demo, unauthenticated)
+Sync: CrdtMemorySync — version sync + delta pull + merge_remote
 ```
 
-The README says "memories travel between agents"; the CRDT actually exchanges
-versions. Both claims are true, but they are different things. v0.2 closes
-that gap.
+Memories travel with state, validity, provenance and lineage — not bare
+payloads.
 
-## 2. Per-layer CRDT policy (review P3 + api.md roadmap)
+## 2. Per-layer merge policy (implemented)
 
-LWW is right for **state**, wrong for **memory**. v0.2 defines merge policy by
-layer:
+| Layer | Policy | Verdict |
+|-------|--------|---------|
+| L0/L1 | local-only | `Rejected` — never accept remote |
+| L2/L3 | multi-value friendly | Applied / history preserved |
+| L4 | causal LWW + history | concurrent → Conflict |
+| L5/L7 | controlled LWW | HITL expectation |
+| L6 | relations set-add | edges accumulate |
 
-| Layer | Policy | Rationale |
-|-------|--------|-----------|
-| L0/L1 | local-only (no sync) | volatile working memory |
-| L2 | **multi-value register** | episodic: conflicts coexist as perspectives |
-| L3 | **multi-value register** | episodic: history preserved |
-| L4 | LWW + reindex | semantic fact; later assertion wins, BQ rebuilt |
-| L5 | LWW (HITL gated) | procedural changes are deliberate |
-| L6 | set-add (relations) | relations accumulate; conflicts = contradictions |
-| L7 | LWW (HITL gated) | identity/state: last write wins, human-approved |
+`MergePolicy` table enforced in `merge_remote` — layer semantics matter.
 
-### 2.1 Multi-value register (L2/L3)
+## 3. VectorClock and causal identity (implemented)
 
-```text
-Node A: "Rovani prefers X"  (source=A, confidence=.72)
-Node B: "Rovani prefers Y"  (source=B, confidence=.41)
-→ keep BOTH (same logical key, different values)
-  recall shows both with provenance — not X-or-Y
-```
+- NMD1 clock: 72B fixed (interop).
+- Runtime: dynamic nodes + overflow registry (v0.6).
+- Per-version identity: `version_id` (MDM1 v2), `sys/version/` reverse index,
+  `lineage()` walk, `supersede` links versions.
+- One logical write = one causal version (`put_companion` for L4+L2 pairs).
 
-- Storage: same `(layer, key)` maps to a value set; each value carries
-  `source`, `confidence`, `valid_from/until`, `state`.
-- NMD1 impact: the "key → single payload" contract becomes
-  "key → value list" for L2/L3 → **format version bump, negotiated with OS**.
+## 4. Anti-entropy (v0.7+ — implemented)
 
-### 2.2 LWW (L4/L5/L7)
+Each sync round:
 
-Higher version wins; loser marked `superseded` (not deleted — Doc 02 §4).
+1. **Announce** full known clock per node.
+2. **Pull** missing causal range `known+1..=v` via `keys_for_clock`.
+3. **Merge** records through `merge_remote` (Conflict preserved, never blind LWW).
 
-## 3. Causal merge — Memory Version DAG
+Tested: triangle mesh, partition/rejoin, relay through intermediate node,
+durable `CrdtState` (`state()`/`restore()`).
 
-Instead of "erase the loser", merge **histories**:
+**Remaining:** overlay routing / partial-mesh spanning — today reconciliation
+is edge-directed per round (see ROADMAP.md).
 
-```text
-       M1
-      /  \
-     /    \
-   M2      M3
-    \      /
-     \    /
-      M4
-```
+## 5. Conflict model (v0.9+ — implemented)
 
-Each memory carries:
-```text
-memory_id     stable global id
-parent_ids    causal parents (from supersede chain / merge)
-clock         VectorClock (dynamic, Doc 01 §4)
-source        creating node
-confidence
-timestamp
-layer
-state
-```
+- `ConflictRecord` persisted in `sys/conflict/` (deterministic id).
+- Candidates carry parallel MDR1 evidence.
+- `resolve_conflict` — import winner via evidence; `dismiss_conflict` — cleanup.
+- Core **never** decides semantic truth — `ArbitrationPolicy` trait for
+  deterministic policies outside LLM (v1.0).
 
-Merge rule:
-- If one clock dominates (∀n: ca[n] ≤ cb[n]) → causal order; apply the
-  dominant value.
-- If concurrent (both have wins the other lacks) → multi-value (L2/L3) or LWW
-  by (clock, source) tiebreak (L4/L5).
-- `parent_ids` records the merge → the DAG survives for audit/reflect.
+## 6. Security and transport (partial)
 
-## 4. Full memory replication (v0.2)
+| Item | Status |
+|------|--------|
+| `SignedEnvelope` + `Signer`/`TrustStore` seams | implemented (reference flow) |
+| `examples/signed_peer.rs` | implemented (where to plug Ed25519) |
+| Crypto in core | deliberate non-goal (ADR-0006) |
+| `UdpTransport` | demo only — unauthenticated |
+| Production signed transport | **remaining** — embedder implements |
 
-Evolve the wire protocol from version-sync to **delta replication**:
+## 7. Honest limitations
 
-```text
-v0.2.0 (today):   [node_id][version]                          — version sync
-v0.2 (design):    [memory_id][base_clock][payload-hash]
-                  + follow-up: full MemoryDoc diffs (L2/L3 registers)
-```
+- **`node_versions` gossip** — partial in directed topologies; does not
+  necessarily converge (content does).
+- **`ConflictRecord`** — local merge evidence; not a replicated MDR1 unit.
+- **Multi-value in one storage key** — conflicts preserved as evidence, not
+  co-located value lists inside NMD1 (see Doc 01 §8).
+- **Rate limit:** `Option<u64>` — 0 sentinel fails first sync at now=0 (fixed).
 
-- **Anti-entropy**: node publishes its clock per namespace; peers request
-  deltas (`missing_after(clock)` → docs). Existing `Transport` trait carries
-  this — no new transport, new payloads.
-- **Idempotent**: applying a delta is a merge, not an overwrite — re-delivery
-  is safe (CRDT property).
-- **Fragment-friendly**: reuse the OS mesh's FRAG\0/FRACK\0 pattern for large
-  deltas (already proven in neural-os-core).
+## 8. Remaining gaps
 
-## 5. Provenance & trust
+- Overlay / gossip routing for sparse meshes.
+- Reference Ed25519 (or other) signed transport implementation in-tree.
+- Trust/TOFU and confidence-weighted merge policies (upper layer).
 
-- Every replicated memory carries `source` + `confidence` (Doc 01).
-- `UdpTransport` today is **unauthenticated demo** — production requires a
-  signed transport (the OS mesh signs Ed25519; the crate documents this seam).
-- v0.3: peer trust (TOFU-style), confidence-weighted merge, contradiction
-  surfacing (`contradicts` from Doc 03 §4 feeds CRDT conflict resolution).
+## 9. Relationship to other docs
 
-## 6. Scope guard (v0.2)
-
-| Item | Scope |
-|------|-------|
-| Dynamic VectorClock (serialized, compact) | ✅ core (NMD1 v0.2) |
-| Multi-value register for L2/L3 | ✅ core |
-| Delta replication (clock → missing docs) | ✅ core |
-| Merge DAG (`parent_ids`, causal rule) | ✅ core |
-| LWW tiebreak for concurrent L4/L5 | ✅ core |
-| Signed production transport | ⚠️ seam documented; impl optional |
-| Trust/TOFU, confidence-weighted merge | ❌ v0.3 |
-
-## 7. Open questions
-
-- [ ] Multi-value register encoding in NMD1 (value list vs single payload) —
-      negotiate with OS
-- [ ] Delta granularity: per-doc vs per-layer-snapshot (prefer per-doc, bounded
-      by FRAG limits)
-- [ ] Conflicting L6 relations: keep both (set-add) vs contradiction record?
-
-## 8. Relationship to other docs
-
-- Doc 01 — Memory Model: `memory_id`, `parent_ids`, dynamic clock, provenance
-- Doc 02 — Lifecycle: supersede chain = causal DAG input
-- Doc 03 — Retrieval: `contradicts` surfaces CRDT conflicts
-- Doc 05 — Storage: replication deltas persisted via Storage trait
-- Doc 06 — Cognitive API: `transfer()`, `merge()`
+- Doc 01 — Memory Model: clock, meta, replication unit
+- Doc 02 — Lifecycle: supersede chain feeds merge DAG
+- Doc 03 — Retrieval: `contradicts` surfaces conflict adjacency
+- Doc 05 — Storage: deltas persist via `Storage` trait
+- Doc 06 — Cognitive API: `export_record` / `import_record` / MCP (no transfer tool — use p2p examples)

@@ -6,7 +6,7 @@
 > **Objetivo**: provar (e auditar) que o neural-sgdb funciona de verdade como
 > memória de agente — não apenas em unit tests, mas no fluxo real de uma IDE.
 > **Evolução (v1.1.0 → v1.1.6)**: o hot test cresceu com cada feature release;
-> estado corrente = **90/0 exit 0** (22 tools MCP) — ver §Evolução abaixo.
+> estado corrente = **90/0 exit 0** (23 tools MCP) — ver §Evolução abaixo.
 
 ## Metodologia — 3 vias de integração
 

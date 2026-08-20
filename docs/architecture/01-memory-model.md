@@ -1,8 +1,7 @@
 # 01 — Memory Model
 
-> Status: **v0.2 design target** — builds on the v0.2.0 crate (MemoryDoc, L0–L7,
-> ART, BQ, Storage trait). Sections marked "exists" describe current code;
-> "design" describes the v0.2 target. All English per repo policy.
+> Status: **current (v1.1.6)** — describes the shipped model. **implemented**
+> = code + tests; **remaining** = honest gap. All English per repo policy.
 
 ## 1. What is a memory?
 
@@ -10,144 +9,143 @@ A memory is **not** a `key → value` record. It is a `MemoryDoc`: a cognitive
 entity carrying layer semantics, identity, provenance and (optionally) a
 semantic vector.
 
-### 1.1 Today (v0.2.0, exists)
+### 1.1 NMD1 document (implemented)
 
 ```text
-MemoryDoc
+MemoryDoc (on disk: NMD1 — byte-identical to neural-os-core)
  ├── layer      L0..L7 (cognitive storage class)
- ├── key        opaque string (logical id, e.g. "md/L2/turn-42")
- ├── clock      VectorClock (8 nodes fixed — 72B on disk)
+ ├── key        opaque string (e.g. "md/L4/turn-1")
+ ├── clock      VectorClock (72B fixed in NMD1)
  ├── payload    opaque bytes (text, fact, procedure, embedding)
- └── bitvec     optional binary-quantized vector (L4/L5, 1-bit per dim)
+ └── bitvec     optional binary-quantized vector (L4/L5)
 ```
 
-Format: NMD1 — byte-identical to neural-os-core (interop contract, golden
-test `golden_nmd1_bytes`).
+Golden test `golden_nmd1_bytes` pins the layout. **The NMD1 blob does not
+change** when metadata evolves — new fields live in side-tables (ADR-0003).
 
-### 1.2 What is missing (design)
+### 1.2 Side-table metadata (implemented — MDM1 v6)
 
-The model has structure but no **semantic state**. A v0.2 memory needs:
+Semantic state and provenance travel in `sys/meta/` (MDM1), not inside NMD1:
 
 ```text
-MemoryDoc (v0.2)
- ├── layer
- ├── key
- ├── memory_id      stable global id (replication-friendly)
- ├── parent_ids     causal parents (merge DAG)
- ├── clock          VectorClock — DYNAMIC node identity (design §4)
- ├── payload
- ├── bitvec
- ├── state          active | superseded | archived | decayed
- ├── source         node_id that created it
- ├── confidence     [0..1] — trust in the content
- ├── importance     [0..1] — retention/reinforcement weight
- ├── valid_from/valid_to   temporal validity window
- └── associations   related_to/causes/contradicts/supports (design §5)
+MemoryMeta (MDM1 v6, side-table sys/meta/)
+ ├── memory_id          stable 32-hex identity
+ ├── version_id         per-version identity (v2+)
+ ├── source             creating node_id
+ ├── confidence         [0..1]
+ ├── importance         [0..1]
+ ├── created_tick       creation counter
+ ├── parent_ids         causal parents (merge DAG)
+ ├── last_reinforced    (v3+, from reinforce())
+ ├── scope              (v4+, multi-agent scoping)
+ ├── entities           (v5+, declared entity strings)
+ └── content_type       (v6+, declared stable label)
 ```
 
-**NMD1 impact:** adding fields changes the byte layout — must be negotiated
-with neural-os-core (shared contract) and versioned, not silently extended.
+Additional side-tables (same pattern — NMD1 untouched):
+
+| Side-table | Purpose |
+|------------|---------|
+| `sys/state/` | `MemoryState`: Active / Superseded / Archived / Invalidated / Decayed |
+| `sys/validity/` | bi-temporal window `[from, until)` — invalidate-not-delete |
+| `sys/rel/<kind>/` | L6 associative edges (forward + reverse ART index) |
+| `sys/version/` | reverse index: `(node, counter) → storage keys` |
+| `sys/conflict/` | first-class conflict records (CFL1) |
+
+**Replication unit:** `MemoryRecord` (MDR1 wire) = doc + state + validity +
+meta — one import/export/merge unit (v0.6+).
 
 ## 2. Layers L0–L7
 
-| Layer | Name | Storage class | Index | Typical content |
-|-------|------|---------------|-------|-----------------|
-| L0 | Sensory | raw input | — | sensor/network frames (volatile) |
-| L1 | Working | RAM | ART | current turn, immediate context |
-| L2 | Short-term episodic | persistent | ART (ts) | recent timestamped turns |
-| L3 | Long-term episodic | persistent | ART (ts) | consolidated episodes |
-| L4 | Semantic | persistent | BQ + ART | embeddings, generalized facts |
+| Layer | Name | Storage | Index | Typical content |
+|-------|------|---------|-------|-----------------|
+| L0 | Sensory | RAM | — | raw input (volatile) |
+| L1 | Working | RAM | ART | current turn |
+| L2 | Short-term episodic | persistent | ART + lexical | timestamped turns, verbatim companions |
+| L3 | Long-term episodic | persistent | ART + lexical | consolidated facts/episodes |
+| L4 | Semantic | persistent | BQ + ART | embeddings + generalized facts |
 | L5 | Procedural | persistent | BQ + ART | skills, procedures |
-| L6 | (reserved) | — | — | v0.2 proposal: Associative/Metacognitive |
-| L7 | Identity | persistent | ART (fixed key) | persona, preferences, trust state |
+| L6 | Associative | side-table `sys/rel/` | ART forward/rev | causes/supports/contradicts/derived_from |
+| L7 | Identity | persistent | ART | persona, preferences |
 
-**Current truth (v0.2.0):** layers are **storage/index classes**, not a
-lifecycle. A doc written at L2 stays L2 unless the caller writes it elsewhere.
-The lifecycle engine (Doc 02) is the v0.2 work.
+Layers are **storage/index classes**. Promotion between layers is explicit
+(`MemoryLifecycle::tick`, `transfer_to`) — a doc at L2 stays L2 until moved.
 
-## 3. Layer semantics (design)
+## 3. Layer semantics (implemented)
 
-- **L0/L1** — volatile, RAM-only, explicit `checkpoint()` flushes to storage.
-  Purpose: here-and-now; never survives reboot without checkpoint.
-- **L2/L3** — episodic. L2 = recent (retention window), L3 = consolidated
-  (survives pruning). Both timestamped, ART-indexed, sortable via
-  `sortable_ts_key`.
-- **L4** — semantic: embedding (BQ bitvec) + payload text. Retrieval by
-  similarity, not key.
-- **L5** — procedural: what *to do*. Skills indexed by name (ART) + semantic
-  description (BQ).
-- **L6** — v0.2 proposal: **Associative / Metacognitive memory** — not a new
-  storage backend but a **relation index** over other layers:
-  relationships, causal links, confidence, provenance, uncertainty,
-  importance, associations. Implemented as a `MemoryGraph` (Doc 03 §4) whose
-  edges are ordinary MemoryDocs at L6 with `payload = (a, rel, b)`.
-- **L7** — identity: persona, preferences, global state. LWW-appropriate for
-  CRDT (Doc 04), HITL for mutations.
+- **L0/L1** — volatile RAM; `checkpoint()` flushes to storage.
+- **L2/L3** — episodic, timestamped (`sortable_ts_key`), lexical-indexed.
+  `remember_episodic` stores raw user/response pairs verbatim (v1.1.4).
+- **L4/L5** — semantic/procedural: BQ bitvec + companion `/L2/` text for
+  lexical retrieval and RAG. **Write-side era guard** (ADR-0007): embedding
+  dim outside `indexed_dims` on a live corpus → `Invalid`.
+- **L6** — relations asserted by the upper layer (`associate`); **no
+  inference in core**. Stored in `sys/rel/`, indexed in ART, pruned on delete.
+- **L7** — identity; LWW-appropriate for CRDT; HITL for mutations.
 
-## 4. VectorClock (design)
+## 4. VectorClock (implemented)
 
-Today: fixed `[u8; 8]` nodes + `[u64; 8]` counters (72B, part of NMD1). Fine
-for v0.1 clusters ≤ 8 nodes.
+- **NMD1:** fixed 72B (8 nodes × u64 counters) — interop contract unchanged.
+- **Runtime:** dynamic node identity — 8-node fast path + bounded overflow
+  registry (248 extra nodes). Overflow persists in `MemoryMeta.clock_overflow`.
+- Compare/merge/happens_before use `iter_nodes` (fixed + overflow).
 
-v0.2 design — **dynamic node identity**:
-```text
-NodeId  = u16 (dynamic registry, compact)
-Clock   = BTreeMap<NodeId, u64>   (in memory)
-        = serialized as (n u16 | node u16 | counter u64)*  (on disk)
-```
-- Compaction: drop zero counters; cap at MAX_NODES (config) with oldest-first
-  eviction + provenance note.
-- **NMD1 impact:** clock section becomes variable-length → format version bump
-  required (negotiate with OS).
+**Remaining:** variable-length clock inside NMD1 would require OS negotiation
+and a format version bump — not planned while side-table overflow works.
 
-## 5. Associations / Memory Graph (design)
+## 5. Associations (implemented)
 
-Today: memories are independent documents. v0.2 adds a **cognitive topology**
-without turning the DB into a graph database:
+Relations are **not** L6 MemoryDocs in the current implementation — they live
+in `sys/rel/<kind>/<a>#<b>` with derived ART indices:
 
 ```text
-ART        = key topology      (exact/prefix lookup)
-BQ         = semantic topology (similarity)
-Graph      = cognitive topology (relations)   ← v0.2 L6
+RelationKind: related_to | causes | supports | contradicts | derived_from
+API: associate / related_to / causes / supports / contradicts / derived_from
+     associate_checked (validates both endpoints exist)
 ```
 
-Relation types: `related_to`, `causes`, `contradicts`, `supports`,
-`derived_from`, `supersedes`.
+Lookup is O(k) via ART prefix/reverse index. **No graph inference** — strings
+and keys must match exactly (same contract as `entities` and `Embedder`).
 
-Storage: each relation is an L6 MemoryDoc with `payload = (a, rel, b)` and a
-direction-aware ART key (`md/L6/rel/a→b`). Lookup: `scan_prefix("md/L6/rel/")`
-→ filter by a/b. This keeps relations queryable with the existing ART while
-the semantic graph stays simple (no Neo4j ambitions).
-
-## 6. Memory states (design)
-
-Instead of `delete` as the primary op (Doc 02), a memory has a lifecycle state:
+## 6. Memory states (implemented)
 
 ```text
-active ──► superseded ──► archived ──► (removed by GC)
+active ──► superseded ──► archived
    │            │
    └── decayed ─┘
+         └── invalidated (validity window closed)
 ```
 
-- `superseded`: a newer memory replaced it (e.g. "moved to Y" supersedes
-  "lives at X"). History preserved (`valid_until`).
-- `archived`: no longer active but retained for audit/reflection.
-- `decayed`: importance dropped below threshold; GC candidate.
-- `delete` remains available for HITL/security but is **not** the default
-  lifecycle operation.
+- `supersede(old, new)` — history preserved; loser marked Superseded.
+- `forget` — archives (never silent delete by default lifecycle).
+- `delete` — **physical** tombstone + index removal (distinct from logical state).
+- Default recall filters **active only**; `recall_historical*` opts in.
 
-## 7. Open questions
+## 7. Content typing (v1.1.6 — implemented)
 
-- [ ] NMD1 v0.2 format negotiation with neural-os-core (fields + variable
-      clock) — version marker + golden updates in same commit
-- [ ] L6 = Associative layer: confirm naming and relation vocabulary
-- [ ] `memory_id` generation: hash of (source, clock) vs UUID-v7-like
-      time-sortable id (preferred: sortable → ART ts prefix reuse)
+Hits expose typed datums for machine consumers (`src/ctype.rs`):
 
-## 8. Relationship to other docs
+| Type | Meaning |
+|------|---------|
+| Text / Json / Code | prosa projection in `Hit.text` |
+| Embedding(dim) | raw f32 payload — never `from_utf8_lossy` |
+| Binary | non-UTF8 bytes |
 
-- Doc 02 — Memory Lifecycle: states, transitions, consolidation engine
-- Doc 03 — Retrieval: ART/BQ/Graph as three retrieval mechanisms
-- Doc 04 — Distributed: VectorClock dynamic identity, provenance, CRDT per layer
-- Doc 05 — Storage: durability levels, WAL/checkpoint/compaction
-- Doc 06 — Cognitive API: remember/recall/associate/reinforce/...
+Write seam: `set_content_type` (MDM1 v6) — **declared wins** over read-time
+detector. Propagates to L4/L5 companion `/L2/`.
+
+## 8. Remaining gaps
+
+- Multi-value register encoding **inside NMD1** for L2/L3 (today: conflict
+  preservation via CRDT + side metadata, not co-located value lists in one key).
+- Automatic entity/relation **inference** from text (deliberate non-goal —
+  upper layer provides strings).
+- In-record `valid_from/valid_to` (today: `sys/validity/` side-table).
+
+## 9. Relationship to other docs
+
+- Doc 02 — Lifecycle: transitions, `MemoryLifecycle::tick`
+- Doc 03 — Retrieval: ART/BQ/lexical/entities, typed `Hit`
+- Doc 04 — Distributed: clock, replication, merge policy
+- Doc 05 — Storage: persistence, compaction
+- Doc 06 — Cognitive API: public verbs + MCP

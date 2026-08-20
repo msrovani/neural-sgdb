@@ -36,8 +36,10 @@ filesystem, no external runtime.
 
 ## Status
 
-**v1.1.6** ✅ — hits TIPADOS para o consumidor máquina (máquina→máquina),
-dual-mode (`no_std` + `std`, zero dependencies):
+**v1.1.6** ✅ — hits tipados para consumidor máquina, dual-mode (`no_std` +
+`std`, zero dependencies). O `Cargo.toml` permanece em **1.1.0** (SemVer da
+crate); releases de feature v1.1.2–v1.1.6 estão no `CHANGELOG.md` e
+`docs/api.md`.
 
 - `cargo test` on host: **229 tests + doc-test** (275 + doc-test with `p2p`,
   181 + doc-test with `--no-default-features`)
@@ -97,6 +99,8 @@ dual-mode (`no_std` + `std`, zero dependencies):
   annotations; `cargo run --release --example stress` (100k-op stress) and
   `--example bench`
 - Full API contract in [`docs/api.md`](docs/api.md)
+- Architecture + status in [`docs/architecture/`](docs/architecture/) and
+  [`docs/implementation-status.md`](docs/implementation-status.md)
 
 The reference implementation runs on bare-metal in the parent OS
 (`k_ai::sgdb`, AGPL); this repo evolves separately (MIT OR Apache-2.0).
@@ -193,10 +197,11 @@ avoid stale/unreproducible claims).
   (LaTeX, two-column article; **compiled [`neural-sgdb-telepathy.pdf`](docs/paper/neural-sgdb-telepathy.pdf)**,
   8 TikZ figures + design rationale, threats to validity, case study, appendix;
   upload the `.tex` source to arXiv)
-- **Architecture v0.2 (design)** — [`docs/architecture/`](docs/architecture/)
+- **Architecture (v1.1.6)** — [`docs/architecture/`](docs/architecture/)
   — Memory Model (01), Lifecycle (02), Retrieval (03), Distributed (04),
-  Storage (05), Cognitive API (06) — formalizes the *cognitive memory system*
-  step on top of the current *memory substrate*
+  Storage (05), Cognitive API (06) — documents the shipped cognitive memory
+  system; [`docs/implementation-status.md`](docs/implementation-status.md)
+  tracks capability vs code
 - **AI agent guides** — `AGENTS.md`, `CLAUDE.md`, `codemap.md` (atlas)
 - **Governance** — [`SECURITY.md`](SECURITY.md) (policy + trust model),
   [`VERSIONING.md`](VERSIONING.md) (SemVer + release process),
