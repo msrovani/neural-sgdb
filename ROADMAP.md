@@ -1,10 +1,10 @@
 # Roadmap — neural-sgdb
 
-Status: **v1.0.0 shipped (2026-08-13)** — stable API, zero deps, `no_std` +
-`std`, CI gates green. **v1.1.0 in preparation** (health/validate API, P2-4
-fuzz harness, P2-5 telepathy simulation, MCP observability tools, signed-peer
-example). This roadmap is honest about what is DONE, what is NEXT, and what is
-deliberately NOT planned.
+Status: **v1.1.x maintenance line shipped (2026-08-19, features até v1.1.6)** —
+stable API, zero deps, `no_std` + `std`, CI gates green. Crate version mantém
+**1.1.0**; feature releases v1.1.2–v1.1.6 são commits/unreleased no
+`CHANGELOG.md`. This roadmap is honest about what is DONE, what is NEXT, and
+what is deliberately NOT planned.
 
 Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
 
@@ -37,6 +37,27 @@ Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
    layer answers via its own recall, telepathy propagates L1→L5, and a deep
    layer recovers by semantic recall the exact memory that entered at L1 —
    `layered_ai_telepathy_mesh` test + `examples/mesh_simulation.rs`.
+✅ **v1.1.2 — Guinea-pig plan** (guinea-pig user): `resolve_known_key`,
+   `recall_weighted` por importância de DOC, `associate_checked`, trait
+   `Embedder` + `DemoEmbedder`, `sqrt_f32` pub(crate). Hot test 49/49.
+✅ **v1.1.3 — Co-author ergonomics** (S1–S5): recall LOUD em dim mismatch
+   (`indexed_embedding_dims`), `examples/embedder_http.rs`, `get_texts_batch`,
+   `BqFlatIndex::retain` + `reclaim_bq_orphans`, MCP recall lazy-paginado.
+   Hot test 60/60.
+✅ **v1.1.4 — Memory landscape** (itens 1–10): ADD-only contrato,
+   `remember_episodic`/`feedback`/`diary`/`profile`/`expire_old`, scoping
+   multi-agente (MDM1 v4), retrieval modes (semantic/lexical/hybrid),
+   `recall_temporal`, entidades 1-hop (MDM1 v5). Hot test 84/0; MCP 22 tools.
+✅ **v1.1.5 — Era guard (ADR-0007, write-side)**: `remember_semantic` fora da
+   era → `Invalid`; `Sgdb::era_report()` (src/era.rs) + MCP `era_report`
+   (tool 23). Hot test 81/0.
+✅ **v1.1.6 — Hits TIPADOS p/ consumidor máquina** (itens 1–5): `src/ctype.rs`
+   (ContentType/RecallPath), `Hit` + path/content_type/payload_type/score/
+   matched_terms/validity/rel, projeção prosa só Text/Json/Code, seam de write
+   `set_content_type` (MDM1 v6, declared wins), MCP `format=json` +
+   `remember(type=)` + `rag_context rerank=/mode=`, `rag_context_reranked`
+   (ancoragem lexical, `anchors=N`), `examples/two_ai_protocol.rs` (16/16).
+   Hot test 90/0; matrix 229/181/275.
 🔜 **CI hardening** (remaining tail of P2-4): cross-target checks and an
    examples gate in `.github/workflows/ci.yml`.
 

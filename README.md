@@ -36,16 +36,29 @@ filesystem, no external runtime.
 
 ## Status
 
-**v1.1.0** ✅ — dual-mode (`no_std` + `std`, zero dependencies):
+**v1.1.6** ✅ — hits TIPADOS para o consumidor máquina (máquina→máquina),
+dual-mode (`no_std` + `std`, zero dependencies):
 
-- `cargo test` on host: **182 tests + doc-test** (228 + doc-test with `p2p`,
-  139 + doc-test with `--no-default-features`)
+- `cargo test` on host: **229 tests + doc-test** (275 + doc-test with `p2p`,
+  181 + doc-test with `--no-default-features`)
 - `cargo check --no-default-features --target x86_64-unknown-none`: **clean**
+- **Typed hits (v1.1.6)**: o recall devolve, por hit, `path` (semantic/
+  lexical/entities), `content_type` (Text/Json/Code/Embedding(dim)/Binary),
+  `payload_type` (o datum REAL do primário — `Embedding(dim)` para L4/L5),
+  `score` bruto, `matched_terms` (grounding BM25), `validity` e `rel`
+  (companion → primário). Projeção prosa só para Text/Json/Code — embeddings e
+  binários NUNCA passam por `from_utf8_lossy`. **Seam de write**
+  (`set_content_type`, MDM1 v6): quem fornece declara o rótulo estável e
+  `declared wins` sobre o detector. **MCP `format=json`** devolve hits
+  estruturados para consumo máquina. Exemplo ponta a ponta:
+  `examples/two_ai_protocol.rs` (16/16 checks).
 - **Recall stack**: BQ coarse → FP32 rescore, SIMD hamming (AVX-512/AVX2/
   scalar), auto-oversample by dimensionality, `recall_oversampled`,
   `recall_weighted` (recency·importance·semantic), `recall_lexical` +
   `recall_hybrid` (BM25 dual-path), `MihIndex` (multi-index hashing,
-  sub-linear candidates)
+  sub-linear candidates), `recall_temporal` (bi-temporal intent),
+  `recall_entities` (1-hop), `rag_context_reranked` (ancoragem lexical,
+  `anchors=N`)
 - **Storage**: `Storage` trait + `InMemory` + `FileStorage` (CRC32 append-log,
   persistent lazy handle ~38x, durability levels, atomic compaction) +
   `TickvFile` (byte-exact TKLV **with TKCK checkpoint fast-mount + GC/compact**
@@ -54,29 +67,35 @@ filesystem, no external runtime.
   `Decayed`), temporal validity window (`sys/validity/` —
   invalidate-not-delete), physical `Sgdb::delete` (tombstone + index
   removal, distinct from logical state), **memory identity + provenance**
-  (`memory_id`, source, confidence, importance, parent_ids in `sys/meta/`,
-  exposed as `Hit.provenance`), **dynamic VectorClock** (8-node fast path +
-  bounded overflow registry, NMD1 stays byte-identical), CRDT sync with
-  conflict preservation + delta sending (`p2p`), **replication units**
-  (`MemoryRecord` carries doc + state + validity + provenance; `export`/
-  `import`/`merge_remote`), **per-layer merge policy** (L2/L3 multi-value,
-  L4 causal-LWW-with-history, L0/L1 local-only), a **3-node
-  partition/rejoin test harness**, and **anti-entropy** (v0.7): clock
-  announce/gossip through relay nodes, directed pull of the missing causal
-  range (`keys_for_clock`), durable `CrdtState` for restart-safe clocks,
-  **L6 associative memory** (associate/related_to/causes/supports/
+  (`memory_id`, source, confidence, importance, parent_ids, scope, entities,
+  content_type in `sys/meta/`, exposed as `Hit.provenance`), **dynamic
+  VectorClock** (8-node fast path + bounded overflow registry, NMD1 stays
+  byte-identical), CRDT sync with conflict preservation + delta sending
+  (`p2p`), **replication units** (`MemoryRecord` carries doc + state +
+  validity + provenance; `export`/`import`/`merge_remote`), **per-layer merge
+  policy** (L2/L3 multi-value, L4 causal-LWW-with-history, L0/L1 local-only),
+  a **3-node partition/rejoin test harness**, and **anti-entropy** (v0.7):
+  clock announce/gossip through relay nodes, directed pull of the missing
+  causal range (`keys_for_clock`), durable `CrdtState` for restart-safe
+  clocks, **L6 associative memory** (associate/related_to/causes/supports/
   contradicts/derived_from on ART), **provenance-aware recall** (default =
   active only; historical opt-in) and a **deterministic `MemoryLifecycle`**
   (commit/promote/semanticize/decay/archive with no hidden wall clock),
   **first-class conflict model** (deterministic id, MDR1 evidence per
   candidate, `resolve_conflict` via evidence, `dismiss_conflict`),
   **cognitive API** (`reinforce`/`forget`/`explain`/`transfer_to`/
-  `merge_memories`/`conflicts`/`resolve_conflict`) and **MCP 15 tools**
-  (provenance per hit in recall, `health`/`validate` observability,
-  ServerInfo v1.1.0)
+  `merge_memories`/`conflicts`/`resolve_conflict`/`feedback`/`diary`/
+  `profile`/`expire_old`) and **MCP 23 tools** (provenance per hit in recall,
+  `health`/`validate` observability, `era_report`, `remember_episodic`,
+  retrieval modes semantic/lexical/hybrid, `recall_temporal`,
+  `recall_entities`, ServerInfo v1.1.0) + **write-side era guard** (S1 no
+  write também — `remember_semantic` fora da era do corpus vivo é `Invalid`)
+  + **seams de conteúdo** (`Embedder` trait, `entities`, `content_type` —
+  quem fornece declara)
 - **Interfaces**: MCP server with `memory://{layer}/{key}` resources +
-  `nextCursor` pagination + 15 cognitive/observability tools + tool annotations;
-  `cargo run --release --example stress` (100k-op stress) and `--example bench`
+  `nextCursor` pagination + 23 cognitive/observability tools + tool
+  annotations; `cargo run --release --example stress` (100k-op stress) and
+  `--example bench`
 - Full API contract in [`docs/api.md`](docs/api.md)
 
 The reference implementation runs on bare-metal in the parent OS
@@ -103,6 +122,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let recent = db.recall_weighted(&emb, 3, 1.0, 1.0, 0.5, 1000)?;
     let lex = db.recall_lexical("sunny weather", 3)?;
 
+    // hits TIPADOS (v1.1.6): path/content_type/payload_type/score/matched_terms
+    // — o consumidor máquina sabe QUE datum é e COMO parseá-lo
+    for h in &hits {
+        match h.content_type {
+            neural_sgdb::ContentType::Embedding(dim) => { /* re-usa o vetor */ }
+            neural_sgdb::ContentType::Json => { /* parseia verbatim */ }
+            _ => { /* prosa */ }
+        }
+    }
+
     // L3 fato temporal + janela de validade (invalidar-não-deletar)
     db.remember_fact("user prefers dark mode", 42)?;
     db.set_validity("md/L3/ts/000000000000002a", 0, 1000)?;
@@ -114,7 +143,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 More: `cargo run --release --example bench` (benchmarks), `--example stress`
-(100k-op stress), `--example mcp_server` (MCP), and **telepathy** —
+(100k-op stress), `--example mcp_server` (MCP), `--example two_ai_protocol`
+(máquina→máquina: IA-A grava datum declarado, IA-B lê tipado, 16/16 checks),
+`--example agent_protocol` (protocolo de decisão), `--example
+memory_arena_eval` (utilidade da memória), and **telepathy** —
 `cargo run --release --example p2p_telepathy --features p2p` exchanges
 memories between two `Sgdb` instances via CRDT version sync + record pull
 (`export_record` → `merge_remote` — state/validity/lineage travel too;
@@ -129,10 +161,12 @@ arbitrates the preserved conflicts.
 
 ## MCP (AI agents)
 
-`cargo run --release --example mcp_server` exposes `remember` / `recall` /
-`rag_context` as MCP tools (JSON-RPC 2.0 over stdio, `2025-11-25` handshake),
-memories as **resources** (`memory://{layer}/{key}`), recall with opaque
-`nextCursor` pagination, and tool annotations (`readOnlyHint`/
+`cargo run --release --example mcp_server` exposes 23 tools: `remember` /
+`recall` / `rag_context` as MCP tools (JSON-RPC 2.0 over stdio, `2025-11-25`
+handshake), memories as **resources** (`memory://{layer}/{key}`), recall with
+opaque `nextCursor` pagination, retrieval **modes** (`semantic`/`lexical`/
+`hybrid`), **typed hits** (`format=json` — estruturados p/ consumo máquina;
+`remember(type=)` — seam de write), and tool annotations (`readOnlyHint`/
 `destructiveHint`/`idempotentHint`) — connectable to Claude Code, Cursor and
 OpenCode:
 

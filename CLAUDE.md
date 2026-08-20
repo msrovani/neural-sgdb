@@ -33,9 +33,12 @@ neural-os-core via byte-identical NMD1 and TKLV formats.
 ## Commands
 
 ```bash
-cargo test                                   # 31+1 tests
-cargo test --features p2p                    # 35+1
+cargo test                                   # 229+1 tests
+cargo test --features p2p                    # 275+1
+cargo test --no-default-features             # 181+1 (no_std core, host harness)
 cargo run --release --example bench          # benchmarks
 cargo run --release --example mcp_server     # MCP server
+cargo run --release --example mcp_client     # HOT TEST (90/0 checks)
+cargo run --release --example two_ai_protocol # machine→machine contract (16/16)
 cargo check --no-default-features --target x86_64-unknown-none
 ```

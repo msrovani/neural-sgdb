@@ -4,6 +4,13 @@
 > **code and tests in this repository at the time of writing**, not the
 > architecture docs (which describe targets). Last updated: 2026-08-12.
 > Baseline: `v0.5.0` (`main`, `84aa5e4`).
+>
+> **UPDATE (2026-08-19, v1.1.6)**: this is a historical Phase-0 audit — the
+> capability matrix below predates v0.6–v1.1.6. For the CURRENT contract and
+> feature surface use `docs/api.md` (crate v1.1.0, features up to v1.1.6),
+> `CHANGELOG.md`, and `codemap.md`. The test baseline evolved to **229+1
+> default / 275+1 p2p / 181+1 no_std** with the v1.1.6 typed-hit release
+> (hot test 90/0; clippy/no_std/doc gates green).
 
 ## 0. Status labels
 

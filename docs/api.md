@@ -1,10 +1,11 @@
 # neural-sgdb — API Contract
 
 > Contract document for the extraction of the SGDB core from neural-os-core.
-> Status: **current public contract (crate v1.1.0)** — this document is the
-> current public contract; roadmap items are explicitly marked as such. The
-> internal API lives in `crates/k_ai/src/sgdb/` of the parent OS; this doc
-> defines the public surface the community crate exposes (and already ships).
+> Status: **current public contract (crate v1.1.0; features up to v1.1.6)** —
+> this document is the current public contract; roadmap items are explicitly
+> marked as such. The internal API lives in `crates/k_ai/src/sgdb/` of the
+> parent OS; this doc defines the public surface the community crate exposes
+> (and already ships).
 
 ## Principles
 
@@ -203,14 +204,40 @@ impl LexicalIndex {
 
 pub struct Hit {
     pub key: String,
+    /// Projeção prosa do datum (não-vazio ⟺ `content_type` rende prosa —
+    /// Text/Json/Code; Embedding/Binary → vazio, NUNCA `from_utf8_lossy`).
     pub text: String,
-    pub dist: f32,   // 1-cos distance (0 = identical)
-    /// Provenance (v0.6): `None` for pre-v0.6 records without meta yet.
+    /// distância 1−cos (0 = idêntico) em escala 0..1 — escala DIFERENTE por
+    /// `path` (cosseno 0..1 vs BM25 normalizado vs overlap de entidades).
+    pub dist: f32,
+    /// Proveniência (v0.6) — `None` para hits sem metadados.
     pub provenance: Option<HitProvenance>,
+    /// Caminho de retrieval (v1.1.6) — Semantic | Lexical | Entities.
+    pub path: RecallPath,
+    /// Tipo do datum (v1.1.6) — Text/Json/Code/Embedding(dim)/Binary.
+    pub content_type: ContentType,
+    /// Tipo do payload do doc PRIMÁRIO que o hit representa (v1.1.6 item 3) —
+    /// para um hit semântico L4/L5 é `Embedding(dim)`: o consumidor re-usa o
+    /// vetor com o MESMO modelo (era ADR-0007).
+    pub payload_type: ContentType,
+    /// Score bruto (BM25 p/ lexical; rescore u32 p/ semântico) — ranking
+    /// auditable além do `dist` normalizado.
+    pub score: f32,
+    /// Termos da query que casaram (só lexical; vazio nos demais paths) —
+    /// o "porquê" do casamento (grounding BM25).
+    pub matched_terms: Vec<String>,
+    /// Janela de validade bi-temporal `[from, until)` (`sys/validity/`;
+    /// `None` = sem janela).
+    pub validity: Option<(u64, u64)>,
+    /// Para um companion `/L2/`: a storage key do doc PRIMÁRIO
+    /// (`md/L4|L5|L3/<id>`) — follow-ups miram o primário. `None` para docs
+    /// primários.
+    pub rel: Option<String>,
 }
 
 pub struct HitProvenance {
     pub memory_id: String,
+    pub version_id: String,
     pub layer: MemoryLayer,
     pub state: MemoryState,
     pub source: u8,
@@ -218,15 +245,163 @@ pub struct HitProvenance {
     pub importance: f32,
     pub created_tick: u64,
     pub parent_ids: Vec<String>,
+    pub last_reinforced: u64,   // v0.9 (`reinforce`); 0 = nunca
+    pub scope: String,          // v1.1.4 item 7 — tenant do datum
+    pub entities: Vec<String>,  // v1.1.4 item 10 — entidades declaradas
 }
 
+/// Tipagem de payload dos hits (v1.1.6, `src/ctype.rs`, no_std-safe).
+pub enum ContentType {
+    Text,                 // prosa/verbatim — renderiza na projeção
+    Json,                 // objeto/array — máquina→máquina parseável
+    Code,                 // código-fonte (heurística HINT)
+    Embedding(u32),       // payload f32 (L4/L5) — dim = len/4
+    Binary,               // não-UTF8 — nunca `from_utf8_lossy`
+}
+
+/// Caminho de retrieval que produziu o hit (escala do `dist` por path).
+pub enum RecallPath {
+    Semantic,             // cosseno 0..1
+    Lexical,              // BM25 normalizado
+    Entities,             // fração de entidades não cobertas
+}
+
+/// Detector na LEITURA (HINT, nunca persistido): JSON = `{…}`/`[…]`
+/// delimitado; código = keyword + segundo sinal estrutural; não-UTF8 →
+/// Binary. `embedding_dim = Some(dim)` para L4/L5 com bitvec/payload f32.
+pub fn detect_content_type(payload: &[u8], embedding_dim: Option<u32>) -> ContentType;
+
+/// Rótulo ESTÁVEL do tipo (seam de write): `stable_label`/`parse_stable_label`
+/// mapeiam `ContentType` ↔ "text"|"json"|"code"|"embedding"|"binary".
+/// `renders_prose(ct)` diz se `Hit.text` será preenchido.
+pub fn stable_label(ct: ContentType) -> &'static str;
+pub fn parse_stable_label(s: &str) -> Option<ContentType>;
+pub fn renders_prose(ct: ContentType) -> bool;
+
 pub struct MemoryMeta { /* memory_id, source, confidence, importance,
-    created_tick, parent_ids, clock_overflow — persisted in `sys/meta/` */ }
+    created_tick, parent_ids, clock_overflow, scope, entities,
+    content_type: Option<String> — persisted in `sys/meta/` (MDM1 v6) */ }
 
 /// Deterministic memory id: FNV-1a 128 over (node_id, created_tick, layer,
 /// key) → 32 hex chars. Assigned once at creation, never re-derived.
 pub fn generate_memory_id(node_id: u8, created_tick: u64, layer: MemoryLayer,
     key: &str) -> String;
+```
+
+> **Hit NÃO é tipo wire** (MDR1 é) — novos campos do `Hit` fluem para
+> `recall_weighted`/`recall_temporal`/`recall_lexical`/`recall_entities` de
+> graça, sem quebra de formato.
+
+## Typed hits — o contrato do consumidor máquina (v1.1.6)
+
+O retorno de recall é lido por OUTRA inteligência (não por humano) — e o canal
+carrega dados que NÃO são palavras humanas (JSON de intenção, embeddings,
+código, binários). Duas regras tornam o consumo determinístico:
+
+1. **Projeção prosa só para Text/Json/Code** — Embedding/Binary → `Hit.text`
+   vazio; o consumidor vê `content_type = Embedding(dim)` e sabe que o datum é
+   o payload binário do primário (era ADR-0007), nunca `from_utf8_lossy`.
+2. **Quem fornece declara** — o writer pode declarar o tipo via
+   `set_content_type` (rótulo estável persistido em `MemoryMeta`, MDM1 v6);
+   `declared wins` sobre o detector nos 3 sites de construção do hit
+   (`resolve_content_type`): Embedding declarado absorve a dim do payload;
+   Embedding/Binary declarado NUNCA rende prosa. Rótulo inválido →
+   `SgdbError::Invalid` na escrita. Mesmo contrato de `entities` (item 10) e
+   `Embedder` (v1.1.2): o core sugere, o fornecedor decide.
+3. **Escala de `dist` é por `path`** — em `hybrid` cosseno 0..1 e BM25
+   normalizado compartilham o campo; o consumidor lê `path` antes de comparar.
+4. **`rel` liga companion → primário** — um hit `/L2/` (lexical/entities)
+   carrega a key do primário `/L4|L5|L3/` e `payload_type` (o datum real);
+   `Sgdb::primary_of(key)` resolve `md/L2/<id>` → primário existente para
+   follow-ups.
+
+## Additive public surface (v1.1.2–v1.1.6)
+
+Everything below is **additive** (MINOR per VERSIONING.md) — no signature of a
+v1.0 method changed; the crate version stays 1.1.0 with feature releases
+tagged v1.1.x. Key additions since the contract above:
+
+```rust
+// ---- S1: recall is LOUD on dimension mismatch (v1.1.3) ----
+// query dims matching NONE of the indexed embeddings → SgdbError::Invalid
+// (message cites `indexed_embedding_dims()`). Text-payload L4/L5 (no bitvec)
+// don't feed the detection. Same-model-on-write-and-query is enforced loudly.
+pub fn indexed_embedding_dims(&self) -> BTreeSet<usize>;
+
+// ---- Embedder seam (v1.1.2, src/embedder.rs, no_std-safe) ----
+// trait Embedder { fn embed(&self, text: &str) -> Vec<f32>; }
+// Contract: whoever supplies embeddings uses the SAME model on write and
+// query (4-dim agent vector ≠ 256-dim demo — they don't cross-match).
+
+// ---- Scoping multi-agente (v1.1.4 item 7) ----
+pub fn set_scope(&mut self, key: &str, scope: &str) -> Result<(), SgdbError>;
+pub fn scope_of(&mut self, key: &str) -> Result<String, SgdbError>;
+pub fn recall_scoped(&mut self, query: &[f32], k: usize, scope: &str)
+    -> Result<Vec<Hit>, SgdbError>;
+pub fn recall_scoped_historical(&mut self, query: &[f32], k: usize, scope: &str)
+    -> Result<Vec<Hit>, SgdbError>;
+// scoped recall NEVER competes for slots of another scope; global recall
+// does not leak scoped memories. Lexical/hybrid honor the same filter
+// (recall_lexical_scoped/recall_hybrid_scoped; scope of a companion /L2/
+// comes from its primary via Engine::effective_scope).
+
+// ---- Retrieval modes (v1.1.4 item 8) ----
+pub fn recall_lexical_scoped(&mut self, q: &str, k: usize, scope: &str) -> Result<Vec<Hit>, SgdbError>;
+pub fn recall_hybrid_scoped(&mut self, emb: &[f32], q: &str, k: usize, scope: &str) -> Result<Vec<Hit>, SgdbError>;
+
+// ---- Entidades 1-hop (v1.1.4 item 10) ----
+// MemoryMeta.entities: Vec<String> = MDM1 v5. The core NEVER extracts
+// entities from text — exact-string match (same contract as Embedder).
+pub fn set_entities(&mut self, key: &str, entities: &[String]) -> Result<(), SgdbError>;
+pub fn entities_of(&mut self, key: &str) -> Result<Vec<String>, SgdbError>;
+pub fn recall_entities(&mut self, entities: &[String], k: usize) -> Result<Vec<Hit>, SgdbError>;
+pub fn recall_entities_historical(&mut self, entities: &[String], k: usize) -> Result<Vec<Hit>, SgdbError>;
+pub fn recall_entities_scoped(&mut self, entities: &[String], k: usize, scope: &str) -> Result<Vec<Hit>, SgdbError>;
+pub fn recall_entities_scoped_historical(&mut self, entities: &[String], k: usize, scope: &str) -> Result<Vec<Hit>, SgdbError>;
+// rank: overlap desc → importância desc → key asc; dist = fração não coberta.
+
+// ---- Retrieval temporal (v1.1.4 item 9) ----
+pub fn recall_temporal(&mut self, query: &[f32], k: usize, at: u64, w_sem: f32, w_time: f32)
+    -> Result<Vec<Hit>, SgdbError>;
+pub fn recall_temporal_scoped(&mut self, query: &[f32], k: usize, at: u64, w_sem: f32, w_time: f32, scope: &str)
+    -> Result<Vec<Hit>, SgdbError>;
+// re-ranks the semantic pool by proximity to `at`: valid in the window
+// covering `at` rise (penalty 0), not covering = penalty 1, no window uses
+// recency relative to `at`.
+
+// ---- Episodic VERBATIM (v1.1.4 item 2) ----
+pub fn remember_episodic(&mut self, user: &str, response: &str, now: u64) -> Result<(String, String), SgdbError>;
+// L2 timestamped md/L2/<ts>/u and /a — no extraction/resume (mempalace).
+
+// ---- Feedback (v1.1.4 item 3), diary (item 4), profile (item 5) ----
+pub fn feedback(&mut self, key: &str, positive: bool, amount: f32) -> Result<(), SgdbError>;
+// re-weights importance AND confidence by real outcome (clamped [0,1],
+// non-finite rejected, does NOT tick the clock).
+pub fn diary(&mut self, node_id: u8, limit: usize) -> Result<Vec<(String, String)>, SgdbError>;
+pub fn profile(&mut self, node_id: u8, limit: usize) -> Result<Vec<(String, f32, f32, String)>, SgdbError>;
+
+// ---- Expiração (v1.1.4 item 6) ----
+pub fn expire_old(&mut self, now: u64) -> Result<usize, SgdbError>;
+// marks Invalidated the memories whose validity window closed at `now`
+// (idempotent; default active-only recall ignores them; history via
+// recall_historical).
+
+// ---- Seam de WRITE — content_type (v1.1.6 item 2) ----
+pub fn set_content_type(&mut self, key: &str, ct: ContentType) -> Result<(), SgdbError>;
+pub fn content_type_of(&mut self, key: &str) -> Result<Option<ContentType>, SgdbError>;
+// persists the stable label (MDM1 v6) and PROPAGATES to the /L2/ companion
+// of an L4/L5 primary; invalid label → SgdbError::Invalid.
+
+// ---- Rerank por ancoragem lexical (v1.1.6 item 4) ----
+pub fn rag_context_reranked(&mut self, emb: &[f32], query_text: &str, k: usize)
+    -> Result<String, SgdbError>;
+// amplified pool (recall_oversampled oversample 8, top-4k) + rerank by
+// lexical anchoring (query tokens present in the hit text) → score desc →
+// dist asc. Line exposes `anchors=N` (the "why" is auditable).
+
+// ---- Resolução canônica (v1.1.2) ----
+pub fn primary_of(&mut self, key: &str) -> Result<Option<(String, ContentType)>, SgdbError>;
+// md/L2/<id> → primary md/L4|L5|L3/<id> (existing) + payload type.
 ```
 
 ## Format decision (v0.6)
@@ -249,6 +424,18 @@ via `set_importance`/`set_confidence`).
 | Logging | `k_nano::slog_kai!` (serial) | internal macro + optional `log` hook |
 | Storage | `k_nano::storage` (NVMe/RAM) | `Storage` trait (above) |
 
+**Content seams (v1.1.2–v1.1.6)** — three seams share the same philosophy
+*the provider declares, the core suggests*:
+
+- **`Embedder`** (`src/embedder.rs`, no_std-safe zero-dep seam): a real model
+  supplies embeddings on write and query. Whoever supplies them uses the SAME
+  model on both sides; different dims don't cross-match (S1 guards loudly).
+- **`entities`** (MDM1 v5): the upper layer declares the entity strings; the
+  core NEVER extracts entities from text — 1-hop recall matches exact strings.
+- **`content_type`** (MDM1 v6): the writer declares the stable label
+  (`text`/`json`/`code`/`embedding`/`binary`); the reader stops depending on
+  the heuristic detector. `declared wins`.
+
 ## On-disk format (OS interop)
 
 - **Records:** `TKLV` (klen/vlen/crc32, tombstone V=0) and `TKCK` (checkpoint).
@@ -267,6 +454,7 @@ Binary layouts are contracts — documented by byte offsets in the source
 |--------|-------------|--------|
 | NMD1 | `golden_nmd1_bytes` | magic, layer, klen/key, VectorClock 72B, plen/payload, bitflag |
 | TKLV | `golden_record_bytes` | magic, klen/vlen u32le, CRC over key‖val, body pad 16, record pad 512 |
+| MDM1 | via `golden_record_bytes`/decode tests | side-table meta codec — **v6** (`version_id`, `last_reinforced`, `scope`, `entities`, `content_type`) |
 | FNV-1a 64 | `fnv1a64_known_vector` | offset basis + prime (vector `"a"` = `0xaf63dc4c8601ec8c`) |
 
 **Cross-direction tests (P2):**
@@ -285,6 +473,14 @@ codec): adds `version_id` (per-version identity, Phase 3); v1 records decode
 with `version_id = memory_id` (explicit migration, never silent). NMD1 and
 TKLV/TKCK unchanged. Any layout change MUST bump a version marker and update
 the golden tests in the same commit.
+
+**MDM1 side-table meta codec (all backward-decodable, explicit migration):**
+v3 (v0.9) adds `last_reinforced` (v1/v2 decode → 0); **v4** (v1.1.4 item 7)
+adds `scope` (v1–v3 decode → `""`); **v5** (v1.1.4 item 10) adds `entities`
+(v1–v4 decode → empty list); **v6** (v1.1.6 item 2) adds `content_type`
+(v1–v5 decode → `None`). Decode discipline: EVERY field advances `off`, even
+when the value is the default (the v4/v5/v6 bugs were exactly this). NMD1 and
+TKLV/TKCK remain untouched.
 
 ## Feature matrix (P2)
 

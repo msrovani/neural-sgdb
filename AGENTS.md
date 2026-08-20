@@ -403,9 +403,9 @@ hash, not a semantic model). Restart opencode after changing the config.
 ## Running tests
 
 ```bash
-cargo test                                 # 210+1 tests (InMemory/FileStorage/TickvFile)
-cargo test --features p2p                  # 256+1 (includes CRDT sync + mesh harness)
-cargo test --no-default-features           # 162+1 (no_std core, host test harness)
+cargo test                                 # 229+1 tests (InMemory/FileStorage/TickvFile)
+cargo test --features p2p                  # 275+1 (includes CRDT sync + mesh harness)
+cargo test --no-default-features           # 181+1 (no_std core, host test harness)
 cargo check --no-default-features --target x86_64-unknown-none   # no_std gate
 cargo clippy --all-targets --all-features -- -D warnings          # lint gate (P0-5)
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-6/P0-10)
@@ -431,7 +431,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-
 - **Wire-codec fuzz harness** (`src/wire_fuzz.rs`, P2-4): the single LCG
   never-panic/roundtrip/truncation gate over ALL 8 wire types — add a new
   wire type there (plus its per-module `prop_tests`), and keep the matrix
-  (210+1 / 256+1 / 162+1) green. `SignedEnvelope::decode` returns
+  (229+1 / 181+1 / 275+1) green. `SignedEnvelope::decode` returns
   `Option<(Self, usize)>` (no magic byte — corrupt via field lengths, not
   byte 0).
 - **TickvFile** (`src/tickv.rs`): 512-aligned records, tombstone `vlen=0` or

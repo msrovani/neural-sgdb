@@ -5,6 +5,8 @@
 > **Data**: 2026-08-13 · **Status**: executado e auditado (45/45 asserções)
 > **Objetivo**: provar (e auditar) que o neural-sgdb funciona de verdade como
 > memória de agente — não apenas em unit tests, mas no fluxo real de uma IDE.
+> **Evolução (v1.1.0 → v1.1.6)**: o hot test cresceu com cada feature release;
+> estado corrente = **90/0 exit 0** (22 tools MCP) — ver §Evolução abaixo.
 
 ## Metodologia — 3 vias de integração
 
@@ -222,3 +224,53 @@ commit (hot test agora 60/60 exit 0; matriz **197+1 / 243+1 / 151+1**).
 | **S3** | recall fazia N×(NMD1+meta) reads para os companions L2 | `Engine::get_texts_batch`: 1 passada deduplicada, payload-only | `recall_companion_texts_batch_parity` |
 | **S4** | delete físico deixava órfãos no BQ append-only para sempre | `BqFlatIndex::retain` + `Sgdb::delete` dispara `reclaim_bq_orphans` ao cruzar `DEFAULT_BQ_ORPHAN_THRESHOLD=64`; `0` = sempre | `reclaim_bq_orphans_recompacts_after_delete` |
 | **S5** | recall do MCP paginava top-100 fixo (custo fixo + teto artificial) | lazy: computa só `off+size+1` (sentinela = página cheia reporta `nextCursor`) | `lazy_recall_pages_match_full_topk` + hot test fase 4c (raw `rpc` p/ ver `nextCursor` top-level) |
+
+---
+
+## Follow-up v1.1.4 — Memory landscape (itens 1–10)
+
+Ported from the memory-landscape benchmark (mem0/mempalace/Zep/Letta/
+Supermemory/cognee — `docs/memory-landscape.md`). MCP ganhou
+`remember_episodic`/`feedback`/`diary`/`profile`/`expire_old`/`recall_temporal`/
+`recall_entities` + `scope=`/`mode=`/`entities=` no remember/recall — **22
+tools**; hot test 84/0 exit 0; matriz **225+1 / 271+1 / 177+1**. Atores: ADD-only
+contrato, recall_weighted por importância de doc, scoping multi-agente (MDM1
+v4, filtro DENTRO do pool), retrieval modes (semantic/lexical/hybrid),
+`recall_temporal` (bi-temporal intent), entidades 1-hop (MDM1 v5, index
+derivado `entity_index`).
+
+---
+
+## Follow-up v1.1.5 — Era guard (ADR-0007, write-side)
+
+S1 era só no query; o WRITE ficou loud também: `remember_semantic` com dim
+fora de `indexed_dims` em corpus vivo → `SgdbError::Invalid` (nada é escrito;
+a 1ª escrita de DB vazio DEFINE a era). `Sgdb::era_report()` (src/era.rs,
+no_std-safe) reporta dims, contagem, largura do BQ, cobertura `/L2/`, veredito
+e custo estimado; MCP `era_report` = **tool 23**. Hot test 81/0 exit 0; matriz
+**217+1 / 263+1 / 169+1**.
+
+---
+
+## Follow-up v1.1.6 — Hits TIPADOS para o consumidor máquina (itens 1–5)
+
+O retorno de recall é lido por OUTRA inteligência — e o canal carrega dados
+que NÃO são palavras humanas (JSON máquina→máquina, embeddings da era, código,
+binários). Cada item com regressão; **hot test 90/0 exit 0**; matriz **229+1 /
+181+1 / 275+1**; gates clippy/no_std/doc verdes.
+
+| # | O que era | Correção | Regressão |
+|---|-----------|----------|-----------|
+| **1** | consumidor recebia prosa lossy, sem saber QUE datum era | MCP `format=json` (recall/temporal/entities/rag_context): hits ESTRUTURADOS com strings ESTÁVEIS (`path`, `type`); default = prosa (invariantes) | hot test +2 checks (recall json + rag json) |
+| **2** | tipo do datum era adivinhação na leitura | seam de WRITE `set_content_type` (MDM1 v6, rótulo estável, `declared wins`, propaga p/ companion; MCP `remember(type=)`) | `declared_content_type_wins_over_detector` / `declared_binary_and_text_override_detector` |
+| **3** | hit semântico não dizia que o datum real é o vetor | `Hit.payload_type` (Embedding(dim) do primário; `Sgdb::primary_of`); MCP `payload=` só quando difere | `hit_payload_type_...` + 2 sites do two_ai |
+| **4** | o gargalo é ESCOLHER o que entra no prompt, não achar | `rag_context_reranked`: pool ampliado + ancoragem lexical (`anchors=N`); MCP `rag_context rerank=true` | `rag_context_reranked_lexical_anchoring...` |
+| **5** | não havia prova ponta a ponta do contrato máquina | `examples/two_ai_protocol.rs`: IA-A grava datum declarado (JSON/`"42"`/binário/vetor), IA-B lê tipado e segue `rel=` | 16/16 auto-checks no example |
+
+- **BUGFIX companion L5 (bughunt #13)**: `companion_key()` mapeia L4 E L5 →
+  `md/L2/<id>` (o replacen só `/L4/` era no-op em keys L5 — o batch lia o
+  PRÓPRIO doc L5 e projetava floats como prosa lossy, o bug exato do pedido).
+- **`LexicalIndex::search`** → `(key, score, matched_terms)` — grounding BM25.
+- **MCP `fmt_hit`** unificado (recall/temporal/entities): prefixo `- {key} | `
+  e sufixo ` [state=` preservados (invariantes de paginação); `payload=..` só
+  quando difere de `type`.

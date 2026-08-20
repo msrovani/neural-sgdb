@@ -4,6 +4,80 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [Unreleased] — v1.1.6 (hits TIPADOS para o consumidor máquina)
+
+O retorno de recall é lido por OUTRA inteligência (não por humano) — e o canal
+carrega dados que NÃO são palavras humanas (JSON de intenção máquina→máquina,
+embeddings da era, código, binários). Antes, tudo passava por
+`String::from_utf8_lossy` e o consumidor não sabia nem QUE datum era nem COMO
+parseá-lo. Cada item com regressão; matrix **229+1 / 181+1 / 275+1**, gates
+verdes, hot test 90/0 exit 0.
+
+### Added
+- **`src/ctype.rs` (no_std-safe)**: `ContentType` = Text | Json | Code |
+  Embedding(dim) | Binary — HINT derivado na LEITURA (nunca persistido; o
+  writer pode declarar via seam, mesmo contrato de `entities`/`Embedder`);
+  `RecallPath` = Semantic | Lexical | Entities (o campo `dist` tem escala
+  DIFERENTE por path — cosseno 0..1 vs BM25 normalizado; em `hybrid` o
+  consumidor precisa saber qual é qual); `detect_content_type` (JSON =
+  `{…}`/`[…]` delimitado; código = keyword + um segundo sinal estrutural;
+  não-UTF8 → Binary), `embedding_dim_of` (len%4==0 e ≥4 — mesma regra do
+  `index_doc`/S1), `stable_label`/`parse_stable_label` (rótulos estáveis do
+  seam de write), `renders_prose` (Embedding/Binary NUNCA viram prosa).
+- **`Hit` (v1.1.6)**: + `path`, `content_type`, `score` (bruto, ranking
+  auditável), `matched_terms` (grounding BM25), `validity: Option<(u64,u64)>`
+  (janela bi-temporal por hit), `rel: Option<String>` (companion `/L2/` → key
+  do primário `/L4|L5|L3/`), `payload_type` (datum REAL do primário). `Hit`
+  NÃO é tipo wire (MDR1 é) → sem quebra de formato. `recall_weighted`/
+  `recall_temporal` CARREGAM o Hit (campos novos fluem de graça).
+- **Projeção prosa só para Text/Json/Code**: Embedding/Binary → `text` vazio;
+  o consumidor vê `type=Embedding(4)` e sabe que o datum é o payload binário
+  (era ADR-0007), nunca `from_utf8_lossy`.
+- **Seam de WRITE — `set_content_type` (item 2)**: `MemoryMeta.content_type:
+  Option<String>` = **MDM1 v6** (migração explícita: v1–v5 decodificam com
+  `None`; NMD1/TKLV intocados). Quem fornece declara o rótulo ESTÁVEL
+  (`text`/`json`/`code`/`embedding`/`binary`); rótulo inválido →
+  `SgdbError::Invalid` na escrita. A declaração PROPAGA para o companion
+  `/L2/` do primário (L4/L5); **declared wins** nos 3 sites de construção do
+  Hit (`resolve_content_type`): Embedding declarado absorve a dim do payload;
+  Embedding/Binary declarado NUNCA rende prosa. `content_type_of(key)` lê a
+  declaração; `meta_for_import` carrega na replicação (o tipo viaja no MDR1).
+- **`rag_context_reranked` (item 4 — lição P1/P5)**: o gargalo é ESCOLHER o
+  que entra no prompt. Pool AMPLIADO (`recall_oversampled` oversample 8,
+  top-4k) + rerank por ancoragem lexical (tokens do query no texto do hit) →
+  score desc → dist asc. Linha expõe `anchors=N`; mesmo teto de bytes.
+- **`examples/two_ai_protocol.rs` (item 5)**: contrato COMPLETO máquina→
+  máquina, ponta a ponta (16 auto-checks): IA-A grava JSON de intenção, JSON
+  NÚMERO `"42"` (o detector diria Text — o seam remove a adivinhação), binário
+  não-UTF8 e vetor da era — todos DECLARADOS; IA-B consome os hits TIPADOS
+  (`content_type` declarado vence, `payload_type`, `rel`, `matched_terms`),
+  parseia JSON verbatim, segue `rel=` e re-lê o payload do primário, consome o
+  binário cru pela key (nunca `from_utf8_lossy`). Determinístico (InMemory,
+  sem LLM, embedding LCG do exemplo). Exit 0 sse 16/16.
+
+### Changed
+- **MCP `remember(type=)`** (item 2): declara o tipo no write (schema enum).
+- **MCP `format=json`** (item 1): recall/recall_temporal/recall_entities/
+  rag_context devolvem hits ESTRUTURADOS
+  (`[{key,text,dist,score,path,type,dim,matched_terms,validity,rel,
+  provenance}]`) com strings ESTÁVEIS (`path= semantic|lexical|entities`,
+  `type= text|json|code|embedding(bin)`). Default continua a prosa
+  (invariantes de paginação preservadas).
+- **MCP `rag_context`**: + `rerank=true` (item 4) e + `mode`
+  (semantic/lexical/hybrid) devolvendo hits tipados no lexical/hybrid.
+- **MCP `fmt_hit`** unificado p/ recall (todos os modes) + temporal +
+  entities; `payload=..` só aparece quando difere de `type` (datum real ≠
+  projeção).
+
+### Fixed
+- **BUGFIX companion L5 (bughunt #13)**: o lookup do texto companion fazia
+  `sk.replacen("/L4/","/L2/",1)` — no-op para keys `md/L5/` → o batch lia o
+  PRÓPRIO doc L5 e projetava floats como prosa lossy. Agora `companion_key()`
+  mapeia L4 E L5 → `md/L2/<id>`; sem companion, o tipo cai para o payload e o
+  texto fica vazio (batch com texto vazio NÃO sobrescreve o tipo).
+- **`LexicalIndex::search`** agora retorna `(key, score, matched_terms)` —
+  termos da query que casaram, deduplicados por doc.
+
 ## [Unreleased] — v1.1.5 (era guard + era_report)
 
 The write side of ADR-0007 hardened (guinea-pig path: the agent hits S1 on
