@@ -10,7 +10,8 @@ Use após `git pull`, mudanças em `examples/mcp_server.rs`, ou recall/health de
    ```
 2. **Cursor → Settings → MCP → Reload** (ou reinicie o IDE).
 3. **Verifique** (agente ou manual):
-   - tool `health` → `mcp_tool_count: 4`, `onboarding` presente
+   - tool `health` → `mcp_tool_count: 4`, `onboarding` presente, `embedder` = `none` (a menos que `NEURAL_SGDB_EMBEDDER=demo`)
+   - `health(view=tensions)` e resource `nsgdb://session`
    - `build_git` corresponde ao commit local (`git rev-parse --short HEAD`)
 4. Se ainda 22 tools: desligue o MCP, apague `target/release/examples/mcp_server.exe` se locked, reinstale.
 5. Se o MCP falha na subida (`failed during live tool discovery`): o Cursor

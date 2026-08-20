@@ -18,7 +18,7 @@ Layered architecture with injectable seams (replacing the origin kernel):
 | `hamming_dispatch.rs` | SIMD dispatch scalar/AVX2/AVX-512 (`#[target_feature]`), seam `cpu_caps()`/`set_cpu_caps()` | Runtime strategy |
 | `ctype.rs` | **v1.1.6**: `ContentType` (Text/Json/Code/Embedding(dim)/Binary), `RecallPath`, `detect_content_type`, `stable_label`/`parse_stable_label`/`renders_prose` — tipagem do datum p/ consumidor máquina | HINT derivation (no_std-safe) |
 | `engine.rs` | `AiosDatabaseEngine` — RAM L0/L1 + Storage L2–L7, ART/BQ indexing, rebuild, side-tables, relations, `entity_index` | Persistence engine |
-| `sgdb.rs` | `Sgdb` — public facade: remember/recall/rag_context/checkpoint; `Hit` (tipado v1.1.6); `remember_semantic_with`/`RememberOutcome`/`recall_empty_hint`/`scope_distribution`/`set_default_scope` (v1.1.7); `HealthReport` com escopos | Facade (port of layers.rs) |
+| `sgdb.rs` | `Sgdb` — public facade; `remember_text_with` (v1.1.9 lexical write); `remember_semantic_with`/`RememberOutcome`/`recall_empty_hint` (v1.1.7); `Hit` tipado v1.1.6 | Facade |
 | `doctrine.rs` | **v1.1.8**: agent doctrine (`DOCTRINE`, key/scope/entities) — source `docs/doctrine.md` | Compile-time include |
 | `era.rs` | **v1.1.5**: `Sgdb::era_report()`/`era_report_lines()` — era do corpus, veredito, custo estimado de migração | Read-only diagnostic |
 | `lexical.rs` | Inverted BM25 index over L2/L3 texts; `search` → `(key, score, matched_terms)` (v1.1.6) | Inverted index |

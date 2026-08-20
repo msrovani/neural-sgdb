@@ -4,6 +4,21 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [1.1.9] — 2026-08-20 (ADR-0008: lexical-first MCP)
+
+### Changed
+- **MCP default recall is lexical** when the caller does not pass `embedding`.
+  `mode=semantic` / `hybrid` require a vector or explicit
+  `NEURAL_SGDB_EMBEDDER=demo`.
+- **`remember(text=)` without a vector writes L3** (`remember_text_with`) —
+  does not open a fake BQ era. L4 only with `embedding=` or demo embedder.
+- **ADR-0008 Accepted** (was Proposed): embeddings are a host-side era.
+
+### Added
+- MCP resource **`nsgdb://session`** — cold-start JSON (health + tensions).
+- **`health(view=tensions)`** — conflicts, superseded keys, unseen scopes.
+- Core **`Sgdb::remember_text_with`**.
+
 ## [1.1.8] — 2026-08-20 (agent doctrine + 4 MCP tools)
 
 ### Added
@@ -21,6 +36,9 @@ All notable changes to this project. Format based on
   never starts) and treats native `cargo` stderr as terminating under
   `$ErrorActionPreference = Stop`. `scripts/mcp-server.ps1` / `mcp-install.ps1`
   now use `[Console]::Error.WriteLine` and `Continue` around cargo.
+
+### Changed
+- **ADR-0008 Accepted** (decision record). MCP default flip shipped in **1.1.9**.
 
 ## [1.1.7] — 2026-08-20 (agent ergonomics — core + MCP)
 

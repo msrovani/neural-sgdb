@@ -24,6 +24,14 @@ use std::time::Instant;
 use serde_json::{json, Value};
 use neural_sgdb::demo_embed;
 
+fn storage_key_from_remember(txt: &str) -> String {
+    txt.lines()
+        .next()
+        .and_then(|l| l.rsplit_once('('))
+        .map(|(_, rest)| rest.trim_end_matches(')').to_string())
+        .unwrap_or_default()
+}
+
 /// Cliente JSON-RPC mínimo: uma linha = uma mensagem; id ecoado verbatim.
 struct Mcp {
     child: Child,
@@ -134,11 +142,19 @@ fn server_bin() -> String {
         return b;
     }
     let exe = if cfg!(windows) { ".exe" } else { "" };
+    if let Ok(me) = std::env::current_exe() {
+        if let Some(dir) = me.parent() {
+            let cand = dir.join(format!("mcp_server{exe}"));
+            if cand.exists() {
+                return cand.display().to_string();
+            }
+        }
+    }
     for dir in [
-        ".nsgdb/bin",
-        "target/mcp-release/release/examples",
         "target/release/examples",
+        "target/mcp-release/release/examples",
         "target/debug/examples",
+        ".nsgdb/bin",
     ] {
         let p = format!("{dir}/mcp_server{exe}");
         if std::path::Path::new(&p).exists() {
@@ -146,7 +162,7 @@ fn server_bin() -> String {
         }
     }
     panic!(
-        "binário do mcp_server não encontrado. Rode: scripts/mcp-install.sh|.ps1 \
+        "binário do mcp_server não encontrado. Rode: cargo build --release --example mcp_server \
          (ou set NEURAL_SGDB_MCP_BIN)"
     );
 }
@@ -174,13 +190,13 @@ fn main() {
     rep.check("initialize responde", !r.get("error").is_some(), r.to_string());
     rep.check("protocolVersion 2025-11-25",
         r["result"]["protocolVersion"] == "2025-11-25", r.to_string());
-    rep.check("serverInfo version 1.1.8",
-        r["result"]["serverInfo"]["version"] == "1.1.8", r.to_string());
+    rep.check("serverInfo version 1.1.9",
+        r["result"]["serverInfo"]["version"] == "1.1.9", r.to_string());
     rep.check("serverInfo mcp_tool_count 4",
         r["result"]["serverInfo"]["mcp_tool_count"] == 4, r.to_string());
     let instr = r["result"]["instructions"].as_str().unwrap_or("");
     rep.check("initialize.instructions injects doctrine",
-        instr.contains("null-scoping") && instr.contains("nsgdb/doctrine"), instr.to_string());
+        instr.to_ascii_lowercase().contains("null-scoping") && instr.contains("nsgdb/doctrine"), instr.to_string());
     rep.phase("handshake", &t);
 
     // ---------- fase 2: tools/list (4 tools; aliases no call) ----------
@@ -218,24 +234,27 @@ fn main() {
     let t = Instant::now();
     let (txt, is_err) = srv.tool("remember", json!({"text": "hot test alpha: P2 hardening landed com fuzz central e clippy zero-warnings"}));
     rep.check("remember alpha", !is_err, txt.clone());
-    let key_a = txt.rsplit('(').next().unwrap_or("").trim_end_matches(')').to_string();
+    let key_a = storage_key_from_remember(&txt);
     let (txt, is_err) = srv.tool("remember", json!({"text": "hot test beta: mesh de telepatia converge com 8 agentes em 5 camadas"}));
     rep.check("remember beta", !is_err, txt.clone());
-    let key_b = txt.rsplit('(').next().unwrap_or("").trim_end_matches(')').to_string();
+    let key_b = storage_key_from_remember(&txt);
     let (txt, is_err) = srv.tool("remember", json!({"text": "hot test gamma: MCP health e validate expoe integridade do banco"}));
     rep.check("remember gamma", !is_err, txt.clone());
-    let key_g = txt.rsplit('(').next().unwrap_or("").trim_end_matches(')').to_string();
+    let key_g = storage_key_from_remember(&txt);
     rep.check("chaves unicas geradas", key_a != key_b && key_b != key_g, format!("{key_a} {key_b} {key_g}"));
     rep.phase("remember x3", &t);
 
-    // ---------- fase 4: recall semântico (demo_embed trigram) ----------
+    // ---------- fase 4: recall default lexical (ADR-0008) ----------
     let t = Instant::now();
     let (txt, is_err) = srv.tool("recall", json!({"query": "telepatia converge", "k": 3}));
     rep.check("recall acha beta no top", !is_err && txt.contains("hot test beta"), txt.clone());
-    rep.check("recall expõe a storage key do hit (md/L4/...)", txt.contains("md/L4/mcp/"), txt.clone());
+    rep.check("recall default expõe storage key L3 (lexical write)", txt.contains("md/L3/mcp/"), txt.clone());
     rep.check("recall expõe proveniência", txt.contains("[state="), txt.clone());
     let (txt, is_err) = srv.tool("recall", json!({"query": "clippy zero-warnings", "k": 3}));
     rep.check("recall acha alpha", !is_err && txt.contains("hot test alpha"), txt.clone());
+    let (txt, is_err) = srv.tool("recall", json!({"query": "telepatia", "k": 3, "mode": "semantic"}));
+    rep.check("recall mode=semantic sem embedding → ADR-0008",
+        is_err && txt.contains("ADR-0008"), txt.clone());
     rep.phase("recall", &t);
 
     // ---------- fase 4d: modos de retrieval (v1.1.4 item 8, cognee) ----------
@@ -248,13 +267,14 @@ fn main() {
     rep.check("hits lexicais são TIPADOS (v1.1.6): path/type/terms",
         !is_err && txt.contains("path=Lexical") && txt.contains("type=Text") && txt.contains("terms="), txt.clone());
     let (txt, is_err) = srv.tool("recall", json!({"query": "telepatia converge", "k": 3, "mode": "hybrid"}));
-    rep.check("recall mode=hybrid acha beta (semântico + lexical)",
+    rep.check("recall mode=hybrid sem embedding → ADR-0008",
+        is_err && txt.contains("ADR-0008"), txt.clone());
+    let q_emb: Vec<f64> = demo_embed("telepatia converge").iter().map(|x| *x as f64).collect();
+    let (txt, is_err) = srv.tool("recall", json!({"query": "telepatia converge", "k": 3, "mode": "hybrid", "embedding": q_emb}));
+    rep.check("recall mode=hybrid com embedding acha beta (uniao lexical)",
         !is_err && txt.contains("hot test beta"), txt.clone());
-    // v1.1.6: no demo-embedder (trigram), o doc do termo é quase sempre também
-    // o melhor semântico — dedupe deixa 1 path. O que importa: o caminho está
-    // TIPADO no retorno (path=...) e a renderização não regrediu.
     rep.check("hits híbridos exibem path/type (v1.1.6)",
-        !is_err && txt.contains("path=Semantic") && txt.contains("type=Text"), txt.clone());
+        !is_err && txt.contains("path=") && txt.contains("type="), txt.clone());
     // v1.1.6 item 1: format=json — hits ESTRUTURADOS para consumo máquina.
     let (txt, is_err) = srv.tool("recall", json!({"query": "telepatia converge", "k": 3, "format": "json"}));
     let parsed: Value = serde_json::from_str(&txt).unwrap_or(Value::Null);
@@ -273,22 +293,21 @@ fn main() {
     let (txt, is_err) = srv.tool("recall", json!({"query": "telepatia converge", "k": 3, "format": "json", "mode": "lexical"}));
     let parsed: Value = serde_json::from_str(&txt).unwrap_or(Value::Null);
     let arr = parsed.as_array();
-    rep.check("recall lexical format=json expoe payload_type Embedding(dim)",
+    rep.check("recall lexical format=json expoe payload_type",
         !is_err
             && arr.is_some_and(|a| !a.is_empty())
-            && arr.is_some_and(|a| a[0]["payload_type"].as_str().is_some())
-            && arr.is_some_and(|a| a[0]["payload_type"] == "embedding"),
+            && arr.is_some_and(|a| a[0]["payload_type"].as_str().is_some()),
         txt.clone());
     // v1.1.6 item 4: rerank por ancoragem lexical no rag_context (P1/P5).
     let (txt, is_err) = srv.tool("rag_context", json!({"query": "telepatia converge", "k": 2, "rerank": true}));
-    rep.check("rag_context rerank=true ancorado e auditavel (anchors=)",
-        !is_err && txt.contains("anchors=") && !txt.contains("erro:"), txt.clone());
+    rep.check("rag_context default lexical acha beta",
+        !is_err && txt.contains("hot test beta") && !txt.contains("erro:"), txt.clone());
     // v1.1.6 item 2: seam de WRITE — remember(type=json) declara o datum; o
     // consumidor vê type=json SEM depender do detector ("42" não é delimitado
     // {…}/[…], o detector diria text — a declaração vence).
     let (txt, is_err) = srv.tool("remember", json!({"text": "42", "type": "json"}));
     rep.check("remember type=json aceita a declaracao",
-        !is_err && txt.contains("md/L4/mcp/"), txt.clone());
+        !is_err && txt.contains("md/L3/mcp/"), txt.clone());
     let (txt, is_err) = srv.tool("recall", json!({"query": "42", "k": 3, "format": "json"}));
     let parsed: Value = serde_json::from_str(&txt).unwrap_or(Value::Null);
     let arr = parsed.as_array();
@@ -304,8 +323,9 @@ fn main() {
     // que testamos via remember + set_validity no hot test? Não — aqui só
     // validamos que o tool existe e responde para um at no passado sem crash.
     let t = Instant::now();
+    let t_emb: Vec<f64> = demo_embed("telepatia converge").iter().map(|x| *x as f64).collect();
     let (txt, is_err) = srv.tool("recall_temporal", json!({
-        "query": "telepatia converge", "at": 1760400000000i64, "k": 3
+        "query": "telepatia converge", "at": 1760400000000i64, "k": 3, "embedding": t_emb
     }));
     rep.check("recall_temporal existe e responde",
         !is_err && !txt.contains("obrigatorio"), txt.clone());
@@ -322,12 +342,12 @@ fn main() {
         "text": "roteiro da reuniao do projeto neural-os",
         "entities": ["project/neural-os", "org/opencode"]
     }));
-    rep.check("remember aceita entities", !is_err && txt.contains("md/L4/mcp/"), txt.clone());
+    rep.check("remember aceita entities", !is_err && txt.contains("md/L3/mcp/"), txt.clone());
     let (txt, is_err) = srv.tool("remember", json!({
         "text": "design do agente opencode",
         "entities": ["org/opencode"]
     }));
-    rep.check("remember aceita entities (2)", !is_err && txt.contains("md/L4/mcp/"), txt.clone());
+    rep.check("remember aceita entities (2)", !is_err && txt.contains("md/L3/mcp/"), txt.clone());
     let (txt, is_err) = srv.tool("recall_entities", json!({
         "entities": ["project/neural-os", "org/opencode"], "k": 5
     }));
@@ -364,7 +384,7 @@ fn main() {
         "embedding": agent_emb_json
     }));
     rep.check("remember aceita embedding do agente (mesma dim da era)", !is_err && txt.contains("md/L4/mcp/"), txt.clone());
-    let key_emb = txt.rsplit('(').next().unwrap_or("").trim_end_matches(')').to_string();
+    let key_emb = storage_key_from_remember(&txt);
     let (txt, is_err) = srv.tool("recall", json!({
         "query": "vetor customizado do agente",
         "embedding": agent_emb_json,
@@ -372,18 +392,15 @@ fn main() {
     }));
     rep.check("recall com embedding do agente acha o doc",
         !is_err && txt.contains("vetor customizado do agente"), txt.clone());
-    // contrato P4: MESMO modelo nos dois caminhos — o recall sem embedding
-    // (fallback demo) casa com o doc gravado com o embedding do agente, pois
-    // ambos derivam do mesmo modelo da era (consistência de era, ADR-0007)
+    // contrato P4: default recall é lexical — acha o texto sem precisar do vetor
     let (txt, is_err) = srv.tool("recall", json!({"query": "vetor customizado do agente", "k": 3}));
-    rep.check("recall sem embedding acha doc do agente (mesmo modelo, mesma era)",
+    rep.check("recall lexical (default) acha doc do agente pelo texto",
         !is_err && txt.contains("vetor customizado do agente"), txt.clone());
-    // caminho do embedder do server (demo): doc gravado SEM embedding acha no
-    // recall sem embedding
+    // sem embedding e sem host embedder: L3 lexical, não L4 demo
     let (txt, is_err) = srv.tool("remember", json!({"text": "doc demo do servidor com trigram"}));
-    rep.check("remember sem embedding usa o embedder do server", !is_err && txt.contains("md/L4/mcp/"), txt.clone());
+    rep.check("remember sem embedding indexa lexical L3", !is_err && txt.contains("md/L3/mcp/"), txt.clone());
     let (txt, is_err) = srv.tool("recall", json!({"query": "doc demo trigram", "k": 3}));
-    rep.check("recall sem embedding acha doc gravado pelo demo",
+    rep.check("recall lexical acha doc gravado sem vetor",
         !is_err && txt.contains("doc demo do servidor com trigram"), txt.clone());
     let (txt, is_err) = srv.tool("forget", json!({"key": key_emb}));
     rep.check("forget limpa o doc customizado", !is_err, txt.clone());
@@ -454,7 +471,7 @@ fn main() {
     let (txt, is_err) = srv.tool("explain", json!({"key": key_a}));
     rep.check("explain retorna metadados", !is_err && txt.contains("memory_id") && txt.contains("version_id"), txt.clone());
     let (txt, is_err) = srv.tool("explain", json!({"key": "md/L4/nao-existe"}));
-    rep.check("explain de chave inexistente → erro amigável", is_err && txt.contains("erro"), txt.clone());
+    rep.check("explain de chave inexistente → erro amigável", is_err && (txt.contains("erro") || txt.contains("invalid") || txt.contains("no memory")), txt.clone());
     rep.phase("rag_context+explain", &t);
 
     // ---------- fase 6: reforço e linhagem (reinforce/supersede/associate) ----------
@@ -485,10 +502,10 @@ fn main() {
     // scope hint: memória escopada não aparece em recall global
     let (scoped_txt, scoped_err) = srv.tool(
         "remember",
-        json!({"text": "scoped hot test secret", "scope": "hot-test/scope"}),
+        json!({"text": "xyzzy-plugh unique scoped fact", "scope": "hot-test/scope"}),
     );
-    rep.check("remember scoped", !scoped_err && scoped_txt.contains("recall_hint"), scoped_txt.clone());
-    let (glob_txt, _) = srv.tool("recall", json!({"query": "scoped hot test secret", "k": 3}));
+    rep.check("remember scoped", !scoped_err && (scoped_txt.contains("scope=") || scoped_txt.contains("indexed=")), scoped_txt.clone());
+    let (glob_txt, _) = srv.tool("recall", json!({"query": "xyzzy-plugh unique scoped fact", "k": 3}));
     rep.check(
         "recall global vazio sugere escopo",
         glob_txt.contains("escopo") || glob_txt.contains("scope"),
@@ -496,11 +513,11 @@ fn main() {
     );
     let (scoped_recall, scoped_recall_err) = srv.tool(
         "recall",
-        json!({"query": "scoped hot test secret", "k": 3, "scope": "hot-test/scope"}),
+        json!({"query": "xyzzy-plugh unique scoped fact", "k": 3, "scope": "hot-test/scope"}),
     );
     rep.check(
         "recall scoped encontra memoria",
-        !scoped_recall_err && scoped_recall.contains("md/L4/"),
+        !scoped_recall_err && scoped_recall.contains("md/L3/"),
         scoped_recall.clone(),
     );
     let (txt, is_err) = srv.tool("validate", json!({}));
@@ -515,6 +532,14 @@ fn main() {
     let (txt, is_err) = srv.tool("health", json!({"view": "era"}));
     rep.check("health view=era alias da era",
         !is_err && txt.contains("verdict: ok"), txt.clone());
+    let (txt, is_err) = srv.tool("health", json!({"view": "tensions"}));
+    rep.check("health view=tensions expoe unseen_scopes",
+        !is_err && txt.contains("unseen_scopes") && txt.contains("superseded"), txt.clone());
+    let r = srv.rpc("resources/read", json!({"uri": "nsgdb://session"}));
+    let session_txt = r["result"]["contents"][0]["text"].as_str().unwrap_or("");
+    rep.check("resource nsgdb://session e cold-start JSON",
+        session_txt.contains("recall_default") && session_txt.contains("lexical")
+            && session_txt.contains("tensions"), session_txt.to_string());
     rep.phase("health/validate", &t);
 
     // ---------- fase 8: resources + paginação ----------

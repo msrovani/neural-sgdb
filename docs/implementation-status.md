@@ -52,7 +52,7 @@
 | Cognitive API | IMPLEMENTED | reinforce, supersede, explain, merge, … |
 | Arbitration policy seam | IMPLEMENTED | `ArbitrationPolicy`, no LLM in core |
 | Embedder seam | IMPLEMENTED | trait + DemoEmbedder + HTTP example |
-| MCP server | IMPLEMENTED | 23 tools, resources, typed hits |
+| MCP server | IMPLEMENTED | 4 tools (+ aliases), lexical-first (ADR-0008), `nsgdb://session` |
 | Signed transport seam | IMPLEMENTED | `SignedEnvelope`, `signed_peer` example |
 | UdpTransport | EXPERIMENTAL | unauthenticated demo |
 | Overlay mesh routing | REMAINING | edge-directed pull today |

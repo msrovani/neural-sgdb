@@ -1,11 +1,13 @@
-//! Pluggable text→embedding seam (AUDIT v1.1 P4).
+//! Pluggable text→embedding seam (AUDIT v1.1 P4, ADR-0008).
 //!
 //! The core NEVER generates embeddings — `remember_semantic`/`recall` take
 //! `&[f32]` from the caller (layer above owns the model). This module gives
-//! that layer a small, `no_std`-safe, zero-dep trait so a real embedding
-//! model (BGE / OpenAI / local ONNX, etc.) can be injected without touching
-//! the core: the `demo_embed` trigram hash is the shipped default, useful
-//! for keyword-ish recall over short texts but NOT a semantic model.
+//! that layer a small, `no_std`-safe, zero-dep trait.
+//!
+//! ADR-0008: product default retrieval is **lexical**. `DemoEmbedder` (trigram
+//! hash) is for tests / explicit `NEURAL_SGDB_EMBEDDER=demo`, not implied
+//! semantics. Real cosine recall is a host HTTP client to a local model
+//! server — never linked into this crate.
 
 use alloc::vec;
 use alloc::vec::Vec;

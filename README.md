@@ -36,8 +36,9 @@ filesystem, no external runtime.
 
 ## Status
 
-**v1.1.8** ✅ — doutrina do agente (handshake + seed) e MCP com **4 tools**
-(`remember`/`recall`/`health`/`curate`). Crate em `Cargo.toml`: **1.1.8**.
+**v1.1.9** ✅ — MCP lexical-first (ADR-0008): `remember` sem vetor = L3;
+`recall` default lexical; `nsgdb://session` + `health(view=tensions)`.
+Crate em `Cargo.toml`: **1.1.9**.
 
 - `cargo test` on host: **233 tests + doc-test** (plus p2p / no_std matrix)
 - `cargo check --no-default-features --target x86_64-unknown-none`: **clean**

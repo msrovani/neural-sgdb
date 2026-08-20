@@ -36,11 +36,9 @@ protocols that codify HOW to use the DB.
   `fmt_hit` unificado preserva invariantes de paginação (`- {key} | `, ` [state=`)
 - **v1.1.7+ doutrina**: `initialize.instructions` + seed `nsgdb/doctrine`
   (`ensure_doctrine`); resource `nsgdb://doctrine`.
-- **Embedder plugável** (`neural_sgdb::Embedder`): default `DemoEmbedder`
-  (trigram hash → 256-dim normalized, NOT a real semantic model). Agente pode
-  fornecer `embedding` no payload (mesmo modelo na gravação E na busca);
-  fallback = embedder ativo (`NEURAL_SGDB_EMBEDDER`). Contract: dimensões
-  diferentes não casam por design.
+- **v1.1.9 ADR-0008**: default recall **lexical**; `remember` sem vetor → L3;
+  `NEURAL_SGDB_EMBEDDER` unset = none; `=demo` explícito. Resources
+  `nsgdb://doctrine` + `nsgdb://session`. `health(view=tensions)`.
 - Persistence: `FileStorage` via env `NEURAL_SGDB_DB` (default `sgdb_memory.db`)
 - Protocol: `initialize` (echo 2025-11-25) → `notifications/initialized`
   (ignore) → `tools/list` → `tools/call` → `ping`; unknown → `-32601`

@@ -26,7 +26,7 @@ decisions MUST add an ADR in the same commit as the code.
 | 0005 | ART rejects prefix keys at the API boundary | No silent loss — `has_prefix_conflict` guard |
 | 0006 | No crypto in the core | Transport seam + `SignedEnvelope`; production plugs a real signer |
 | 0007 | Embedding model = era invariant | Model swaps are era transitions; migrate via re-embed + BQ rebuild, never mixed dims in a live BQ |
-| 0008 | Local embedder = client of a local model server | The `Embedder` seam talks HTTP to a local ollama/llama.cpp process; inference never links into the core |
+| 0008 | Default retrieval is lexical; embeddings are host-side | MCP default = lexical; `DemoEmbedder` is not the product path; optional local HTTP embedder; never in the core |
 
 ## Retrospective history
 

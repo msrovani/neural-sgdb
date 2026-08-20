@@ -5,21 +5,18 @@
 //! client at the binary (e.g. `claude mcp add neural-sgdb -- cargo run
 //! --release --example mcp_server`).
 //!
+//! ADR-0008: default retrieval is **lexical**. `DemoEmbedder` only if
+//! `NEURAL_SGDB_EMBEDDER=demo`. Pass `embedding=` for cosine / L4.
+//!
 //! Protocolo: JSON-RPC 2.0 sobre stdio, uma mensagem por linha (`\n`), stdout
 //! SÓ com mensagens MCP (logs → stderr). Handshake legado `2025-11-25`
 //! (initialize → initialized → tools/list → tools/call), ver spec em
 //! https://modelcontextprotocol.io/specification/2025-11-25/
-//!
-//! ⚠️ Embedding de demonstração por default: o crate standalone não tem
-//! modelo de embedding (o kernel usa BGE); aqui usamos hash de trigramas →
-//! 256-dim para `recall` funcionar de ponta a ponta. Plugue um embedder REAL
-//! via env `NEURAL_SGDB_EMBEDDER` (trait `neural_sgdb::Embedder`) ou forneça
-//! `embedding` no payload de `remember`/`recall` (v1.1 P4).
 
 use std::io::{self, BufRead, Write};
 
 use neural_sgdb::{
-    ContentType, DemoEmbedder, Embedder, RecallPath, Sgdb, DOCTRINE, DOCTRINE_SCOPE,
+    ContentType, DemoEmbedder, Embedder, MemoryState, RecallPath, Sgdb, DOCTRINE, DOCTRINE_SCOPE,
 };
 #[cfg(feature = "file-storage")]
 use neural_sgdb::FileStorage;
@@ -31,34 +28,63 @@ use serde_json::{json, Value};
 /// colide — ms*1000 + seq garante unicidade no mesmo milissegundo).
 static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Embedder ativo no server: default `DemoEmbedder` (trigram). O trait
-/// `neural_sgdb::Embedder` permite plugar um modelo real sem tocar no core.
-/// `NEURAL_SGDB_EMBEDDER=demo` → demo; qualquer outro valor atual = demo
-/// (registrado em stderr) — a porta de plug-in real é o trait + embeddings
-/// no payload.
-fn load_embedder() -> Box<dyn Embedder> {
-    match std::env::var("NEURAL_SGDB_EMBEDDER").as_deref() {
-        Ok("demo") | Ok("") => {
-            eprintln!("[neural-sgdb] embedder: demo (trigram hash)");
-            Box::new(DemoEmbedder)
+/// `NEURAL_SGDB_EMBEDDER=demo` → trigram explícito (ADR-0008). Unset = nenhum
+/// embedder de host: remember sem `embedding=` vai para L3 lexical.
+fn load_embedder() -> Option<Box<dyn Embedder>> {
+    match std::env::var("NEURAL_SGDB_EMBEDDER") {
+        Ok(s) if s == "demo" => {
+            eprintln!("[neural-sgdb] embedder: demo (trigram hash, EXPLICITO)");
+            Some(Box::new(DemoEmbedder))
         }
-        Ok(other) => {
+        Ok(other) if !other.is_empty() => {
             eprintln!(
-                "[neural-sgdb] embedder '{other}' desconhecido — usando demo; \
-                 plugue um modelo real via trait Embedder"
+                "[neural-sgdb] embedder '{other}' ainda nao plugado — sem host embedder \
+                 (passe embedding= ou NEURAL_SGDB_EMBEDDER=demo)"
             );
-            Box::new(DemoEmbedder)
+            None
         }
-        Err(_) => {
-            eprintln!("[neural-sgdb] embedder: demo (trigram hash)");
-            Box::new(DemoEmbedder)
+        _ => {
+            eprintln!("[neural-sgdb] embedder: none (ADR-0008 lexical-first)");
+            None
         }
+    }
+}
+
+fn has_caller_embedding(payload: &Value) -> bool {
+    payload["embedding"]
+        .as_array()
+        .is_some_and(|a| !a.is_empty())
+}
+
+/// ADR-0008: sem `mode` e sem `embedding=` → lexical. semantic/hybrid exigem
+/// vetor do caller ou host embedder explícito.
+fn resolve_retrieval_mode(args: &Value, has_host_embedder: bool) -> Result<String, String> {
+    let caller = has_caller_embedding(args);
+    match args["mode"].as_str() {
+        Some("lexical") => Ok("lexical".into()),
+        Some(m @ ("semantic" | "hybrid")) => {
+            if caller || has_host_embedder {
+                Ok(m.into())
+            } else {
+                Err(
+                    "ADR-0008: mode=semantic|hybrid exige `embedding` no payload ou \
+                     NEURAL_SGDB_EMBEDDER=demo. Sem vetor, omita mode (default lexical)."
+                        .into(),
+                )
+            }
+        }
+        Some(other) => Err(format!("mode desconhecido: {other}")),
+        None => Ok(if caller {
+            "semantic".into()
+        } else {
+            "lexical".into()
+        }),
     }
 }
 
 /// Embedding para um texto: usa o fornecido pelo agente (payload) se
 /// presente/validável, senão o embedder ativo do server.
-fn embed_for(emb: &dyn Embedder, text: &str, payload: &Value) -> Result<Vec<f32>, String> {
+fn embed_for(host: Option<&dyn Embedder>, text: &str, payload: &Value) -> Result<Vec<f32>, String> {
     if let Some(arr) = payload["embedding"].as_array() {
         if !arr.is_empty() && arr.len() <= neural_sgdb::MAX_EMBEDDING_DIM {
             let v: Vec<f32> = arr
@@ -75,7 +101,14 @@ fn embed_for(emb: &dyn Embedder, text: &str, payload: &Value) -> Result<Vec<f32>
             neural_sgdb::MAX_EMBEDDING_DIM
         ));
     }
-    emb.embed(text).map_err(|e| format!("embedding falhou: {e}"))
+    match host {
+        Some(e) => e.embed(text).map_err(|e| format!("embedding falhou: {e}")),
+        None => Err(
+            "ADR-0008: sem `embedding` e sem NEURAL_SGDB_EMBEDDER=demo — use mode=lexical \
+             ou passe o vetor."
+                .into(),
+        ),
+    }
 }
 
 /// #8 — parse do URI de resource `memory://{layer}/{key}` (ex: memory://L2/ts/0000).
@@ -239,7 +272,7 @@ fn error_response(id: &Value, code: i64, message: &str) -> Value {
 
 /// Número de tools em `tools/list` (aliases antigos ainda funcionam em tools/call).
 const EXPECTED_MCP_TOOL_COUNT: usize = 4;
-const MCP_CONTRACT_VERSION: &str = "1.1.8";
+const MCP_CONTRACT_VERSION: &str = "1.1.9";
 const BUILD_GIT: &str = env!("NEURAL_SGDB_BUILD_GIT");
 
 /// Lista pública: 4 tools. Os 23 nomes antigos continuam válidos em `tools/call`.
@@ -269,7 +302,7 @@ fn expand_tool(name: &str, args: &Value) -> String {
 fn mcp_listed_tools() -> Value {
     json!([
         {"name":"remember",
-         "description":"Write. text= fato semantico L4; user+response= episodico verbatim L2. INVARIANTE: scope nao vaza no recall global; devolve md/L4/... + recall_hint. Duas passadas: recall ANTES. Mesmo embedding/dim. entities= strings identicas na busca. type= text|json|code|embedding|binary. Demo NAO e semantico.",
+         "description":"Write. Sem embedding= grava L3 lexical (ADR-0008, nao abre era BQ). embedding= ou NEURAL_SGDB_EMBEDDER=demo → L4. user+response= episodico L2. scope nao vaza no recall global. Devolve storage key + recall_hint.",
          "inputSchema":{"type":"object","properties":{
            "text":{"type":"string"},
            "user":{"type":"string","description":"Com `response`: episodio L2 verbatim"},
@@ -282,10 +315,10 @@ fn mcp_listed_tools() -> Value {
          }},
          "annotations":{"destructiveHint":true,"idempotentHint":true}},
         {"name":"recall",
-         "description":"Read. Default: busca semantica/lexical/hybrid. entities[]= 1-hop; at= temporal; rag=true monta contexto. INVARIANTE: sem scope= so globais; vazio != inexistente. Doutrina: scope=nsgdb/doctrine entities=doc/protocol. format=json hits tipados.",
+         "description":"Read. Default mode=lexical (ADR-0008) se nao houver embedding=. semantic/hybrid exigem vetor. entities[]= 1-hop; at= temporal; rag=true. Sem scope= so globais. format=json hits tipados. Session: resource nsgdb://session.",
          "inputSchema":{"type":"object","properties":{
            "query":{"type":"string"},
-           "mode":{"type":"string","enum":["semantic","lexical","hybrid"],"default":"semantic"},
+           "mode":{"type":"string","enum":["semantic","lexical","hybrid"],"default":"lexical"},
            "format":{"type":"string","enum":["json"]},
            "embedding":{"type":"array","items":{"type":"number"}},
            "k":{"type":"integer","minimum":1,"maximum":20,"default":5},
@@ -302,9 +335,9 @@ fn mcp_listed_tools() -> Value {
          }},
          "annotations":{"readOnlyHint":true}},
         {"name":"health",
-         "description":"Observabilidade. view=status (default): onboarding+doutrina+dims. view=validate: integridade. view=era: era_report ADR-0007 (dim mismatch). Chame cedo.",
+         "description":"Observabilidade. view=status (default): onboarding+doutrina+dims. view=validate: integridade. view=era: era_report ADR-0007. view=tensions: conflitos, superseded, scopes invisíveis. Chame cedo. Resource nsgdb://session.",
          "inputSchema":{"type":"object","properties":{
-           "view":{"type":"string","enum":["status","validate","era"],"default":"status"}
+           "view":{"type":"string","enum":["status","validate","era","tensions"],"default":"status"}
          }},
          "annotations":{"readOnlyHint":true}},
         {"name":"curate",
@@ -353,7 +386,7 @@ fn mcp_tool_result(text: &str, structured: Value, is_error: bool) -> Value {
 }
 
 fn embedder_label() -> String {
-    std::env::var("NEURAL_SGDB_EMBEDDER").unwrap_or_else(|_| "demo".into())
+    std::env::var("NEURAL_SGDB_EMBEDDER").unwrap_or_else(|_| "none".into())
 }
 
 /// Erros acionáveis para o agente (S1/era guard, contrato de embedding).
@@ -404,19 +437,93 @@ fn health_payload(db: &mut Sgdb, db_path: &str, embedder: &str) -> Value {
         "build_git": BUILD_GIT,
         "binary_path": binary_path,
         "binary_mtime_unix": binary_mtime,
-        "contract": "same embedding model/dimension on write and query; demo trigram is NOT semantic",
+        "contract": "ADR-0008: default recall is lexical; demo trigram is NOT semantic and is not implied",
         "http_embedder": "cargo run --release --example embedder_http — see docs/MCP.md",
         "doctrine_scope": neural_sgdb::DOCTRINE_SCOPE,
         "doctrine_key": format!("md/L4/{}", neural_sgdb::DOCTRINE_KEY),
         "doctrine_entities": neural_sgdb::DOCTRINE_ENTITIES,
         "onboarding": [
-            "0. doctrine: initialize.instructions + recall(scope=nsgdb/doctrine, mode=lexical) or recall_entities(['doc/protocol'], scope=nsgdb/doctrine) or resource nsgdb://doctrine",
-            "1. remember(text=...) then recall(query=...) with the SAME words (demo embedder)",
+            "0. cold-start: resource nsgdb://session + nsgdb://doctrine (or recall scope=nsgdb/doctrine mode=lexical)",
+            "1. remember(text=...) is lexical L3; recall(query=...) default mode=lexical (same words). Cosine: pass embedding= on both, or NEURAL_SGDB_EMBEDDER=demo",
             "2. remember(scope=..., entities=[...]) for multi-agent / recall_entities 1-hop",
-            "3. recall(format=json) or rag_context(format=json) for typed machine hits",
+            "3. recall(format=json) for typed machine hits",
             "4. remember(type=json|code|embedding|binary) to declare payload type (MDM1 v6)",
-            "5. health(view=era) after any dimension/era Invalid error (ADR-0007)"
+            "5. health(view=era) after dim/era Invalid; health(view=tensions) for conflicts/unseen scopes"
         ]
+    })
+}
+
+fn tensions_payload(db: &mut Sgdb) -> Value {
+    let default = db.default_scope().unwrap_or("").to_string();
+    let dist = db.scope_distribution().ok();
+    let scope_labels: Vec<Value> = dist
+        .as_ref()
+        .map(|d| {
+            d.scoped
+                .iter()
+                .map(|(s, c)| json!([s, c]))
+                .collect()
+        })
+        .unwrap_or_default();
+    let unseen_scopes: Vec<String> = dist
+        .as_ref()
+        .map(|d| {
+            d.scoped
+                .iter()
+                .filter(|(s, _)| s.as_str() != default)
+                .map(|(s, c)| format!("{s}({c})"))
+                .collect()
+        })
+        .unwrap_or_default();
+    let conflicts: Vec<Value> = db
+        .conflicts()
+        .into_iter()
+        .map(|c| {
+            json!({
+                "id": c.conflict_id,
+                "subject": c.subject,
+                "status": match c.status {
+                    neural_sgdb::ConflictStatus::Open => "open",
+                    neural_sgdb::ConflictStatus::Resolved => "resolved",
+                },
+                "candidates": c.candidates,
+            })
+        })
+        .collect();
+    let open_n = conflicts
+        .iter()
+        .filter(|c| c["status"] == "open")
+        .count();
+    let mut superseded = Vec::new();
+    if let Ok(items) = db.scan_prefix("md/") {
+        for (k, _) in items {
+            if superseded.len() >= 20 {
+                break;
+            }
+            if matches!(db.get_state(&k), Ok(MemoryState::Superseded)) {
+                superseded.push(k);
+            }
+        }
+    }
+    let empty_hint = db.recall_empty_hint(&default, "lexical");
+    json!({
+        "view": "tensions",
+        "default_scope": default,
+        "open_conflicts": open_n,
+        "conflicts": conflicts,
+        "superseded": superseded,
+        "scope_labels": scope_labels,
+        "unseen_scopes": unseen_scopes,
+        "empty_hint": empty_hint
+    })
+}
+
+fn session_payload(db: &mut Sgdb, db_path: &str, embedder: &str) -> Value {
+    json!({
+        "resource": "nsgdb://session",
+        "recall_default": "lexical",
+        "health": health_payload(db, db_path, embedder),
+        "tensions": tensions_payload(db)
     })
 }
 
@@ -473,7 +580,8 @@ fn main() {
     }
     let embedder = load_embedder();
     let embedder_name = embedder_label();
-    match embedder.embed(DOCTRINE) {
+    // Doutrina: seed L4 com DemoEmbedder interno (texto canônico, não o default do produto).
+    match DemoEmbedder.embed(DOCTRINE) {
         Ok(emb) => match db.ensure_doctrine(&emb) {
             Ok(true) => eprintln!("[neural-sgdb] doctrine seeded (scope={DOCTRINE_SCOPE})"),
             Ok(false) => eprintln!("[neural-sgdb] doctrine already present"),
@@ -549,6 +657,12 @@ fn main() {
                     "mimeType": "text/plain",
                     "description": "How to use neural-sgdb (same as initialize.instructions)"
                 }));
+                all.push(json!({
+                    "uri": "nsgdb://session",
+                    "name": "cold-start",
+                    "mimeType": "application/json",
+                    "description": "health + tensions + doctrine pointers (ADR-0008 lexical default)"
+                }));
                 for layer in ["L1", "L2", "L3", "L4", "L5", "L7"] {
                     if let Ok(items) = db.scan_prefix(&format!("md/{layer}/")) {
                         for (k, _) in items {
@@ -570,6 +684,13 @@ fn main() {
                 if uri == "nsgdb://doctrine" {
                     send(&json!({"jsonrpc":"2.0","id":id,"result":{
                         "contents":[{"uri":uri,"mimeType":"text/plain","text":DOCTRINE}]}}));
+                    continue;
+                }
+                if uri == "nsgdb://session" {
+                    let payload = session_payload(&mut db, &db_path, &embedder_name);
+                    let text = serde_json::to_string_pretty(&payload).unwrap_or_default();
+                    send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                        "contents":[{"uri":uri,"mimeType":"application/json","text":text}]}}));
                     continue;
                 }
                 match parse_resource_uri(uri) {
@@ -603,14 +724,6 @@ fn main() {
                             let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             ms * 1000 + seq as u128
                         });
-                        let emb = match embed_for(embedder.as_ref(), text, args) {
-                            Ok(e) => e,
-                            Err(e) => {
-                                send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                    "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}}));
-                                continue;
-                            }
-                        };
                         let entities: Vec<&str> = args["entities"]
                             .as_array()
                             .map(|a| a.iter().filter_map(|e| e.as_str()).collect())
@@ -622,18 +735,33 @@ fn main() {
                             entities: &entities,
                             content_type: args["type"].as_str(),
                         };
-                        match db.remember_semantic_with(&key, text, &emb, opts) {
+                        let semantic = has_caller_embedding(args) || embedder.is_some();
+                        let written = if semantic {
+                            match embed_for(embedder.as_deref(), text, args) {
+                                Ok(emb) => db.remember_semantic_with(&key, text, &emb, opts),
+                                Err(e) => {
+                                    send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                        "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}}));
+                                    continue;
+                                }
+                            }
+                        } else {
+                            db.remember_text_with(&key, text, opts)
+                        };
+                        match written {
                             Ok(out) => {
+                                let indexed = if semantic { "semantic" } else { "lexical" };
                                 let structured = json!({
                                     "storage_key": out.storage_key,
                                     "companion_key": out.companion_key,
                                     "scope": out.scope,
                                     "entities": out.entities,
                                     "content_type": out.content_type,
-                                    "recall_hint": out.recall_hint
+                                    "recall_hint": out.recall_hint,
+                                    "indexed": indexed
                                 });
                                 let prose = format!(
-                                    "memoria armazenada ({})\nscope={:?}\n{}",
+                                    "memoria armazenada ({})\nindexed={indexed}\nscope={:?}\n{}",
                                     out.storage_key, out.scope, out.recall_hint
                                 );
                                 send(&json!({"jsonrpc":"2.0","id":id,"result":
@@ -671,14 +799,18 @@ fn main() {
                             send(&error_response(&id, -32602, "parametro 'query' obrigatorio"));
                             continue;
                         }
-                        // v1.1.4 item 8 — modo de retrieval (cognee search_type):
-                        // semantic (default, precisa embedding), lexical (BM25,
-                        // sem embedding), hybrid (semântico + lexical).
-                        let mode = args["mode"].as_str().unwrap_or("semantic");
+                        let mode = match resolve_retrieval_mode(args, embedder.is_some()) {
+                            Ok(m) => m,
+                            Err(e) => {
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                    "content":[{"type":"text","text":e}],"isError":true}}));
+                                continue;
+                            }
+                        };
                         let emb = if mode == "lexical" {
                             Vec::new()
                         } else {
-                            match embed_for(embedder.as_ref(), query, args) {
+                            match embed_for(embedder.as_deref(), query, args) {
                                 Ok(e) => e,
                                 Err(e) => {
                                     send(&json!({"jsonrpc":"2.0","id":id,"result":{
@@ -704,7 +836,7 @@ fn main() {
                         let need = off.saturating_add(size).saturating_add(1);
                         // v1.1.4 item 7 — scope: explícito ou default (env/core).
                         let scope = db.resolve_scope_param(args["scope"].as_str());
-                        let all = match recall_for_mcp(&mut db, mode, &scope, &emb, query, need) {
+                        let all = match recall_for_mcp(&mut db, &mode, &scope, &emb, query, need) {
                             Ok(h) => h,
                             Err(e) => {
                                 send(&json!({"jsonrpc":"2.0","id":id,"result":{
@@ -717,7 +849,7 @@ fn main() {
                         let text = if json_fmt {
                             hits_json(&page)
                         } else if page.is_empty() {
-                            db.recall_empty_hint(&scope, mode)
+                            db.recall_empty_hint(&scope, &mode)
                                 .unwrap_or_else(|| "nenhuma memoria similar encontrada".into())
                         } else {
                             page.iter().map(fmt_hit).collect::<Vec<_>>().join("\n")
@@ -740,14 +872,18 @@ fn main() {
                             send(&error_response(&id, -32602, "parametro 'query' obrigatorio"));
                             continue;
                         }
-                        // v1.1.6 — mode = caminho de retrieval (mesmo contrato do
-                        // recall): semantic (default, core rag_context), lexical
-                        // (BM25, sem embedding) e hybrid (semântico + lexical).
-                        let mode = args["mode"].as_str().unwrap_or("semantic");
+                        let mode = match resolve_retrieval_mode(args, embedder.is_some()) {
+                            Ok(m) => m,
+                            Err(e) => {
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                    "content":[{"type":"text","text":e}],"isError":true}}));
+                                continue;
+                            }
+                        };
                         let emb = if mode == "lexical" {
                             Vec::new()
                         } else {
-                            match embed_for(embedder.as_ref(), query, args) {
+                            match embed_for(embedder.as_deref(), query, args) {
                                 Ok(e) => e,
                                 Err(e) => {
                                     send(&json!({"jsonrpc":"2.0","id":id,"result":{
@@ -757,7 +893,7 @@ fn main() {
                             }
                         };
                         let json_fmt = args["format"].as_str().unwrap_or("") == "json";
-                        let result_text = match mode {
+                        let result_text = match mode.as_str() {
                             "lexical" => {
                                 let hits = db.recall_lexical(query, k).unwrap_or_default();
                                 if json_fmt {
@@ -818,7 +954,7 @@ fn main() {
                             send(&error_response(&id, -32602, "parametros 'query' e 'at' obrigatorios"));
                             continue;
                         }
-                        let emb = match embed_for(embedder.as_ref(), query, args) {
+                        let emb = match embed_for(embedder.as_deref(), query, args) {
                             Ok(e) => e,
                             Err(e) => {
                                 send(&json!({"jsonrpc":"2.0","id":id,"result":{
@@ -1055,10 +1191,18 @@ fn main() {
                         }
                     }
                     "health" => {
-                        let payload = health_payload(&mut db, &db_path, &embedder_name);
-                        let text = serde_json::to_string_pretty(&payload).unwrap_or_default();
-                        send(&json!({"jsonrpc":"2.0","id":id,"result":
-                            mcp_tool_result(&text, payload, false)}));
+                        let view = args["view"].as_str().unwrap_or("status");
+                        if view == "tensions" {
+                            let payload = tensions_payload(&mut db);
+                            let text = serde_json::to_string_pretty(&payload).unwrap_or_default();
+                            send(&json!({"jsonrpc":"2.0","id":id,"result":
+                                mcp_tool_result(&text, payload, false)}));
+                        } else {
+                            let payload = health_payload(&mut db, &db_path, &embedder_name);
+                            let text = serde_json::to_string_pretty(&payload).unwrap_or_default();
+                            send(&json!({"jsonrpc":"2.0","id":id,"result":
+                                mcp_tool_result(&text, payload, false)}));
+                        }
                     }
                     "diary" => {
                         let node = args["node_id"].as_u64().map(|n| n as u8).unwrap_or(db.node_id());
@@ -1250,6 +1394,10 @@ mod tests {
             "era_report"
         );
         assert_eq!(
+            expand_tool("health", &serde_json::json!({"view":"tensions"})),
+            "health"
+        );
+        assert_eq!(
             expand_tool("curate", &serde_json::json!({"op":"reinforce"})),
             "reinforce"
         );
@@ -1266,5 +1414,28 @@ mod tests {
     fn mcp_actionable_error_hints_era_report() {
         let msg = mcp_actionable_error("Invalid: query dims not in indexed_embedding_dims()");
         assert!(msg.contains("era_report"), "{msg}");
+    }
+
+    #[test]
+    fn adr0008_recall_default_is_lexical() {
+        let lexical = resolve_retrieval_mode(&serde_json::json!({"query": "x"}), false).unwrap();
+        assert_eq!(lexical, "lexical");
+        let with_vec = resolve_retrieval_mode(
+            &serde_json::json!({"query": "x", "embedding": [1.0, -1.0]}),
+            false,
+        )
+        .unwrap();
+        assert_eq!(with_vec, "semantic");
+        let denied = resolve_retrieval_mode(
+            &serde_json::json!({"query": "x", "mode": "semantic"}),
+            false,
+        );
+        assert!(denied.unwrap_err().contains("ADR-0008"));
+        let demo_host = resolve_retrieval_mode(
+            &serde_json::json!({"query": "x", "mode": "hybrid"}),
+            true,
+        )
+        .unwrap();
+        assert_eq!(demo_host, "hybrid");
     }
 }

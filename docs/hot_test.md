@@ -329,3 +329,15 @@ A LLM de cima não lê `AGENTS.md`. Empurrão:
 
 Memória desta sessão: `md/L4/mcp/1787199497425001`.
 
+## Follow-up v1.1.9 — lexical-first (ADR-0008)
+
+Hot test **84/0 exit 0**. Contrato MCP:
+
+| Campo | Valor |
+|-------|--------|
+| Default `recall` / `rag_context` | `mode=lexical` se não houver `embedding=` |
+| `remember(text=)` sem vetor | L3 (`remember_text_with`), não abre era BQ |
+| L4 | `embedding=` ou `NEURAL_SGDB_EMBEDDER=demo` |
+| Resources | `nsgdb://doctrine` + **`nsgdb://session`** |
+| `health(view=tensions)` | conflitos, superseded, unseen scopes |
+

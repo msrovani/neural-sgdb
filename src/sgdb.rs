@@ -1176,6 +1176,37 @@ impl Sgdb {
         self.remember_semantic(key, text, emb)?;
         let sk = format!("md/L4/{key}");
         let companion = format!("md/L2/{key}");
+        self.finish_remember(sk, companion, opts, false)
+    }
+
+    /// Fato indexável por lexical/entities (L3), **sem** vetor — ADR-0008.
+    /// Não toca o BQ / não abre era. `remember_semantic*` continua sendo o
+    /// caminho L4 quando o host tem embedding real (ou demo explícito).
+    pub fn remember_text_with(
+        &mut self,
+        key: &str,
+        text: &str,
+        opts: RememberOptions<'_>,
+    ) -> Result<RememberOutcome, SgdbError> {
+        let doc = MemoryDoc::new(
+            MemoryLayer::L3EpisodicLong,
+            key,
+            text.as_bytes().to_vec(),
+        );
+        let _ = self.engine.put(doc)?;
+        self.metrics.memory_writes += 1;
+        self.metrics.clock_changes += 1;
+        let sk = format!("md/L3/{key}");
+        self.finish_remember(sk.clone(), sk, opts, true)
+    }
+
+    fn finish_remember(
+        &mut self,
+        sk: String,
+        companion: String,
+        opts: RememberOptions<'_>,
+        lexical: bool,
+    ) -> Result<RememberOutcome, SgdbError> {
         let scope = opts
             .scope
             .filter(|s| !s.is_empty())
@@ -1196,11 +1227,20 @@ impl Sgdb {
                 self.set_content_type(&sk, ct)?;
             }
         }
-        let recall_hint = if scope.is_empty() {
-            "recall global ve apenas memorias sem scope; escopadas exigem recall(scope=...)"
+        let recall_hint = if lexical {
+            if scope.is_empty() {
+                "indexed=lexical; recall default (mode=lexical) ve globais; escopadas exigem recall(scope=...)"
+                    .to_string()
+            } else {
+                format!(
+                    "indexed=lexical; use recall(scope={scope:?}, mode=lexical) ou recall_entities — global nao ve este escopo"
+                )
+            }
+        } else if scope.is_empty() {
+            "indexed=semantic; recall global ve apenas memorias sem scope; escopadas exigem recall(scope=...)"
                 .to_string()
         } else {
-            format!("use recall(scope={scope:?}) ou recall_entities — global nao ve este escopo")
+            format!("indexed=semantic; use recall(scope={scope:?}) ou recall_entities — global nao ve este escopo")
         };
         Ok(RememberOutcome {
             storage_key: sk,
@@ -4924,6 +4964,30 @@ mod tests {
             .recall_scoped(&[1.0, -1.0, 1.0, -1.0], 5, "agent/a")
             .unwrap();
         assert_eq!(scoped.len(), 1);
+    }
+
+    #[test]
+    fn remember_text_with_is_lexical_not_bq() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let out = db
+            .remember_text_with(
+                "klex",
+                "fato so palavras telepatia converge",
+                RememberOptions {
+                    scope: Some("agent/a"),
+                    entities: &["ent/lex"],
+                    content_type: Some("text"),
+                },
+            )
+            .unwrap();
+        assert_eq!(out.storage_key, "md/L3/klex");
+        assert!(out.recall_hint.contains("lexical"), "{}", out.recall_hint);
+        assert!(db.indexed_embedding_dims().is_empty());
+        let hits = db
+            .recall_lexical_scoped("telepatia converge", 5, "agent/a")
+            .unwrap();
+        assert!(hits.iter().any(|h| h.key == "md/L3/klex"));
+        assert_eq!(db.entities_of("md/L3/klex").unwrap(), vec!["ent/lex".to_string()]);
     }
 
     #[test]

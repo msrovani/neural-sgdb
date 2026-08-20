@@ -122,8 +122,10 @@ exit 0 (23 MCP tools).
   avançava `off` após `last_reinforced` (v3 era último campo; o v4 `scope`
   lia do offset errado) — disciplina "todo flag avança off".
 - **Modos de retrieval (item 8, cognee `search_type`)**: MCP `recall` ganha
-  `mode` = `semantic` (default, BQ+FP32) | `lexical` (BM25 sobre textos
+  `mode` = `semantic` (BQ+FP32) | `lexical` (BM25 sobre textos
   L2/L3, SEM embedding) | `hybrid` (semântico + lexical não-duplicados).
+  **v1.1.9 / ADR-0008:** default MCP é **lexical**; semantic/hybrid exigem
+  `embedding=` ou `NEURAL_SGDB_EMBEDDER=demo`.
   Core: `recall_lexical_scoped(_historical)`/`recall_hybrid_scoped`. O path
   lexical/hybrid agora honra o mesmo filtro de scope do recall (vazava
   antes). **`Engine::effective_scope(sk)`**: o scope do companion `/L2/`
