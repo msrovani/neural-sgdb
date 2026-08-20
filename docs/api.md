@@ -1,7 +1,7 @@
 # neural-sgdb — API Contract
 
 > Contract document for the extraction of the SGDB core from neural-os-core.
-> Status: **current public contract (crate v1.1.6)** —
+> Status: **current public contract (crate v1.1.7)** —
 > this document is the current public contract; roadmap items are explicitly
 > marked as such. The internal API lives in `crates/k_ai/src/sgdb/` of the
 > parent OS; this doc defines the public surface the community crate exposes
@@ -98,6 +98,10 @@ impl Sgdb {
     /// safe prefixes, corrupt magic/version rejected) — the centralized
     /// "fuzz-tested" gate.
     pub fn remember_semantic(&mut self, key: &str, text: &str, emb: &[f32]) -> Result<(), SgdbError>;
+    /// L4+L2 + scope/entities/type numa operação; `RememberOutcome` p/ follow-up.
+    pub fn remember_semantic_with(
+        &mut self, key: &str, text: &str, emb: &[f32], opts: RememberOptions<'_>,
+    ) -> Result<RememberOutcome, SgdbError>;
 
     /// L4 recall: coarse BQ top-k -> FP32 rescore -> fine top-k.
     /// Auto-oversample by dimensionality (1 word→16, 2-4→8, else 4).
@@ -315,10 +319,10 @@ código, binários). Duas regras tornam o consumo determinístico:
    `Sgdb::primary_of(key)` resolve `md/L2/<id>` → primário existente para
    follow-ups.
 
-## Additive public surface (v1.1.2–v1.1.6)
+## Additive public surface (v1.1.2–v1.1.7)
 
 Everything below is **additive** (MINOR per VERSIONING.md) — no signature of a
-v1.0 method changed; crate version **1.1.6** in `Cargo.toml`. Key additions since the contract above:
+v1.0 method changed; crate version **1.1.7** in `Cargo.toml`. Key additions since the contract above:
 
 ```rust
 // ---- S1: recall is LOUD on dimension mismatch (v1.1.3) ----
@@ -510,9 +514,15 @@ signer (Ed25519/HMAC) at this boundary; the core stays crypto-free
 
 **Observability (P2-3, replaces `ready()`):** `Sgdb::health()` returns a
 `HealthReport` (backend, node_id, storage probe, doc/BQ/RAM counts, open
-conflicts); `Sgdb::validate()` runs integrity checks (storage `md/` walk +
-NMD1 decode + cross-check derived indexes and side-tables) returning every
-`ValidateIssue` found (empty = healthy). Both are `no_std`-safe.
+conflicts, **scope distribution**, **indexed_embedding_dims**);
+`Sgdb::scope_distribution()` and `Sgdb::recall_empty_hint()` help multi-agent
+callers when scoped memories do not appear in global recall (mem0 null-scoping);
+`Sgdb::remember_semantic_with(RememberOptions)` returns `RememberOutcome` (key,
+scope, entities, recall hint); `Sgdb::set_default_scope` sets a tenant default
+for hosts that omit `scope`. `Sgdb::validate()` runs integrity checks (storage
+`md/` walk + NMD1 decode + cross-check derived indexes and side-tables)
+returning every `ValidateIssue` found (empty = healthy). Both are
+`no_std`-safe.
 
 ## CRDT per-layer merge policy (IMPLEMENTED v0.6)
 

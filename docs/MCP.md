@@ -3,13 +3,13 @@
 Guia de instalação, contrato e troubleshooting do servidor MCP
 (`examples/mcp_server.rs`).
 
-## Contrato atual (v1.1.6)
+## Contrato atual (v1.1.7)
 
 | Campo | Valor |
 |-------|-------|
 | Protocolo | JSON-RPC 2.0 over **stdio** (uma linha JSON por mensagem) |
 | Handshake | `initialize` → `protocolVersion: 2025-11-25` |
-| `serverInfo.version` | `1.1.6` |
+| `serverInfo.version` | `1.1.7` |
 | Tools | **23** (inclui `era_report`, `health`, `validate`) |
 | Embedder default | `NEURAL_SGDB_EMBEDDER=demo` (trigrama — **não** é modelo semântico real) |
 | DB default | `NEURAL_SGDB_DB=.nsgdb/memory.db` (relativo ao cwd do processo) |
@@ -34,9 +34,18 @@ Guia de instalação, contrato e troubleshooting do servidor MCP
 
 ## Build (obrigatório antes do IDE)
 
+Preferir install em path fixo (não conflita com MCP rodando no Windows):
+
 ```bash
-cargo build --release --example mcp_server --target-dir target/mcp-release
+# Windows
+powershell -File scripts/mcp-install.ps1
+# Linux/macOS
+bash scripts/mcp-install.sh
 ```
+
+Binário em `.nsgdb/bin/mcp_server` (gitignored). Reload: [`MCP-RELOAD.md`](MCP-RELOAD.md).
+`NEURAL_SGDB_DEFAULT_SCOPE` (launcher default `project/neural-sgdb`) aplica
+escopo quando a tool omite `scope`. Core equivalente: `Sgdb::set_default_scope`.
 
 Use `target/mcp-release` para rebuild enquanto o MCP está rodando — no Windows o
 `.exe` em `target/release` fica **locked** pelo processo stdio do Cursor e o

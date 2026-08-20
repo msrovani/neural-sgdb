@@ -98,7 +98,7 @@ pub use bq::{
     hamming, hamming_path, quantize_f32, quantize_f32_centered, BqFlatIndex, MihIndex,
 };
 pub use conflict::{generate_conflict_id, ConflictRecord, ConflictStatus};
-pub use embedder::{demo_embed, DemoEmbedder, Embedder};
+pub use embedder::{demo_embed, DemoEmbedder, Embedder, DEMO_EMBED_DIM, DEMO_EMBED_NOTE};
 pub use era::{estimate_era_migration, EraEstimate, EraReport};
 pub use ctype::{detect_content_type, ContentType, RecallPath};
 pub use hamming_dispatch::{
@@ -110,7 +110,10 @@ pub use memory_doc::{
     generate_memory_id, LineageEntry, MemoryDoc, MemoryDocView, MemoryLayer, MemoryMeta,
     MemoryRecord, MemoryState, RelationKind, VectorClock,
 };
-pub use sgdb::{HealthReport, Hit, HitProvenance, Sgdb, ValidateIssue};
+pub use sgdb::{
+    HealthReport, Hit, HitProvenance, RememberOptions, RememberOutcome, ScopeDistribution, Sgdb,
+    ValidateIssue,
+};
 pub use storage::{InMemory, Storage, SgdbError};
 pub use limits::{
     DEFAULT_SCAN_PAGE_SIZE, MAX_EMBEDDING_DIM, MAX_KLEN, MAX_RAG_CONTEXT_BYTES, MAX_VLEN,

@@ -87,6 +87,43 @@ pub struct HealthReport {
     pub ram_len: usize,
     /// Conflitos persistidos em aberto (`sys/conflict/`).
     pub open_conflicts: usize,
+    /// Memórias primárias (L3/L4/L5) sem escopo (`scope=""`).
+    pub global_memory_count: usize,
+    /// Memórias primárias com escopo não vazio.
+    pub scoped_memory_count: usize,
+    /// Top escopos `(label, count)` — multi-tenancy observável.
+    pub scope_labels: Vec<(String, usize)>,
+    /// Dimensões de embedding indexadas no corpus vivo (era ADR-0007).
+    pub indexed_embedding_dims: Vec<usize>,
+}
+
+/// Distribuição de memórias por escopo (multi-agente / mem0 null-scoping).
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct ScopeDistribution {
+    /// Primários L3/L4/L5 com `scope=""`.
+    pub global_count: usize,
+    /// `(scope_label, count)` ordenado por label asc (determinístico).
+    pub scoped: Vec<(String, usize)>,
+}
+
+/// Opções opcionais na escrita semântica L4+L2 (seam de scope/entities/type).
+#[derive(Clone, Debug, Default)]
+pub struct RememberOptions<'a> {
+    pub scope: Option<&'a str>,
+    pub entities: &'a [&'a str],
+    pub content_type: Option<&'a str>,
+}
+
+/// Resultado estruturado de uma escrita semântica — útil p/ agentes e MCP.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RememberOutcome {
+    pub storage_key: String,
+    pub companion_key: String,
+    pub scope: String,
+    pub entities: Vec<String>,
+    pub content_type: Option<String>,
+    /// Hint de retrieval quando escopo ≠ global.
+    pub recall_hint: String,
 }
 
 /// Problema de integridade encontrado por [`Sgdb::validate`] (P2-3).
@@ -185,6 +222,8 @@ pub struct Sgdb {
     /// Observabilidade estruturada (v1.0, Phase 32): contadores nomeados,
     /// incrementados nos pontos de entrada. Snapshot via [`Sgdb::metrics`].
     pub(crate) metrics: crate::metrics::Metrics,
+    /// Escopo default quando o caller omite `scope` (ex.: env no MCP launcher).
+    default_scope: Option<String>,
 }
 
 impl Sgdb {
@@ -210,7 +249,113 @@ impl Sgdb {
             index_rebuilds: 1,
             ..crate::metrics::Metrics::default()
         };
-        Ok(Sgdb { engine, metrics })
+        Ok(Sgdb {
+            engine,
+            metrics,
+            default_scope: None,
+        })
+    }
+
+    /// Escopo default para writes/recalls que omitem `scope` explicitamente.
+    pub fn set_default_scope(&mut self, scope: Option<String>) {
+        self.default_scope = scope.filter(|s| !s.is_empty());
+    }
+
+    /// Escopo default configurado (`None` = sem default).
+    pub fn default_scope(&self) -> Option<&str> {
+        self.default_scope.as_deref()
+    }
+
+    /// Resolve escopo: explícito não-vazio vence; senão default; senão global (`""`).
+    pub fn resolve_scope_param(&self, explicit: Option<&str>) -> String {
+        explicit
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .or_else(|| self.default_scope.clone())
+            .unwrap_or_default()
+    }
+
+    /// Contagem de memórias primárias por escopo (L3/L4/L5 + `sys/meta/`).
+    pub fn scope_distribution(&mut self) -> Result<ScopeDistribution, SgdbError> {
+        use alloc::collections::BTreeMap;
+        let metas = self.engine.scan_prefix_storage(b"sys/meta/")?;
+        let mut global = 0usize;
+        let mut scoped: BTreeMap<String, usize> = BTreeMap::new();
+        for (mk, bytes) in metas {
+            let sk = match mk.strip_prefix(b"sys/meta/") {
+                Some(s) => String::from_utf8_lossy(s).into_owned(),
+                None => continue,
+            };
+            if !(sk.starts_with("md/L3/") || sk.starts_with("md/L4/") || sk.starts_with("md/L5/")) {
+                continue;
+            }
+            let scope = match MemoryMeta::decode(&bytes) {
+                Ok(m) => m.scope,
+                Err(_) => continue,
+            };
+            if scope.is_empty() {
+                global += 1;
+            } else {
+                *scoped.entry(scope).or_insert(0) += 1;
+            }
+        }
+        Ok(ScopeDistribution {
+            global_count: global,
+            scoped: scoped.into_iter().collect(),
+        })
+    }
+
+    /// Hint acionável quando recall retorna vazio mas o corpus tem docs.
+    pub fn recall_empty_hint(&mut self, scope_filter: &str, mode: &str) -> Option<String> {
+        let h = self.health();
+        if h.doc_count == 0 {
+            return None;
+        }
+        let dist = self.scope_distribution().ok()?;
+        let scoped_total: usize = dist.scoped.iter().map(|(_, c)| c).sum();
+        if scope_filter.is_empty() {
+            if scoped_total == 0 {
+                return Some(format!(
+                    "0 hits (mode={mode}). Corpus tem {} doc(s) globais — \
+                     use as MESMAS palavras da escrita ou mode=lexical.",
+                    dist.global_count
+                ));
+            }
+            let top: Vec<String> = dist
+                .scoped
+                .iter()
+                .take(4)
+                .map(|(s, c)| format!("{s}({c})"))
+                .collect();
+            return Some(format!(
+                "0 hits no escopo global — recall global NAO ve escopos (mem0 null-scoping). \
+                 {scoped_total} memoria(s) escopada(s): {}. Tente recall(scope=...) ou mode=lexical.",
+                top.join(", ")
+            ));
+        }
+        let in_scope = dist
+            .scoped
+            .iter()
+            .find(|(s, _)| s == scope_filter)
+            .map(|(_, c)| *c)
+            .unwrap_or(0);
+        if in_scope == 0 && scoped_total > 0 {
+            let top: Vec<String> = dist
+                .scoped
+                .iter()
+                .take(4)
+                .map(|(s, c)| format!("{s}({c})"))
+                .collect();
+            return Some(format!(
+                "0 hits em scope={scope_filter:?}. Escopos conhecidos: {}. \
+                 Verifique o label ou use mode=lexical.",
+                top.join(", ")
+            ));
+        }
+        Some(format!(
+            "0 hits (scope={scope_filter:?}, mode={mode}). Ajuste query, mode=lexical/hybrid, \
+             ou recall_historical se estado != Active."
+        ))
     }
 
     /// Node_id local (vector clock / origem) — estável por instância.
@@ -1017,6 +1162,54 @@ impl Sgdb {
         self.metrics.memory_writes += 1;
         self.metrics.clock_changes += 1;
         Ok(())
+    }
+
+    /// Como [`remember_semantic`], aplicando scope/entities/content_type na mesma
+    /// operação lógica e devolvendo metadados p/ follow-up de retrieval.
+    pub fn remember_semantic_with(
+        &mut self,
+        key: &str,
+        text: &str,
+        emb: &[f32],
+        opts: RememberOptions<'_>,
+    ) -> Result<RememberOutcome, SgdbError> {
+        self.remember_semantic(key, text, emb)?;
+        let sk = format!("md/L4/{key}");
+        let companion = format!("md/L2/{key}");
+        let scope = opts
+            .scope
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .or_else(|| self.default_scope.clone())
+            .unwrap_or_default();
+        if !scope.is_empty() {
+            self.set_scope(&sk, &scope)?;
+        }
+        let mut entities = Vec::new();
+        if !opts.entities.is_empty() {
+            self.set_entities(&sk, opts.entities)?;
+            entities = opts.entities.iter().map(|s| (*s).to_string()).collect();
+        }
+        let content_type = opts.content_type.map(str::to_string);
+        if let Some(ct) = opts.content_type {
+            if !ct.is_empty() {
+                self.set_content_type(&sk, ct)?;
+            }
+        }
+        let recall_hint = if scope.is_empty() {
+            "recall global ve apenas memorias sem scope; escopadas exigem recall(scope=...)"
+                .to_string()
+        } else {
+            format!("use recall(scope={scope:?}) ou recall_entities — global nao ve este escopo")
+        };
+        Ok(RememberOutcome {
+            storage_key: sk,
+            companion_key: companion,
+            scope,
+            entities,
+            content_type,
+            recall_hint,
+        })
     }
 
     /// Distância 1−cos em escala u32 (0 = idêntico). Sem floats no payload → None.
@@ -2373,6 +2566,13 @@ impl Sgdb {
             probe.is_ok()
         };
         let open_conflicts = self.engine.list_conflicts().len();
+        let scope_dist = self.scope_distribution().unwrap_or_default();
+        let scoped_memory_count: usize = scope_dist.scoped.iter().map(|(_, c)| c).sum();
+        let mut scope_labels = scope_dist.scoped;
+        scope_labels.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        scope_labels.truncate(8);
+        let mut indexed_embedding_dims: Vec<usize> = self.engine.indexed_dims.iter().copied().collect();
+        indexed_embedding_dims.sort_unstable();
         HealthReport {
             backend: self.engine.backend_name(),
             node_id: self.engine.node_id,
@@ -2381,6 +2581,10 @@ impl Sgdb {
             bq_len: self.engine.bq_len(),
             ram_len: self.engine.ram_l0l1_len(),
             open_conflicts,
+            global_memory_count: scope_dist.global_count,
+            scoped_memory_count,
+            scope_labels,
+            indexed_embedding_dims,
         }
     }
 
@@ -4666,6 +4870,91 @@ mod tests {
     }
 
     // ── P2-3: health() / validate() ────────────────────────────────────────
+
+    #[test]
+    fn remember_semantic_with_scope_and_hint() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let out = db
+            .remember_semantic_with(
+                "k1",
+                "fato escopado",
+                &[1.0, -1.0, 1.0, -1.0],
+                RememberOptions {
+                    scope: Some("agent/a"),
+                    entities: &["ent/x"],
+                    content_type: Some("text"),
+                },
+            )
+            .unwrap();
+        assert_eq!(out.storage_key, "md/L4/k1");
+        assert_eq!(out.scope, "agent/a");
+        assert!(out.recall_hint.contains("scope="));
+        let global = db.recall(&[1.0, -1.0, 1.0, -1.0], 5).unwrap();
+        assert!(global.is_empty(), "global recall must not leak scoped memory");
+        let scoped = db
+            .recall_scoped(&[1.0, -1.0, 1.0, -1.0], 5, "agent/a")
+            .unwrap();
+        assert_eq!(scoped.len(), 1);
+    }
+
+    #[test]
+    fn recall_empty_hint_suggests_scope() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic_with(
+            "k1",
+            "dado privado",
+            &[1.0, -1.0, 1.0, -1.0],
+            RememberOptions {
+                scope: Some("proj/x"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let hint = db.recall_empty_hint("", "semantic").expect("hint");
+        assert!(hint.contains("escop"), "{hint}");
+        assert!(hint.contains("proj/x"), "{hint}");
+    }
+
+    #[test]
+    fn default_scope_applied_on_write() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.set_default_scope(Some("tenant/default".into()));
+        let out = db
+            .remember_semantic_with(
+                "k2",
+                "tenant fact",
+                &[1.0, -1.0, 1.0, -1.0],
+                RememberOptions::default(),
+            )
+            .unwrap();
+        assert_eq!(out.scope, "tenant/default");
+    }
+
+    #[test]
+    fn health_reports_scope_distribution() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic_with(
+            "g",
+            "global",
+            &[1.0, -1.0, 1.0, -1.0],
+            RememberOptions::default(),
+        )
+        .unwrap();
+        db.remember_semantic_with(
+            "s",
+            "scoped",
+            &[1.0, -1.0, 1.0, -1.0],
+            RememberOptions {
+                scope: Some("s1"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let h = db.health();
+        assert_eq!(h.global_memory_count, 1);
+        assert_eq!(h.scoped_memory_count, 1);
+        assert_eq!(h.indexed_embedding_dims, vec![4]);
+    }
 
     #[test]
     fn health_reports_observable_state() {

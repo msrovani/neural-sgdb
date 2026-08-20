@@ -36,12 +36,11 @@ filesystem, no external runtime.
 
 ## Status
 
-**v1.1.6** ✅ — hits tipados para consumidor máquina, dual-mode (`no_std` +
-`std`, zero dependencies). Versão da crate em `Cargo.toml`: **1.1.6**;
-histórico em `CHANGELOG.md` e `docs/api.md`.
+**v1.1.7** ✅ — agent ergonomics (scope-aware write/recall/health) sobre hits
+tipados v1.1.6. Dual-mode (`no_std` + `std`, zero dependencies). Versão da
+crate em `Cargo.toml`: **1.1.7**; histórico em `CHANGELOG.md` e `docs/api.md`.
 
-- `cargo test` on host: **229 tests + doc-test** (275 + doc-test with `p2p`,
-  181 + doc-test with `--no-default-features`)
+- `cargo test` on host: **233 tests + doc-test** (plus p2p / no_std matrix)
 - `cargo check --no-default-features --target x86_64-unknown-none`: **clean**
 - **Typed hits (v1.1.6)**: o recall devolve, por hit, `path` (semantic/
   lexical/entities), `content_type` (Text/Json/Code/Embedding(dim)/Binary),
@@ -168,13 +167,13 @@ arbitrates the preserved conflicts.
 git clone https://github.com/msrovani/neural-sgdb.git && cd neural-sgdb
 git config user.name "Seu Nome"    # ver CONTRIBUTING.md
 git config user.email "seu@email.com"
-cargo build --release --example mcp_server --target-dir target/mcp-release
+powershell -File scripts/mcp-install.ps1   # ou: bash scripts/mcp-install.sh
 cargo test
-bash scripts/mcp-smoke.sh          # 23 tools + health onboarding
+powershell -File scripts/mcp-smoke.ps1     # Windows; bash scripts/mcp-smoke.sh no Linux
 ```
 
 No Windows, use `scripts\mcp-server.ps1` no lugar do `.sh`. Detalhes MCP:
-[`docs/MCP.md`](docs/MCP.md).
+[`docs/MCP.md`](docs/MCP.md) · reload: [`docs/MCP-RELOAD.md`](docs/MCP-RELOAD.md).
 
 ## MCP (AI agents)
 

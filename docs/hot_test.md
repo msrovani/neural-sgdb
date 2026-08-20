@@ -291,3 +291,26 @@ Lições da instalação real na IDE (memorizadas em `md/L4/mcp/...`, ver
 | commit falha pós-clone | `user.name`/`user.email` ausentes | [`CONTRIBUTING.md`](../CONTRIBUTING.md) |
 
 CI: step `bash scripts/mcp-smoke.sh` após `cargo build --release --examples`.
+
+---
+
+## Follow-up v1.1.7 — Agent ergonomics (core + MCP)
+
+As 15 ideias da rodada Cursor/Windows: **core primeiro**, MCP como consumidor.
+
+| # | Core | MCP / ops |
+|---|------|-----------|
+| 1 | — | `scripts/mcp-install.{ps1,sh}` → `.nsgdb/bin` (path fixo; exe locked) |
+| 2 | `Sgdb::recall_empty_hint` | recall vazio explica null-scoping |
+| 3 | `remember_semantic_with` → `RememberOutcome` | remember devolve key/scope/hint + `structuredContent` |
+| 4–5 | — | `mcp-smoke.ps1`; launcher auto-build |
+| 6–7 | `HealthReport` + scopes/dims | health stamp (`build_git`, `binary_path`); log stderr |
+| 8 | — | [`docs/MCP-RELOAD.md`](MCP-RELOAD.md) (workspace vs global) |
+| 9–10 | — | `serverInfo.mcp_tool_count`; `structuredContent` |
+| 11–12 | testes em `sgdb.rs` | hot test scoped recall + CI `mcp-windows` |
+| 13 | `DEMO_EMBED_DIM` / `DEMO_EMBED_NOTE` | health expõe nota do demo |
+| 14 | `set_default_scope` | `NEURAL_SGDB_DEFAULT_SCOPE` |
+| 15 | — | checklist reload |
+
+Memória MCP: `md/L4/mcp/1787197395227000` (`scope=project/neural-sgdb`).
+

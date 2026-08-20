@@ -134,13 +134,21 @@ fn server_bin() -> String {
         return b;
     }
     let exe = if cfg!(windows) { ".exe" } else { "" };
-    for dir in ["target/release/examples", "target/debug/examples"] {
+    for dir in [
+        ".nsgdb/bin",
+        "target/mcp-release/release/examples",
+        "target/release/examples",
+        "target/debug/examples",
+    ] {
         let p = format!("{dir}/mcp_server{exe}");
         if std::path::Path::new(&p).exists() {
             return p;
         }
     }
-    panic!("binário do mcp_server não encontrado. Rode: cargo build --release --example mcp_server (ou set NEURAL_SGDB_MCP_BIN)");
+    panic!(
+        "binário do mcp_server não encontrado. Rode: scripts/mcp-install.sh|.ps1 \
+         (ou set NEURAL_SGDB_MCP_BIN)"
+    );
 }
 
 fn main() {
@@ -166,8 +174,10 @@ fn main() {
     rep.check("initialize responde", !r.get("error").is_some(), r.to_string());
     rep.check("protocolVersion 2025-11-25",
         r["result"]["protocolVersion"] == "2025-11-25", r.to_string());
-    rep.check("serverInfo version 1.1.6",
-        r["result"]["serverInfo"]["version"] == "1.1.6", r.to_string());
+    rep.check("serverInfo version 1.1.7",
+        r["result"]["serverInfo"]["version"] == "1.1.7", r.to_string());
+    rep.check("serverInfo mcp_tool_count 23",
+        r["result"]["serverInfo"]["mcp_tool_count"] == 23, r.to_string());
     rep.phase("handshake", &t);
 
     // ---------- fase 2: tools/list (23 tools) ----------
@@ -448,6 +458,34 @@ fn main() {
     rep.check("health: storage_ok", !is_err && txt.contains("\"storage_ok\": true"), txt.clone());
     rep.check("health: doc_count ≥ 6 (3 docs L4 + 3 companions L2)",
         !is_err && txt.contains("doc_count"), txt.clone());
+    let hr = srv.rpc("tools/call", json!({"name": "health", "arguments": {}}));
+    rep.check(
+        "health structuredContent onboarding + mcp_tool_count",
+        hr["result"]["structuredContent"]["mcp_tool_count"] == 23
+            && hr["result"]["structuredContent"]["onboarding"].is_array(),
+        hr.to_string(),
+    );
+    // scope hint: memória escopada não aparece em recall global
+    let (scoped_txt, scoped_err) = srv.tool(
+        "remember",
+        json!({"text": "scoped hot test secret", "scope": "hot-test/scope"}),
+    );
+    rep.check("remember scoped", !scoped_err && scoped_txt.contains("recall_hint"), scoped_txt.clone());
+    let (glob_txt, _) = srv.tool("recall", json!({"query": "scoped hot test secret", "k": 3}));
+    rep.check(
+        "recall global vazio sugere escopo",
+        glob_txt.contains("escopo") || glob_txt.contains("scope"),
+        glob_txt.clone(),
+    );
+    let (scoped_recall, scoped_recall_err) = srv.tool(
+        "recall",
+        json!({"query": "scoped hot test secret", "k": 3, "scope": "hot-test/scope"}),
+    );
+    rep.check(
+        "recall scoped encontra memoria",
+        !scoped_recall_err && scoped_recall.contains("md/L4/"),
+        scoped_recall.clone(),
+    );
     let (txt, is_err) = srv.tool("validate", json!({}));
     rep.check("validate: banco saudável", !is_err && txt.contains("saudavel"), txt.clone());
     // era_report (ADR-0007): veredito de era + custo estimado aplicando a

@@ -41,7 +41,7 @@ jobs:
       - name: build examples
         run: cargo build --release --examples
 
-      - name: MCP smoke (23 tools + health)
+      - name: MCP smoke (23 tools + structured health)
         run: bash scripts/mcp-smoke.sh
 
       - name: stress (reduced N for CI)
@@ -51,3 +51,13 @@ jobs:
 
       - name: bench (smoke, reduced)
         run: cargo run --release --example bench
+
+  mcp-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: MCP smoke (PowerShell)
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File scripts/mcp-smoke.ps1

@@ -4,6 +4,23 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [1.1.7] — 2026-08-20 (agent ergonomics — core + MCP)
+
+### Added (core)
+- **`ScopeDistribution`**, **`RememberOptions`**, **`RememberOutcome`**, **`Sgdb::remember_semantic_with`**
+  — write L4+L2 + scope/entities/content_type numa operação; retorno estruturado p/ SDK/agentes.
+- **`Sgdb::scope_distribution`**, **`Sgdb::recall_empty_hint`** — diagnóstico multi-tenant quando recall
+  vazio (null-scoping mem0).
+- **`Sgdb::set_default_scope` / `resolve_scope_param`** — escopo default por instância (host/MCP).
+- **`HealthReport`**: `global_memory_count`, `scoped_memory_count`, `scope_labels`, `indexed_embedding_dims`.
+- **`embedder::DEMO_EMBED_DIM` / `DEMO_EMBED_NOTE`** — contrato explícito do demo trigram (256-dim, não semântico).
+- **`build.rs`** — `NEURAL_SGDB_BUILD_GIT` para diagnóstico runtime.
+
+### Added (MCP / ops)
+- Install fixo: `scripts/mcp-install.{ps1,sh}` → `.nsgdb/bin/mcp_server`; launchers com auto-build.
+- `scripts/mcp-smoke.ps1`, CI job `mcp-windows`, `docs/MCP-RELOAD.md`.
+- MCP: `structuredContent` em health/remember/recall; hints de escopo; `NEURAL_SGDB_DEFAULT_SCOPE`.
+
 ## [1.1.6] — 2026-08-20 (hits TIPADOS + ergonomia MCP)
 
 O retorno de recall é lido por OUTRA inteligência (não por humano) — e o canal

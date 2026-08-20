@@ -34,6 +34,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 cargo check --no-default-features --target x86_64-unknown-none
 bash scripts/mcp-smoke.sh
+# Windows: powershell -File scripts/mcp-install.ps1; powershell -File scripts/mcp-smoke.ps1
 ```
 
 ## Regras do crate

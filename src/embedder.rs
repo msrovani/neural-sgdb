@@ -64,6 +64,13 @@ pub fn demo_embed(text: &str) -> Vec<f32> {
     v
 }
 
+/// Dimensão do [`DemoEmbedder`] / [`demo_embed`] (256 — position-independent trigram).
+pub const DEMO_EMBED_DIM: usize = 256;
+
+/// Nota de contrato — o demo NÃO é modelo semântico; dims devem casar na era (ADR-0007).
+pub const DEMO_EMBED_NOTE: &str =
+    "DemoEmbedder (256-dim trigram hash) is NOT a semantic model; use the same dims on write and query.";
+
 #[cfg(test)]
 mod tests {
     use super::*;

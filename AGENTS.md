@@ -363,6 +363,11 @@ let mut db = Sgdb::open(FileStorage::open("mem.db")?)?;
 // memories
 db.remember_exchange("user", "response")?;             // L1 + L2
 db.remember_semantic("k", "text", &emb)?;              // L4 BQ (emb: &[f32])
+db.remember_semantic_with("k2", "text", &emb, RememberOptions {
+    scope: Some("user/ana"), entities: &["pref/theme"], content_type: Some("text"),
+})?;
+db.set_default_scope(Some("project/foo".into()));
+let _ = db.recall_empty_hint("", "semantic");          // hint se recall global vazio
 db.remember_fact("fact", now)?;                        // L3 timestamped
 db.checkpoint()?; db.prune_working_ram()?;             // flush L0/L1 RAM
 db.delete("md/L4/k1")?;                     // deleção FÍSICA (tombstone + índices)
@@ -429,7 +434,8 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-
   `demo_embed` embedding is a trigram hash — NOT a real semantic model. Now
   exposes read-only `health`/`validate`/`era_report` tools (P2-3 + ADR-0007);
   **instalação e troubleshooting**: [`docs/MCP.md`](docs/MCP.md) (launchers
-  release, Cursor Windows, smoke test, embedder HTTP).
+  release, Cursor Windows, smoke test, embedder HTTP);
+  [`docs/MCP-RELOAD.md`](docs/MCP-RELOAD.md) (reload vs rebuild, `.nsgdb/bin`).
 - **Wire-codec fuzz harness** (`src/wire_fuzz.rs`, P2-4): the single LCG
   never-panic/roundtrip/truncation gate over ALL 8 wire types — add a new
   wire type there (plus its per-module `prop_tests`), and keep the matrix

@@ -237,7 +237,30 @@ fn error_response(id: &Value, code: i64, message: &str) -> Value {
 
 /// Número de tools expostas — mantido em sync com `tools/list` + CI smoke.
 const EXPECTED_MCP_TOOL_COUNT: usize = 23;
-const MCP_CONTRACT_VERSION: &str = "1.1.6";
+const MCP_CONTRACT_VERSION: &str = "1.1.7";
+const BUILD_GIT: &str = env!("NEURAL_SGDB_BUILD_GIT");
+
+fn binary_runtime_info() -> (String, Option<u64>) {
+    std::env::current_exe()
+        .ok()
+        .map(|p| {
+            let mtime = p.metadata().ok().and_then(|m| m.modified().ok()).and_then(|t| {
+                t.duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_secs())
+            });
+            (p.display().to_string(), mtime)
+        })
+        .unwrap_or_else(|| ("unknown".into(), None))
+}
+
+fn mcp_tool_result(text: &str, structured: Value, is_error: bool) -> Value {
+    json!({
+        "content": [{"type": "text", "text": text}],
+        "structuredContent": structured,
+        "isError": is_error
+    })
+}
 
 fn embedder_label() -> String {
     std::env::var("NEURAL_SGDB_EMBEDDER").unwrap_or_else(|_| "demo".into())
@@ -268,7 +291,7 @@ fn mcp_actionable_error(e: impl std::fmt::Display) -> String {
 
 fn health_payload(db: &mut Sgdb, db_path: &str, embedder: &str) -> Value {
     let h = db.health();
-    let dims: Vec<usize> = db.indexed_embedding_dims().into_iter().collect();
+    let (binary_path, binary_mtime) = binary_runtime_info();
     json!({
         "backend": h.backend,
         "node_id": h.node_id,
@@ -277,11 +300,20 @@ fn health_payload(db: &mut Sgdb, db_path: &str, embedder: &str) -> Value {
         "bq_len": h.bq_len,
         "ram_len": h.ram_len,
         "open_conflicts": h.open_conflicts,
+        "global_memory_count": h.global_memory_count,
+        "scoped_memory_count": h.scoped_memory_count,
+        "scope_labels": h.scope_labels,
         "db_path": db_path,
         "embedder": embedder,
+        "default_scope": db.default_scope(),
         "mcp_contract_version": MCP_CONTRACT_VERSION,
         "mcp_tool_count": EXPECTED_MCP_TOOL_COUNT,
-        "indexed_embedding_dims": dims,
+        "indexed_embedding_dims": h.indexed_embedding_dims,
+        "demo_embed_dim": neural_sgdb::DEMO_EMBED_DIM,
+        "demo_embed_note": neural_sgdb::DEMO_EMBED_NOTE,
+        "build_git": BUILD_GIT,
+        "binary_path": binary_path,
+        "binary_mtime_unix": binary_mtime,
         "contract": "same embedding model/dimension on write and query; demo trigram is NOT semantic",
         "onboarding": [
             "1. remember(text=...) then recall(query=...) with the SAME words (demo embedder)",
@@ -340,7 +372,18 @@ fn main() {
             std::process::exit(1);
         }
     };
-    eprintln!("[neural-sgdb] MCP server pronto — db={db_path} backend={} tools={EXPECTED_MCP_TOOL_COUNT}", db.backend());
+    if let Ok(scope) = std::env::var("NEURAL_SGDB_DEFAULT_SCOPE") {
+        if !scope.is_empty() {
+            db.set_default_scope(Some(scope));
+        }
+    }
+    let (bin_path, bin_mtime) = binary_runtime_info();
+    eprintln!(
+        "[neural-sgdb] mcp={MCP_CONTRACT_VERSION} tools={EXPECTED_MCP_TOOL_COUNT} git={BUILD_GIT} \
+         binary={bin_path} mtime={bin_mtime:?} db={db_path} backend={} default_scope={:?}",
+        db.backend(),
+        db.default_scope()
+    );
     let embedder = load_embedder();
     let embedder_name = embedder_label();
 
@@ -373,7 +416,13 @@ fn main() {
                 send(&json!({"jsonrpc":"2.0","id":id,"result":{
                     "protocolVersion":"2025-11-25",
                     "capabilities":{"tools":{}},
-                    "serverInfo":{"name":"neural-sgdb","version":MCP_CONTRACT_VERSION}
+                    "serverInfo":{
+                        "name":"neural-sgdb",
+                        "version":MCP_CONTRACT_VERSION,
+                        "title":"neural-sgdb cognitive memory MCP",
+                        "mcp_contract_version":MCP_CONTRACT_VERSION,
+                        "mcp_tool_count":EXPECTED_MCP_TOOL_COUNT
+                    }
                 }}));
             }
             "notifications/initialized" | "notifications/cancelled" | "notifications/progress" => {
@@ -609,8 +658,6 @@ fn main() {
                             send(&error_response(&id, -32602, "parametro 'text' obrigatorio"));
                             continue;
                         }
-                        // unique key: ms + monotonic counter (2 remembers in
-                        // the same ms do not collide — bughunt #10)
                         let key = format!("mcp/{:06}", {
                             let ms = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
@@ -627,48 +674,33 @@ fn main() {
                                 continue;
                             }
                         };
-                        match db.remember_semantic(&key, text, &emb) {
-                            Ok(()) => {
-                                // scope opcional (v1.1.4 item 7) — aplica após
-                                // o put (a meta nasce no primeiro write)
-                                let scope = args["scope"].as_str().unwrap_or("");
-                                if !scope.is_empty() {
-                                    if let Err(e) = db.set_scope(&format!("md/L4/{key}"), scope) {
-                                        send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                            "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}}));
-                                        continue;
-                                    }
-                                }
-                                // entidades opcionais (v1.1.4 item 10) — declaradas
-                                // pela camada superior, nunca extraídas de texto
-                                let entities: Vec<&str> = args["entities"]
-                                    .as_array()
-                                    .map(|a| a.iter().filter_map(|e| e.as_str()).collect())
-                                    .unwrap_or_default();
-                                if !entities.is_empty() {
-                                    if let Err(e) = db.set_entities(&format!("md/L4/{key}"), &entities) {
-                                        send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                            "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}}));
-                                        continue;
-                                    }
-                                }
-                                // tipo declarado (v1.1.6 item 2 — seam de WRITE):
-                                // o writer declara, o consumidor não depende do
-                                // detector (propaga para o companion /L2/).
-                                if let Some(ct) = args["type"].as_str() {
-                                    if let Err(e) = db.set_content_type(&format!("md/L4/{key}"), ct) {
-                                        send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                            "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}}));
-                                        continue;
-                                    }
-                                }
-                                // devolve a STORAGE KEY completa (`md/L4/...`) —
-                                // a chave crua `mcp/...` NÃO resolve em
-                                // explain/reinforce (achado hot-test 2026-08-13)
-                                let sk = format!("md/L4/{key}");
-                                send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                    "content":[{"type":"text","text":format!("memoria armazenada ({sk})")}],
-                                    "isError":false}}))
+                        let entities: Vec<&str> = args["entities"]
+                            .as_array()
+                            .map(|a| a.iter().filter_map(|e| e.as_str()).collect())
+                            .unwrap_or_default();
+                        let scope_explicit = args["scope"].as_str();
+                        let scope_resolved = db.resolve_scope_param(scope_explicit);
+                        let opts = neural_sgdb::RememberOptions {
+                            scope: Some(scope_resolved.as_str()),
+                            entities: &entities,
+                            content_type: args["type"].as_str(),
+                        };
+                        match db.remember_semantic_with(&key, text, &emb, opts) {
+                            Ok(out) => {
+                                let structured = json!({
+                                    "storage_key": out.storage_key,
+                                    "companion_key": out.companion_key,
+                                    "scope": out.scope,
+                                    "entities": out.entities,
+                                    "content_type": out.content_type,
+                                    "recall_hint": out.recall_hint
+                                });
+                                let prose = format!(
+                                    "memoria armazenada ({})\nscope={:?}\n{}",
+                                    out.storage_key, out.scope, out.recall_hint
+                                );
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":
+                                    mcp_tool_result(&prose, structured, false)}));
                             }
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":mcp_actionable_error(&e)}],"isError":true}})),
@@ -733,10 +765,9 @@ fn main() {
                         // página exatamente preenchida pareceria a última
                         // (paginate usa items.len() como "conjunto inteiro").
                         let need = off.saturating_add(size).saturating_add(1);
-                        // v1.1.4 item 7 — scope opcional: filtro DENTRO do
-                        // pipeline (candidatos de outro scope não competem).
-                        let scope = args["scope"].as_str().unwrap_or("");
-                        let all = match recall_for_mcp(&mut db, mode, scope, &emb, query, need) {
+                        // v1.1.4 item 7 — scope: explícito ou default (env/core).
+                        let scope = db.resolve_scope_param(args["scope"].as_str());
+                        let all = match recall_for_mcp(&mut db, mode, &scope, &emb, query, need) {
                             Ok(h) => h,
                             Err(e) => {
                                 send(&json!({"jsonrpc":"2.0","id":id,"result":{
@@ -745,22 +776,21 @@ fn main() {
                             }
                         };
                         let (page, next) = paginate(&all, args["cursor"].as_str(), size);
-                        // v1.1.6: `format=json` devolve hits ESTRUTURADOS para
-                        // consumo máquina→máquina (parseável, datum tipado);
-                        // default = projeção prosa (invariantes preservadas).
                         let json_fmt = args["format"].as_str().unwrap_or("") == "json";
                         let text = if json_fmt {
                             hits_json(&page)
                         } else if page.is_empty() {
-                            "nenhuma memoria similar encontrada".into()
+                            db.recall_empty_hint(&scope, mode)
+                                .unwrap_or_else(|| "nenhuma memoria similar encontrada".into())
                         } else {
-                            // v1.1.6 — hits TIPADOS (path/type/terms/valid/rel):
-                            // o consumidor sabe o datum + o porquê do casamento.
                             page.iter().map(fmt_hit).collect::<Vec<_>>().join("\n")
                         };
-                        let mut result = json!({
-                            "content":[{"type":"text","text":text}],"isError":false
-                        });
+                        let structured = if json_fmt {
+                            json!({"hits": page.iter().map(hit_json).collect::<Vec<_>>(), "scope": scope, "mode": mode})
+                        } else {
+                            json!({"hit_count": page.len(), "scope": scope, "mode": mode})
+                        };
+                        let mut result = mcp_tool_result(&text, structured, false);
                         if let Some(n) = next {
                             result["nextCursor"] = json!(n);
                         }
@@ -1089,9 +1119,9 @@ fn main() {
                     }
                     "health" => {
                         let payload = health_payload(&mut db, &db_path, &embedder_name);
-                        send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                            "content":[{"type":"text","text":serde_json::to_string_pretty(&payload).unwrap_or_default()}],
-                            "isError":false}}));
+                        let text = serde_json::to_string_pretty(&payload).unwrap_or_default();
+                        send(&json!({"jsonrpc":"2.0","id":id,"result":
+                            mcp_tool_result(&text, payload, false)}));
                     }
                     "diary" => {
                         let node = args["node_id"].as_u64().map(|n| n as u8).unwrap_or(db.node_id());
