@@ -23,11 +23,19 @@ if (-not $Exe) {
     if (-not $cargo) {
         Write-Error "Binario MCP ausente. Rode: powershell -File scripts/mcp-install.ps1"
     }
-    Write-Host "[neural-sgdb] building MCP..." >&2
+    [Console]::Error.WriteLine("[neural-sgdb] building MCP...")
     Push-Location $Root
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
     try {
         & cargo build --release --example mcp_server --target-dir (Join-Path $Root "target\mcp-release")
-    } finally { Pop-Location }
+        if ($LASTEXITCODE -ne 0) {
+            [Console]::Error.WriteLine("[neural-sgdb] build failed (exit $LASTEXITCODE)")
+        }
+    } finally {
+        $ErrorActionPreference = $prevEap
+        Pop-Location
+    }
     foreach ($c in @($Installed, $AltBin, $Bin)) {
         if (Test-Path $c) { $Exe = $c; break }
     }

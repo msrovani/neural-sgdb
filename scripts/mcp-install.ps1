@@ -8,10 +8,14 @@ $Alt = Join-Path $Root "target\mcp-release\release\examples\mcp_server.exe"
 $Dst = Join-Path $OutDir "mcp_server.exe"
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 Push-Location $Root
-try {
-  cargo build --release --example mcp_server --target-dir $TargetDir 2>&1 | Out-Null
-} catch {
-  Write-Host "[neural-sgdb] build skipped/failed (exe may be locked); using existing binary" >&2
+# Native cargo stderr must not trip Stop (PowerShell 5.1 treats stderr as errors).
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+& cargo build --release --example mcp_server --target-dir $TargetDir
+$cargoExit = $LASTEXITCODE
+$ErrorActionPreference = $prevEap
+if ($cargoExit -ne 0) {
+  [Console]::Error.WriteLine("[neural-sgdb] build failed (exit $cargoExit); using existing binary if present")
 }
 $pick = if (Test-Path $Src) { $Src } elseif (Test-Path $Alt) { $Alt } else { $null }
 if (-not $pick) {

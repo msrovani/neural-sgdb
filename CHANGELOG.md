@@ -16,6 +16,12 @@ All notable changes to this project. Format based on
   Dispatch by args (`user+response`, `entities`, `at`, `rag`, `view=era|validate`,
   `curate.op`). The previous 23 names remain valid aliases on `tools/call`.
 
+### Fixed
+- **Windows Cursor launchers**: PowerShell 5.1 rejects `>&2` (parse error → MCP
+  never starts) and treats native `cargo` stderr as terminating under
+  `$ErrorActionPreference = Stop`. `scripts/mcp-server.ps1` / `mcp-install.ps1`
+  now use `[Console]::Error.WriteLine` and `Continue` around cargo.
+
 ## [1.1.7] — 2026-08-20 (agent ergonomics — core + MCP)
 
 ### Added (core)
