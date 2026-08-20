@@ -40,7 +40,7 @@ Se ambos definem `neural-sgdb`, o comportamento depende da versão do Cursor —
 | Var | Default | Uso |
 |-----|---------|-----|
 | `NEURAL_SGDB_DB` | `.nsgdb/memory.db` | Persistência |
-| `NEURAL_SGDB_EMBEDDER` | `demo` | Trigrama 256-dim (não semântico) |
+| `NEURAL_SGDB_EMBEDDER` | unset (`none`) | Só `demo` se você **pedir** o trigrama; senão L3 lexical |
 | `NEURAL_SGDB_DEFAULT_SCOPE` | `project/neural-sgdb` | Scope quando tool omite `scope` |
 
 ## Core (não só MCP)

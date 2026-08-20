@@ -46,7 +46,8 @@ with a regression test, hot test 49/49 exit 0):
 - **`Embedder` trait (`src/embedder.rs`)** + `DemoEmbedder` + `demo_embed`
   (moved from mcp_server): `no_std`-safe zero-dep seam for a real model. MCP
   accepts agent-supplied `embedding` in `remember`/`recall`/`rag_context`,
-  falling back to `NEURAL_SGDB_EMBEDDER` (default demo trigram). Contract:
+  falling back to `NEURAL_SGDB_EMBEDDER` if set. **v1.1.9:** unset = none
+  (lexical L3); `=demo` is explicit, not the launcher default. Contract:
   whoever supplies embeddings uses the SAME model on write and query (4-dim
   agent vector ≠ 256-dim demo — they don't cross-match, by design).
 - `sqrt_f32` is now `pub(crate)` (sgdb.rs) — Newton, reused by embedder

@@ -75,7 +75,7 @@ O repo inclui [`.cursor/mcp.json`](../.cursor/mcp.json) apontando para
         "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
         "${workspaceFolder}/scripts/mcp-server.ps1"
       ],
-      "env": { "NEURAL_SGDB_EMBEDDER": "demo" }
+      "env": { "NEURAL_SGDB_DEFAULT_SCOPE": "project/neural-sgdb" }
     }
   }
 }
@@ -109,7 +109,7 @@ Config global ou `.cursor/mcp.json`:
     "neural-sgdb": {
       "type": "stdio",
       "command": "/caminho/absoluto/neural-sgdb/scripts/mcp-server.sh",
-      "env": { "NEURAL_SGDB_EMBEDDER": "demo" }
+      "env": { "NEURAL_SGDB_DEFAULT_SCOPE": "project/neural-sgdb" }
     }
   }
 }

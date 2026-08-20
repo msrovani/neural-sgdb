@@ -30,6 +30,6 @@ else
 fi
 
 export NEURAL_SGDB_DB="${NEURAL_SGDB_DB:-$ROOT/.nsgdb/memory.db}"
-export NEURAL_SGDB_EMBEDDER="${NEURAL_SGDB_EMBEDDER:-demo}"
+# ADR-0008: do not default to demo — unset = lexical L3, no fake BQ era.
 export NEURAL_SGDB_DEFAULT_SCOPE="${NEURAL_SGDB_DEFAULT_SCOPE:-project/neural-sgdb}"
 exec "$EXE"

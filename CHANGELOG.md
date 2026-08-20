@@ -19,6 +19,10 @@ All notable changes to this project. Format based on
 - **`health(view=tensions)`** — conflicts, superseded keys, unseen scopes.
 - Core **`Sgdb::remember_text_with`**.
 
+### Fixed
+- Launchers and `.cursor/mcp.json` no longer set `NEURAL_SGDB_EMBEDDER=demo`
+  by default (that made host embedder “explicit” and kept L4 writes).
+
 ## [1.1.8] — 2026-08-20 (agent doctrine + 4 MCP tools)
 
 ### Added

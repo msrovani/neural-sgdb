@@ -11,7 +11,6 @@
         "${workspaceFolder}${/}scripts${/}mcp-server.ps1"
       ],
       "env": {
-        "NEURAL_SGDB_EMBEDDER": "demo",
         "NEURAL_SGDB_DEFAULT_SCOPE": "project/neural-sgdb"
       }
     }

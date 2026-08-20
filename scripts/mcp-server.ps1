@@ -43,6 +43,6 @@ if (-not $Exe) {
 }
 
 $env:NEURAL_SGDB_DB = if ($env:NEURAL_SGDB_DB) { $env:NEURAL_SGDB_DB } else { Join-Path $Root ".nsgdb\memory.db" }
-if (-not $env:NEURAL_SGDB_EMBEDDER) { $env:NEURAL_SGDB_EMBEDDER = "demo" }
+# ADR-0008: do not default to demo — unset = lexical L3, no fake BQ era.
 if (-not $env:NEURAL_SGDB_DEFAULT_SCOPE) { $env:NEURAL_SGDB_DEFAULT_SCOPE = "project/neural-sgdb" }
 & $Exe
