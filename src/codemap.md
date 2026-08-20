@@ -19,7 +19,7 @@ Layered architecture with injectable seams (replacing the origin kernel):
 | `ctype.rs` | **v1.1.6**: `ContentType` (Text/Json/Code/Embedding(dim)/Binary), `RecallPath`, `detect_content_type`, `stable_label`/`parse_stable_label`/`renders_prose` — tipagem do datum p/ consumidor máquina | HINT derivation (no_std-safe) |
 | `engine.rs` | `AiosDatabaseEngine` — RAM L0/L1 + Storage L2–L7, ART/BQ indexing, rebuild, side-tables, relations, `entity_index` | Persistence engine |
 | `sgdb.rs` | `Sgdb` — public facade: remember/recall/rag_context/checkpoint; `Hit` (tipado v1.1.6); `remember_semantic_with`/`RememberOutcome`/`recall_empty_hint`/`scope_distribution`/`set_default_scope` (v1.1.7); `HealthReport` com escopos | Facade (port of layers.rs) |
-| `embedder.rs` | **v1.1.2**: `Embedder` trait + `DemoEmbedder`; **v1.1.7**: `DEMO_EMBED_DIM`/`DEMO_EMBED_NOTE` | Seam (provider declares) |
+| `doctrine.rs` | **v1.1.8**: agent doctrine (`DOCTRINE`, key/scope/entities) — source `docs/doctrine.md` | Compile-time include |
 | `era.rs` | **v1.1.5**: `Sgdb::era_report()`/`era_report_lines()` — era do corpus, veredito, custo estimado de migração | Read-only diagnostic |
 | `lexical.rs` | Inverted BM25 index over L2/L3 texts; `search` → `(key, score, matched_terms)` (v1.1.6) | Inverted index |
 | `lifecycle.rs` | `MemoryLifecycle` — deterministic tick (commit/promote/semanticize/decay/archive) | Deterministic engine |

@@ -1,7 +1,7 @@
 # neural-sgdb — API Contract
 
 > Contract document for the extraction of the SGDB core from neural-os-core.
-> Status: **current public contract (crate v1.1.7)** —
+> Status: **current public contract (crate v1.1.8)** —
 > this document is the current public contract; roadmap items are explicitly
 > marked as such. The internal API lives in `crates/k_ai/src/sgdb/` of the
 > parent OS; this doc defines the public surface the community crate exposes
@@ -319,10 +319,10 @@ código, binários). Duas regras tornam o consumo determinístico:
    `Sgdb::primary_of(key)` resolve `md/L2/<id>` → primário existente para
    follow-ups.
 
-## Additive public surface (v1.1.2–v1.1.7)
+## Additive public surface (v1.1.2–v1.1.8)
 
 Everything below is **additive** (MINOR per VERSIONING.md) — no signature of a
-v1.0 method changed; crate version **1.1.7** in `Cargo.toml`. Key additions since the contract above:
+v1.0 method changed; crate version **1.1.8** in `Cargo.toml`. Key additions since the contract above:
 
 ```rust
 // ---- S1: recall is LOUD on dimension mismatch (v1.1.3) ----
@@ -517,6 +517,10 @@ signer (Ed25519/HMAC) at this boundary; the core stays crypto-free
 conflicts, **scope distribution**, **indexed_embedding_dims**);
 `Sgdb::scope_distribution()` and `Sgdb::recall_empty_hint()` help multi-agent
 callers when scoped memories do not appear in global recall (mem0 null-scoping);
+`Sgdb::ensure_doctrine(emb)` seeds the agent protocol text (`docs/doctrine.md`)
+at `md/L4/nsgdb/doctrine` (scoped; idempotent). MCP injects the same text as
+`initialize.instructions` and as resource `nsgdb://doctrine`.
+
 `Sgdb::remember_semantic_with(RememberOptions)` returns `RememberOutcome` (key,
 scope, entities, recall hint); `Sgdb::set_default_scope` sets a tenant default
 for hosts that omit `scope`. `Sgdb::validate()` runs integrity checks (storage

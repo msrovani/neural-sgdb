@@ -367,6 +367,7 @@ db.remember_semantic_with("k2", "text", &emb, RememberOptions {
     scope: Some("user/ana"), entities: &["pref/theme"], content_type: Some("text"),
 })?;
 db.set_default_scope(Some("project/foo".into()));
+let _ = db.ensure_doctrine(&emb)?;                 // seed doutrina (hosts/MCP)
 let _ = db.recall_empty_hint("", "semantic");          // hint se recall global vazio
 db.remember_fact("fact", now)?;                        // L3 timestamped
 db.checkpoint()?; db.prune_working_ram()?;             // flush L0/L1 RAM
@@ -395,10 +396,8 @@ cargo run --release --example signed_peer --features p2p      # signed-transport
 
 The project agent is a test subject: `.opencode/opencode.json` registers the
 MCP server as a local server (`NEURAL_SGDB_DB=.nsgdb/memory.db`, gitignored),
-giving the agent `mcp__neural-sgdb__*` tools (23: remember/remember_episodic/
-recall/rag_context/recall_temporal/recall_entities/feedback/diary/profile/
-expire_old/explain/reinforce/forget/associate/related_to/contradicts/
-supersede/conflicts/resolve_conflict/merge_memories/health/validate/era_report). Audit
+giving the agent `mcp__neural-sgdb__*` tools (4 listed: remember/recall/health/curate;
+legacy names still work on tools/call). Audit
 log in
 `docs/hot_test.md`. Lessons learned (2026-08-13): `remember` returns the FULL
 storage key (`md/L4/...`), always use it for follow-up (`explain`/`reinforce`

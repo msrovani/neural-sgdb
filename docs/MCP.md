@@ -3,24 +3,25 @@
 Guia de instalação, contrato e troubleshooting do servidor MCP
 (`examples/mcp_server.rs`).
 
-## Contrato atual (v1.1.7)
+## Contrato atual (v1.1.8)
 
 | Campo | Valor |
 |-------|-------|
 | Protocolo | JSON-RPC 2.0 over **stdio** (uma linha JSON por mensagem) |
 | Handshake | `initialize` → `protocolVersion: 2025-11-25` |
-| `serverInfo.version` | `1.1.7` |
-| Tools | **23** (inclui `era_report`, `health`, `validate`) |
+| `serverInfo.version` | `1.1.8` |
+| Tools | **4** (`remember`, `recall`, `health`, `curate`) — 23 nomes antigos ainda funcionam em `tools/call` |
 | Embedder default | `NEURAL_SGDB_EMBEDDER=demo` (trigrama — **não** é modelo semântico real) |
 | DB default | `NEURAL_SGDB_DB=.nsgdb/memory.db` (relativo ao cwd do processo) |
 
-### Tools (23)
+### Tools (4 + aliases)
 
-`remember`, `remember_episodic`, `recall`, `rag_context`, `recall_temporal`,
-`recall_entities`, `feedback`, `diary`, `profile`, `expire_old`, `explain`,
-`reinforce`, `forget`, `associate`, `related_to`, `contradicts`, `supersede`,
-`conflicts`, `resolve_conflict`, `merge_memories`, `health`, `validate`,
-`era_report`.
+Lista: `remember`, `recall`, `health`, `curate`.
+
+Dispatch: `remember(user+response)` → episódico; `recall(entities|at|rag=true)` →
+1-hop / temporal / rag; `health(view=era|validate)`; `curate(op=explain|reinforce|…)`.
+
+Aliases (ainda aceitos no call): os 23 nomes antigos.
 
 ### Parâmetros importantes
 
@@ -30,7 +31,9 @@ Guia de instalação, contrato e troubleshooting do servidor MCP
   `scope`, `mode` (`semantic`|`lexical`|`hybrid`), `format=json` para hits
   estruturados (consumo máquina).
 - **`health`**: onboarding JSON (`db_path`, `embedder`, dims indexadas,
-  `mcp_tool_count`, link para embedder HTTP).
+  `mcp_tool_count`, **doctrine_scope/key**, link para embedder HTTP).
+  Handshake injeta `instructions` = [`docs/doctrine.md`](doctrine.md).
+  Resource `nsgdb://doctrine`. Seed no open do MCP (`ensure_doctrine`).
 
 ## Build (obrigatório antes do IDE)
 

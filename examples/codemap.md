@@ -29,20 +29,13 @@ protocols that codify HOW to use the DB.
 - `cargo run --release --example mcp_server` — connectable to Claude Code/Cursor/OpenCode
 - MCP (Model Context Protocol) over stdio: JSON-RPC 2.0, one message per `\n`
   line, stdout JSON-RPC ONLY (logs → stderr), legacy `2025-11-25` handshake
-- Tools (23): `remember(text[, embedding][, scope][, entities][, type])`,
-  `remember_episodic`/`feedback`/`diary`/`profile`/`expire_old`,
-  `recall(query[, embedding][, k][, scope][, mode][, format])`,
-  `recall_temporal`/`recall_entities`, `rag_context([, rerank][, mode][,
-  format])`, `explain`/`reinforce`/`forget`/`associate`/`related_to`/
-  `contradicts`/`supersede`/`conflicts`/`resolve_conflict`/`merge_memories`/
-  `health`/`validate`/`era_report`
+- Tools (4): `remember`, `recall`, `health`, `curate` (aliases: 23 nomes antigos no call)
 - **Hits TIPADOS (v1.1.6)**: `format=json` devolve hits ESTRUTURADOS
   (`[{key,text,dist,score,path,type,dim,matched_terms,validity,rel,
   provenance}]`); `remember(type=)` declara o rótulo (seam MDM1 v6);
   `fmt_hit` unificado preserva invariantes de paginação (`- {key} | `, ` [state=`)
-- **v1.1.7**: `remember_semantic_with` no core; MCP `structuredContent`;
-  hints de scope em recall vazio; `NEURAL_SGDB_DEFAULT_SCOPE`; install
-  `.nsgdb/bin` (`scripts/mcp-install.ps1`)
+- **v1.1.7+ doutrina**: `initialize.instructions` + seed `nsgdb/doctrine`
+  (`ensure_doctrine`); resource `nsgdb://doctrine`.
 - **Embedder plugável** (`neural_sgdb::Embedder`): default `DemoEmbedder`
   (trigram hash → 256-dim normalized, NOT a real semantic model). Agente pode
   fornecer `embedding` no payload (mesmo modelo na gravação E na busca);

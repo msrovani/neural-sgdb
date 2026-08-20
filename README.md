@@ -36,9 +36,8 @@ filesystem, no external runtime.
 
 ## Status
 
-**v1.1.7** ✅ — agent ergonomics (scope-aware write/recall/health) sobre hits
-tipados v1.1.6. Dual-mode (`no_std` + `std`, zero dependencies). Versão da
-crate em `Cargo.toml`: **1.1.7**; histórico em `CHANGELOG.md` e `docs/api.md`.
+**v1.1.8** ✅ — doutrina do agente (handshake + seed) e MCP com **4 tools**
+(`remember`/`recall`/`health`/`curate`). Crate em `Cargo.toml`: **1.1.8**.
 
 - `cargo test` on host: **233 tests + doc-test** (plus p2p / no_std matrix)
 - `cargo check --no-default-features --target x86_64-unknown-none`: **clean**
@@ -85,7 +84,7 @@ crate em `Cargo.toml`: **1.1.7**; histórico em `CHANGELOG.md` e `docs/api.md`.
   candidate, `resolve_conflict` via evidence, `dismiss_conflict`),
   **cognitive API** (`reinforce`/`forget`/`explain`/`transfer_to`/
   `merge_memories`/`conflicts`/`resolve_conflict`/`feedback`/`diary`/
-  `profile`/`expire_old`) and **MCP 23 tools** (provenance per hit in recall,
+  `profile`/`expire_old`) and **MCP 4 tools** (`remember`/`recall`/`health`/`curate`;
   `health`/`validate` observability, `era_report`, `remember_episodic`,
   retrieval modes semantic/lexical/hybrid, `recall_temporal`,
   `recall_entities`, ServerInfo v1.1.6) + **write-side era guard** (S1 no
@@ -180,13 +179,12 @@ No Windows, use `scripts\mcp-server.ps1` no lugar do `.sh`. Detalhes MCP:
 Guia completo: **[`docs/MCP.md`](docs/MCP.md)** (Cursor/Windows, smoke test,
 embedder HTTP, troubleshooting).
 
-`cargo run --release --example mcp_server` exposes 23 tools: `remember` /
-`recall` / `rag_context` as MCP tools (JSON-RPC 2.0 over stdio, `2025-11-25`
-handshake), memories as **resources** (`memory://{layer}/{key}`), recall with
-opaque `nextCursor` pagination, retrieval **modes** (`semantic`/`lexical`/
-`hybrid`), **typed hits** (`format=json` — estruturados p/ consumo máquina;
-`remember(type=)` — seam de write), `era_report` + `health` onboarding, and
-tool annotations (`readOnlyHint`/`destructiveHint`/`idempotentHint`).
+`cargo run --release --example mcp_server` exposes **4 tools**: `remember` /
+`recall` / `health` / `curate` (JSON-RPC 2.0 over stdio, `2025-11-25`
+handshake). Legacy names (`era_report`, `recall_entities`, …) still work on
+`tools/call`. Memories as **resources** (`memory://{layer}/{key}` +
+`nsgdb://doctrine`), recall with opaque `nextCursor`, modes
+`semantic`/`lexical`/`hybrid`, **typed hits** (`format=json`).
 
 ### Cursor (Windows)
 

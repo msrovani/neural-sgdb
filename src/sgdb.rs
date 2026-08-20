@@ -1212,6 +1212,35 @@ impl Sgdb {
         })
     }
 
+    /// Seeds or refreshes the agent doctrine (`docs/doctrine.md`) in
+    /// `scope=nsgdb/doctrine`. Idempotent: same companion text → no write.
+    /// Overwrite on text change preserves `memory_id`. Not called from `open`
+    /// (would pollute every InMemory test). Hosts (MCP) call after open.
+    pub fn ensure_doctrine(&mut self, emb: &[f32]) -> Result<bool, SgdbError> {
+        let text = crate::doctrine::DOCTRINE;
+        if let Ok(Some(doc)) = self.get(MemoryLayer::L2EpisodicShort, crate::doctrine::DOCTRINE_KEY)
+        {
+            if doc.payload.as_slice() == text.as_bytes() {
+                let sk = format!("md/L4/{}", crate::doctrine::DOCTRINE_KEY);
+                let _ = self.set_scope(&sk, crate::doctrine::DOCTRINE_SCOPE);
+                let _ = self.set_entities(&sk, crate::doctrine::DOCTRINE_ENTITIES);
+                let _ = self.set_content_type(&sk, "text");
+                return Ok(false);
+            }
+        }
+        self.remember_semantic_with(
+            crate::doctrine::DOCTRINE_KEY,
+            text,
+            emb,
+            RememberOptions {
+                scope: Some(crate::doctrine::DOCTRINE_SCOPE),
+                entities: crate::doctrine::DOCTRINE_ENTITIES,
+                content_type: Some("text"),
+            },
+        )?;
+        Ok(true)
+    }
+
     /// Distância 1−cos em escala u32 (0 = idêntico). Sem floats no payload → None.
     fn fp32_dist_u32(query: &[f32], payload: &[u8]) -> Option<u32> {
         let n = payload.len() / 4;
@@ -4928,6 +4957,37 @@ mod tests {
             )
             .unwrap();
         assert_eq!(out.scope, "tenant/default");
+    }
+
+    #[test]
+    fn ensure_doctrine_idempotent_and_scoped() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let emb = [1.0f32, -1.0, 1.0, -1.0];
+        assert!(db.ensure_doctrine(&emb).unwrap());
+        assert!(!db.ensure_doctrine(&emb).unwrap());
+        let global = db.recall(&emb, 5).unwrap();
+        assert!(
+            global.iter().all(|h| h.key != "md/L4/nsgdb/doctrine"),
+            "doctrine must not leak into global recall"
+        );
+        let hits = db
+            .recall_entities_scoped(&["doc/protocol"], 3, crate::doctrine::DOCTRINE_SCOPE)
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].key, "md/L4/nsgdb/doctrine");
+        let lex = db
+            .recall_lexical_scoped("null-scoping", 3, crate::doctrine::DOCTRINE_SCOPE)
+            .unwrap();
+        assert!(
+            lex.iter().any(|h| h.text.to_ascii_lowercase().contains("null-scoping")),
+            "lexical should surface doctrine companion text: {:?}",
+            lex.iter().map(|h| h.text.clone()).collect::<Vec<_>>()
+        );
+        let hint = db.recall_empty_hint("", "semantic").expect("hint");
+        assert!(
+            hint.contains("nsgdb/doctrine") || hint.contains("escop"),
+            "{hint}"
+        );
     }
 
     #[test]

@@ -314,3 +314,18 @@ As 15 ideias da rodada Cursor/Windows: **core primeiro**, MCP como consumidor.
 
 Memória MCP: `md/L4/mcp/1787197395227000` (`scope=project/neural-sgdb`).
 
+---
+
+## Follow-up v1.1.8 — Doutrina + 4 tools
+
+A LLM de cima não lê `AGENTS.md`. Empurrão:
+
+| Canal | Onde |
+|-------|------|
+| Handshake | `initialize.instructions` = [`docs/doctrine.md`](doctrine.md) |
+| Banco | `Sgdb::ensure_doctrine` → `md/L4/nsgdb/doctrine` (`scope=nsgdb/doctrine`) |
+| Resource | `nsgdb://doctrine` |
+| Superfície | **4 tools** listadas; 23 nomes antigos = aliases em `tools/call` |
+
+Memória desta sessão: `md/L4/mcp/1787199497425001`.
+

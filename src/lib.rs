@@ -71,9 +71,10 @@ pub mod art;
 pub mod arbitration;
 pub mod bq;
 pub mod conflict;
+pub mod ctype;
+pub mod doctrine;
 pub mod embedder;
 pub mod era;
-pub mod ctype;
 pub mod hamming_dispatch;
 pub mod lexical;
 pub mod limits;
@@ -98,6 +99,7 @@ pub use bq::{
     hamming, hamming_path, quantize_f32, quantize_f32_centered, BqFlatIndex, MihIndex,
 };
 pub use conflict::{generate_conflict_id, ConflictRecord, ConflictStatus};
+pub use doctrine::{DOCTRINE, DOCTRINE_ENTITIES, DOCTRINE_KEY, DOCTRINE_SCOPE};
 pub use embedder::{demo_embed, DemoEmbedder, Embedder, DEMO_EMBED_DIM, DEMO_EMBED_NOTE};
 pub use era::{estimate_era_migration, EraEstimate, EraReport};
 pub use ctype::{detect_content_type, ContentType, RecallPath};

@@ -174,28 +174,45 @@ fn main() {
     rep.check("initialize responde", !r.get("error").is_some(), r.to_string());
     rep.check("protocolVersion 2025-11-25",
         r["result"]["protocolVersion"] == "2025-11-25", r.to_string());
-    rep.check("serverInfo version 1.1.7",
-        r["result"]["serverInfo"]["version"] == "1.1.7", r.to_string());
-    rep.check("serverInfo mcp_tool_count 23",
-        r["result"]["serverInfo"]["mcp_tool_count"] == 23, r.to_string());
+    rep.check("serverInfo version 1.1.8",
+        r["result"]["serverInfo"]["version"] == "1.1.8", r.to_string());
+    rep.check("serverInfo mcp_tool_count 4",
+        r["result"]["serverInfo"]["mcp_tool_count"] == 4, r.to_string());
+    let instr = r["result"]["instructions"].as_str().unwrap_or("");
+    rep.check("initialize.instructions injects doctrine",
+        instr.contains("null-scoping") && instr.contains("nsgdb/doctrine"), instr.to_string());
     rep.phase("handshake", &t);
 
-    // ---------- fase 2: tools/list (23 tools) ----------
+    // ---------- fase 2: tools/list (4 tools; aliases no call) ----------
     let t = Instant::now();
     let r = srv.rpc("tools/list", json!({}));
     let tools = r["result"]["tools"].as_array().cloned().unwrap_or_default();
     let names: Vec<&str> = tools.iter().filter_map(|x| x["name"].as_str()).collect();
-    rep.check("tools/list retorna 23 tools", names.len() == 23,
+    rep.check("tools/list retorna 4 tools", names.len() == 4,
         format!("{} tools: {names:?}", names.len()));
-    for want in ["remember", "remember_episodic", "recall", "rag_context", "recall_temporal",
-                 "recall_entities",
-                 "feedback", "diary", "profile", "expire_old",
-                 "explain", "reinforce", "forget",
-                 "associate", "related_to", "contradicts", "supersede", "conflicts",
-                 "resolve_conflict", "merge_memories", "health", "validate", "era_report"] {
+    for want in ["remember", "recall", "health", "curate"] {
         rep.check(&format!("tool '{want}' presente"), names.contains(&want), "".into());
     }
     rep.phase("tools/list", &t);
+
+    // ---------- doutrina persistida (MCP seed) ----------
+    let t = Instant::now();
+    let (txt, is_err) = srv.tool("recall", json!({
+        "query": "null-scoping ADD-only typed hits",
+        "mode": "lexical",
+        "scope": "nsgdb/doctrine",
+        "k": 3
+    }));
+    rep.check("recall doutrina (scope nsgdb/doctrine, lexical)",
+        !is_err && txt.contains("MEMORY substrate"), txt.clone());
+    let (txt, is_err) = srv.tool("recall_entities", json!({
+        "entities": ["doc/protocol"],
+        "scope": "nsgdb/doctrine",
+        "k": 3
+    }));
+    rep.check("recall_entities doc/protocol na doutrina",
+        !is_err && txt.contains("md/L4/nsgdb/doctrine"), txt.clone());
+    rep.phase("doctrine seed", &t);
 
     // ---------- fase 3: memória (remember) ----------
     let t = Instant::now();
@@ -461,7 +478,7 @@ fn main() {
     let hr = srv.rpc("tools/call", json!({"name": "health", "arguments": {}}));
     rep.check(
         "health structuredContent onboarding + mcp_tool_count",
-        hr["result"]["structuredContent"]["mcp_tool_count"] == 23
+        hr["result"]["structuredContent"]["mcp_tool_count"] == 4
             && hr["result"]["structuredContent"]["onboarding"].is_array(),
         hr.to_string(),
     );
@@ -495,6 +512,9 @@ fn main() {
         !is_err && txt.contains("verdict: ok"), txt.clone());
     rep.check("era_report: estimativa de custo exposta (formula + db-side)",
         txt.contains("estimated db-side") && txt.contains("formula"), txt.clone());
+    let (txt, is_err) = srv.tool("health", json!({"view": "era"}));
+    rep.check("health view=era alias da era",
+        !is_err && txt.contains("verdict: ok"), txt.clone());
     rep.phase("health/validate", &t);
 
     // ---------- fase 8: resources + paginação ----------

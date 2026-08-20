@@ -18,7 +18,9 @@
 
 use std::io::{self, BufRead, Write};
 
-use neural_sgdb::{ContentType, DemoEmbedder, Embedder, RecallPath, Sgdb};
+use neural_sgdb::{
+    ContentType, DemoEmbedder, Embedder, RecallPath, Sgdb, DOCTRINE, DOCTRINE_SCOPE,
+};
 #[cfg(feature = "file-storage")]
 use neural_sgdb::FileStorage;
 #[cfg(not(feature = "file-storage"))]
@@ -235,10 +237,98 @@ fn error_response(id: &Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
 }
 
-/// Número de tools expostas — mantido em sync com `tools/list` + CI smoke.
-const EXPECTED_MCP_TOOL_COUNT: usize = 23;
-const MCP_CONTRACT_VERSION: &str = "1.1.7";
+/// Número de tools em `tools/list` (aliases antigos ainda funcionam em tools/call).
+const EXPECTED_MCP_TOOL_COUNT: usize = 4;
+const MCP_CONTRACT_VERSION: &str = "1.1.8";
 const BUILD_GIT: &str = env!("NEURAL_SGDB_BUILD_GIT");
+
+/// Lista pública: 4 tools. Os 23 nomes antigos continuam válidos em `tools/call`.
+fn expand_tool(name: &str, args: &Value) -> String {
+    match name {
+        "remember"
+            if args["user"].as_str().is_some_and(|s| !s.is_empty())
+                && args["response"].as_str().is_some_and(|s| !s.is_empty()) =>
+        {
+            "remember_episodic".into()
+        }
+        "recall" if args["entities"].as_array().is_some_and(|a| !a.is_empty()) => {
+            "recall_entities".into()
+        }
+        "recall" if args["at"].as_u64().unwrap_or(0) > 0 => "recall_temporal".into(),
+        "recall" if args["rag"].as_bool().unwrap_or(false) => "rag_context".into(),
+        "health" => match args["view"].as_str().unwrap_or("status") {
+            "validate" => "validate".into(),
+            "era" | "era_report" => "era_report".into(),
+            _ => "health".into(),
+        },
+        "curate" => args["op"].as_str().unwrap_or("curate").to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn mcp_listed_tools() -> Value {
+    json!([
+        {"name":"remember",
+         "description":"Write. text= fato semantico L4; user+response= episodico verbatim L2. INVARIANTE: scope nao vaza no recall global; devolve md/L4/... + recall_hint. Duas passadas: recall ANTES. Mesmo embedding/dim. entities= strings identicas na busca. type= text|json|code|embedding|binary. Demo NAO e semantico.",
+         "inputSchema":{"type":"object","properties":{
+           "text":{"type":"string"},
+           "user":{"type":"string","description":"Com `response`: episodio L2 verbatim"},
+           "response":{"type":"string"},
+           "now":{"type":"integer"},
+           "embedding":{"type":"array","items":{"type":"number"}},
+           "scope":{"type":"string"},
+           "entities":{"type":"array","items":{"type":"string"}},
+           "type":{"type":"string","enum":["text","json","code","embedding","binary"]}
+         }},
+         "annotations":{"destructiveHint":true,"idempotentHint":true}},
+        {"name":"recall",
+         "description":"Read. Default: busca semantica/lexical/hybrid. entities[]= 1-hop; at= temporal; rag=true monta contexto. INVARIANTE: sem scope= so globais; vazio != inexistente. Doutrina: scope=nsgdb/doctrine entities=doc/protocol. format=json hits tipados.",
+         "inputSchema":{"type":"object","properties":{
+           "query":{"type":"string"},
+           "mode":{"type":"string","enum":["semantic","lexical","hybrid"],"default":"semantic"},
+           "format":{"type":"string","enum":["json"]},
+           "embedding":{"type":"array","items":{"type":"number"}},
+           "k":{"type":"integer","minimum":1,"maximum":20,"default":5},
+           "scope":{"type":"string"},
+           "cursor":{"type":"string"},
+           "pageSize":{"type":"integer","minimum":1,"maximum":20,"default":5},
+           "entities":{"type":"array","items":{"type":"string"},"description":"Se nao-vazio: recall_entities (query opcional)"},
+           "at":{"type":"integer","description":"Se setado: recall_temporal"},
+           "w_sem":{"type":"number","default":1.0},
+           "w_time":{"type":"number","default":10.0},
+           "rag":{"type":"boolean","default":false},
+           "rerank":{"type":"boolean","default":false},
+           "historical":{"type":"boolean","default":false}
+         }},
+         "annotations":{"readOnlyHint":true}},
+        {"name":"health",
+         "description":"Observabilidade. view=status (default): onboarding+doutrina+dims. view=validate: integridade. view=era: era_report ADR-0007 (dim mismatch). Chame cedo.",
+         "inputSchema":{"type":"object","properties":{
+           "view":{"type":"string","enum":["status","validate","era"],"default":"status"}
+         }},
+         "annotations":{"readOnlyHint":true}},
+        {"name":"curate",
+         "description":"Mutacao pontual / grafo L6. op= explain|reinforce|feedback|forget|expire_old|diary|profile|associate|related_to|contradicts|supersede|conflicts|resolve_conflict|merge_memories. Use a storage key completa md/L4/.... Nao hoarde: so depois de evidência.",
+         "inputSchema":{"type":"object","properties":{
+           "op":{"type":"string","enum":["explain","reinforce","feedback","forget","expire_old","diary","profile","associate","related_to","contradicts","supersede","conflicts","resolve_conflict","merge_memories"]},
+           "key":{"type":"string"},
+           "delta":{"type":"number"},
+           "positive":{"type":"boolean"},
+           "amount":{"type":"number"},
+           "now":{"type":"integer"},
+           "node_id":{"type":"integer"},
+           "limit":{"type":"integer"},
+           "a":{"type":"string"},
+           "b":{"type":"string"},
+           "kind":{"type":"string"},
+           "old":{"type":"string"},
+           "new":{"type":"string"},
+           "conflict_id":{"type":"string"},
+           "winner_version_id":{"type":"string"},
+           "target":{"type":"string"}
+         },"required":["op"]}}
+    ])
+}
 
 fn binary_runtime_info() -> (String, Option<u64>) {
     std::env::current_exe()
@@ -315,14 +405,18 @@ fn health_payload(db: &mut Sgdb, db_path: &str, embedder: &str) -> Value {
         "binary_path": binary_path,
         "binary_mtime_unix": binary_mtime,
         "contract": "same embedding model/dimension on write and query; demo trigram is NOT semantic",
+        "http_embedder": "cargo run --release --example embedder_http — see docs/MCP.md",
+        "doctrine_scope": neural_sgdb::DOCTRINE_SCOPE,
+        "doctrine_key": format!("md/L4/{}", neural_sgdb::DOCTRINE_KEY),
+        "doctrine_entities": neural_sgdb::DOCTRINE_ENTITIES,
         "onboarding": [
+            "0. doctrine: initialize.instructions + recall(scope=nsgdb/doctrine, mode=lexical) or recall_entities(['doc/protocol'], scope=nsgdb/doctrine) or resource nsgdb://doctrine",
             "1. remember(text=...) then recall(query=...) with the SAME words (demo embedder)",
             "2. remember(scope=..., entities=[...]) for multi-agent / recall_entities 1-hop",
             "3. recall(format=json) or rag_context(format=json) for typed machine hits",
             "4. remember(type=json|code|embedding|binary) to declare payload type (MDM1 v6)",
-            "5. era_report after any dimension/era Invalid error (ADR-0007)"
-        ],
-        "http_embedder": "cargo run --release --example embedder_http — see docs/MCP.md"
+            "5. health(view=era) after any dimension/era Invalid error (ADR-0007)"
+        ]
     })
 }
 
@@ -377,6 +471,16 @@ fn main() {
             db.set_default_scope(Some(scope));
         }
     }
+    let embedder = load_embedder();
+    let embedder_name = embedder_label();
+    match embedder.embed(DOCTRINE) {
+        Ok(emb) => match db.ensure_doctrine(&emb) {
+            Ok(true) => eprintln!("[neural-sgdb] doctrine seeded (scope={DOCTRINE_SCOPE})"),
+            Ok(false) => eprintln!("[neural-sgdb] doctrine already present"),
+            Err(e) => eprintln!("[neural-sgdb] doctrine seed skipped: {e}"),
+        },
+        Err(e) => eprintln!("[neural-sgdb] doctrine embed failed: {e}"),
+    }
     let (bin_path, bin_mtime) = binary_runtime_info();
     eprintln!(
         "[neural-sgdb] mcp={MCP_CONTRACT_VERSION} tools={EXPECTED_MCP_TOOL_COUNT} git={BUILD_GIT} \
@@ -384,8 +488,6 @@ fn main() {
         db.backend(),
         db.default_scope()
     );
-    let embedder = load_embedder();
-    let embedder_name = embedder_label();
 
     let stdin = io::stdin();
     for line in stdin.lock().lines() {
@@ -415,7 +517,8 @@ fn main() {
                 // server/discover antes do initialize).
                 send(&json!({"jsonrpc":"2.0","id":id,"result":{
                     "protocolVersion":"2025-11-25",
-                    "capabilities":{"tools":{}},
+                    "capabilities":{"tools":{},"resources":{}},
+                    "instructions": DOCTRINE,
                     "serverInfo":{
                         "name":"neural-sgdb",
                         "version":MCP_CONTRACT_VERSION,
@@ -432,184 +535,7 @@ fn main() {
                 send(&json!({"jsonrpc":"2.0","id":id,"result":{}}));
             }
             "tools/list" => {
-                send(&json!({"jsonrpc":"2.0","id":id,"result":{"tools":[
-                    {"name":"remember",
-                     "description":"Armazena uma memoria de texto no banco neural-sgdb. Opcional: forneca `embedding` (array de f32, 1..=256 dims) para usar um modelo real; sem ele, o server usa o embedder configurado (demo trigram). `scope` (opcional) particiona por user/agent/projeto (mem0 multi-tenancy). `entities` (opcional, item 10) declara entidades nomeadas da memoria (lista de strings — use as MESMAS strings na busca `recall_entities`; o core nunca extrai entidade do texto). `type` (v1.1.6 item 2) declara o tipo de conteudo do datum (`text`/`json`/`code`/`embedding`/`binary`) — o consumidor para de depender do detector heuristico (mesmo contrato de entities: quem fornece declara).",
-                     "inputSchema":{"type":"object",
-                       "properties":{
-                         "text":{"type":"string","description":"Conteudo a lembrar"},
-                         "embedding":{"type":"array","items":{"type":"number"},"description":"Embedding fornecido pelo agente (opcional)"},
-                         "scope":{"type":"string","description":"Escopo de isolamento (ex: 'user/ana', 'project/neural-os'). Vazio = global."},
-                         "entities":{"type":"array","items":{"type":"string"},"description":"Entidades nomeadas da memoria (opcional). Mesmas strings na busca recall_entities."},
-                         "type":{"type":"string","enum":["text","json","code","embedding","binary"],"description":"Tipo de conteudo declarado (v1.1.6 item 2)"}},
-                       "required":["text"]},
-                     "annotations":{"destructiveHint":true,"idempotentHint":true}},
-                    {"name":"remember_episodic",
-                     "description":"Camada episodica VERBATIM (mempalace): guarda o par user/response cru em L2 timestamped, sem extracao nem resumo. Util quando a extracao perderia contexto. Devolve as storage keys (md/L2/<ts>/u e /a).",
-                     "inputSchema":{"type":"object",
-                       "properties":{
-                         "user":{"type":"string","description":"Texto do usuario (verbatim)"},
-                         "response":{"type":"string","description":"Texto do assistente (verbatim)"},
-                         "now":{"type":"integer","description":"Timestamp (ms). Omitir = relogio local."}},
-                       "required":["user","response"]},
-                     "annotations":{"idempotentHint":true}},
-                    {"name":"recall",
-                     "description":"Busca memorias armazenadas. `mode` seleciona o caminho de retrieval (cognee search_type): 'semantic' (BQ+FP32, precisa de embedding), 'lexical' (BM25 sobre textos L2/L3, nao precisa de embedding) ou 'hybrid' (semantico primeiro, depois lexicais nao-duplicados). `format=json` (v1.1.6) devolve hits ESTRUTURADOS para consumo maquina (key/text/dist/path/type/dim/matched_terms/validity/rel/provenance) em vez da projecao prosa. Opcional: forneca `embedding` (consistente com o usado no remember) para busca com modelo real. `scope` (opcional) limita a um user/agent/projeto (vazio = busca em TODOS os scopes globais; escopada nao vaza de outros scopes).",
-                     "inputSchema":{"type":"object",
-                       "properties":{
-                         "query":{"type":"string","description":"Texto de busca"},
-                         "mode":{"type":"string","enum":["semantic","lexical","hybrid"],"default":"semantic","description":"Caminho de retrieval (semantic default)"},
-                         "format":{"type":"string","enum":["json"],"description":"'json' = hits estruturados (maquina); omitir = prosa"},
-                         "embedding":{"type":"array","items":{"type":"number"},"description":"Embedding fornecido pelo agente (opcional)"},
-                         "k":{"type":"integer","minimum":1,"maximum":20,"default":5},
-                         "scope":{"type":"string","description":"Escopo de isolamento (ex: 'user/ana'). Omitir = global (só memórias sem scope)."},
-                         "cursor":{"type":"string","description":"Cursor de paginacao (opaco, de um resultado anterior)"},
-                         "pageSize":{"type":"integer","minimum":1,"maximum":20,"default":5}},
-                       "required":["query"]},
-                     "annotations":{"readOnlyHint":true}},
-                    {"name":"rag_context",
-                     "description":"Busca memorias e monta contexto formatado pronto para prompt RAG. `mode` (v1.1.6) seleciona o caminho de retrieval como no recall: 'semantic' (default, core rag_context), 'lexical' (BM25, sem embedding) ou 'hybrid' (semantico + lexical). `rerank=true` (v1.1.6 item 4) re-ordena o pool ampliado por ancoragem lexical (tokens do query no texto — o gargalo e escolher o que entra no prompt, P1/P5). `format=json` (v1.1.6) devolve os hits ESTRUTURADOS em vez da prosa compacta. Opcional: `embedding` fornecido pelo agente.",
-                     "inputSchema":{"type":"object",
-                       "properties":{
-                         "query":{"type":"string","description":"Texto de busca"},
-                         "embedding":{"type":"array","items":{"type":"number"},"description":"Embedding fornecido pelo agente (opcional)"},
-                         "mode":{"type":"string","enum":["semantic","lexical","hybrid"],"default":"semantic"},
-                         "rerank":{"type":"boolean","default":false,"description":"Rerank por ancoragem lexical no pool ampliado"},
-                         "format":{"type":"string","enum":["json"],"description":"'json' = hits estruturados; omitir = prosa"},
-                         "k":{"type":"integer","minimum":1,"maximum":10,"default":3}},
-                       "required":["query"]},
-                     "annotations":{"readOnlyHint":true}},
-                    {"name":"recall_temporal",
-                     "description":"Retrieval temporal com intencao (mem0/Graphiti bi-temporal): responde 'quando mudou X?' / 'qual era o estado em T?'. `at` = instante (ms) da pergunta; sobem as memorias VALIDAS naquele momento (janela cobre `at`), descem as que nao vigoravam, sem janela usa recorrencia relativa a `at`. `w_time` pondera o fator temporal (default 10), `w_sem` o semantico (default 1.0). `format=json` devolve hits estruturados.",
-                     "inputSchema":{"type":"object",
-                       "properties":{
-                         "query":{"type":"string","description":"Texto de busca"},
-                         "at":{"type":"integer","description":"Instante (ms unix) da intencao temporal"},
-                         "embedding":{"type":"array","items":{"type":"number"},"description":"Embedding fornecido pelo agente (opcional)"},
-                         "format":{"type":"string","enum":["json"],"description":"'json' = hits estruturados; omitir = prosa"},
-                         "k":{"type":"integer","minimum":1,"maximum":20,"default":5},
-                         "scope":{"type":"string","description":"Escopo de isolamento (opcional)"},
-                         "w_sem":{"type":"number","default":1.0,"description":"Peso do fator semantico"},
-                         "w_time":{"type":"number","default":10.0,"description":"Peso do fator temporal"}},
-                       "required":["query","at"]},
-                     "annotations":{"readOnlyHint":true}},
-                    {"name":"recall_entities",
-                     "description":"Recall por entidades (item 10, 1-hop): devolve memorias que declaram PELO MENOS UMA das entidades consultadas, ranqueadas por overlap (desc) e importância (desc). NAO extrai entidade de texto — as strings devem casar exatamente com as fornecidas no remember/set_entities. `scope` (opcional) limita a um user/agent/projeto. `format=json` devolve hits estruturados.",
-                     "inputSchema":{"type":"object",
-                       "properties":{
-                         "entities":{"type":"array","items":{"type":"string"},"description":"Entidades para casar (mesmas strings do remember)"},
-                         "format":{"type":"string","enum":["json"],"description":"'json' = hits estruturados; omitir = prosa"},
-                         "k":{"type":"integer","minimum":1,"maximum":20,"default":5},
-                         "scope":{"type":"string","description":"Escopo de isolamento (opcional). Omitir = global (só memórias sem scope)."},
-                         "historical":{"type":"boolean","default":false,"description":"true = inclui memórias inativas (superseded/archived)"}},
-                       "required":["entities"]},
-                     "annotations":{"readOnlyHint":true}},
-                    {"name":"explain",
-                     "description":"Explica ESTRUTURADAMENTE por que uma memoria esta no estado atual (proveniencia, importância, linhagem, validade).",
-                     "inputSchema":{"type":"object",
-                       "properties":{"key":{"type":"string","description":"Storage key (md/L4/k ou L4/k)"}},
-                       "required":["key"]},
-                     "annotations":{"readOnlyHint":true}},
-                    {"name":"reinforce",
-                     "description":"Reforca uma memoria: importância += delta (clampada a [0,1]) e registra last_reinforced.",
-                     "inputSchema":{"type":"object",
-                       "properties":{
-                         "key":{"type":"string"},
-                         "delta":{"type":"number","description":"Aumento de importância (ex: 0.1)"}},
-                       "required":["key","delta"]}},
-                    {"name":"feedback",
-                     "description":"Feedback de uso (cognee improve): re-pondera a memoria pelo resultado real — positive sobe importancia E confianca, negative desce ambas. amount (default 0.1) e a intensidade.",
-                     "inputSchema":{"type":"object",
-                       "properties":{
-                         "key":{"type":"string"},
-                         "positive":{"type":"boolean","description":"true = util (sobe), false = errado/inutil (desce)"},
-                         "amount":{"type":"number","default":0.1,"description":"Intensidade (default 0.1)"}},
-                       "required":["key","positive"]}},
-                    {"name":"forget",
-                     "description":"Esquece (ARCHIVA) uma memoria — historia preservada, recall default passa a ignora-la.",
-                     "inputSchema":{"type":"object",
-                       "properties":{"key":{"type":"string"}},
-                       "required":["key"]},
-                     "annotations":{"destructiveHint":true,"idempotentHint":true}},
-                    {"name":"associate",
-                     "description":"Afirma uma relacao L6: a --kind--> b (related_to|causes|supports|contradicts|derived_from|supersedes).",
-                     "inputSchema":{"type":"object",
-                       "properties":{
-                         "a":{"type":"string"},
-                         "kind":{"type":"string","enum":["related_to","causes","supports","contradicts","derived_from","supersedes"]},
-                         "b":{"type":"string"}},
-                       "required":["a","kind","b"]}},
-                    {"name":"related_to",
-                     "description":"Lista alvos de relacoes partindo de uma memoria.",
-                     "inputSchema":{"type":"object",
-                       "properties":{"key":{"type":"string"}},
-                       "required":["key"]},
-                     "annotations":{"readOnlyHint":true}},
-                    {"name":"contradicts",
-                     "description":"Lista memorias que contradizem a informada.",
-                     "inputSchema":{"type":"object",
-                       "properties":{"key":{"type":"string"}},
-                       "required":["key"]},
-                     "annotations":{"readOnlyHint":true}},
-                    {"name":"supersede",
-                     "description":"Marca old como superseded e liga new como sucessor (linhagem causal).",
-                     "inputSchema":{"type":"object",
-                       "properties":{"old":{"type":"string"},"new":{"type":"string"}},
-                       "required":["old","new"]}},
-                    {"name":"conflicts",
-                     "description":"Lista conflitos persistidos (Open/Resolved) com evidencias preservadas.",
-                     "inputSchema":{"type":"object","properties":{}},
-                     "annotations":{"readOnlyHint":true}},
-                    {"name":"resolve_conflict",
-                     "description":"Resolve um conflito escolhendo o vencedor por version_id — o perdedor permanece na historia.",
-                     "inputSchema":{"type":"object",
-                       "properties":{
-                         "conflict_id":{"type":"string"},
-                         "winner_version_id":{"type":"string"}},
-                       "required":["conflict_id","winner_version_id"]}},
-                    {"name":"merge_memories",
-                     "description":"Funde duas memorias em C: parent_ids=[A,B], payload concatenado, fontes intactas.",
-                     "inputSchema":{"type":"object",
-                       "properties":{
-                         "a":{"type":"string"},
-                         "b":{"type":"string"},
-                         "target":{"type":"string","description":"Chave nova (vazia = gerada)"}},
-                       "required":["a","b"]}},
-                    {"name":"health",
-                     "description":"Onboarding + estado observavel: backend, db_path, embedder ativo, dims indexadas (era), mcp_tool_count, contrato same-model-on-write-and-query, passos iniciais e link para embedder HTTP. Chame primeiro apos instalar o MCP.",
-                     "inputSchema":{"type":"object","properties":{}},
-                     "annotations":{"readOnlyHint":true}},
-                    {"name":"diary",
-                     "description":"Diario por agente (mempalace): memorias L2 episodicas cujo source == node_id, mais recentes primeiro (keys ts sortable revertidas). Devolve (storage_key, payload).",
-                     "inputSchema":{"type":"object",
-                       "properties":{
-                         "node_id":{"type":"integer","description":"ID do agente (source). Omitir = agente local (health.node_id)."},
-                         "limit":{"type":"integer","minimum":1,"maximum":100,"default":10}},
-                       "required":[]},
-                     "annotations":{"readOnlyHint":true}},
-                    {"name":"profile",
-                     "description":"Perfil agregado por agente (supermemory): fatos estaveis do node_id (L3/L4/L5) ordenados por importância desc, prontos para injetar no prompt. Devolve (storage_key, importance, confidence, payload).",
-                     "inputSchema":{"type":"object",
-                       "properties":{
-                         "node_id":{"type":"integer","description":"ID do agente (source). Omitir = agente local."},
-                         "limit":{"type":"integer","minimum":1,"maximum":50,"default":10}},
-                       "required":[]},
-                     "annotations":{"readOnlyHint":true}},
-                    {"name":"expire_old",
-                     "description":"Esquecimento temporal automatico (supermemory): marca como Invalidated as memorias cuja janela de validade ja fechou em `now` (until <= now). Idempotente. Passo periodico — memoria envelhece sem apagar (historia via recall_historical).",
-                     "inputSchema":{"type":"object",
-                       "properties":{
-                         "now":{"type":"integer","description":"Timestamp (ms). Omitir = relogio local."}},
-                       "required":[]}},
-                    {"name":"validate",
-                     "description":"Integridade: varre storage md/, decodifica NMD1, cruza ART/BQ e detecta side-tables orfas. Vazio = saudavel; cada issue = key + descricao.",
-                     "inputSchema":{"type":"object","properties":{}},
-                     "annotations":{"readOnlyHint":true}},
-                    {"name":"era_report",
-                     "description":"Relatorio da ERA do corpus (ADR-0007): dims indexadas, contagem por dim, largura do BQ, cobertura de texto preservado para re-embed, veredito (empty/ok/mixed_dims), plano de migracao e CUSTO ESTIMADO (formula aplicada ao total de registros; o custo do MODELO e externo — multiplique docs/text pelos numeros do seu modelo). Chamar apos um erro de dimensionalidade (S1/guard de escrita) para decidir migrar/esperar/base nova.",
-                     "inputSchema":{"type":"object","properties":{}},
-                     "annotations":{"readOnlyHint":true}}
-                ]}}));
+                send(&json!({"jsonrpc":"2.0","id":id,"result":{"tools": mcp_listed_tools()}}));
             }
             "resources/list" => {
                 // #8: expõe as memórias como resources `memory://{layer}/{key}`
@@ -617,6 +543,12 @@ fn main() {
                 let cursor = msg["params"]["cursor"].as_str();
                 let size = msg["params"]["pageSize"].as_u64().unwrap_or(20).max(1) as usize;
                 let mut all: Vec<Value> = Vec::new();
+                all.push(json!({
+                    "uri": "nsgdb://doctrine",
+                    "name": "agent-doctrine",
+                    "mimeType": "text/plain",
+                    "description": "How to use neural-sgdb (same as initialize.instructions)"
+                }));
                 for layer in ["L1", "L2", "L3", "L4", "L5", "L7"] {
                     if let Ok(items) = db.scan_prefix(&format!("md/{layer}/")) {
                         for (k, _) in items {
@@ -635,6 +567,11 @@ fn main() {
             }
             "resources/read" => {
                 let uri = msg["params"]["uri"].as_str().unwrap_or("");
+                if uri == "nsgdb://doctrine" {
+                    send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                        "contents":[{"uri":uri,"mimeType":"text/plain","text":DOCTRINE}]}}));
+                    continue;
+                }
                 match parse_resource_uri(uri) {
                     Some((layer, key)) => match db.get(layer, &key) {
                         Ok(Some(doc)) => {
@@ -649,9 +586,9 @@ fn main() {
                 }
             }
             "tools/call" => {
-                let name = msg["params"]["name"].as_str().unwrap_or("");
                 let args = &msg["params"]["arguments"];
-                match name {
+                let name = expand_tool(msg["params"]["name"].as_str().unwrap_or(""), args);
+                match name.as_str() {
                     "remember" => {
                         let text = args["text"].as_str().unwrap_or("");
                         if text.is_empty() {
@@ -1305,7 +1242,24 @@ mod tests {
 
     #[test]
     fn mcp_contract_tool_count() {
-        assert_eq!(EXPECTED_MCP_TOOL_COUNT, 23);
+        assert_eq!(EXPECTED_MCP_TOOL_COUNT, 4);
+        assert_eq!(mcp_listed_tools().as_array().map(|a| a.len()), Some(4));
+        assert_eq!(expand_tool("era_report", &serde_json::json!({})), "era_report");
+        assert_eq!(
+            expand_tool("health", &serde_json::json!({"view":"era"})),
+            "era_report"
+        );
+        assert_eq!(
+            expand_tool("curate", &serde_json::json!({"op":"reinforce"})),
+            "reinforce"
+        );
+        assert_eq!(
+            expand_tool(
+                "recall",
+                &serde_json::json!({"entities":["doc/protocol"]})
+            ),
+            "recall_entities"
+        );
     }
 
     #[test]

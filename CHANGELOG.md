@@ -4,6 +4,18 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [1.1.8] — 2026-08-20 (agent doctrine + 4 MCP tools)
+
+### Added
+- **`docs/doctrine.md` / `src/doctrine.rs`**: compact protocol for the LLM above
+  (memories not RAG, null-scoping, ADD-only, two-pass, typed hits, era).
+- **`Sgdb::ensure_doctrine(emb)`**: idempotent seed at `md/L4/nsgdb/doctrine`,
+  `scope=nsgdb/doctrine`, entities `doc/protocol`+`nsgdb/usage`. Not called from
+  `open` (tests stay clean). MCP calls it after embed.
+- **MCP surface 4 tools**: `remember` / `recall` / `health` / `curate`.
+  Dispatch by args (`user+response`, `entities`, `at`, `rag`, `view=era|validate`,
+  `curate.op`). The previous 23 names remain valid aliases on `tools/call`.
+
 ## [1.1.7] — 2026-08-20 (agent ergonomics — core + MCP)
 
 ### Added (core)
