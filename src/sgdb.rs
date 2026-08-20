@@ -1164,7 +1164,7 @@ impl Sgdb {
         Ok(())
     }
 
-    /// Como [`remember_semantic`], aplicando scope/entities/content_type na mesma
+    /// Como [`Self::remember_semantic`], aplicando scope/entities/content_type na mesma
     /// operação lógica e devolvendo metadados p/ follow-up de retrieval.
     pub fn remember_semantic_with(
         &mut self,

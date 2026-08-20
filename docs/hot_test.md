@@ -341,3 +341,28 @@ Hot test **84/0 exit 0**. Contrato MCP:
 | Resources | `nsgdb://doctrine` + **`nsgdb://session`** |
 | `health(view=tensions)` | conflitos, superseded, unseen scopes |
 
+## Follow-up v1.1.9 — re-verificação de gates (2026-08-20)
+
+Após o pull `5a56458` (connectors + lexical-first), bateria completa re-rodada
+e comparada ao baseline v1.1.6 memorizado no nsgdb:
+
+| Gate | v1.1.6 | v1.1.9 |
+|------|--------|--------|
+| `cargo test` | 229+1 | **235+1** ✓ |
+| `cargo test --features p2p` | 275+1 | **281+1** ✓ |
+| `cargo test --no-default-features` | 181+1 | **187+1** ✓ |
+| no_std `x86_64-unknown-none` | verde | **verde** ✓ |
+| hot test `mcp_client` | 90/0 | **84/0** ✓ (rework 4-tools + lexical) |
+| `two_ai_protocol` | 16/16 | **16/16** ✓ |
+| connectors `test_contract` + `mcp-smoke` | — | **4/4 + OK** ✓ |
+| clippy `-D warnings` | verde | vermelho → **corrigido** ✓ |
+| rustdoc `-D warnings` | verde | vermelho → **corrigido** ✓ |
+
+O pull quebrou os dois gates de lint (P0-5/P0-6): 35 erros
+(`needless_borrows_for_generic_args` + `useless format!`) em
+`examples/mcp_server.rs` (`mcp_actionable_error(&e)` → `mcp_actionable_error(e)`,
+`format!("{}", …)` removido) e link quebrado `[`remember_semantic]` →
+`[`Self::remember_semantic]` em `src/sgdb.rs:1167`. Correções com
+comportamento idêntico; clippy/rustdoc/hot test re-verificados verdes.
+Memória da re-verificação: `md/L3/mcp/1787256069194000`.
+

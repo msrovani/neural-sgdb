@@ -741,7 +741,7 @@ fn main() {
                                 Ok(emb) => db.remember_semantic_with(&key, text, &emb, opts),
                                 Err(e) => {
                                     send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                        "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}}));
+                                        "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}}));
                                     continue;
                                 }
                             }
@@ -768,7 +768,7 @@ fn main() {
                                     mcp_tool_result(&prose, structured, false)}));
                             }
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":mcp_actionable_error(&e)}],"isError":true}})),
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
                         }
                     }
                     "remember_episodic" => {
@@ -789,7 +789,7 @@ fn main() {
                                 "content":[{"type":"text","text":format!("episodio verbatim armazenado:\nuser: {ku}\nasst: {ka}")}],
                                 "isError":false}})),
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}})),
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
                         }
                     }
                     "recall" => {
@@ -814,7 +814,7 @@ fn main() {
                                 Ok(e) => e,
                                 Err(e) => {
                                     send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                        "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}}));
+                                        "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}}));
                                     continue;
                                 }
                             }
@@ -887,7 +887,7 @@ fn main() {
                                 Ok(e) => e,
                                 Err(e) => {
                                     send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                        "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}}));
+                                        "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}}));
                                     continue;
                                 }
                             }
@@ -958,7 +958,7 @@ fn main() {
                             Ok(e) => e,
                             Err(e) => {
                                 send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                    "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}}));
+                                    "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}}));
                                 continue;
                             }
                         };
@@ -984,7 +984,7 @@ fn main() {
                                     "content":[{"type":"text","text":text}],"isError":false}}))
                             }
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}})),
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
                         }
                     }
                     "recall_entities" => {
@@ -1024,7 +1024,7 @@ fn main() {
                                     "content":[{"type":"text","text":text}],"isError":false}}))
                             }
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}})),
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
                         }
                     }
                     "explain" => {
@@ -1045,7 +1045,7 @@ fn main() {
                                     "validity": ex.validity, "children": ex.children})).unwrap_or_default()}],
                                 "isError":false}})),
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}})),
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
                         }
                     }
                     "reinforce" => {
@@ -1059,7 +1059,7 @@ fn main() {
                             Ok(()) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":format!("reforcada: {key} (+{delta})")}],"isError":false}})),
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}})),
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
                         }
                     }
                     "forget" => {
@@ -1072,7 +1072,7 @@ fn main() {
                             Ok(()) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":format!("arquivada: {key} (historia preservada)")}],"isError":false}})),
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}})),
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
                         }
                     }
                     "feedback" => {
@@ -1090,7 +1090,7 @@ fn main() {
                                     "content":[{"type":"text","text":format!("feedback aplicado ({verb} {amount}): {key}")}],"isError":false}}))
                             }
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}})),
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
                         }
                     }
                     "associate" => {
@@ -1109,7 +1109,7 @@ fn main() {
                             Ok(()) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":format!("relacao: {a} --{kind:?}--> {b}")}],"isError":false}})),
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}})),
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
                         }
                     }
                     "related_to" => {
@@ -1147,7 +1147,7 @@ fn main() {
                             Ok(()) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":format!("{old} superseded por {new}")}],"isError":false}})),
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}})),
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
                         }
                     }
                     "conflicts" => {
@@ -1172,7 +1172,7 @@ fn main() {
                             Ok(()) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":format!("conflito {cid} resolvido -> {winner}")}],"isError":false}})),
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}})),
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
                         }
                     }
                     "merge_memories" => {
@@ -1187,7 +1187,7 @@ fn main() {
                             Ok(sk) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":format!("fundidas em {sk}")}],"isError":false}})),
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}})),
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
                         }
                     }
                     "health" => {
@@ -1219,7 +1219,7 @@ fn main() {
                                     "content":[{"type":"text","text":text}],"isError":false}}));
                             }
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}})),
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
                         }
                     }
                     "profile" => {
@@ -1238,7 +1238,7 @@ fn main() {
                                     "content":[{"type":"text","text":text}],"isError":false}}));
                             }
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}})),
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
                         }
                     }
                     "expire_old" => {
@@ -1252,7 +1252,7 @@ fn main() {
                             Ok(n) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":format!("{n} memorias expiradas em now={now}")}],"isError":false}})),
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}})),
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
                         }
                     }
                     "validate" => {
@@ -1271,7 +1271,7 @@ fn main() {
                             Ok(lines) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":lines.join("\n")}],"isError":false}})),
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}})),
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
                         }
                     }
                     _ => send(&error_response(&id, -32602, "Unknown tool")),
