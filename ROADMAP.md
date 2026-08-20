@@ -94,6 +94,10 @@ Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
 ✅ Architecture docs aligned to v1.1.9 (`docs/architecture/`), API contract
    (`docs/api.md`), implementation status (`docs/implementation-status.md`),
    arXiv preprint draft (`docs/paper/`).
+✅ **Host connectors (claw)** — `connectors/`: Hermes MemoryProvider + shared
+   Python MCP client + contract tests 4/4; OpenClaw TS skeleton. Outside crate
+   SemVer (see `VERSIONING.md`). Next: wire OpenClaw Node MCP transport in host
+   checkout; optional HTTP/UDS single-writer broker.
 🔜 True bidirectional format test with the OS's own reader — blocked on
    `neural-os-core` publishing its TickvLite reader as a crate.
 

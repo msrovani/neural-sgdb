@@ -2,6 +2,10 @@
 /target
 Cargo.lock
 
+# Connector Python bytecode
+__pycache__/
+*.py[cod]
+
 # MCP demo db
 sgdb_memory.db
 

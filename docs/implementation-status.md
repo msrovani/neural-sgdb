@@ -53,6 +53,7 @@
 | Arbitration policy seam | IMPLEMENTED | `ArbitrationPolicy`, no LLM in core |
 | Embedder seam | IMPLEMENTED | trait + DemoEmbedder + HTTP example |
 | MCP server | IMPLEMENTED | 4 tools (+ aliases), lexical-first (ADR-0008), `nsgdb://session` |
+| Host connectors (claw) | PARTIAL | `connectors/`: Hermes provider + MCP client + 4/4 contract tests; OpenClaw TS skeleton (wire into host checkout next) |
 | Signed transport seam | IMPLEMENTED | `SignedEnvelope`, `signed_peer` example |
 | UdpTransport | EXPERIMENTAL | unauthenticated demo |
 | Overlay mesh routing | REMAINING | edge-directed pull today |
@@ -89,6 +90,12 @@ topologies; **content** does.
 `NEURAL_SGDB_EMBEDDER` = none (`=demo` explicit only). `remember(text=)`
 without vector → L3. Resources `nsgdb://doctrine` + `nsgdb://session`.
 `health(view=tensions)`. Hot test 84/0.
+
+### Host connectors
+`connectors/` is host-side (not crate SemVer). Hermes `MemoryProvider` is
+executable against `mcp_server` 1.1.9 (lexical, scoped, lockfile). OpenClaw
+adapter is a documented skeleton pending Node MCP transport in the host tree.
+Contract: `python -m unittest discover -s connectors/tests -v`.
 
 ## Compatibility constraints
 

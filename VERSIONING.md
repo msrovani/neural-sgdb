@@ -64,3 +64,12 @@ a MAJOR bump. Architecture docs in `docs/architecture/` describe the
 **shipped** system at **v1.1.9** (lexical-first MCP, ADR-0008). Typed hits
 landed in v1.1.6; agent doctrine in v1.1.8. Architecture folders keep the
 v1.1.6 cognitive model and note MCP/tooling deltas through 1.1.9.
+
+## Host connectors (`connectors/`)
+
+Adapters for OpenClaw / Hermes / similar hosts live **outside** the crate
+SemVer line. They speak MCP to `examples/mcp_server.rs` and must not change
+`src/`, NMD1, or TKLV. Ship them under `CHANGELOG.md` `[Unreleased]` (or a
+dated note) **without** bumping `Cargo.toml` unless the core/MCP contract
+also changes. Connector behavior is versioned by git commit + the README in
+`connectors/`.

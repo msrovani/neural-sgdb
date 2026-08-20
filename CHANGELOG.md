@@ -4,6 +4,16 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Added (host layer — does **not** bump crate SemVer)
+- **`connectors/`** — adapters claw ↔ `mcp_server` without touching `src/`,
+  NMD1, or TKLV. Shared Python MCP/stdio client (handshake `2025-11-25`,
+  cooperative `.connector.lock`), Hermes `MemoryProvider` (tools + bounded
+  auto-recall; auto-capture OFF by default), OpenClaw TypeScript skeleton,
+  contract tests (`python -m unittest discover -s connectors/tests -v`, 4/4).
+  Docs: [`connectors/README.md`](connectors/README.md). Crate remains **1.1.9**.
+
 ## [1.1.9] — 2026-08-20 (ADR-0008: lexical-first MCP)
 
 ### Changed

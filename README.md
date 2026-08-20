@@ -191,6 +191,10 @@ Semantic/hybrid and L4 need `embedding=` or explicit `NEURAL_SGDB_EMBEDDER=demo`
 Typed hits: `format=json`. `health(view=era)` is era_report; `view=tensions`
 lists conflicts / superseded / unseen scopes.
 
+Host adapters for claw-like apps (Hermes provider, OpenClaw skeleton, shared
+MCP client) live in [`connectors/`](connectors/README.md) — **outside** crate
+SemVer; core stays 1.1.9.
+
 ### Cursor (Windows)
 
 1. `cargo build --release --example mcp_server --target-dir target/mcp-release`

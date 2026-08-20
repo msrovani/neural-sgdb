@@ -1,0 +1,5 @@
+name: neural-sgdb
+version: 1.0.0
+description: "Memória lexical-first e escopada via neural-sgdb MCP."
+hooks:
+  - on_session_switch
