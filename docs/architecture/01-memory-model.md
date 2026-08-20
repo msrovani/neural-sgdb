@@ -1,6 +1,7 @@
 # 01 — Memory Model
 
-> Status: **current (v1.1.6)** — describes the shipped model. **implemented**
+> Status: **current (v1.1.9)** — describes the shipped model (typed hits
+> v1.1.6). **implemented**
 > = code + tests; **remaining** = honest gap. All English per repo policy.
 
 ## 1. What is a memory?

@@ -40,7 +40,7 @@ filesystem, no external runtime.
 `recall` default lexical; `nsgdb://session` + `health(view=tensions)`.
 Crate em `Cargo.toml`: **1.1.9**.
 
-- `cargo test` on host: **233 tests + doc-test** (plus p2p / no_std matrix)
+- `cargo test` on host: **235+ lib tests + doc-test** (plus p2p / no_std matrix)
 - `cargo check --no-default-features --target x86_64-unknown-none`: **clean**
 - **Typed hits (v1.1.6)**: o recall devolve, por hit, `path` (semantic/
   lexical/entities), `content_type` (Text/Json/Code/Embedding(dim)/Binary),
@@ -88,13 +88,14 @@ Crate em `Cargo.toml`: **1.1.9**.
   `profile`/`expire_old`) and **MCP 4 tools** (`remember`/`recall`/`health`/`curate`;
   `health`/`validate` observability, `era_report`, `remember_episodic`,
   retrieval modes semantic/lexical/hybrid, `recall_temporal`,
-  `recall_entities`, ServerInfo v1.1.6) + **write-side era guard** (S1 no
+  `recall_entities`, ServerInfo v1.1.9) + **write-side era guard** (S1 no
   write também — `remember_semantic` fora da era do corpus vivo é `Invalid`)
   + **seams de conteúdo** (`Embedder` trait, `entities`, `content_type` —
   quem fornece declara)
-- **Interfaces**: MCP server with `memory://{layer}/{key}` resources +
-  `nextCursor` pagination + 23 cognitive/observability tools + tool
-  annotations; `cargo run --release --example stress` (100k-op stress) and
+- **Interfaces**: MCP server with `memory://{layer}/{key}` + `nsgdb://doctrine`
+  + `nsgdb://session` resources, `nextCursor` pagination, **4 tools**
+  (`remember`/`recall`/`health`/`curate`; 23 legacy names as `tools/call`
+  aliases); `cargo run --release --example stress` (100k-op stress) and
   `--example bench`
 - Full API contract in [`docs/api.md`](docs/api.md)
 - Architecture + status in [`docs/architecture/`](docs/architecture/) and
@@ -184,8 +185,11 @@ embedder HTTP, troubleshooting).
 `recall` / `health` / `curate` (JSON-RPC 2.0 over stdio, `2025-11-25`
 handshake). Legacy names (`era_report`, `recall_entities`, …) still work on
 `tools/call`. Memories as **resources** (`memory://{layer}/{key}` +
-`nsgdb://doctrine`), recall with opaque `nextCursor`, modes
-`semantic`/`lexical`/`hybrid`, **typed hits** (`format=json`).
+`nsgdb://doctrine` + **`nsgdb://session`**). Default `recall`/`rag_context`
+is **lexical** (ADR-0008). `remember(text=)` without a vector writes **L3**.
+Semantic/hybrid and L4 need `embedding=` or explicit `NEURAL_SGDB_EMBEDDER=demo`.
+Typed hits: `format=json`. `health(view=era)` is era_report; `view=tensions`
+lists conflicts / superseded / unseen scopes.
 
 ### Cursor (Windows)
 
@@ -194,8 +198,9 @@ handshake). Legacy names (`era_report`, `recall_entities`, …) still work on
    (binário release, **sem** `cargo` no PATH do IDE).
 3. Recarregue MCP se rebuildar o binário.
 
-**Troubleshooting:** binário ausente → rebuild; recall vazio → `era_report`;
-22 tools → binário desatualizado; ver [`docs/MCP.md`](docs/MCP.md).
+**Troubleshooting:** binário ausente → rebuild; recall vazio →
+`health(view=era)` (alias `era_report`); `tools/list` ≠ 4 tools → binário
+desatualizado; ver [`docs/MCP.md`](docs/MCP.md).
 
 ### Scope / entidades (exemplo)
 
@@ -216,9 +221,10 @@ chmod +x scripts/mcp-server.sh
 claude mcp add neural-sgdb -- /path/to/neural-sgdb/scripts/mcp-server.sh
 ```
 
-⚠️ The MCP recall embedding is a **demo** (character-trigram hash); for real
-semantic recall, provide your own embeddings via `remember`/`recall` or see
-[`examples/embedder_http.rs`](examples/embedder_http.rs).
+⚠️ Launchers do **not** set `NEURAL_SGDB_EMBEDDER`. Unset = no host embedder
+(lexical L3). `=demo` is an explicit trigram hash, **not** cosine semantics.
+For real semantic recall, pass `embedding=` (same model on write and query)
+or see [`examples/embedder_http.rs`](examples/embedder_http.rs).
 
 ## Benchmarks
 
@@ -235,7 +241,7 @@ avoid stale/unreproducible claims).
   (LaTeX, two-column article; **compiled [`neural-sgdb-telepathy.pdf`](docs/paper/neural-sgdb-telepathy.pdf)**,
   8 TikZ figures + design rationale, threats to validity, case study, appendix;
   upload the `.tex` source to arXiv)
-- **Architecture (v1.1.6)** — [`docs/architecture/`](docs/architecture/)
+- **Architecture (v1.1.9)** — [`docs/architecture/`](docs/architecture/)
   — Memory Model (01), Lifecycle (02), Retrieval (03), Distributed (04),
   Storage (05), Cognitive API (06) — documents the shipped cognitive memory
   system; [`docs/implementation-status.md`](docs/implementation-status.md)
@@ -261,9 +267,9 @@ Licensed under **MIT** **or** **Apache-2.0** (dual license), your choice.
       `Transport` trait + std `UdpTransport`; symmetric LWW merge)
 - [x] Published benchmarks (`cargo run --release --example bench` — ART
       P50/P99, BQ top-k, recall BQ vs FP32)
-- [x] MCP server layer (`cargo run --release --example mcp_server` — exposes
-      `remember`/`recall`/`rag_context` to AI agents via MCP over stdio;
-      trigram demo embedding)
+- [x] MCP server layer (`cargo run --release --example mcp_server` — 4 tools
+      `remember`/`recall`/`health`/`curate`; default retrieval lexical;
+      optional explicit `NEURAL_SGDB_EMBEDDER=demo`)
 - [x] **Byte-exact TKLV/TKCK storage interop with the OS** (`src/tickv.rs`:
       byte-exact codec + OS-readable `TickvFile` backend; golden test +
       `scan_volume` re-parse; NMD1 and TKLV interoperable)

@@ -142,7 +142,8 @@ The append-only FileStorage keeps the old-era blobs until `compact()`.
 - **Network/CRDT sync latency** — transport is a demo (`UdpTransport`,
   unauthenticated). Latency numbers would be meaningless without a real
   deployment target.
-- **MCP server throughput** — stdio JSON-RPC, demo embedding (trigram).
+- **MCP server throughput** — stdio JSON-RPC; host embedder unset = none
+  (lexical). Trigram demo only if `NEURAL_SGDB_EMBEDDER=demo`.
 - **Power-loss / crash durability** — not measurable by a bench; covered by
   the recovery tests and sweep tests, not by timing.
 - **Microbenchmarks of individual memory operations** (`remember_semantic`,

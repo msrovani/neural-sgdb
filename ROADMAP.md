@@ -57,6 +57,13 @@ Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
    `remember(type=)` + `rag_context rerank=/mode=`, `rag_context_reranked`
    (ancoragem lexical, `anchors=N`), `examples/two_ai_protocol.rs` (16/16).
    Hot test 90/0; matrix 229/181/275.
+✅ **v1.1.8 — Agent doctrine + 4 MCP tools**: `docs/doctrine.md` seeded via
+   `ensure_doctrine`; `tools/list` = remember/recall/health/curate (23 names
+   remain `tools/call` aliases); `nsgdb://doctrine`.
+✅ **v1.1.9 — Lexical-first (ADR-0008 Accepted)**: MCP default `mode=lexical`;
+   `remember(text=)` without vector → L3 (`remember_text_with`); unset
+   `NEURAL_SGDB_EMBEDDER` = none; `nsgdb://session`; `health(view=tensions)`.
+   Launchers do not default `EMBEDDER=demo`. Hot test **84/0**.
 🔜 **CI hardening** (remaining tail of P2-4): cross-target checks and an
    examples gate in `.github/workflows/ci.yml`.
 
@@ -84,7 +91,7 @@ Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
 
 ## Documentation / interop
 
-✅ Architecture docs aligned to v1.1.6 (`docs/architecture/`), API contract
+✅ Architecture docs aligned to v1.1.9 (`docs/architecture/`), API contract
    (`docs/api.md`), implementation status (`docs/implementation-status.md`),
    arXiv preprint draft (`docs/paper/`).
 🔜 True bidirectional format test with the OS's own reader — blocked on

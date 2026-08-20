@@ -2,9 +2,16 @@
 
 Guide for AI agents (OpenCode, Cursor, Windsurf, Claude Code) working in this
 repo. **Read `codemap.md` (atlas), `docs/api.md` (contract) and
-`docs/architecture/` (v1.1.6 — Memory Model, Lifecycle, Retrieval,
-Distributed, Storage, Cognitive API) and
+`docs/architecture/` (v1.1.9 crate — Memory Model, Lifecycle, Retrieval,
+Distributed, Storage, Cognitive API; typed hits from v1.1.6) and
 `docs/implementation-status.md` before editing code.**
+
+**Shipped crate is 1.1.9 (ADR-0008):** MCP lists **4 tools**
+(`remember`/`recall`/`health`/`curate`; 23 old names are `tools/call` aliases).
+Default retrieval is **lexical**. Unset `NEURAL_SGDB_EMBEDDER` = none;
+`=demo` only if requested. `remember(text=)` without a vector → L3
+(`remember_text_with`). Resources: `nsgdb://doctrine` + `nsgdb://session`.
+Hot test **84/0**. Lib tests **235+**.
 
 ## Post-P2 hardening state (2026-08-13)
 
@@ -365,6 +372,9 @@ let mut db = Sgdb::open(FileStorage::open("mem.db")?)?;
 
 // memories
 db.remember_exchange("user", "response")?;             // L1 + L2
+db.remember_text_with("note", "same words", RememberOptions {
+    scope: None, entities: &[], content_type: None,
+})?; // L3, no BQ era
 db.remember_semantic("k", "text", &emb)?;              // L4 BQ (emb: &[f32])
 db.remember_semantic_with("k2", "text", &emb, RememberOptions {
     scope: Some("user/ana"), entities: &["pref/theme"], content_type: Some("text"),
@@ -387,7 +397,7 @@ let facts = db.scan_prefix("md/L3/")?;                 // ART prefix scan
 ```bash
 cargo run --release --example bench        # benchmarks (ART/BQ/recall vs FP32)
 cargo run --release --example mcp_server   # MCP server for AI agents
-cargo run --release --example mcp_client   # HOT TEST: drives mcp_server like an IDE (77 checks)
+cargo run --release --example mcp_client   # HOT TEST: drives mcp_server like an IDE (84/0)
 cargo run --release --example agent_protocol  # DECISION PROTOCOL (itens 2–6 + P1–P6): como o agente USA o DB
 cargo run --release --example two_ai_protocol # PROTOCOLO MÁQUINA→MÁQUINA (v1.1.6 itens 1–5): IA-A grava datum declarado, IA-B lê tipado
 cargo run --release --example memory_arena_eval # MEMORY-ARENA EVAL (P7): utilidade da memória em tarefas interdependentes
@@ -411,7 +421,7 @@ hash, not a semantic model). Restart opencode after changing the config.
 ## Running tests
 
 ```bash
-cargo test                                 # 229+1 tests (InMemory/FileStorage/TickvFile)
+cargo test                                 # 235+1 tests (InMemory/FileStorage/TickvFile)
 cargo test --features p2p                  # 275+1 (includes CRDT sync + mesh harness)
 cargo test --no-default-features           # 181+1 (no_std core, host test harness)
 cargo check --no-default-features --target x86_64-unknown-none   # no_std gate
@@ -432,12 +442,15 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-
 - **MCP server** (`examples/mcp_server.rs`): stdout JSON-RPC ONLY (logs →
   stderr), one message per `\n` line, `2025-11-25` handshake, do not gate tools
   on `notifications/initialized` (Claude Code sends tools/list first), echo the
-  id verbatim, `-32601` for unknown methods (modern-client fallback). The
-  `demo_embed` embedding is a trigram hash — NOT a real semantic model. Now
-  exposes read-only `health`/`validate`/`era_report` tools (P2-3 + ADR-0007);
-  **instalação e troubleshooting**: [`docs/MCP.md`](docs/MCP.md) (launchers
-  release, Cursor Windows, smoke test, embedder HTTP);
-  [`docs/MCP-RELOAD.md`](docs/MCP-RELOAD.md) (reload vs rebuild, `.nsgdb/bin`).
+  id verbatim, `-32601` for unknown methods (modern-client fallback). **4 tools**
+  listed (`remember`/`recall`/`health`/`curate`); legacy names work on
+  `tools/call`. Default recall is **lexical** (ADR-0008). Unset
+  `NEURAL_SGDB_EMBEDDER` = none; `=demo` is an explicit trigram hash — NOT
+  cosine. `health(view=era)` = era_report; `health(view=tensions)` =
+  conflicts/superseded/unseen scopes. Resources `nsgdb://doctrine` +
+  `nsgdb://session`. Windows launchers: PowerShell 5.1 — no `>&2`; use
+  `[Console]::Error.WriteLine`. **instalação**: [`docs/MCP.md`](docs/MCP.md);
+  reload: [`docs/MCP-RELOAD.md`](docs/MCP-RELOAD.md).
 - **Wire-codec fuzz harness** (`src/wire_fuzz.rs`, P2-4): the single LCG
   never-panic/roundtrip/truncation gate over ALL 8 wire types — add a new
   wire type there (plus its per-module `prop_tests`), and keep the matrix

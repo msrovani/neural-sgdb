@@ -5,8 +5,8 @@
 > **Data**: 2026-08-13 · **Status**: executado e auditado (45/45 asserções)
 > **Objetivo**: provar (e auditar) que o neural-sgdb funciona de verdade como
 > memória de agente — não apenas em unit tests, mas no fluxo real de uma IDE.
-> **Evolução (v1.1.0 → v1.1.6)**: o hot test cresceu com cada feature release;
-> estado corrente = **90/0 exit 0** (23 tools MCP) — ver §Evolução abaixo.
+> **Evolução (v1.1.0 → v1.1.9)**: o hot test cresceu com cada feature release;
+> estado corrente = **84/0 exit 0** (4 tools MCP + aliases) — ver §Follow-up v1.1.9.
 
 ## Metodologia — 3 vias de integração
 
@@ -286,7 +286,7 @@ Lições da instalação real na IDE (memorizadas em `md/L4/mcp/...`, ver
 |----------|-------|----------|
 | `cargo` não encontrado no Cursor | IDE não herda PATH do shell | Launcher `scripts/mcp-server.ps1` / `.sh` usa binário **release** |
 | `${workspaceFolder}` no `command` | Windows quebra path | `command: powershell` + script em `args` (`.cursor/mcp.json`) |
-| 22 tools / sem `era_report` | binário desatualizado ou `.exe` locked pelo MCP | `cargo build --release --example mcp_server --target-dir target/mcp-release`; reload MCP (launcher usa `target/mcp-release/release/examples/`) |
+| 4 tools vs lista antiga de 23 | binário desatualizado ou `.exe` locked pelo MCP | `powershell -File scripts/mcp-install.ps1`; reload MCP |
 | `health` sem onboarding | build antiga | v1.1.6: JSON com `mcp_tool_count`, `embedder`, passos iniciais |
 | commit falha pós-clone | `user.name`/`user.email` ausentes | [`CONTRIBUTING.md`](../CONTRIBUTING.md) |
 

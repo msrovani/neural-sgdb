@@ -1,8 +1,8 @@
 # 06 — Cognitive API
 
-> Status: **current (v1.1.6)** — the cognitive surface ships in `Sgdb` +
-> MCP server (23 tools). **implemented** = code + tests; **remaining** =
-> honest gap. All English per repo policy.
+> Status: **current (v1.1.9)** — the cognitive surface ships in `Sgdb` +
+> MCP server (**4 tools**, aliases for the 23 legacy names). **implemented** =
+> code + tests; **remaining** = honest gap. All English per repo policy.
 
 ## 1. Principle
 
@@ -23,6 +23,7 @@ material for the agent/LLM above.
 |------|-------|-------|
 | `remember_exchange` | L1+L2 | RAM until checkpoint |
 | `remember_episodic` | L2 | verbatim user/response pairs (v1.1.4) |
+| `remember_text_with` | L3 | lexical write, no BQ era (v1.1.9) |
 | `remember_semantic` | L4+L2 companion | era guard on live corpus |
 | `remember_fact` | L3 | timestamped |
 | `set_importance` / `set_confidence` | meta | clamped [0,1] |
@@ -66,28 +67,35 @@ material for the agent/LLM above.
 | `validate()` | integrity walk |
 | `era_report()` | embedding era diagnostic (ADR-0007) |
 
-## 6. MCP surface (implemented — 23 tools)
+## 6. MCP surface (implemented — 4 tools + aliases)
 
 `cargo run --release --example mcp_server` — JSON-RPC 2.0 stdio, handshake
-`2025-11-25`.
+`2025-11-25`. `serverInfo.version` = crate **1.1.9**.
 
-**Tools:** remember, remember_episodic, recall, recall_temporal,
-recall_entities, rag_context, feedback, diary, profile, expire_old, explain,
-reinforce, forget, associate, related_to, contradicts, supersede, conflicts,
-resolve_conflict, merge_memories, health, validate, era_report.
+**Listed tools:** `remember`, `recall`, `health`, `curate`. Dispatch by args
+(`user+response` → episodic L2; `entities` / `at` / `rag=true`;
+`health(view=era|validate|tensions)`; `curate.op=…`). The previous 23 names
+remain valid aliases on `tools/call`.
 
-**Resources:** `memory://{layer}/{key}` with opaque `nextCursor` pagination.
+**Default retrieval (ADR-0008):** `mode=lexical` when the caller does not pass
+`embedding=`. Semantic/hybrid require a caller vector or explicit
+`NEURAL_SGDB_EMBEDDER=demo`. `remember(text=)` without a vector writes **L3**
+(`Sgdb::remember_text_with`) and does not open a fake BQ era.
 
-**v1.1.6 extras:**
+**Resources:** `memory://{layer}/{key}`, `nsgdb://doctrine`, **`nsgdb://session`**
+(cold-start JSON). Opaque `nextCursor` pagination.
+
+**v1.1.6 extras (still current):**
 - `remember(type=)` — write-side content type (MDM1 v6)
 - `recall(format=json)` — structured typed hits for machine consumers
-- `recall(mode=)` — semantic | lexical | hybrid
-- `rag_context(rerank=, mode=, format=)`
+- `recall(mode=)` — semantic | lexical | hybrid (default lexical)
+- `rag_context(rerank=, mode=, format=)` via `recall(rag=true)` or alias
 
-**Embedder:** `DemoEmbedder` (trigram hash) — NOT semantic. Agent supplies
-`embedding` in payload; same model on write and query (S1 guard).
+**Embedder:** unset host embedder = none. `DemoEmbedder` (trigram) is **not**
+the product default — set `NEURAL_SGDB_EMBEDDER=demo` only if requested.
+Same model on write and query (S1 guard).
 
-Hot test: `mcp_client` — **90/0** checks (v1.1.6).
+Hot test: `mcp_client` — **84/0** checks (v1.1.9).
 
 ## 7. Machine→machine contract (v1.1.6)
 

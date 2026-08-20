@@ -52,9 +52,10 @@ Conventional Commits curtos, foco no **porquê**:
 ```
 fix(mcp): surface era_report hint on dimension mismatch
 
-docs: align architecture docs to v1.1.6
+docs(v1.1.9): align root and docs/ to lexical-first MCP
 ```
 
 ## MCP / agentes
 
-Instalação e troubleshooting: [`docs/MCP.md`](docs/MCP.md).
+Instalação e troubleshooting: [`docs/MCP.md`](docs/MCP.md). Superfície atual:
+4 tools, recall lexical-first (ADR-0008), `docs/MCP-RELOAD.md`.

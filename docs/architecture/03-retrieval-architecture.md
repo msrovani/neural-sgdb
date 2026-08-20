@@ -1,7 +1,8 @@
 # 03 — Retrieval Architecture
 
-> Status: **current (v1.1.6)** — ART + BQ + lexical + entities + typed hits
-> ship in production code. **implemented** = code + tests; **remaining** =
+> Status: **current (v1.1.9)** — ART + BQ + lexical + entities + typed hits
+> ship in production code. MCP default retrieval is **lexical** (ADR-0008).
+> **implemented** = code + tests; **remaining** =
 > honest gap. All English per repo policy.
 
 ## 1. Retrieval mechanisms
@@ -78,6 +79,8 @@ final ranking → Hit { path=Semantic, content_type, payload_type, … }
 - `search` returns `(key, score, matched_terms)` — grounding for typed hits.
 - Scoped: `recall_lexical_scoped` honors same scope filter as semantic recall.
 - Companion `/L2/` scope comes from primary via `Engine::effective_scope`.
+- **MCP default (ADR-0008):** `recall`/`rag_context` use lexical when no
+  `embedding=` is supplied. Semantic/hybrid are opt-in.
 
 ## 5. Hybrid, temporal, weighted — implemented
 

@@ -23,6 +23,10 @@ All notable changes to this project. Format based on
 - Launchers and `.cursor/mcp.json` no longer set `NEURAL_SGDB_EMBEDDER=demo`
   by default (that made host embedder “explicit” and kept L4 writes).
 
+### Notes
+- Hot test: **84/0**. Lib tests **235+**.
+- MCP `tools/list`: 4 tools; 23 legacy names remain `tools/call` aliases.
+
 ## [1.1.8] — 2026-08-20 (agent doctrine + 4 MCP tools)
 
 ### Added

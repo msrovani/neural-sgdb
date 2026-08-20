@@ -61,5 +61,6 @@ migrations in `MIGRATIONS.md` and never silently reinterpreted old bytes
 Crate version in `Cargo.toml` is **1.1.9**; additive feature releases
 **v1.1.2–v1.1.9** are documented in `CHANGELOG.md` and `docs/api.md` without
 a MAJOR bump. Architecture docs in `docs/architecture/` describe the
-**shipped** system at v1.1.6+ (typed hits); v1.1.8 adds agent doctrine;
-v1.1.9 makes MCP retrieval lexical-first (ADR-0008).
+**shipped** system at **v1.1.9** (lexical-first MCP, ADR-0008). Typed hits
+landed in v1.1.6; agent doctrine in v1.1.8. Architecture folders keep the
+v1.1.6 cognitive model and note MCP/tooling deltas through 1.1.9.

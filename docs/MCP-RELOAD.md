@@ -13,7 +13,8 @@ Use após `git pull`, mudanças em `examples/mcp_server.rs`, ou recall/health de
    - tool `health` → `mcp_tool_count: 4`, `onboarding` presente, `embedder` = `none` (a menos que `NEURAL_SGDB_EMBEDDER=demo`)
    - `health(view=tensions)` e resource `nsgdb://session`
    - `build_git` corresponde ao commit local (`git rev-parse --short HEAD`)
-4. Se ainda 22 tools: desligue o MCP, apague `target/release/examples/mcp_server.exe` se locked, reinstale.
+4. Se `tools/list` ainda não mostra 4 tools: desligue o MCP, apague
+   `target/release/examples/mcp_server.exe` se locked, reinstale.
 5. Se o MCP falha na subida (`failed during live tool discovery`): o Cursor
    usa **PowerShell 5.1** — `>&2` é erro de parse e stderr do `cargo` dispara
    `Stop`. Os launchers `.ps1` devem usar `[Console]::Error.WriteLine`.

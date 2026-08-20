@@ -21,9 +21,9 @@ protocols that codify HOW to use the DB.
 
 ## mcp_client.rs — HOT TEST
 - `cargo run --release --example mcp_client` — drives `mcp_server` like an IDE;
-  **90/0 checks exit 0** (v1.1.6). Covers recall modes + `format=json` +
-  `remember(type=)`, temporal, entities, lazy pagination (raw `rpc` for
-  top-level `nextCursor`), scope, persistence across restart.
+  **84/0 checks exit 0** (v1.1.9). Covers 4-tool surface + aliases, lexical
+  default (ADR-0008), `format=json`, `remember(type=)`, temporal, entities,
+  lazy pagination, scope, persistence across restart.
 
 ## mcp_server.rs
 - `cargo run --release --example mcp_server` — connectable to Claude Code/Cursor/OpenCode

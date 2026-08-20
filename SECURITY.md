@@ -40,9 +40,9 @@ the core**. Consequently:
   demo. Production deployments must plug a signed/encrypted transport at the
   `Transport` seam; `SignedEnvelope` is the authenticable envelope format —
   the core does not implement crypto (P2-3 / ADR-0006).
-- **Embedding security** is the caller's job. The MCP demo embedding is a
-  trigram hash, not a semantic model, and must never be used for untrusted
-  input classification.
+- **Embedding security** is the caller's job. The optional MCP demo embedder
+  (`NEURAL_SGDB_EMBEDDER=demo`) is a trigram hash, not a semantic model, and
+  must never be used for untrusted input classification. Unset embedder = none.
 - **Arbitration is policy-pluggable**: the core detects/preserves conflicts
   and never decides semantic truth. A pluggable `ArbitrationPolicy` (v1.0)
   runs outside the core — its security is the host's responsibility.

@@ -13,15 +13,18 @@ Guia de instalação, contrato e troubleshooting do servidor MCP
 | Tools | **4** (`remember`, `recall`, `health`, `curate`) — 23 nomes antigos ainda funcionam em `tools/call` |
 | Recall default | **lexical** (ADR-0008). Cosine: `embedding=` ou `NEURAL_SGDB_EMBEDDER=demo` |
 | Embedder host | unset = none; `NEURAL_SGDB_EMBEDDER=demo` = trigrama explícito (**não** semântico) |
-| Resources | `nsgdb://doctrine`, **`nsgdb://session`** (cold-start) |
+| Write sem vetor | `remember(text=)` → **L3** (`remember_text_with`); L4 só com `embedding=` ou `NEURAL_SGDB_EMBEDDER=demo` |
+| Observabilidade | `health(view=era)` = era_report; `health(view=tensions)` = conflitos / superseded / scopes invisíveis |
+| Resources | `nsgdb://doctrine`, **`nsgdb://session`** (cold-start JSON) |
 | DB default | `NEURAL_SGDB_DB=.nsgdb/memory.db` (relativo ao cwd do processo) |
 
 ### Tools (4 + aliases)
 
 Lista: `remember`, `recall`, `health`, `curate`.
 
-Dispatch: `remember(user+response)` → episódico; `recall(entities|at|rag=true)` →
-1-hop / temporal / rag; `health(view=era|validate)`; `curate(op=explain|reinforce|…)`.
+Dispatch: `remember(user+response)` → episódico L2; `remember(text=)` sem vetor →
+L3; `recall(entities|at|rag=true)` → 1-hop / temporal / rag; `health(view=era|validate|tensions)`;
+`curate(op=explain|reinforce|…)`.
 
 Aliases (ainda aceitos no call): os 23 nomes antigos.
 
@@ -88,10 +91,11 @@ O repo inclui [`.cursor/mcp.json`](../.cursor/mcp.json) apontando para
 2. **`${workspaceFolder}` no `command`** — no Windows, mantenha `command`:
    `powershell` e o script em `args` (como acima).
 3. **Binário ausente** — rode `cargo build --release --example mcp_server`.
-4. **Tools desatualizadas (22 vs 23)** — rebuild release e recarregue MCP nas
-   configurações do Cursor.
-5. **Recall vazio / dim mismatch** — chame `era_report`; use o **mesmo**
-   embedder/dimensão em `remember` e `recall`.
+4. **`tools/list` ≠ 4 tools** (`remember`/`recall`/`health`/`curate`) — binário
+   antigo (a lista de 23 nomes era v1.1.6). Rebuild + reload.
+5. **Recall vazio / dim mismatch** — chame `health(view=era)` (alias
+   `era_report`); use o **mesmo** embedder/dimensão em `remember` e `recall`.
+   Sem `embedding=` o default é lexical (mesmas palavras).
 
 ### macOS / Linux
 
@@ -129,8 +133,8 @@ Ou defina `NEURAL_SGDB_DB` e aponte para o binário release diretamente.
 bash scripts/mcp-smoke.sh
 ```
 
-Verifica: 23 tools, presença de `era_report`, schemas `remember(type=)` e
-`recall(format=json)`, e `health` com `onboarding`.
+Verifica: `mcp_tool_count=4`, schemas `remember`/`recall`, `health` com
+`onboarding`, embedder `none` (salvo `NEURAL_SGDB_EMBEDDER=demo` explícito).
 
 ## Embedder HTTP (modelo real)
 
@@ -153,7 +157,7 @@ citam o contrato same-model. Exemplo:
 ```
 Invalid: query dims not in indexed_embedding_dims()
 
-acao: chame a tool `era_report` (read-only) para veredito empty/ok/mixed_dims...
+acao: chame `health(view=era)` (alias `era_report`) para veredito empty/ok/mixed_dims...
 ```
 
 ## Scope e entidades (multi-agente)

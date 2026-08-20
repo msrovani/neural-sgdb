@@ -102,6 +102,10 @@ impl Sgdb {
     pub fn remember_semantic_with(
         &mut self, key: &str, text: &str, emb: &[f32], opts: RememberOptions<'_>,
     ) -> Result<RememberOutcome, SgdbError>;
+    /// L3 lexical write (v1.1.9 / ADR-0008) — no BQ era. MCP `remember(text=)` without embedding.
+    pub fn remember_text_with(
+        &mut self, key: &str, text: &str, opts: RememberOptions<'_>,
+    ) -> Result<RememberOutcome, SgdbError>;
 
     /// L4 recall: coarse BQ top-k -> FP32 rescore -> fine top-k.
     /// Auto-oversample by dimensionality (1 word→16, 2-4→8, else 4).
@@ -519,10 +523,15 @@ conflicts, **scope distribution**, **indexed_embedding_dims**);
 callers when scoped memories do not appear in global recall (mem0 null-scoping);
 `Sgdb::ensure_doctrine(emb)` seeds the agent protocol text (`docs/doctrine.md`)
 at `md/L4/nsgdb/doctrine` (scoped; idempotent). MCP injects the same text as
-`initialize.instructions` and as resource `nsgdb://doctrine`.
+`initialize.instructions` and as resource `nsgdb://doctrine`. Resource
+`nsgdb://session` is the MCP cold-start packet. MCP lists **4 tools**
+(`remember`/`recall`/`health`/`curate`); default recall is **lexical**.
+`health(view=era)` is `era_report`; `health(view=tensions)` reports conflicts,
+superseded keys, and unseen scopes.
 
 `Sgdb::remember_semantic_with(RememberOptions)` returns `RememberOutcome` (key,
-scope, entities, recall hint); `Sgdb::set_default_scope` sets a tenant default
+scope, entities, recall hint); `Sgdb::remember_text_with` writes **L3** without
+opening a BQ era (ADR-0008). `Sgdb::set_default_scope` sets a tenant default
 for hosts that omit `scope`. `Sgdb::validate()` runs integrity checks (storage
 `md/` walk + NMD1 decode + cross-check derived indexes and side-tables)
 returning every `ValidateIssue` found (empty = healthy). Both are

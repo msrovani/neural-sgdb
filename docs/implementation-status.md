@@ -1,6 +1,6 @@
 # neural-sgdb — Implementation Status
 
-> **Current snapshot (2026-08-19, v1.1.6).** Capability matrix vs the shipped
+> **Current snapshot (2026-08-20, v1.1.9).** Capability matrix vs the shipped
 > codebase. For the public contract see [`docs/api.md`](api.md); for architecture
 > narrative see [`docs/architecture/README.md`](architecture/README.md).
 
@@ -17,11 +17,11 @@
 
 | Check | Command | Result |
 |---|---|---|
-| Default tests | `cargo test` | **229 lib + 1 doc-test** |
+| Default tests | `cargo test` | **235+ lib + 1 doc-test** |
 | P2P tests | `cargo test --features p2p` | **275 lib + 1 doc-test** |
 | no_std tests | `cargo test --no-default-features` | **181 lib + 1 doc-test** |
 | no_std target | `cargo check --no-default-features --target x86_64-unknown-none` | **ok** |
-| Hot test (MCP) | `cargo run --release --example mcp_client` | **90/0 exit 0** |
+| Hot test (MCP) | `cargo run --release --example mcp_client` | **84/0 exit 0** |
 | Machine protocol | `cargo run --release --example two_ai_protocol` | **16/16 exit 0** |
 | Agent protocol | `cargo run --release --example agent_protocol` | **23/23 exit 0** |
 | Clippy / doc gates | `-D warnings` | green |
@@ -65,7 +65,7 @@
 ## Subsystem notes
 
 ### Memory model
-NMD1 byte-identical to neural-os-core. All v0.6–v1.1.6 metadata in side-tables
+NMD1 byte-identical to neural-os-core. All v0.6–v1.1.9 metadata in side-tables
 (ADR-0003). Pre-v0.6 records decode with safe defaults (`scope=""`, empty
 entities, `content_type=None`).
 
@@ -84,8 +84,11 @@ mesh harness tests. `node_versions` gossip may not converge in directed
 topologies; **content** does.
 
 ### MCP
-23 tools; demo trigram embedding documented. Hot test covers pagination,
-scope, modes, `format=json`, persistence across restart.
+4 tools (`remember`/`recall`/`health`/`curate`); 23 legacy names as
+`tools/call` aliases. Default recall **lexical** (ADR-0008). Unset
+`NEURAL_SGDB_EMBEDDER` = none (`=demo` explicit only). `remember(text=)`
+without vector → L3. Resources `nsgdb://doctrine` + `nsgdb://session`.
+`health(view=tensions)`. Hot test 84/0.
 
 ## Compatibility constraints
 
@@ -98,4 +101,4 @@ scope, modes, `format=json`, persistence across restart.
 
 Update when a capability moves from REMAINING → IMPLEMENTED (code + tests
 required). Historical Phase-0 audit content (v0.5 baseline) was superseded
-by this snapshot on 2026-08-19.
+by this snapshot on 2026-08-20.
