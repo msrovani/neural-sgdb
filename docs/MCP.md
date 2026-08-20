@@ -3,13 +3,13 @@
 Guia de instalação, contrato e troubleshooting do servidor MCP
 (`examples/mcp_server.rs`).
 
-## Contrato atual (v1.1.9)
+## Contrato atual (v1.1.10)
 
 | Campo | Valor |
 |-------|-------|
 | Protocolo | JSON-RPC 2.0 over **stdio** (uma linha JSON por mensagem) |
 | Handshake | `initialize` → `protocolVersion: 2025-11-25` |
-| `serverInfo.version` | `1.1.9` |
+| `serverInfo.version` | `1.1.10` |
 | Tools | **4** (`remember`, `recall`, `health`, `curate`) — 23 nomes antigos ainda funcionam em `tools/call` |
 | Recall default | **lexical** (ADR-0008). Cosine: `embedding=` ou `NEURAL_SGDB_EMBEDDER=demo` |
 | Embedder host | unset = none; `NEURAL_SGDB_EMBEDDER=demo` = trigrama explícito (**não** semântico) |
@@ -24,7 +24,10 @@ Lista: `remember`, `recall`, `health`, `curate`.
 
 Dispatch: `remember(user+response)` → episódico L2; `remember(text=)` sem vetor →
 L3; `recall(entities|at|rag=true)` → 1-hop / temporal / rag; `health(view=era|validate|tensions)`;
-`curate(op=explain|reinforce|…)`.
+`curate(op=explain|reinforce|decay|consolidate|audit_checkpoint|audit_verify|rollback_to|…)`
+(v1.1.10: ops de metadado cognitivo — decay Ebbinghaus, consolidação por
+recorrência, auditoria hash-chain + rollback cognitivo; `audit_verify` expõe
+`structuredContent` com o `AuditReport`).
 
 Aliases (ainda aceitos no call): os 23 nomes antigos.
 

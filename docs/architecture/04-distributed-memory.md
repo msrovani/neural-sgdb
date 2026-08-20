@@ -1,6 +1,6 @@
-# 04 — Distributed Memory
+﻿# 04 — Distributed Memory
 
-> Status: **current (v1.1.9)** — CRDT sync, full record replication, and
+> Status: **current (v1.1.10)** — CRDT sync, full record replication, and
 > anti-entropy ship behind feature `p2p`. **implemented** = code + tests;
 > **remaining** = honest gap. All English per repo policy.
 

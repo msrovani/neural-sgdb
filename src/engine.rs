@@ -215,6 +215,13 @@ impl AiosDatabaseEngine {
         self.storage.put(key, val)
     }
 
+    /// Put CRU do storage para o ledger de auditoria (v1.1.10 item 5):
+    /// `sys/audit/<seq>` não passa por índices derivados (é fonte da verdade,
+    /// não doc de memória).
+    pub(crate) fn storage_put(&mut self, key: &[u8], val: &[u8]) -> Result<(), SgdbError> {
+        self.storage.put(key, val)
+    }
+
     /// Persiste doc: L0/L1 → RAM; demais → Storage (`md/Lx/key`) + indexa.
     /// v0.6: além do NMD1, escreve a side-table `sys/meta/` (identidade +
     /// proveniência) — identidade é ESTÁVEL: um doc já existente na chave
@@ -409,6 +416,29 @@ impl AiosDatabaseEngine {
     /// Meta da memória em `sk` (None = sem doc OU registro pré-v0.6).
     pub fn meta(&mut self, sk: &str) -> Result<Option<MemoryMeta>, SgdbError> {
         Ok(self.read_meta(sk))
+    }
+
+    /// Deleta uma side-table cognitiva de `sk` do storage cru
+    /// (`sys/meta/` | `sys/state/` | `sys/validity/`). Usado pelo rollback de
+    /// auditoria (v1.1.10 item 5) para remover metadados de memórias criadas
+    /// DEPOIS do checkpoint — payloads permanecem (ADD-only).
+    pub(crate) fn delete_side_key(&mut self, kind: &[u8], sk: &str) -> Result<(), SgdbError> {
+        let mut k = Vec::with_capacity(kind.len() + sk.len());
+        k.extend_from_slice(kind);
+        k.extend_from_slice(sk.as_bytes());
+        self.storage.delete(&k)
+    }
+
+    /// Métricas de auditoria: último seq do ledger (`None` = ledger vazio).
+    pub(crate) fn audit_last_seq(&mut self) -> Result<Option<u64>, SgdbError> {
+        let rows = self.storage.scan_prefix(b"sys/audit/")?;
+        let mut last = None;
+        for (k, _) in rows {
+            if let Some(s) = crate::audit::audit_seq_from_key(&k) {
+                last = Some(last.map(|l: u64| l.max(s)).unwrap_or(s));
+            }
+        }
+        Ok(last)
     }
 
     /// Escopo EFETIVO de uma storage key (v1.1.4 item 8): lê a meta própria;

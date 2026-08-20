@@ -69,6 +69,7 @@ macro_rules! sgdb_log {
 
 pub mod art;
 pub mod arbitration;
+pub mod audit;
 pub mod bq;
 pub mod conflict;
 pub mod ctype;
@@ -95,6 +96,10 @@ mod sgdb;
 mod wire_fuzz;
 
 pub use art::ArtIndex;
+pub use audit::{
+    audit_key, audit_seq_from_key, AuditEntry, AuditSnapshotItem, AUDIT_OP_CHECKPOINT,
+    AUDIT_OP_ROLLBACK,
+};
 pub use bq::{
     hamming, hamming_path, quantize_f32, quantize_f32_centered, BqFlatIndex, MihIndex,
 };
@@ -113,8 +118,8 @@ pub use memory_doc::{
     MemoryRecord, MemoryState, RelationKind, VectorClock,
 };
 pub use sgdb::{
-    HealthReport, Hit, HitProvenance, RememberOptions, RememberOutcome, ScopeDistribution, Sgdb,
-    ValidateIssue,
+    AuditReport, ConsolidateConfig, DecayConfig, HealthReport, Hit, HitProvenance, RecallWeights,
+    RememberOptions, RememberOutcome, ScoreBreakdown, ScopeDistribution, Sgdb, ValidateIssue,
 };
 pub use storage::{InMemory, Storage, SgdbError};
 pub use limits::{

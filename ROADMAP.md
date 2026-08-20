@@ -1,13 +1,25 @@
 # Roadmap — neural-sgdb
 
-Status: **v1.1.x maintenance line (2026-08-20, crate v1.1.9)** —
+Status: **v1.1.x maintenance line (2026-08-20, crate v1.1.10)** —
 stable API, zero deps, `no_std` + `std`, CI gates green. Crate version
-**1.1.9**; histórico v1.1.2–v1.1.9 no `CHANGELOG.md`. This roadmap is honest
+**1.1.10**; histórico v1.1.2–v1.1.10 no `CHANGELOG.md`. This roadmap is honest
 about what is DONE, what is NEXT, and what is deliberately NOT planned.
 
 Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
 
 ## v1.x maintenance (2026-08-13 — ongoing)
+
+✅ **v1.1.10 — Cognitive metadata (2026-08-20)** — cinco itens de
+   `docs/future-horizons.md` entregues com regressão cada: (1) decay de
+   importância Ebbinghaus (`decay_importance`, estado `Decayed`),
+   (2) consolidação por recorrência L2→L3 determinística
+   (`consolidate_recurrences`, linhagem causal), (3) `recall_weighted_full`
+   com breakdown de score (`Hit.score_breakdown`) + ponderação por
+   confiança/fonte (trust p2p), (5) auditoria hash-chain `sys/audit/`
+   (`audit_checkpoint`/`audit_verify`/`rollback_to` — tamper-evidence sem
+   cripto, ADR-0006), (6) write-path hardening (`validate_written`).
+   MCP `curate` ganhou as 5 ops (4 tools listadas permanecem). Matriz
+   **243+1 / 289+1 / 195+1**, hot test **95/0**.
 
 ✅ **P0 — Hardening & tooling** (docs aligned to v1.0.0, clippy zero-warnings,
    CI gates, MCP paginate clamp, arbitration empty-scores fix, storage
@@ -85,9 +97,11 @@ Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
 🔜 **Cognitive surface** (all policy-pluggable, none inside the core):
 - Real embedding backfill for L3→L4 consolidation (core never generates
   embeddings).
-- Repetition/similarity-density consolidation signals.
+- Repetition/similarity-density consolidation **signals** (the mechanism —
+  `consolidate_recurrences` por repetição EXATA — já existe em v1.1.10;
+  densidade semântica é da camada).
 - Reinforcement scheduling (`reinforce` exists; scheduling is the layer's
-  job).
+  job; `decay_importance` v1.1.10 usa `last_reinforced`).
 
 ## Documentation / interop
 

@@ -7,12 +7,56 @@ All notable changes to this project. Format based on
 ## [Unreleased]
 
 ### Added (host layer — does **not** bump crate SemVer)
-- **`connectors/`** — adapters claw ↔ `mcp_server` without touching `src/`,
+- **`connectors/`** — adapters claw — `mcp_server` without touching `src/`,
   NMD1, or TKLV. Shared Python MCP/stdio client (handshake `2025-11-25`,
   cooperative `.connector.lock`), Hermes `MemoryProvider` (tools + bounded
   auto-recall; auto-capture OFF by default), OpenClaw TypeScript skeleton,
   contract tests (`python -m unittest discover -s connectors/tests -v`, 4/4).
   Docs: [`connectors/README.md`](connectors/README.md). Crate remains **1.1.9**.
+
+## [1.1.10] — 2026-08-20 (cognitive metadata: decay, consolidation, audit)
+
+Crate now **1.1.10**. Five future-horizon items landed (each with a lib
+regression + hot-test coverage; matrix **243+1 / 289+1 / 195+1** green,
+clippy `-D warnings`, `no_std` bare-metal, `cargo doc -D warnings`, hot test
+**95/0** exit 0).
+
+### Added
+- **Item 1 — Ebbinghaus decay** `Sgdb::decay_importance(now, &DecayConfig)`:
+  importância decai exponencialmente com a idade (desde `last_reinforced` ou
+  `created_tick`) em direção ao `floor`, sem nunca subir; abaixo de
+  `decay_state_at` o estado vira `Decayed` (recall active-only ignora,
+  história preservada). Idempotente para o mesmo `now` (relógio = input).
+  `exp_f32` (IEEE + série, no_std-safe) junto de `sqrt_f32`/`ln_f32`.
+- **Item 2 — Consolidação por recorrência** `Sgdb::consolidate_recurrences`:
+  episódicos L2 (`md/L2/<ts>/…`) com MESMO texto normalizado (BM25 tokenize)
+  repetido `min_repeats`+ → fato L3 determinístico
+  (`md/L3/consolidated/<fnv1a>`) VERBATIM do episódio mais antigo, com
+  `parent_ids` (version_ids) + relação `derived_from`. Dedup idempotente
+  (mesmo payload = no-op, sem bump de versão); churn bounded por `max_new`.
+- **Item 3 — Breakdown de score + ponderação** `Sgdb::recall_weighted_full`:
+  pesos por sinal — semântico, recência, importância, **confiança** e
+  **fonte** — e `Hit.score_breakdown` expõe cada sinal em penalidade + o
+  total (o consumidor vê o "porquê" do ranking). `trust: &[(node_id, 0..1)]`
+  penaliza fonte não confiável (p2p); fora do mapa = 0.5 neutro.
+  `recall_weighted` legado delega (w_conf=w_src=0 → comportamento idêntico).
+- **Item 5 — Auditoria hash-chain + rollback** `src/audit.rs` (wire `AUD1`):
+  `Sgdb::audit_checkpoint(now)` anexa elo `sys/audit/<seq:016x>` com
+  `prev_hash` (FNV-1a do elo anterior), `digest` (FNV-1a do estado ordenado
+  docs+side-tables) e SNAPSHOT das side-tables cognitivas;
+  `Sgdb::audit_verify()` → `AuditReport` (chain_intact + digest_matches_last
+  — tamper-evidence sem cripto, ADR-0006); `Sgdb::rollback_to(seq)` restaura
+  `sys/meta/`+`sys/state/`+`sys/validity/` e remove metas de memórias criadas
+  após o checkpoint (payloads ficam — ADD-only; undo de conteúdo é o DAG
+  causal). Ledger cobre o `wire_fuzz` (nunca-panic/roundtrip/truncation/magic).
+- **Item 6 — Write-path hardening** `validate_written`: rejeita chave/
+  scope/entidade com path traversal (`..`/`.`), NUL/control chars, separador
+  reservado `#` (sys/rel/) ou acima de `MAX_KLEN` — em `remember_semantic`,
+  `remember_text_with`, `set_scope`, `set_entities` e `Sgdb::put`. Nada é
+  gravado (MPBench/MemAudit lesson).
+- MCP `curate` (ferramentas listadas continuam **4**) ganhou ops
+  `decay`/`consolidate`/`audit_checkpoint`/`audit_verify`/`rollback_to`
+  (schema + dispatch; hot test fase 6b).
 
 ## [1.1.9] — 2026-08-20 (ADR-0008: lexical-first MCP)
 

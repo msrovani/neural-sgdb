@@ -190,8 +190,8 @@ fn main() {
     rep.check("initialize responde", !r.get("error").is_some(), r.to_string());
     rep.check("protocolVersion 2025-11-25",
         r["result"]["protocolVersion"] == "2025-11-25", r.to_string());
-    rep.check("serverInfo version 1.1.9",
-        r["result"]["serverInfo"]["version"] == "1.1.9", r.to_string());
+    rep.check("serverInfo version 1.1.10",
+        r["result"]["serverInfo"]["version"] == "1.1.10", r.to_string());
     rep.check("serverInfo mcp_tool_count 4",
         r["result"]["serverInfo"]["mcp_tool_count"] == 4, r.to_string());
     let instr = r["result"]["instructions"].as_str().unwrap_or("");
@@ -485,6 +485,42 @@ fn main() {
     let (txt, is_err) = srv.tool("supersede", json!({"old": key_b, "new": key_a}));
     rep.check("supersede (linhagem causal)", !is_err && txt.contains("superseded"), txt.clone());
     rep.phase("linhagem", &t);
+
+    // ---------- fase 6b: metadado cognitivo (v1.1.10 itens 1/2/5) ----------
+    // Decay de importância (Ebbinghaus), consolidação por recorrência e
+    // auditoria (hash-chain + rollback cognitivo) — novos ops do curate.
+    let t = Instant::now();
+    // consolidação: 3 episódicos L2 com MESMO texto normalizado
+    for i in 0..3 {
+        let (txt, is_err) = srv.tool("remember", json!({
+            "user": "qual o andar da sala de reunioes?",
+            "response": format!("resposta variavel {}", i),
+            "now": 1700000000000u64 + i
+        }));
+        rep.check(&format!("remember episodico L2 #{}", i), !is_err && txt.contains("md/L2/"), txt.clone());
+    }
+    let (txt, is_err) = srv.tool("curate", json!({"op": "consolidate", "min_repeats": 3, "min_len": 1, "max_new": 8}));
+    rep.check("consolidate: 1 fato L3 consolidado", !is_err && txt.contains("1 episodios"), txt.clone());
+    // auditoria: checkpoint → mutação → rollback
+    let (txt, is_err) = srv.tool("remember", json!({"text": "hot audit alpha"}));
+    rep.check("remember p/ auditoria", !is_err && txt.contains("md/L3/"), txt.clone());
+    let audit_key = storage_key_from_remember(&txt);
+    let (txt, is_err) = srv.tool("curate", json!({"op": "audit_checkpoint", "now": 1000}));
+    rep.check("audit_checkpoint anexa seq=0", !is_err && txt.contains("seq=0"), txt.clone());
+    let (txt, is_err) = srv.tool("feedback", json!({"key": audit_key, "positive": false, "amount": 0.3}));
+    rep.check("feedback derruba o metadado", !is_err, txt.clone());
+    let (txt, is_err) = srv.tool("curate", json!({"op": "audit_verify"}));
+    rep.check("audit_verify detecta divergência pós-escrita",
+        !is_err && txt.contains("estado diverge"), txt.clone());
+    let (txt, is_err) = srv.tool("curate", json!({"op": "rollback_to", "seq": 0}));
+    rep.check("rollback_to restaura o metadado", !is_err && txt.contains("restaurados"), txt.clone());
+    let (txt, is_err) = srv.tool("curate", json!({"op": "audit_verify"}));
+    rep.check("audit_verify confirma estado==checkpoint",
+        !is_err && txt.contains("estado == ultimo checkpoint"), txt.clone());
+    // decay em now=0 é fator 1 → 0 mudanças (idempotente/determinístico)
+    let (txt, is_err) = srv.tool("curate", json!({"op": "decay", "now": 0}));
+    rep.check("decay em now=0 é no-op", !is_err && txt.contains("0 memorias"), txt.clone());
+    rep.phase("metadado cognitivo", &t);
 
     // ---------- fase 7: observabilidade (health/validate) ----------
     let t = Instant::now();

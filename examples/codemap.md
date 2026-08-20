@@ -21,9 +21,12 @@ protocols that codify HOW to use the DB.
 
 ## mcp_client.rs — HOT TEST
 - `cargo run --release --example mcp_client` — drives `mcp_server` like an IDE;
-  **84/0 checks exit 0** (v1.1.9). Covers 4-tool surface + aliases, lexical
+  **95/0 checks exit 0** (v1.1.10). Covers 4-tool surface + aliases, lexical
   default (ADR-0008), `format=json`, `remember(type=)`, temporal, entities,
-  lazy pagination, scope, persistence across restart.
+  lazy pagination, scope, persistence across restart, e **fase 6b (metadado
+  cognitivo)**: `curate` ops `consolidate`/`audit_checkpoint`/`audit_verify`/
+  `rollback_to`/`decay` — episódicos L2 precisam de `now` DISTINTO por chamada
+  (senão as chaves `md/L2/ts/<hex>` colidem no mesmo ms).
 
 ## mcp_server.rs
 - `cargo run --release --example mcp_server` — connectable to Claude Code/Cursor/OpenCode
@@ -39,6 +42,9 @@ protocols that codify HOW to use the DB.
 - **v1.1.9 ADR-0008**: default recall **lexical**; `remember` sem vetor → L3;
   `NEURAL_SGDB_EMBEDDER` unset = none; `=demo` explícito. Resources
   `nsgdb://doctrine` + `nsgdb://session`. `health(view=tensions)`.
+- **v1.1.10 (curate ops)**: `decay` (Ebbinghaus), `consolidate`, 
+  `audit_checkpoint`/`audit_verify` (ledger hash-chain + structuredContent),
+  `rollback_to` (cognitivo — payloads intocados).
 - Persistence: `FileStorage` via env `NEURAL_SGDB_DB` (default `sgdb_memory.db`)
 - Protocol: `initialize` (echo 2025-11-25) → `notifications/initialized`
   (ignore) → `tools/list` → `tools/call` → `ping`; unknown → `-32601`

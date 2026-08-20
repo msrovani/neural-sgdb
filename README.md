@@ -36,11 +36,13 @@ filesystem, no external runtime.
 
 ## Status
 
-**v1.1.9** ✅ — MCP lexical-first (ADR-0008): `remember` sem vetor = L3;
-`recall` default lexical; `nsgdb://session` + `health(view=tensions)`.
-Crate em `Cargo.toml`: **1.1.9**.
+**v1.1.10** ✅ — cognitive metadata: `decay_importance` (Ebbinghaus),
+`consolidate_recurrences`, `recall_weighted_full` (`Hit.score_breakdown`),
+auditoria hash-chain (`audit_checkpoint`/`audit_verify`/`rollback_to`) e
+write-path hardening. Herda o MCP lexical-first (ADR-0008).
+Crate em `Cargo.toml`: **1.1.10**.
 
-- `cargo test` on host: **235+ lib tests + doc-test** (plus p2p / no_std matrix)
+- `cargo test` on host: **243+ lib tests + doc-test** (plus p2p / no_std matrix)
 - `cargo check --no-default-features --target x86_64-unknown-none`: **clean**
 - **Typed hits (v1.1.6)**: o recall devolve, por hit, `path` (semantic/
   lexical/entities), `content_type` (Text/Json/Code/Embedding(dim)/Binary),
@@ -88,7 +90,7 @@ Crate em `Cargo.toml`: **1.1.9**.
   `profile`/`expire_old`) and **MCP 4 tools** (`remember`/`recall`/`health`/`curate`;
   `health`/`validate` observability, `era_report`, `remember_episodic`,
   retrieval modes semantic/lexical/hybrid, `recall_temporal`,
-  `recall_entities`, ServerInfo v1.1.9) + **write-side era guard** (S1 no
+  `recall_entities`, ServerInfo v1.1.10, curate ops de metadado cognitivo) + **write-side era guard** (S1 no
   write também — `remember_semantic` fora da era do corpus vivo é `Invalid`)
   + **seams de conteúdo** (`Embedder` trait, `entities`, `content_type` —
   quem fornece declara)
@@ -193,7 +195,7 @@ lists conflicts / superseded / unseen scopes.
 
 Host adapters for claw-like apps (Hermes provider, OpenClaw skeleton, shared
 MCP client) live in [`connectors/`](connectors/README.md) — **outside** crate
-SemVer; core stays 1.1.9.
+SemVer; core stays 1.1.10.
 
 ### Cursor (Windows)
 
@@ -245,7 +247,7 @@ avoid stale/unreproducible claims).
   (LaTeX, two-column article; **compiled [`neural-sgdb-telepathy.pdf`](docs/paper/neural-sgdb-telepathy.pdf)**,
   8 TikZ figures + design rationale, threats to validity, case study, appendix;
   upload the `.tex` source to arXiv)
-- **Architecture (v1.1.9)** — [`docs/architecture/`](docs/architecture/)
+- **Architecture (v1.1.10)** — [`docs/architecture/`](docs/architecture/)
   — Memory Model (01), Lifecycle (02), Retrieval (03), Distributed (04),
   Storage (05), Cognitive API (06) — documents the shipped cognitive memory
   system; [`docs/implementation-status.md`](docs/implementation-status.md)

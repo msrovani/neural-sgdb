@@ -1,7 +1,7 @@
 # neural-sgdb — API Contract
 
 > Contract document for the extraction of the SGDB core from neural-os-core.
-> Status: **current public contract (crate v1.1.9)** —
+> Status: **current public contract (crate v1.1.10)** —
 > this document is the current public contract; roadmap items are explicitly
 > marked as such. The internal API lives in `crates/k_ai/src/sgdb/` of the
 > parent OS; this doc defines the public surface the community crate exposes
@@ -323,10 +323,10 @@ código, binários). Duas regras tornam o consumo determinístico:
    `Sgdb::primary_of(key)` resolve `md/L2/<id>` → primário existente para
    follow-ups.
 
-## Additive public surface (v1.1.2–v1.1.9)
+## Additive public surface (v1.1.2–v1.1.10)
 
 Everything below is **additive** (MINOR per VERSIONING.md) — no signature of a
-v1.0 method changed; crate version **1.1.9** in `Cargo.toml`. Key additions since the contract above:
+v1.0 method changed; crate version **1.1.10** in `Cargo.toml`. Key additions since the contract above:
 
 ```rust
 // ---- S1: recall is LOUD on dimension mismatch (v1.1.3) ----
@@ -409,6 +409,68 @@ pub fn rag_context_reranked(&mut self, emb: &[f32], query_text: &str, k: usize)
 // ---- Resolução canônica (v1.1.2) ----
 pub fn primary_of(&mut self, key: &str) -> Result<Option<(String, ContentType)>, SgdbError>;
 // md/L2/<id> → primary md/L4|L5|L3/<id> (existing) + payload type.
+
+// ================= v1.1.10 — cognitive metadata =================
+
+// ---- Decay Ebbinghaus (item 1) ----
+pub struct DecayConfig {
+    pub half_life_ms: u64,     // curve half-life (ms); 0 disables decay
+    pub floor: f32,            // importance floor (never decays below)
+    pub decay_state_at: f32,   // below this the doc state becomes Decayed
+    pub decay_confidence: bool,// decay confidence too (same factor, floor 0.0)
+}
+pub fn decay_importance(&mut self, now: u64, cfg: &DecayConfig) -> Result<usize, SgdbError>;
+// importance decays exponentially with age (since last_reinforced or
+// created_tick) toward `floor`, never rises; below `decay_state_at` the state
+// becomes `Decayed` (active-only recall ignores; history via
+// recall_historical). IDEMPOTENT for the same `now` (clock = input).
+
+// ---- Consolidação por recorrência (item 2) ----
+pub struct ConsolidateConfig {
+    pub min_repeats: usize, // identical normalized text repeated N+ times
+    pub min_len: usize,     // skip tiny episodes (bytes)
+    pub max_new: usize,     // bounded churn per pass
+}
+pub fn consolidate_recurrences(&mut self, cfg: &ConsolidateConfig) -> Result<usize, SgdbError>;
+// timestamped L2 episodics with the SAME normalized text (BM25 tokenize)
+// repeated `min_repeats`+ → deterministic L3 fact
+// md/L3/consolidated/<fnv1a>:016x VERBATIM of the oldest episode, with
+// parent_ids (version_ids) + derived_from relation. Dedup: identical payload
+// → no-op (no version bump); returns # of NEW facts.
+
+// ---- Recall ponderado com breakdown (item 3) ----
+pub struct RecallWeights { pub w_sem: f32, pub w_rec: f32, pub w_imp: f32,
+                           pub w_conf: f32, pub w_src: f32 }
+impl RecallWeights { pub fn legacy(w_sem: f32, w_rec: f32, w_imp: f32) -> Self; }
+pub struct ScoreBreakdown { pub semantic: Option<f32>, pub recency: Option<f32>,
+    pub importance: Option<f32>, pub confidence: Option<f32>,
+    pub source: Option<f32>, pub total: f32 } // all penalties 0..1, lower = better
+pub fn recall_weighted_full(&mut self, query: &[f32], k: usize,
+    w: &RecallWeights, trust: &[(u8, f32)], now: u64)
+    -> Result<Vec<Hit>, SgdbError>;
+// per-signal weights + Hit.score_breakdown ALWAYS filled. trust: &[(node_id,
+// reliability 0..1)] — nodes outside the map = 0.5 neutral (Sgdb::open uses
+// node_id 1, not 0). recall_weighted delegates with RecallWeights::legacy
+// (w_conf=w_src=0 → identical ordering, regression-tested).
+
+// ---- Auditoria hash-chain + rollback (item 5, src/audit.rs, wire AUD1) ----
+pub fn audit_checkpoint(&mut self, now: u64) -> Result<u64, SgdbError>;
+// appends sys/audit/<seq:016x> link: prev_hash (FNV-1a of previous link),
+// digest (FNV-1a of ordered md/+sys/meta|state|validity — sys/audit/ does NOT
+// sign itself) and SNAPSHOT of the cognitive side-tables. Returns the seq.
+pub struct AuditReport { pub entries: usize, pub chain_intact: bool,
+    pub digest_matches_last: bool, pub last_seq: Option<u64> }
+pub fn audit_verify(&mut self) -> Result<AuditReport, SgdbError>;
+pub fn rollback_to(&mut self, seq: u64) -> Result<usize, SgdbError>;
+// restores meta/state/validity from the snapshot + removes side-tables of
+// memories created AFTER the checkpoint; PAYLOADS are NOT reverted (ADD-only;
+// content undo = causal DAG) and a rollback marker closes the chain.
+
+// ---- Write-path hardening (item 6) ----
+// validate_written (internal) rejects key/scope/entity with `..`/`.` component,
+// NUL/control (<0x20 or 0x7F), reserved `#` (sys/rel/ separator) or > MAX_KLEN
+// — in remember_semantic, remember_text_with, set_scope, set_entities,
+// Sgdb::put. SgdbError::Invalid with a STATIC message; nothing is written.
 ```
 
 ## Format decision (v0.6)

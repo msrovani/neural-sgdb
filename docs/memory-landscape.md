@@ -1,4 +1,4 @@
-# Memory landscape — benchmark de sistemas de memória persistente (2026-08)
+﻿# Memory landscape — benchmark de sistemas de memória persistente (2026-08)
 
 Análise de projetos concorrentes de memória persistente para agentes de IA,
 feita para extrair ideias copiáveis (licenças compatíveis: MIT / Apache-2.0;
@@ -77,7 +77,7 @@ v1.1.5–v1.1.6 acrescentaram era guard e hits tipados — ver `CHANGELOG.md`.
 
 Status: itens **1–10 entregues em v1.1.4** (2026-08-14, commits por item com
 regressão; na época: matriz 210+1 / 256+1 / 162+1; hot test 22 tools).
-**Estado corrente (v1.1.9):** crate 1.1.9; MCP 4 tools + aliases; default
+**Estado corrente (v1.1.10):** crate 1.1.9; MCP 4 tools + aliases; default
 recall lexical (ADR-0008); hot test 84/0. Typed hits (v1.1.6) e doutrina
 (v1.1.8) permanecem.
 Item 10 foi entregue no modo **custo baixo + risco baixo** (1-hop de
@@ -109,3 +109,6 @@ MCP: `remember(entities=)` + tool `recall_entities`. **Multi-hop (grafo
 semântico real, BFS/DFS em entidades, persistência de arestas) segue fora de
 escopo** — custo 1–2 semanas, maior risco (ver discussão de custo/risco na
 sessão).
+
+O estado da arte pós-v1.1.4, as apostas de pesquisa de 2026 e a visão de longo
+prazo estão separados em **[`future-horizons.md`](future-horizons.md)**.

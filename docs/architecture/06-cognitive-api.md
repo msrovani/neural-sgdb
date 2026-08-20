@@ -1,6 +1,6 @@
-# 06 — Cognitive API
+﻿# 06 — Cognitive API
 
-> Status: **current (v1.1.9)** — the cognitive surface ships in `Sgdb` +
+> Status: **current (v1.1.10)** — the cognitive surface ships in `Sgdb` +
 > MCP server (**4 tools**, aliases for the 23 legacy names). **implemented** =
 > code + tests; **remaining** = honest gap. All English per repo policy.
 
@@ -23,7 +23,7 @@ material for the agent/LLM above.
 |------|-------|-------|
 | `remember_exchange` | L1+L2 | RAM until checkpoint |
 | `remember_episodic` | L2 | verbatim user/response pairs (v1.1.4) |
-| `remember_text_with` | L3 | lexical write, no BQ era (v1.1.9) |
+| `remember_text_with` | L3 | lexical write, no BQ era (v1.1.10) |
 | `remember_semantic` | L4+L2 companion | era guard on live corpus |
 | `remember_fact` | L3 | timestamped |
 | `set_importance` / `set_confidence` | meta | clamped [0,1] |
@@ -70,7 +70,7 @@ material for the agent/LLM above.
 ## 6. MCP surface (implemented — 4 tools + aliases)
 
 `cargo run --release --example mcp_server` — JSON-RPC 2.0 stdio, handshake
-`2025-11-25`. `serverInfo.version` = crate **1.1.9**.
+`2025-11-25`. `serverInfo.version` = crate **1.1.10**.
 
 **Listed tools:** `remember`, `recall`, `health`, `curate`. Dispatch by args
 (`user+response` → episodic L2; `entities` / `at` / `rag=true`;
@@ -95,7 +95,7 @@ remain valid aliases on `tools/call`.
 the product default — set `NEURAL_SGDB_EMBEDDER=demo` only if requested.
 Same model on write and query (S1 guard).
 
-Hot test: `mcp_client` — **84/0** checks (v1.1.9).
+Hot test: `mcp_client` — **84/0** checks (v1.1.10).
 
 ## 7. Machine→machine contract (v1.1.6)
 

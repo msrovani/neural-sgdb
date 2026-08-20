@@ -1,6 +1,6 @@
 # neural-sgdb — Implementation Status
 
-> **Current snapshot (2026-08-20, v1.1.9).** Capability matrix vs the shipped
+> **Current snapshot (2026-08-20, v1.1.10).** Capability matrix vs the shipped
 > codebase. For the public contract see [`docs/api.md`](api.md); for architecture
 > narrative see [`docs/architecture/README.md`](architecture/README.md).
 
@@ -17,11 +17,11 @@
 
 | Check | Command | Result |
 |---|---|---|
-| Default tests | `cargo test` | **235+ lib + 1 doc-test** |
-| P2P tests | `cargo test --features p2p` | **275 lib + 1 doc-test** |
-| no_std tests | `cargo test --no-default-features` | **181 lib + 1 doc-test** |
+| Default tests | `cargo test` | **243+ lib + 1 doc-test** |
+| P2P tests | `cargo test --features p2p` | **289 lib + 1 doc-test** |
+| no_std tests | `cargo test --no-default-features` | **195 lib + 1 doc-test** |
 | no_std target | `cargo check --no-default-features --target x86_64-unknown-none` | **ok** |
-| Hot test (MCP) | `cargo run --release --example mcp_client` | **84/0 exit 0** |
+| Hot test (MCP) | `cargo run --release --example mcp_client` | **95/0 exit 0** |
 | Machine protocol | `cargo run --release --example two_ai_protocol` | **16/16 exit 0** |
 | Agent protocol | `cargo run --release --example agent_protocol` | **23/23 exit 0** |
 | Clippy / doc gates | `-D warnings` | green |
@@ -50,6 +50,11 @@
 | Conflict model | IMPLEMENTED | CFL1, resolve/dismiss |
 | MemoryLifecycle tick | IMPLEMENTED | promote/decay/archive deterministic |
 | Cognitive API | IMPLEMENTED | reinforce, supersede, explain, merge, … |
+| Ebbinghaus decay (v1.1.10) | IMPLEMENTED | `decay_importance`, state `Decayed`, idempotent per `now` |
+| Recurrence consolidation (v1.1.10) | IMPLEMENTED | `consolidate_recurrences`, deterministic L3, lineage |
+| Score breakdown (v1.1.10) | IMPLEMENTED | `recall_weighted_full`, `Hit.score_breakdown`, trust weights |
+| Audit hash-chain (v1.1.10) | IMPLEMENTED | `sys/audit/` (AUD1), `audit_verify`, `rollback_to` |
+| Write-path hardening (v1.1.10) | IMPLEMENTED | `validate_written` on all write seams |
 | Arbitration policy seam | IMPLEMENTED | `ArbitrationPolicy`, no LLM in core |
 | Embedder seam | IMPLEMENTED | trait + DemoEmbedder + HTTP example |
 | MCP server | IMPLEMENTED | 4 tools (+ aliases), lexical-first (ADR-0008), `nsgdb://session` |
@@ -66,7 +71,7 @@
 ## Subsystem notes
 
 ### Memory model
-NMD1 byte-identical to neural-os-core. All v0.6–v1.1.9 metadata in side-tables
+NMD1 byte-identical to neural-os-core. All v0.6–v1.1.10 metadata in side-tables
 (ADR-0003). Pre-v0.6 records decode with safe defaults (`scope=""`, empty
 entities, `content_type=None`).
 

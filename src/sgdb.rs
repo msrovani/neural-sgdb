@@ -126,6 +126,116 @@ pub struct RememberOutcome {
     pub recall_hint: String,
 }
 
+/// Config de DECAY de importância (v1.1.10 item 1, Ebbinghaus): a importância
+/// decai exponencialmente com a idade (desde `last_reinforced` ou
+/// `created_tick`), aproximando-se de `floor` sem nunca subir. Abaixo de
+/// `decay_state_at` o estado vira `Decayed` (esquecimento: recall active-only
+/// passa a ignorar, história fica via `recall_historical`). Determinístico e
+/// idempotente para o mesmo `now` (o `Sgdb::decay_importance` retorna quantas
+/// memórias MUDARAM — segunda passada com o mesmo relógio → 0).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DecayConfig {
+    /// Meia-vida em ms: idade = meia-vida → importância cai pela metade
+    /// (em direção ao floor). 0 desliga o decay.
+    pub half_life_ms: u64,
+    /// Piso da importância (nunca decai abaixo).
+    pub floor: f32,
+    /// Abaixo deste valor a memória vira `Decayed`.
+    pub decay_state_at: f32,
+    /// Decai também a confiança (fator idêntico, piso 0.0).
+    pub decay_confidence: bool,
+}
+
+impl Default for DecayConfig {
+    fn default() -> Self {
+        Self {
+            half_life_ms: 30 * 24 * 3600 * 1000, // 30 dias
+            floor: 0.05,
+            decay_state_at: 0.05,
+            decay_confidence: true,
+        }
+    }
+}
+
+/// Config de CONSOLIDAÇÃO por recorrência (v1.1.10 item 2, SCM/sono-like):
+/// episódicos L2 (`md/L2/<ts>/...`) com o MESMO texto normalizado, repetidos
+/// `min_repeats`+, são consolidados num fato L3 determinístico
+/// (`md/L3/consolidated/<fnv1a(normalized)>`) com linhagem causal
+/// (`parent_ids` dos episódios + relação `derived_from`). Nunca extrai
+/// entidade/embedding (contrato do core); churn bounded por `max_new`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConsolidateConfig {
+    /// Repetições mínimas do texto (após normalização) para consolidar.
+    pub min_repeats: usize,
+    /// Comprimento mínimo do texto (bytes) — ruído curto não vira fato.
+    pub min_len: usize,
+    /// Teto de novos fatos por chamada (trabalho O(N) bounded).
+    pub max_new: usize,
+}
+
+impl Default for ConsolidateConfig {
+    fn default() -> Self {
+        Self {
+            min_repeats: 3,
+            min_len: 24,
+            max_new: 64,
+        }
+    }
+}
+
+/// Pesos do `recall_weighted_full` (v1.1.10 item 3): um peso por sinal —
+/// semântico, recência, importância, confiança e fonte — todos no espaço de
+/// PENALIDADE (menor = melhor). `w_conf`/`w_src` = 0 reproduzem o
+/// `recall_weighted` legado (w_sem/w_rec/w_imp).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecallWeights {
+    pub w_sem: f32,
+    pub w_rec: f32,
+    pub w_imp: f32,
+    pub w_conf: f32,
+    pub w_src: f32,
+}
+
+impl RecallWeights {
+    /// Pesos legados do `recall_weighted` (confiança/fonte desligados).
+    pub fn legacy(w_sem: f32, w_rec: f32, w_imp: f32) -> Self {
+        Self { w_sem, w_rec, w_imp, w_conf: 0.0, w_src: 0.0 }
+    }
+}
+
+/// Decomposição do score de um hit ponderado (v1.1.10 item 3, memrust-style):
+/// cada sinal exposto em PENALIDADE (0..1, menor = melhor) + o `total`
+/// ponderado. O consumidor vê o "porquê" do ranking sem re-derivar.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct ScoreBreakdown {
+    /// 1−cos (path semântico).
+    pub semantic: Option<f32>,
+    /// Penalidade de recência (0 = recente).
+    pub recency: Option<f32>,
+    /// Penalidade de importância (`1 − importance`; `None` = sem meta → layer default).
+    pub importance: Option<f32>,
+    /// Penalidade de confiança (`1 − confidence`; `None` = pré-v0.6 neutro 0.5).
+    pub confidence: Option<f32>,
+    /// Penalidade de fonte (`1 − trust(node)`; `None` = trust neutro 0.5).
+    pub source: Option<f32>,
+    /// Score final ponderado (ordenação).
+    pub total: f32,
+}
+
+/// Relatório do `Sgdb::audit_verify` (v1.1.10 item 5) — tamper-evidence.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AuditReport {
+    /// Elos no ledger.
+    pub entries: usize,
+    /// Todos os `prev_hash` encadeiam (nenhum elo quebrado/trocado).
+    pub chain_intact: bool,
+    /// O digest do estado CORRENTE bate com o último checkpoint
+    /// (`false` = houve escrita (ou rollback) após o último checkpoint).
+    pub digest_matches_last: bool,
+    /// Último seq do ledger (`None` = vazio).
+    pub last_seq: Option<u64>,
+}
+
 /// Problema de integridade encontrado por [`Sgdb::validate`] (P2-3).
 /// Agregado: um erro não impede os demais checks — `validate()` retorna
 /// TODOS os issues (vazia = saudável).
@@ -189,6 +299,10 @@ pub struct Hit {
     /// — follow-ups (`explain`/`supersede`) miram o primário, não o companion.
     /// `None` para docs primários.
     pub rel: Option<String>,
+    /// Decomposição do score (v1.1.10 item 3): preenchida por
+    /// `recall_weighted_full` (cada sinal em penalidade + total). `None` nos
+    /// demais paths (score bruto em `score`/`dist` já cobre).
+    pub score_breakdown: Option<ScoreBreakdown>,
 }
 
 /// Explicação ESTRUTURADA do estado corrente de uma memória (v0.9,
@@ -567,6 +681,9 @@ impl Sgdb {
     /// scope). Registros pré-v1.1.4 decodificam com `scope = ""` (migração
     /// MDM1 v4 explícita).
     pub fn set_scope(&mut self, key: &str, scope: &str) -> Result<(), SgdbError> {
+        if !scope.is_empty() {
+            validate_written(scope)?;
+        }
         let sk = self.resolve_known_key(key);
         let mut m = self.engine.ensure_meta(&sk)?;
         m.scope = scope.to_string();
@@ -590,9 +707,7 @@ impl Sgdb {
     /// entidades não aparece em `recall_entities`).
     pub fn set_entities(&mut self, key: &str, entities: &[&str]) -> Result<(), SgdbError> {
         for e in entities {
-            if e.is_empty() {
-                return Err(SgdbError::Invalid("entity must not be empty"));
-            }
+            validate_written(e)?;
         }
         let sk = self.resolve_known_key(key);
         let mut m = self.engine.ensure_meta(&sk)?;
@@ -807,6 +922,7 @@ impl Sgdb {
                 matched_terms: Vec::new(),
                 validity,
                 rel,
+                score_breakdown: None,
             });
         }
         Ok(out)
@@ -1133,6 +1249,7 @@ impl Sgdb {
         text: &str,
         emb: &[f32],
     ) -> Result<(), SgdbError> {
+        validate_written(key)?;
         crate::bq::check_embedding(emb)?;
         // ADR-0007 write-side era guard: `BqFlatIndex` locks `words_per_vec` on
         // the first insert — a different-dim embedding in a live BQ is silently
@@ -1188,6 +1305,7 @@ impl Sgdb {
         text: &str,
         opts: RememberOptions<'_>,
     ) -> Result<RememberOutcome, SgdbError> {
+        validate_written(key)?;
         let doc = MemoryDoc::new(
             MemoryLayer::L3EpisodicLong,
             key,
@@ -1665,6 +1783,7 @@ impl Sgdb {
                     matched_terms: Vec::new(),
                     validity,
                     rel: None,
+                    score_breakdown: None,
                 },
                 declared,
             ));
@@ -1726,9 +1845,26 @@ impl Sgdb {
         w_imp: f32,
         now: u64,
     ) -> Result<Vec<Hit>, SgdbError> {
+        self.recall_weighted_full(query, k, &RecallWeights::legacy(w_sem, w_rec, w_imp), &[], now)
+    }
+
+    /// `recall_weighted` completo (v1.1.10 item 3): pesos por sinal —
+    /// semântico, recência, importância, **confiança** e **fonte** — todos em
+    /// PENALIDADE (menor = melhor). `trust` mapeia `(node_id → confiabilidade
+    /// 0..1)` da fonte (ex: um peer p2p é menos confiável que o autor local);
+    /// fora do mapa → 0.5 (neutro). Cada `Hit.score_breakdown` carrega o
+    /// valor de cada sinal + o total — o consumidor vê o "porquê" do ranking.
+    pub fn recall_weighted_full(
+        &mut self,
+        query: &[f32],
+        k: usize,
+        w: &RecallWeights,
+        trust: &[(u8, f32)],
+        now: u64,
+    ) -> Result<Vec<Hit>, SgdbError> {
         let pool = self.recall_oversampled(query, k.max(1).saturating_mul(16), 1)?;
         let mut scored: Vec<(f64, Hit)> = Vec::with_capacity(pool.len());
-        for h in pool {
+        for mut h in pool {
             let rec = match ts_from_key(&h.key) {
                 Some(t) => (now.saturating_sub(t) as f64 / 1000.0).clamp(0.0, 1.0),
                 None => 0.5, // sem timestamp: neutro
@@ -1737,19 +1873,369 @@ impl Sgdb {
             // doc (0..1, 1 = mais importante → penalty 1−imp) ou, para
             // registros pré-v0.6 sem meta, a default da camada via
             // layer_importance (já é penalty — L4 default importance 1.0 → 0.0)
-            let penalty = match h.provenance.as_ref() {
-                Some(p) => 1.0 - p.importance as f64,
-                None => layer_importance(&h.key),
+            let (imp_pen, conf_pen, src_node) = match h.provenance.as_ref() {
+                Some(p) => (
+                    1.0 - p.importance as f64,
+                    1.0 - p.confidence as f64,
+                    Some(p.source),
+                ),
+                None => (layer_importance(&h.key), 0.5, None),
             };
-            let s = w_sem as f64 * h.dist as f64
-                + w_rec as f64 * rec
-                + w_imp as f64 * penalty;
-            scored.push((s, h));
+            // confiança na FONTE (node_id → trust); neutro 0.5 sem mapa
+            let trust_v = src_node
+                .and_then(|n| trust.iter().find(|(id, _)| *id == n))
+                .map(|(_, t)| (*t).clamp(0.0, 1.0) as f64)
+                .unwrap_or(0.5);
+            let src_pen = 1.0 - trust_v;
+            let sem = h.dist as f64;
+            let total = w.w_sem as f64 * sem
+                + w.w_rec as f64 * rec
+                + w.w_imp as f64 * imp_pen
+                + w.w_conf as f64 * conf_pen
+                + w.w_src as f64 * src_pen;
+            h.score_breakdown = Some(ScoreBreakdown {
+                semantic: Some(sem as f32),
+                recency: Some(rec as f32),
+                importance: Some(imp_pen as f32),
+                confidence: Some(conf_pen as f32),
+                source: Some(src_pen as f32),
+                total: total as f32,
+            });
+            scored.push((total, h));
         }
         scored.sort_by(|a, b| {
             a.0.total_cmp(&b.0).then_with(|| a.1.key.cmp(&b.1.key))
         });
         Ok(scored.into_iter().take(k).map(|(_, h)| h).collect())
+    }
+
+    /// Decay de importância (v1.1.10 item 1, Ebbinghaus/FSFM): a importância
+    /// decai exponencialmente com a idade (desde `last_reinforced` ou
+    /// `created_tick`) em direção ao `floor` — nunca sobe. Abaixo de
+    /// `decay_state_at` a memória vira `Decayed` (recall active-only a
+    /// ignora; história preservada via `recall_historical`). Reforço recente
+    /// (`reinforce`/`feedback`) contrabalança: `last_reinforced` zera a idade.
+    /// Determinístico e idempotente por `now` (devolve quantas mudaram).
+    /// Não ticka o relógio — metadado cognitivo local.
+    pub fn decay_importance(&mut self, now: u64, cfg: &DecayConfig) -> Result<usize, SgdbError> {
+        if cfg.half_life_ms == 0 {
+            return Ok(0);
+        }
+        let rows = self.engine.scan_prefix_storage(b"sys/meta/")?;
+        let mut changed = 0usize;
+        for (mk, bytes) in rows {
+            // `sys/meta/<sk>` → sk (9 bytes de prefixo)
+            let sk = String::from_utf8_lossy(&mk[9..]).into_owned();
+            if !(sk.starts_with("md/L3/") || sk.starts_with("md/L4/") || sk.starts_with("md/L5/"))
+            {
+                continue;
+            }
+            let Ok(mut m) = MemoryMeta::decode(&bytes) else {
+                continue;
+            };
+            if self.engine.get_by_storage_key(&sk)?.is_none() {
+                continue; // chave fantasma (sem doc) — não mexe
+            }
+            if self.engine.get_state(&sk) != MemoryState::Active {
+                continue; // só memória viva decai (histórico fica como está)
+            }
+            let last = if m.last_reinforced != 0 {
+                m.last_reinforced
+            } else {
+                m.created_tick
+            };
+            let age = now.saturating_sub(last);
+            let factor = exp_f32(-(age as f32 / cfg.half_life_ms as f32));
+            let target = cfg.floor + (m.importance - cfg.floor) * factor;
+            let new_imp = target.min(m.importance).clamp(0.0, 1.0);
+            let new_conf = if cfg.decay_confidence {
+                (m.confidence * factor).clamp(0.0, 1.0)
+            } else {
+                m.confidence
+            };
+            let imp_changed = (new_imp - m.importance).abs() > 1e-7;
+            let conf_changed = (new_conf - m.confidence).abs() > 1e-7;
+            let mut touched = false;
+            if imp_changed || conf_changed {
+                m.importance = new_imp;
+                m.confidence = new_conf;
+                self.engine.write_meta(&sk, &m)?;
+                touched = true;
+            }
+            if new_imp <= cfg.decay_state_at {
+                self.engine.set_state(&sk, MemoryState::Decayed)?;
+                touched = true;
+            }
+            if touched {
+                changed += 1;
+            }
+        }
+        Ok(changed)
+    }
+
+    /// Consolidação por recorrência (v1.1.10 item 2, SCM/SleepGate-like):
+    /// episódicos L2 timestamped (`md/L2/<ts>/…`) com o MESMO texto
+    /// normalizado repetido `min_repeats`+ viram um fato L3 determinístico
+    /// (`md/L3/consolidated/<fnv1a(normalized):016x>`) com linhagem causal
+    /// (`parent_ids` = version_ids dos episódios + relação `derived_from`).
+    /// O texto consolidado é VERBATIM do episódio mais antigo (determinístico).
+    /// O core NUNCA extrai entidade/embedding (contrato); dedup por hash →
+    /// re-put da MESMA chave sem payload novo é no-op (sem bump de versão).
+    /// Churn bounded por `max_new`.
+    pub fn consolidate_recurrences(&mut self, cfg: &ConsolidateConfig) -> Result<usize, SgdbError> {
+        use alloc::collections::BTreeMap;
+        let rows = self.engine.scan_prefix_storage(b"md/L2/")?;
+        let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (k, blob) in rows {
+            let sk = String::from_utf8_lossy(&k).into_owned();
+            if !sk.contains("/ts/") {
+                continue; // só episódicos timestamped (companions de L4/L5 não)
+            }
+            let Ok(doc) = MemoryDoc::decode(&blob) else {
+                continue;
+            };
+            let text = String::from_utf8_lossy(&doc.payload).into_owned();
+            let norm = normalize_text(&text);
+            if norm.is_empty() {
+                continue;
+            }
+            groups.entry(norm).or_default().push(sk);
+        }
+        let mut made = 0usize;
+        for (norm, items) in groups {
+            if made >= cfg.max_new {
+                break;
+            }
+            if items.len() < cfg.min_repeats {
+                continue;
+            }
+            let anchor = String::from_utf8_lossy(
+                &self.engine.get_by_storage_key(&items[0])?.map(|d| d.payload).unwrap_or_default(),
+            )
+            .into_owned();
+            if anchor.len() < cfg.min_len {
+                continue;
+            }
+            let hash = crate::tickv::fnv1a64(norm.as_bytes());
+            let ckey = alloc::format!("consolidated/{hash:016x}");
+            let sk = alloc::format!("md/L3/{ckey}");
+            // dedup idempotente: mesmo payload já consolidado → no-op
+            let existing = self.engine.get_by_storage_key(&sk)?;
+            let already = existing
+                .as_ref()
+                .map(|d| d.payload == anchor.as_bytes())
+                .unwrap_or(false);
+            if !already {
+                let doc = MemoryDoc::new(
+                    MemoryLayer::L3EpisodicLong,
+                    &ckey,
+                    anchor.clone().into_bytes(),
+                );
+                let _ = self.engine.put(doc)?;
+                made += 1;
+            }
+            // linhagem: version_ids dos episódios (ordenados, deduplicados)
+            let mut parents: Vec<String> = Vec::new();
+            for esk in &items {
+                if let Ok(m) = self.engine.ensure_meta(esk) {
+                    if !parents.contains(&m.version_id) {
+                        parents.push(m.version_id.clone());
+                    }
+                }
+            }
+            parents.sort();
+            self.add_parents(&sk, &parents)?;
+            let _ = self.associate(&sk, RelationKind::DerivedFrom, &items[0]);
+        }
+        Ok(made)
+    }
+
+    /// Checkpoint de auditoria (v1.1.10 item 5, ChronoMem/MemTxn): anexa um
+    /// elo à hash-chain `sys/audit/` com (a) `prev_hash` = FNV-1a do elo
+    /// anterior, (b) `digest` = FNV-1a do estado corrente ordenado (docs +
+    /// side-tables), e (c) um SNAPSHOT das side-tables cognitivas
+    /// (`sys/meta/` + `sys/state/` + `sys/validity/`) — a base do
+    /// `rollback_to(seq)`. Devolve o seq do checkpoint.
+    pub fn audit_checkpoint(&mut self, now: u64) -> Result<u64, SgdbError> {
+        let digest = self.state_digest()?;
+        let snapshot = self.state_snapshot()?;
+        let last = self.engine.audit_last_seq()?;
+        let seq = last.map(|l| l.saturating_add(1)).unwrap_or(0);
+        let prev_hash = match last {
+            Some(l) => match self.engine.storage_get(&crate::audit::audit_key(l))? {
+                Some(b) => crate::tickv::fnv1a64(&b),
+                None => 0,
+            },
+            None => 0,
+        };
+        let e = crate::audit::AuditEntry {
+            seq,
+            prev_hash,
+            ts: now,
+            op: crate::audit::AUDIT_OP_CHECKPOINT,
+            digest,
+            snapshot,
+        };
+        self.engine.storage_put(&crate::audit::audit_key(seq), &e.encode())?;
+        Ok(seq)
+    }
+
+    /// Verifica a hash-chain e o drift do estado (tamper-evidence): caminha
+    /// `sys/audit/` em ordem de seq, confere os `prev_hash` (elo a elo) e
+    /// compara o digest CORRENTE com o do último CHECKPOINT. `chain_intact` =
+    /// nenhum elo quebrado/trocado; `digest_matches_last` = `false` indica
+    /// escrita (ou rollback) após o último checkpoint — estado legítimo, mas
+    /// o consumidor sabe que o snapshot está defasado.
+    pub fn audit_verify(&mut self) -> Result<AuditReport, SgdbError> {
+        let rows = self.engine.scan_prefix_storage(b"sys/audit/")?;
+        let mut entries: Vec<(u64, Vec<u8>)> = Vec::new();
+        for (k, b) in rows {
+            if let Some(seq) = crate::audit::audit_seq_from_key(&k) {
+                entries.push((seq, b));
+            }
+        }
+        entries.sort_by_key(|(seq, _)| *seq);
+        let mut chain_intact = true;
+        let mut last_checkpoint_digest: Option<u64> = None;
+        let mut prev_bytes: Option<&[u8]> = None;
+        for (seq, bytes) in &entries {
+            let Ok(e) = crate::audit::AuditEntry::decode(bytes) else {
+                chain_intact = false;
+                prev_bytes = Some(bytes);
+                continue;
+            };
+            if e.seq != *seq {
+                chain_intact = false;
+            }
+            let expected = prev_bytes.map(crate::tickv::fnv1a64).unwrap_or(0);
+            if e.prev_hash != expected {
+                chain_intact = false;
+            }
+            if e.op == crate::audit::AUDIT_OP_CHECKPOINT {
+                last_checkpoint_digest = Some(e.digest);
+            }
+            prev_bytes = Some(bytes);
+        }
+        let current = self.state_digest()?;
+        let digest_matches_last = match last_checkpoint_digest {
+            Some(d) => d == current,
+            None => false,
+        };
+        Ok(AuditReport {
+            entries: entries.len(),
+            chain_intact,
+            digest_matches_last,
+            last_seq: entries.last().map(|(s, _)| *s),
+        })
+    }
+
+    /// Rollback COGNITIVO (v1.1.10 item 5, MemTxn-style): restaura as
+    /// side-tables de um checkpoint — `sys/meta/` (importância/confiança/
+    /// escopo/entidades), `sys/state/` e `sys/validity/` — desfazendo uma
+    /// sequência ruim de `feedback`/`decay`/`forget`/`expire_old`. Metadados
+    /// de memórias criadas DEPOIS do checkpoint são removidos (payloads
+    /// permanecem — ADD-only). **Payloads NÃO são revertidos**: o undo de
+    /// conteúdo é o DAG causal (`lineage`/`supersede`/`version_id`), e
+    /// reverter payloads quebraria a causalidade. Índices derivados são
+    /// reconstruídos. Devolve quantas metas foram restauradas.
+    pub fn rollback_to(&mut self, seq: u64) -> Result<usize, SgdbError> {
+        let key = crate::audit::audit_key(seq);
+        let Some(bytes) = self.engine.storage_get(&key)? else {
+            return Err(SgdbError::Invalid("no audit entry at seq"));
+        };
+        let e = crate::audit::AuditEntry::decode(&bytes)
+            .map_err(|_| SgdbError::Invalid("corrupt audit entry at seq"))?;
+        if e.op != crate::audit::AUDIT_OP_CHECKPOINT {
+            return Err(SgdbError::Invalid("rollback target must be a checkpoint"));
+        }
+        // 1) restaura o snapshot (metas + estados + validades)
+        let mut restored = 0usize;
+        for it in &e.snapshot {
+            if self.engine.get_by_storage_key(&it.sk)?.is_none() {
+                continue; // doc sumiu fisicamente — não ressuscita side-table órfã
+            }
+            if !it.meta.is_empty() {
+                if let Ok(m) = MemoryMeta::decode(&it.meta) {
+                    self.engine.write_meta(&it.sk, &m)?;
+                }
+            }
+            self.engine.set_state(&it.sk, it.state)?;
+            if let Some((from, until)) = it.validity {
+                self.engine.set_validity(&it.sk, from, until)?;
+            }
+            restored += 1;
+        }
+        // 2) remove side-tables de memórias criadas após o checkpoint
+        let current = self.engine.scan_prefix_storage(b"sys/meta/")?;
+        for (mk, _) in current {
+            let sk = String::from_utf8_lossy(&mk[9..]).into_owned();
+            if e.snapshot.iter().any(|it| it.sk == sk) {
+                continue;
+            }
+            let _ = self.engine.delete_side_key(b"sys/meta/", &sk);
+            let _ = self.engine.delete_side_key(b"sys/state/", &sk);
+            let _ = self.engine.delete_side_key(b"sys/validity/", &sk);
+        }
+        // 3) índices derivados (entity_index/ART/lexical/BQ) pós-restore
+        self.rebuild_indices()?;
+        // 4) marcador de rollback no ledger (mantém a chain honesta)
+        let digest = self.state_digest()?;
+        let prev_hash = match self.engine.storage_get(&key)? {
+            Some(b) => crate::tickv::fnv1a64(&b),
+            None => 0,
+        };
+        let marker = crate::audit::AuditEntry {
+            seq: seq.saturating_add(1),
+            prev_hash,
+            ts: e.ts,
+            op: crate::audit::AUDIT_OP_ROLLBACK,
+            digest,
+            snapshot: Vec::new(),
+        };
+        self.engine
+            .storage_put(&crate::audit::audit_key(marker.seq), &marker.encode())?;
+        Ok(restored)
+    }
+
+    /// Digest FNV-1a do estado corrente: (key‖val) de docs `md/` + side-tables
+    /// `sys/meta|state|validity`, ordenados (determinístico). `sys/audit/` fica
+    /// FORA (o ledger não pode assinar a si mesmo). Detector de drift/tamper.
+    fn state_digest(&mut self) -> Result<u64, SgdbError> {
+        let mut pairs: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        for prefix in [&b"md/"[..], &b"sys/meta/"[..], &b"sys/state/"[..], &b"sys/validity/"[..]] {
+            let rows = self.engine.scan_prefix_storage(prefix)?;
+            pairs.extend(rows);
+        }
+        pairs.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut h = 0xcbf2_9ce4_8422_2325u64; // seed FNV-1a
+        for (k, v) in pairs {
+            let mut buf = Vec::with_capacity(k.len() + v.len() + 8);
+            buf.extend_from_slice(&(k.len() as u32).to_le_bytes());
+            buf.extend_from_slice(&k);
+            buf.extend_from_slice(&v);
+            h = fnv1a64_seeded(h, &buf);
+        }
+        Ok(h)
+    }
+
+    /// Snapshot das side-tables cognitivas (`sys/meta/` + estado + validade).
+    fn state_snapshot(&mut self) -> Result<alloc::vec::Vec<crate::audit::AuditSnapshotItem>, SgdbError> {
+        let rows = self.engine.scan_prefix_storage(b"sys/meta/")?;
+        let mut out: alloc::vec::Vec<crate::audit::AuditSnapshotItem> =
+            alloc::vec::Vec::with_capacity(rows.len());
+        for (mk, bytes) in rows {
+            let sk = String::from_utf8_lossy(&mk[9..]).into_owned();
+            let state = self.engine.get_state(&sk);
+            let validity = self.engine.validity_window(&sk);
+            out.push(crate::audit::AuditSnapshotItem {
+                sk,
+                state,
+                validity,
+                meta: bytes,
+            });
+        }
+        out.sort_by(|a, b| a.sk.cmp(&b.sk));
+        Ok(out)
     }
 
     /// Janela de validade (#9, Zep/Graphiti pattern): `from ≤ now < until`.
@@ -1923,6 +2409,7 @@ impl Sgdb {
                     matched_terms,
                     validity,
                     rel,
+                    score_breakdown: None,
                 });
             }
         }
@@ -2256,6 +2743,7 @@ impl Sgdb {
     /// migração). Indexa nos índices derivados (ART/BQ/lexical) como qualquer
     /// `remember_*` — útil para o pull de memórias do peer no sync.
     pub fn put(&mut self, doc: MemoryDoc) -> Result<u64, SgdbError> {
+        validate_written(&doc.key)?;
         let v = self.engine.put(doc)?;
         self.metrics.memory_writes += 1;
         self.metrics.clock_changes += 1;
@@ -2823,6 +3311,73 @@ pub(crate) fn sqrt_f32(x: f32) -> f32 {
         y = (y + x / y) * 0.5;
     }
     y
+}
+
+/// `exp` para no_std (f32::exp não existe no core p/ bare-metal — mesmo
+/// ponteiro do `ln_f32`/`sqrt_f32`): expoente IEEE + série no resto.
+/// Precisão ~1e-6 para |r| ≤ ln2/2, suficiente p/ decay de importância
+/// (Ebbinghaus, v1.1.10 item 1).
+fn exp_f32(x: f32) -> f32 {
+    if x <= -40.0 {
+        return 0.0;
+    }
+    if x >= 40.0 {
+        return f32::MAX;
+    }
+    let k = ((x * core::f32::consts::LOG2_E) + if x < 0.0 { -0.5 } else { 0.5 }) as i32;
+    let r = x - k as f32 * core::f32::consts::LN_2;
+    let e = 1.0
+        + r * (1.0 + r * (0.5 + r * (1.0 / 6.0 + r * (1.0 / 24.0 + r * (1.0 / 120.0)))));
+    let bits = ((k + 127) as u32) << 23;
+    e * f32::from_bits(bits)
+}
+
+/// FNV-1a sobre um estado inicial (`h` já seedado) — re-fold usado pelo
+/// `state_digest` da auditoria (v1.1.10 item 5). Mesma polinômica do
+/// `crate::tickv::fnv1a64`.
+fn fnv1a64_seeded(mut h: u64, data: &[u8]) -> u64 {
+    for b in data {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100_0000_01b3);
+    }
+    h
+}
+
+/// Normalização determinística p/ consolidação (v1.1.10 item 2): tokeniza via
+/// BM25 do lexical (lowercase + sem pontuação) e re-une com espaço — dois
+/// episódios com o mesmo conteúdo (mesmas palavras) colidem no mesmo hash.
+fn normalize_text(s: &str) -> String {
+    crate::lexical::tokenize(s).join(" ")
+}
+
+/// Validação do WRITE PATH (v1.1.10 item 6, MPBench/MemAudit lesson): chaves/
+/// escopos/entidades fornecidos por camada externa são hostis até prova em
+/// contrário. Rejeita (a) componentes de path traversal (`..`/`.`), (b) NUL e
+/// control chars (quebram ordenação/UTF-8/log), (c) o separador reservado `#`
+/// (sys/rel/) e (d) strings acima de `MAX_KLEN`. Nada é gravado — `Invalid`.
+/// `SgdbError::Invalid` com mensagem ESTÁTICA (variante não carrega String).
+fn validate_written(s: &str) -> Result<(), SgdbError> {
+    if s.is_empty() {
+        return Err(SgdbError::Invalid("empty written string"));
+    }
+    if s.len() > crate::limits::MAX_KLEN {
+        return Err(SgdbError::Invalid("written string exceeds MAX_KLEN"));
+    }
+    for c in s.chars() {
+        let b = c as u32;
+        if c == '#' {
+            return Err(SgdbError::Invalid("reserved '#' in written string"));
+        }
+        if c == '\0' || b < 0x20 || b == 0x7f {
+            return Err(SgdbError::Invalid("control/NUL char in written string"));
+        }
+    }
+    for comp in s.split('/') {
+        if comp == ".." || comp == "." {
+            return Err(SgdbError::Invalid("path traversal component in written string"));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -5519,5 +6074,194 @@ mod tests {
         let hb = h.iter().find(|x| x.key == "md/L3/b").expect("hit do datum binário");
         assert_eq!(hb.content_type, ContentType::Binary, "declarado binary");
         assert!(hb.text.is_empty(), "Binary NUNCA rende prosa");
+    }
+
+    #[test]
+    fn write_path_rejects_hostile_input() {
+        // v1.1.10 item 6 (MPBench/MemAudit lesson): chave/scope/entidade de
+        // camada externa são hostis até prova em contrário — nada é gravado.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let emb = [1.0f32, -1.0, 1.0, -1.0];
+        for bad in ["../evil", ".", "a#b", "a\x00b", "a\x01b", "a\x7fb"] {
+            assert!(db.remember_semantic(bad, "t", &emb).is_err(), "semantic {bad:?}");
+            assert!(
+                db.remember_text_with(bad, "t", RememberOptions::default()).is_err(),
+                "text {bad:?}"
+            );
+        }
+        assert!(db.remember_semantic("", "t", &emb).is_err(), "chave vazia");
+        db.remember_semantic("ok", "t", &emb).unwrap();
+        assert!(db.set_scope("md/L4/ok", "../x").is_err(), "scope traversal");
+        db.set_scope("md/L4/ok", "legit/scope").unwrap();
+        assert!(db.set_entities("md/L4/ok", &["ent/a", ".."]).is_err(), "entity traversal");
+        assert!(
+            db.put(MemoryDoc::new(MemoryLayer::L3EpisodicLong, "a#b", b"x".to_vec())).is_err(),
+            "put com # reservado"
+        );
+        db.put(MemoryDoc::new(MemoryLayer::L3EpisodicLong, "bom", b"x".to_vec())).unwrap();
+        // nada de hostil vazou para o storage (semantic grava L4 + companion L2)
+        let keys: Vec<String> = db.scan_prefix("md/").unwrap().into_iter().map(|(k, _)| k).collect();
+        assert!(keys.iter().all(|k| matches!(k.as_str(), "md/L4/ok" | "md/L2/ok" | "md/L3/bom")));
+    }
+
+    #[test]
+    fn decay_importance_is_ebbinghaus_monotonic_and_idempotent() {
+        // v1.1.10 item 1 (Ebbinghaus/FSFM): decay exponencial da importância
+        // com a idade; idempotente para o mesmo `now` (relógio = input).
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_text_with("f", "fato duradouro aqui", RememberOptions::default()).unwrap();
+        let sk = "md/L3/f";
+        db.set_importance(sk, 0.9).unwrap();
+        db.set_confidence(sk, 0.8).unwrap();
+        let cfg = DecayConfig {
+            half_life_ms: 1000,
+            floor: 0.05,
+            decay_state_at: 0.3,
+            decay_confidence: true,
+        };
+        // idade 0 → fator exp(0)=1 → nada muda
+        assert_eq!(db.decay_importance(0, &cfg).unwrap(), 0, "idade zero = fator 1");
+        // idade 2 meias-vidas → fator exp(-2) ≈ 0.135
+        let n1 = db.decay_importance(2000, &cfg).unwrap();
+        assert_eq!(n1, 1, "uma memória mudou");
+        let m = db.engine.read_meta(sk).unwrap();
+        assert!(
+            m.importance > 0.1 && m.importance < 0.3,
+            "imp={} deve ≈ 0.05+0.85·e^-2", m.importance
+        );
+        assert!((m.confidence - 0.8 * 0.1353).abs() < 1e-2, "conf={}", m.confidence);
+        assert_eq!(
+            db.engine.get_state(sk),
+            MemoryState::Decayed,
+            "abaixo de decay_state_at vira Decayed"
+        );
+        // idempotência: mesma passada no mesmo relógio → 0
+        assert_eq!(db.decay_importance(2000, &cfg).unwrap(), 0, "idempotente");
+    }
+
+    #[test]
+    fn consolidate_recurrences_makes_deterministic_l3_fact() {
+        // v1.1.10 item 2 (SCM/sono): episódicos L2 repetidos → fato L3
+        // determinístico com linhagem causal. Verbatim, nunca extrai entidade.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_episodic("onde fica a sala de reunioes?", "resposta um", 1000).unwrap();
+        db.remember_episodic("ONDE fica a sala de reunioes?", "resposta dois distinta", 2000).unwrap();
+        db.remember_episodic("onde fica a sala de reunioes?", "resposta tres bem distinta", 3000).unwrap();
+        let cfg = ConsolidateConfig { min_repeats: 3, min_len: 4, max_new: 16 };
+        let made = db.consolidate_recurrences(&cfg).unwrap();
+        assert_eq!(made, 1, "só o grupo do user (3×) consolida");
+        let fact = db
+            .scan_prefix("md/L3/")
+            .unwrap()
+            .into_iter()
+            .map(|(k, _)| k)
+            .find(|k| k.contains("/consolidated/"))
+            .expect("fato consolidado");
+        let doc = db
+            .get(MemoryLayer::L3EpisodicLong, fact.trim_start_matches("md/L3/"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&doc.payload),
+            "onde fica a sala de reunioes?",
+            "verbatim do episódio mais antigo"
+        );
+        let m = db.engine.ensure_meta(&fact).unwrap();
+        assert!(!m.parent_ids.is_empty(), "linhagem causal dos episódios");
+        let rels = db.related_to(&fact);
+        assert!(
+            rels.iter().any(|(k, _)| *k == RelationKind::DerivedFrom),
+            "relação derived_from para o episódio âncora"
+        );
+        // idempotência de saída: re-rodar não cria fato novo nem bump
+        assert_eq!(db.consolidate_recurrences(&cfg).unwrap(), 0);
+        // abaixo de min_repeats não consolida
+        let mut db2 = Sgdb::open(InMemory::new()).unwrap();
+        db2.remember_episodic("q", "texto isolado nao repete", 1).unwrap();
+        assert_eq!(db2.consolidate_recurrences(&cfg).unwrap(), 0);
+    }
+
+    #[test]
+    fn recall_weighted_full_exposes_breakdown_and_trust() {
+        // v1.1.10 item 3 (memrust-style): breakdown do score por sinal +
+        // ponderação por confiança/fonte; w_conf=w_src=0 ≡ legado.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let emb = [1.0f32, -1.0, 1.0, -1.0];
+        db.remember_semantic("confiado", "fato confiavel aqui", &emb).unwrap();
+        db.remember_semantic("desconfiado", "fato confiavel aqui", &emb).unwrap();
+        db.set_confidence("md/L4/confiado", 0.9).unwrap();
+        db.set_confidence("md/L4/desconfiado", 0.1).unwrap();
+        db.set_importance("md/L4/confiado", 0.8).unwrap();
+        let w = RecallWeights { w_sem: 1.0, w_rec: 0.0, w_imp: 0.5, w_conf: 2.0, w_src: 0.0 };
+        let hits = db.recall_weighted_full(&emb, 5, &w, &[], 5000).unwrap();
+        let pos_c = hits.iter().position(|h| h.key == "md/L4/confiado").unwrap();
+        let pos_d = hits.iter().position(|h| h.key == "md/L4/desconfiado").unwrap();
+        assert!(pos_c < pos_d, "confiável primeiro (mesma dist/recência)");
+        let bd = hits[pos_d].score_breakdown.as_ref().expect("breakdown preenchido");
+        assert!(bd.confidence.unwrap() > 0.8, "penalidade do desconfiado");
+        assert!(hits[pos_c].score_breakdown.as_ref().unwrap().confidence.unwrap() < 0.2);
+        assert!(bd.semantic.is_some() && bd.recency.is_some() && bd.importance.is_some());
+        assert!(bd.total > 0.0);
+        // trust map aplica penalidade de fonte (nó fora do mapa = neutro 0.5)
+        let w2 = RecallWeights { w_sem: 1.0, w_rec: 0.0, w_imp: 0.0, w_conf: 0.0, w_src: 4.0 };
+        let h2 = db.recall_weighted_full(&emb, 5, &w2, &[(1, 0.1)], 5000).unwrap();
+        for hit in h2 {
+            let src = hit.score_breakdown.as_ref().unwrap().source.unwrap();
+            assert!((src - 0.9).abs() < 1e-6, "nó 0 distrusted → src_pen 0.9, got {src}");
+        }
+        let h3 = db.recall_weighted_full(&emb, 5, &w2, &[], 5000).unwrap();
+        for hit in h3 {
+            let src = hit.score_breakdown.as_ref().unwrap().source.unwrap();
+            assert!((src - 0.5).abs() < 1e-6, "sem mapa → neutro 0.5, got {src}");
+        }
+        // equivalência com o legado: mesmos pesos → mesma ordem
+        let legacy = db.recall_weighted(&emb, 5, 1.0, 1.0, 0.5, 5000).unwrap();
+        let full = db
+            .recall_weighted_full(&emb, 5, &RecallWeights::legacy(1.0, 1.0, 0.5), &[], 5000)
+            .unwrap();
+        let keys = |v: &[Hit]| v.iter().map(|h| h.key.clone()).collect::<Vec<_>>();
+        assert_eq!(keys(&legacy), keys(&full), "w_conf=w_src=0 ≡ legado");
+    }
+
+    #[test]
+    fn audit_chain_verify_and_cognitive_rollback() {
+        // v1.1.10 item 5 (ChronoMem/MemTxn): checkpoint + hash-chain +
+        // rollback cognitivo das side-tables; tamper de elo e de estado
+        // detectados (sem cripto — ADR-0006: crypto é seam).
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_text_with("a", "fato alpha", RememberOptions::default()).unwrap();
+        db.set_importance("md/L3/a", 0.9).unwrap();
+        let c0 = db.audit_checkpoint(1000).unwrap();
+        assert_eq!(c0, 0, "primeiro elo do ledger");
+        let r = db.audit_verify().unwrap();
+        assert!(r.chain_intact && r.digest_matches_last, "estado == snapshot do ckpt");
+        // mutação ruim pós-checkpoint: feedback negativo derruba o metadado
+        db.feedback("md/L3/a", false, 0.5).unwrap();
+        let r2 = db.audit_verify().unwrap();
+        assert!(r2.chain_intact, "escrita legítima não quebra a chain");
+        assert!(!r2.digest_matches_last, "estado divergiu do último checkpoint");
+        // rollback cognitivo restaura o metadado (payloads ficam — ADD-only)
+        assert_eq!(db.rollback_to(c0).unwrap(), 1, "1 meta restaurada");
+        let m = db.engine.read_meta("md/L3/a").unwrap();
+        assert!((m.importance - 0.9).abs() < 1e-6, "importância restaurada");
+        let r3 = db.audit_verify().unwrap();
+        assert!(r3.chain_intact, "marcador de rollback fecha a chain");
+        assert!(r3.digest_matches_last, "rollback devolve o estado ao checkpoint");
+        assert_eq!(r3.entries, 2, "ckpt + marcador de rollback");
+        // tamper de METADADOS fora do ledger: digest diverge, chain intacta
+        let mut t = db.engine.read_meta("md/L3/a").unwrap();
+        t.importance = 0.123;
+        db.engine.storage_put_raw(b"sys/meta/md/L3/a", &t.encode()).unwrap();
+        let rt = db.audit_verify().unwrap();
+        assert!(rt.chain_intact);
+        assert!(!rt.digest_matches_last, "tamper de meta detectado pelo digest");
+        // tamper do ELO: chain quebra
+        let k0 = crate::audit::audit_key(0);
+        let mut e0 = crate::audit::AuditEntry::decode(&db.engine.storage_get(&k0).unwrap().unwrap()).unwrap();
+        e0.digest ^= 1;
+        db.engine.storage_put_raw(&k0, &e0.encode()).unwrap();
+        let rt2 = db.audit_verify().unwrap();
+        assert!(!rt2.chain_intact, "elo adulterado detectado");
+        assert_eq!(rt2.entries, 2);
     }
 }

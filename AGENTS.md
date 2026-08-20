@@ -2,16 +2,18 @@
 
 Guide for AI agents (OpenCode, Cursor, Windsurf, Claude Code) working in this
 repo. **Read `codemap.md` (atlas), `docs/api.md` (contract) and
-`docs/architecture/` (v1.1.9 crate — Memory Model, Lifecycle, Retrieval,
+`docs/architecture/` (v1.1.10 crate — Memory Model, Lifecycle, Retrieval,
 Distributed, Storage, Cognitive API; typed hits from v1.1.6) and
 `docs/implementation-status.md` before editing code.**
 
-**Shipped crate is 1.1.9 (ADR-0008):** MCP lists **4 tools**
+**Shipped crate is 1.1.10 (ADR-0008):** MCP lists **4 tools**
 (`remember`/`recall`/`health`/`curate`; 23 old names are `tools/call` aliases).
+`curate` ganhou ops de metadado cognitivo (decay/consolidate/audit_checkpoint/
+audit_verify/rollback_to).
 Default retrieval is **lexical**. Unset `NEURAL_SGDB_EMBEDDER` = none;
 `=demo` only if requested. `remember(text=)` without a vector → L3
 (`remember_text_with`). Resources: `nsgdb://doctrine` + `nsgdb://session`.
-Hot test **84/0**. Lib tests **235+**.
+Hot test **95/0**. Lib tests **243+**.
 
 ## Post-P2 hardening state (2026-08-13)
 
@@ -263,6 +265,56 @@ verdes, hot test 90/0 exit 0.
   verbatim, segue `rel=` e re-lê o payload do primário, consome o binário cru
   pela key (bytes idênticos, nunca `from_utf8_lossy`). Determinístico
   (InMemory, sem LLM, embedding LCG do exemplo). Exit 0 sse 16/16.
+
+## Post-audit v1.1.10 (cognitive metadata, 2026-08-20)
+
+Itens 1/2/3/5/6 de `docs/future-horizons.md` entregues com regressão cada;
+matrix **243+1 / 289+1 / 195+1**, gates verdes, hot test **95/0**.
+
+- **Decay de importância Ebbinghaus (item 1)**: `Sgdb::decay_importance(
+  now, &DecayConfig)` — importância decai exponencialmente com a idade
+  (desde `last_reinforced` ou `created_tick`) em direção ao `floor`, nunca
+  sobe; abaixo de `decay_state_at` o estado vira `Decayed` (recall
+  active-only ignora; história via `recall_historical`). IDEMPOTENTE para o
+  mesmo `now` (relógio = input; 2ª passada → 0). `exp_f32` = IEEE + série
+  (mesmo ponteiro de `sqrt_f32`/`ln_f32`); `f32::round` NÃO existe no core
+  deste alvo — arredondar por sinal (`+0.5`/`−0.5` + trunc `as i32`).
+- **Consolidação por recorrência (item 2)**: `consolidate_recurrences` —
+  episódicos L2 timestamped com MESMO texto normalizado (BM25 `tokenize`)
+  repetido `min_repeats`+ → fato L3 determinístico
+  `md/L3/consolidated/<fnv1a(norm):016x>` VERBATIM (episódio mais antigo),
+  `parent_ids` (version_ids) + `derived_from`. Dedup: payload igual → NO-OP
+  (sem bump de versão); `made` conta CRIADOS (não grupos — lição do teste).
+  Normalização colide `ONDE`/`onde` e pontuação — sem extração de entidade.
+- **`recall_weighted_full` + breakdown (item 3)**: pesos por sinal (sem,
+  rec, imp, **conf**, **src**) e `Hit.score_breakdown: Option<ScoreBreakdown>`
+  (penalidades 0..1 + total). `trust: &[(node_id, f32)]` = confiabilidade da
+  fonte (fora do mapa → 0.5 neutro; `Sgdb::open` usa node_id **1**, não 0).
+  `recall_weighted` legado delega com `RecallWeights::legacy` (w_conf=w_src=0
+  → ordem idêntica, garantido por teste). Breakdown SEMPRE preenchido no
+  recall_weighted_full (também no recall_weighted via delegação).
+- **Auditoria hash-chain (item 5)**: `src/audit.rs` (wire `AUD1`, fuzzado em
+  `wire_fuzz`). `audit_checkpoint(now)` → elo `sys/audit/<seq:016x>` com
+  `prev_hash` (FNV-1a do elo anterior), `digest` (FNV-1a do estado ordenado
+  `md/`+`sys/meta|state|validity`; `sys/audit/` NÃO assina a si mesmo) e
+  SNAPSHOT das side-tables. `audit_verify` → `AuditReport` (`chain_intact`,
+  `digest_matches_last` = tamper-evidence sem cripto, ADR-0006). `rollback_to
+  (seq)` restaura o snapshot + remove metas de memórias pós-checkpoint;
+  **payloads NÃO são revertidos** (ADD-only; undo de conteúdo = DAG causal)
+  e um marcador de rollback fecha a chain. `audit_seq_from_key` lê **hex**
+  (`u64::from_str_radix`, não `parse`). Chaves do ledger têm largura fixa
+  16-hex (regra ART: sem prefix keys).
+- **Write-path hardening (item 6)**: `validate_written` rejeita chave/scope/
+  entidade com `..`/`.` (componente), NUL/control (`<0x20`/`0x7F`), `#`
+  (separador reservado de `sys/rel/`) ou > `MAX_KLEN` — em `remember_semantic`,
+  `remember_text_with`, `set_scope`, `set_entities`, `Sgdb::put`. Mensagens
+  `SgdbError::Invalid` ESTÁTICAS. Nada é gravado.
+- **MCP**: `curate` ganhou ops `decay`/`consolidate`/`audit_checkpoint`/
+  `audit_verify`/`rollback_to` (4 tools listadas permanecem; expand_tool
+  mapeia `curate`→op e o dispatch tem arms por nome). Hot test fase 6b:
+  episódicos precisam de `now` DISTINTO por chamada (senão as chaves
+  `md/L2/ts/<hex>` colidem no mesmo ms e sobrescrevem — grupo nunca chega a
+  `min_repeats`).
 
 ## Agent decision protocol (v1.1.4, exemplo `agent_protocol.rs`)
 

@@ -366,3 +366,30 @@ O pull quebrou os dois gates de lint (P0-5/P0-6): 35 erros
 comportamento idêntico; clippy/rustdoc/hot test re-verificados verdes.
 Memória da re-verificação: `md/L3/mcp/1787256069194000`.
 
+## Follow-up v1.1.10 — cognitive metadata (2026-08-20)
+
+Hot test **95/0 exit 0**. Nova fase 6b ("metadado cognitivo") no `mcp_client`:
+
+| Op (`curate`) | O que prova |
+|-------|--------|
+| `consolidate` | episódicos L2 com texto repetido → fato L3 determinístico (`derived_from` + parent_ids) |
+| `audit_checkpoint` | elo `sys/audit/<seq:016x>` anexado (hash-chain) |
+| `audit_verify` | `chain_intact` + `digest_matches_last` verdadeiros |
+| `rollback_to` | restaura side-tables cognitivas; `audit_verify` pós-rollback segue íntegro |
+| `decay` | importância decai; estado `Decayed` abaixo do limiar |
+
+Gotchas da fase (registrados no AGENTS.md): episódicos precisam de `now`
+DISTINTO por chamada (senão as chaves `md/L2/ts/<hex>` colidem no mesmo ms e o
+grupo nunca chega a `min_repeats`); o binário do `mcp_server` precisa ser
+rebuildado antes de rodar o `mcp_client` (binário stale → "Unknown tool").
+
+| Gate | v1.1.9 | v1.1.10 |
+|------|--------|---------|
+| `cargo test` | 235+1 | **243+1** ✓ |
+| `cargo test --features p2p` | 281+1 | **289+1** ✓ |
+| `cargo test --no-default-features` | 187+1 | **195+1** ✓ |
+| no_std `x86_64-unknown-none` | verde | **verde** ✓ |
+| hot test `mcp_client` | 84/0 | **95/0** ✓ |
+| clippy `-D warnings` | verde | **verde** ✓ |
+| rustdoc `-D warnings` | verde | **verde** ✓ |
+

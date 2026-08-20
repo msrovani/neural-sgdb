@@ -272,7 +272,7 @@ fn error_response(id: &Value, code: i64, message: &str) -> Value {
 
 /// Número de tools em `tools/list` (aliases antigos ainda funcionam em tools/call).
 const EXPECTED_MCP_TOOL_COUNT: usize = 4;
-const MCP_CONTRACT_VERSION: &str = "1.1.9";
+const MCP_CONTRACT_VERSION: &str = "1.1.10";
 const BUILD_GIT: &str = env!("NEURAL_SGDB_BUILD_GIT");
 
 /// Lista pública: 4 tools. Os 23 nomes antigos continuam válidos em `tools/call`.
@@ -341,9 +341,9 @@ fn mcp_listed_tools() -> Value {
          }},
          "annotations":{"readOnlyHint":true}},
         {"name":"curate",
-         "description":"Mutacao pontual / grafo L6. op= explain|reinforce|feedback|forget|expire_old|diary|profile|associate|related_to|contradicts|supersede|conflicts|resolve_conflict|merge_memories. Use a storage key completa md/L4/.... Nao hoarde: so depois de evidência.",
+         "description":"Mutacao pontual / grafo L6 + metadado cognitivo. op= explain|reinforce|feedback|forget|expire_old|decay|consolidate|diary|profile|associate|related_to|contradicts|supersede|conflicts|resolve_conflict|merge_memories|audit_checkpoint|audit_verify|rollback_to. Use a storage key completa md/L4/.... Nao hoarde: so depois de evidência.",
          "inputSchema":{"type":"object","properties":{
-           "op":{"type":"string","enum":["explain","reinforce","feedback","forget","expire_old","diary","profile","associate","related_to","contradicts","supersede","conflicts","resolve_conflict","merge_memories"]},
+           "op":{"type":"string","enum":["explain","reinforce","feedback","forget","expire_old","decay","consolidate","diary","profile","associate","related_to","contradicts","supersede","conflicts","resolve_conflict","merge_memories","audit_checkpoint","audit_verify","rollback_to"]},
            "key":{"type":"string"},
            "delta":{"type":"number"},
            "positive":{"type":"boolean"},
@@ -358,7 +358,15 @@ fn mcp_listed_tools() -> Value {
            "new":{"type":"string"},
            "conflict_id":{"type":"string"},
            "winner_version_id":{"type":"string"},
-           "target":{"type":"string"}
+           "target":{"type":"string"},
+           "half_life_ms":{"type":"integer"},
+           "floor":{"type":"number"},
+           "decay_state_at":{"type":"number"},
+           "decay_confidence":{"type":"boolean"},
+           "min_repeats":{"type":"integer"},
+           "min_len":{"type":"integer"},
+           "max_new":{"type":"integer"},
+           "seq":{"type":"integer"}
          },"required":["op"]}}
     ])
 }
@@ -1251,6 +1259,84 @@ fn main() {
                         match db.expire_old(now) {
                             Ok(n) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":format!("{n} memorias expiradas em now={now}")}],"isError":false}})),
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
+                        }
+                    }
+                    "decay" => {
+                        let now = args["now"].as_u64().unwrap_or(0);
+                        let cfg = neural_sgdb::DecayConfig {
+                            half_life_ms: args["half_life_ms"].as_u64().unwrap_or(30 * 24 * 3600 * 1000),
+                            floor: args["floor"].as_f64().unwrap_or(0.05) as f32,
+                            decay_state_at: args["decay_state_at"].as_f64().unwrap_or(0.05) as f32,
+                            decay_confidence: args["decay_confidence"].as_bool().unwrap_or(true),
+                        };
+                        match db.decay_importance(now, &cfg) {
+                            Ok(n) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":format!("{n} memorias com importancia decaida (now={now}, half_life={}ms)", cfg.half_life_ms)}],"isError":false}})),
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
+                        }
+                    }
+                    "consolidate" => {
+                        let cfg = neural_sgdb::ConsolidateConfig {
+                            min_repeats: args["min_repeats"].as_u64().unwrap_or(3) as usize,
+                            min_len: args["min_len"].as_u64().unwrap_or(24) as usize,
+                            max_new: args["max_new"].as_u64().unwrap_or(64) as usize,
+                        };
+                        match db.consolidate_recurrences(&cfg) {
+                            Ok(n) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":format!("{n} episodios L2 consolidados em fatos L3 (min_repeats={})", cfg.min_repeats)}],"isError":false}})),
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
+                        }
+                    }
+                    "audit_checkpoint" => {
+                        let now = args["now"].as_u64().unwrap_or(0);
+                        match db.audit_checkpoint(now) {
+                            Ok(seq) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":format!("checkpoint seq={seq} anexado ao ledger de auditoria")}],"isError":false}})),
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
+                        }
+                    }
+                    "audit_verify" => {
+                        match db.audit_verify() {
+                            Ok(r) => {
+                                let verdict = if !r.chain_intact {
+                                    "CHAIN QUEBRADA (tamper ou corrupcao de elo)"
+                                } else if !r.digest_matches_last {
+                                    "chain intacta; estado diverge do ultimo checkpoint (escritas pos-checkpoint)"
+                                } else {
+                                    "chain intacta; estado == ultimo checkpoint"
+                                };
+                                let text = format!(
+                                    "auditoria: {} elo(s), last_seq={:?} — {verdict}",
+                                    r.entries, r.last_seq
+                                );
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                    "content":[{"type":"text","text":text}],"isError":false,
+                                    "structuredContent": json!({
+                                        "entries": r.entries, "chain_intact": r.chain_intact,
+                                        "digest_matches_last": r.digest_matches_last, "last_seq": r.last_seq
+                                    })}}));
+                            }
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
+                        }
+                    }
+                    "rollback_to" => {
+                        let seq = match args["seq"].as_u64() {
+                            Some(s) => s,
+                            None => {
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                    "content":[{"type":"text","text":"rollback_to exige seq=<checkpoint>"}],"isError":true}}));
+                                return;
+                            }
+                        };
+                        match db.rollback_to(seq) {
+                            Ok(n) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":format!("rollback para seq={seq}: {n} metadados restaurados (payloads intocados — ADD-only)")}],"isError":false}})),
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
                         }

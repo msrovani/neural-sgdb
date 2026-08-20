@@ -59,3 +59,29 @@ MCP `recall.mode` in `examples/mcp_server.rs` (implementation follows this ADR).
 - Contract impact: none on NMD1/TKLV/`no_std`. MCP behavior change is MINOR
   when implemented (`VERSIONING.md`). This ADR authorizes that change; it
   does not by itself bump the crate version.
+
+## Other uses of the memory (not just IDE dev)
+
+The local-embedder decision is the enabler of the non-IDE surfaces; this ADR
+records them so future work does not re-derive them. Landscape research
+2026-08 (see `docs/future-horizons.md`):
+
+- **Linux daemon / fleet**: one shared `Sgdb` serving a fleet of agents, each
+  isolated in its own `scope`; the CRDT mesh syncs nodes (`docs/telepathy.md`).
+- **Windows local-first assistant**: fully offline memory (ollama/llama.cpp +
+  local embedder); data never leaves the machine.
+- **Browser WASM**: the `no_std` core compiles to wasm32; `IndexedDB`/OPFS as a
+  `Storage` backend — the session's memory persists across page loads
+  (mnem and Kurumi already ship this pattern).
+- **Browser extension**: memory of what the user read/navigated, recalled via
+  `recall_temporal`/`recall_entities`.
+- **Edge / embedded**: `no_std` + zero deps → runs on minimal Linux devices;
+  NMD1/TKLV keep the OS interop contract.
+
+Where the AI enters stays at the seams (`Embedder`, entity extraction, the
+decision protocol) — the DB is the memory of the brain, not the brain. The
+"memory, not data" contract is what these uses consume: docs carry
+importance/confidence/validity/provenance; ADD-only with supersede (no silent
+overwrite); conflicts preserved; the queries are "what was the state at T?",
+"does this contradict what I know?", "how much do I trust this?" — none of
+which a relational row answers.

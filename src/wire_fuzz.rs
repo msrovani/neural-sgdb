@@ -31,6 +31,7 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::audit::{AuditEntry, AuditSnapshotItem, AUDIT_OP_CHECKPOINT, AUDIT_OP_ROLLBACK};
 use crate::conflict::{ConflictRecord, ConflictStatus};
 use crate::memory_doc::{MemoryDoc, MemoryLayer, MemoryMeta, MemoryRecord, MemoryState};
 
@@ -59,6 +60,7 @@ fn all_wire_decoders_never_panic_on_lcg_bytes() {
             let _ = MemoryRecord::decode(&b);
             let _ = MemoryMeta::decode(&b);
             let _ = ConflictRecord::decode(&b);
+            let _ = AuditEntry::decode(&b);
             #[cfg(feature = "p2p")]
             {
                 let _ = MemoryDelta::decode(&b);
@@ -124,6 +126,39 @@ fn sample_meta(state: &mut u64) -> MemoryMeta {
             2 => Some("json".into()),
             _ => Some("embedding".into()),
         },
+    }
+}
+
+fn sample_audit(state: &mut u64) -> AuditEntry {
+    let nsnap = (lcg(state) % 4) as usize;
+    let mut snapshot: Vec<AuditSnapshotItem> = Vec::with_capacity(nsnap);
+    for _ in 0..nsnap {
+        let sklen = 1 + (lcg(state) % 12) as usize;
+        let sk: String = (0..sklen).map(|_| (b'a' + (lcg(state) % 26) as u8) as char).collect();
+        let validity = if lcg(state).is_multiple_of(2) {
+            Some((lcg(state), lcg(state)))
+        } else {
+            None
+        };
+        let metalen = (lcg(state) % 16) as usize;
+        snapshot.push(AuditSnapshotItem {
+            sk,
+            state: MemoryState::from_u8((lcg(state) % 5) as u8).unwrap(),
+            validity,
+            meta: bytes(state, metalen),
+        });
+    }
+    AuditEntry {
+        seq: lcg(state),
+        prev_hash: lcg(state),
+        ts: lcg(state),
+        op: if lcg(state).is_multiple_of(2) {
+            AUDIT_OP_CHECKPOINT
+        } else {
+            AUDIT_OP_ROLLBACK
+        },
+        digest: lcg(state),
+        snapshot,
     }
 }
 
@@ -231,6 +266,8 @@ fn all_wire_types_roundtrip_lcg() {
         assert_eq!(MemoryMeta::decode(&m.encode()).unwrap(), m);
         let c = sample_conflict(&mut s);
         assert_eq!(ConflictRecord::decode(&c.encode()).unwrap(), c);
+        let a = sample_audit(&mut s);
+        assert_eq!(AuditEntry::decode(&a.encode()).unwrap(), a);
     }
 }
 
@@ -261,6 +298,7 @@ fn all_wire_decoders_safe_on_truncated_prefixes() {
         sample_record(&mut s).encode(),
         sample_meta(&mut s).encode(),
         sample_conflict(&mut s).encode(),
+        sample_audit(&mut s).encode(),
     ];
     #[cfg(feature = "p2p")]
     let mut encs_p2p: Vec<Vec<u8>> = vec![
@@ -276,6 +314,7 @@ fn all_wire_decoders_safe_on_truncated_prefixes() {
             let _ = MemoryRecord::decode(&enc[..cut]);
             let _ = MemoryMeta::decode(&enc[..cut]);
             let _ = ConflictRecord::decode(&enc[..cut]);
+            let _ = AuditEntry::decode(&enc[..cut]);
         }
     }
     #[cfg(feature = "p2p")]
@@ -300,6 +339,7 @@ fn all_wire_decoders_reject_corrupt_magic_and_version() {
     let rec = sample_record(&mut s).encode();
     let meta = sample_meta(&mut s).encode();
     let cfl = sample_conflict(&mut s).encode();
+    let aud = sample_audit(&mut s).encode();
 
     // primeiro byte corrompido
     let mut bad = enc.clone();
@@ -314,6 +354,9 @@ fn all_wire_decoders_reject_corrupt_magic_and_version() {
     let mut bad = cfl.clone();
     bad[0] ^= 0xFF;
     assert!(ConflictRecord::decode(&bad).is_err());
+    let mut bad = aud.clone();
+    bad[0] ^= 0xFF;
+    assert!(AuditEntry::decode(&bad).is_err());
 
     // versão desconhecida (byte 4)
     let mut bad = enc;
@@ -328,6 +371,9 @@ fn all_wire_decoders_reject_corrupt_magic_and_version() {
     let mut bad = cfl;
     bad[4] = 0xFE;
     assert!(ConflictRecord::decode(&bad).is_err());
+    let mut bad = aud;
+    bad[4] = 0xFE;
+    assert!(AuditEntry::decode(&bad).is_err());
 
     #[cfg(feature = "p2p")]
     {
