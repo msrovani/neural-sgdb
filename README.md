@@ -168,7 +168,7 @@ arbitrates the preserved conflicts.
 git clone https://github.com/msrovani/neural-sgdb.git && cd neural-sgdb
 git config user.name "Seu Nome"    # ver CONTRIBUTING.md
 git config user.email "seu@email.com"
-cargo build --release --example mcp_server
+cargo build --release --example mcp_server --target-dir target/mcp-release
 cargo test
 bash scripts/mcp-smoke.sh          # 23 tools + health onboarding
 ```
@@ -191,7 +191,7 @@ tool annotations (`readOnlyHint`/`destructiveHint`/`idempotentHint`).
 
 ### Cursor (Windows)
 
-1. `cargo build --release --example mcp_server`
+1. `cargo build --release --example mcp_server --target-dir target/mcp-release`
 2. Abra o repo no Cursor — `.cursor/mcp.json` usa `scripts/mcp-server.ps1`
    (binário release, **sem** `cargo` no PATH do IDE).
 3. Recarregue MCP se rebuildar o binário.

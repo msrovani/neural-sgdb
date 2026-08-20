@@ -35,11 +35,14 @@ Guia de instalação, contrato e troubleshooting do servidor MCP
 ## Build (obrigatório antes do IDE)
 
 ```bash
-cargo build --release --example mcp_server
+cargo build --release --example mcp_server --target-dir target/mcp-release
 ```
 
-O launcher do repo usa o **binário release** — não depende de `cargo` no PATH
-do Cursor/Claude Code.
+Use `target/mcp-release` para rebuild enquanto o MCP está rodando — no Windows o
+`.exe` em `target/release` fica **locked** pelo processo stdio do Cursor e o
+linker não consegue sobrescrever (build “Finished” mas binário antigo).
+
+Fallback: desligue o MCP no Cursor e rebuild normal em `target/release`.
 
 ## Cursor
 

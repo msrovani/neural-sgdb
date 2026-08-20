@@ -8,7 +8,7 @@ editar código.
 ```bash
 git clone https://github.com/msrovani/neural-sgdb.git
 cd neural-sgdb
-cargo build --release --example mcp_server
+cargo build --release --example mcp_server --target-dir target/mcp-release
 cargo test
 cargo check --no-default-features --target x86_64-unknown-none
 ```

@@ -286,7 +286,7 @@ Lições da instalação real na IDE (memorizadas em `md/L4/mcp/...`, ver
 |----------|-------|----------|
 | `cargo` não encontrado no Cursor | IDE não herda PATH do shell | Launcher `scripts/mcp-server.ps1` / `.sh` usa binário **release** |
 | `${workspaceFolder}` no `command` | Windows quebra path | `command: powershell` + script em `args` (`.cursor/mcp.json`) |
-| 22 tools / sem `era_report` | binário desatualizado ou `.exe` locked pelo MCP | rebuild + reload MCP; smoke `scripts/mcp-smoke.sh` |
+| 22 tools / sem `era_report` | binário desatualizado ou `.exe` locked pelo MCP | `cargo build --release --example mcp_server --target-dir target/mcp-release`; reload MCP (launcher usa `target/mcp-release/release/examples/`) |
 | `health` sem onboarding | build antiga | v1.1.6: JSON com `mcp_tool_count`, `embedder`, passos iniciais |
 | commit falha pós-clone | `user.name`/`user.email` ausentes | [`CONTRIBUTING.md`](../CONTRIBUTING.md) |
 
