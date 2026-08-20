@@ -41,6 +41,9 @@ jobs:
       - name: build examples
         run: cargo build --release --examples
 
+      - name: MCP smoke (23 tools + health)
+        run: bash scripts/mcp-smoke.sh
+
       - name: stress (reduced N for CI)
         run: |
           STRESS_N=20000 STRESS_REOPEN=5000 STRESS_DEL=10000 STRESS_SIMD=2000 \

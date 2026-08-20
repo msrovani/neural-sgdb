@@ -1,5 +1,6 @@
 # Launcher stdio para o MCP neural-sgdb no Cursor (Windows).
-# Resolve paths relativos ao repo — evita depender de cargo no PATH do IDE.
+# Usa binario release — evita depender de cargo no PATH do IDE.
+# Embedder HTTP: examples/embedder_http.rs — ver docs/MCP.md
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 if (-not (Test-Path (Join-Path $Root "target\release\examples\mcp_server.exe"))) {

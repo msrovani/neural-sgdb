@@ -390,7 +390,7 @@ cargo run --release --example signed_peer --features p2p      # signed-transport
 
 The project agent is a test subject: `.opencode/opencode.json` registers the
 MCP server as a local server (`NEURAL_SGDB_DB=.nsgdb/memory.db`, gitignored),
-giving the agent `mcp__neural-sgdb__*` tools (22: remember/remember_episodic/
+giving the agent `mcp__neural-sgdb__*` tools (23: remember/remember_episodic/
 recall/rag_context/recall_temporal/recall_entities/feedback/diary/profile/
 expire_old/explain/reinforce/forget/associate/related_to/contradicts/
 supersede/conflicts/resolve_conflict/merge_memories/health/validate/era_report). Audit
@@ -427,8 +427,9 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-
   on `notifications/initialized` (Claude Code sends tools/list first), echo the
   id verbatim, `-32601` for unknown methods (modern-client fallback). The
   `demo_embed` embedding is a trigram hash — NOT a real semantic model. Now
-  exposes read-only `health`/`validate` tools (P2-3 surface) for agents
-  monitoring the DB.
+  exposes read-only `health`/`validate`/`era_report` tools (P2-3 + ADR-0007);
+  **instalação e troubleshooting**: [`docs/MCP.md`](docs/MCP.md) (launchers
+  release, Cursor Windows, smoke test, embedder HTTP).
 - **Wire-codec fuzz harness** (`src/wire_fuzz.rs`, P2-4): the single LCG
   never-panic/roundtrip/truncation gate over ALL 8 wire types — add a new
   wire type there (plus its per-module `prop_tests`), and keep the matrix

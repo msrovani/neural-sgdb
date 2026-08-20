@@ -1,7 +1,7 @@
 # neural-sgdb — API Contract
 
 > Contract document for the extraction of the SGDB core from neural-os-core.
-> Status: **current public contract (crate v1.1.0; features up to v1.1.6)** —
+> Status: **current public contract (crate v1.1.6)** —
 > this document is the current public contract; roadmap items are explicitly
 > marked as such. The internal API lives in `crates/k_ai/src/sgdb/` of the
 > parent OS; this doc defines the public surface the community crate exposes
@@ -318,8 +318,7 @@ código, binários). Duas regras tornam o consumo determinístico:
 ## Additive public surface (v1.1.2–v1.1.6)
 
 Everything below is **additive** (MINOR per VERSIONING.md) — no signature of a
-v1.0 method changed; the crate version stays 1.1.0 with feature releases
-tagged v1.1.x. Key additions since the contract above:
+v1.0 method changed; crate version **1.1.6** in `Cargo.toml`. Key additions since the contract above:
 
 ```rust
 // ---- S1: recall is LOUD on dimension mismatch (v1.1.3) ----

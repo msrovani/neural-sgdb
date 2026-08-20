@@ -166,8 +166,8 @@ fn main() {
     rep.check("initialize responde", !r.get("error").is_some(), r.to_string());
     rep.check("protocolVersion 2025-11-25",
         r["result"]["protocolVersion"] == "2025-11-25", r.to_string());
-    rep.check("serverInfo version 1.1.0",
-        r["result"]["serverInfo"]["version"] == "1.1.0", r.to_string());
+    rep.check("serverInfo version 1.1.6",
+        r["result"]["serverInfo"]["version"] == "1.1.6", r.to_string());
     rep.phase("handshake", &t);
 
     // ---------- fase 2: tools/list (23 tools) ----------

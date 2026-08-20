@@ -58,7 +58,7 @@ migrations in `MIGRATIONS.md` and never silently reinterpreted old bytes
 
 ## Current line (1.1.x)
 
-Crate version in `Cargo.toml` is **1.1.0**; additive feature releases
+Crate version in `Cargo.toml` is **1.1.6**; additive feature releases
 **v1.1.2–v1.1.6** are documented in `CHANGELOG.md` and `docs/api.md` without
 bumping the crate MINOR until the maintainer tags a release. Architecture
 docs in `docs/architecture/` describe the **shipped** system at v1.1.6, not

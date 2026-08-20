@@ -37,9 +37,8 @@ filesystem, no external runtime.
 ## Status
 
 **v1.1.6** ✅ — hits tipados para consumidor máquina, dual-mode (`no_std` +
-`std`, zero dependencies). O `Cargo.toml` permanece em **1.1.0** (SemVer da
-crate); releases de feature v1.1.2–v1.1.6 estão no `CHANGELOG.md` e
-`docs/api.md`.
+`std`, zero dependencies). Versão da crate em `Cargo.toml`: **1.1.6**;
+histórico em `CHANGELOG.md` e `docs/api.md`.
 
 - `cargo test` on host: **229 tests + doc-test** (275 + doc-test with `p2p`,
   181 + doc-test with `--no-default-features`)
@@ -90,7 +89,7 @@ crate); releases de feature v1.1.2–v1.1.6 estão no `CHANGELOG.md` e
   `profile`/`expire_old`) and **MCP 23 tools** (provenance per hit in recall,
   `health`/`validate` observability, `era_report`, `remember_episodic`,
   retrieval modes semantic/lexical/hybrid, `recall_temporal`,
-  `recall_entities`, ServerInfo v1.1.0) + **write-side era guard** (S1 no
+  `recall_entities`, ServerInfo v1.1.6) + **write-side era guard** (S1 no
   write também — `remember_semantic` fora da era do corpus vivo é `Invalid`)
   + **seams de conteúdo** (`Embedder` trait, `entities`, `content_type` —
   quem fornece declara)
@@ -163,24 +162,65 @@ the two-instance convergence flow, the honest cost (eventual consistency, no
 global order, conflict preservation) and how an AI at the root of the process
 arbitrates the preserved conflicts.
 
+## Checklist pós-clone
+
+```bash
+git clone https://github.com/msrovani/neural-sgdb.git && cd neural-sgdb
+git config user.name "Seu Nome"    # ver CONTRIBUTING.md
+git config user.email "seu@email.com"
+cargo build --release --example mcp_server
+cargo test
+bash scripts/mcp-smoke.sh          # 23 tools + health onboarding
+```
+
+No Windows, use `scripts\mcp-server.ps1` no lugar do `.sh`. Detalhes MCP:
+[`docs/MCP.md`](docs/MCP.md).
+
 ## MCP (AI agents)
+
+Guia completo: **[`docs/MCP.md`](docs/MCP.md)** (Cursor/Windows, smoke test,
+embedder HTTP, troubleshooting).
 
 `cargo run --release --example mcp_server` exposes 23 tools: `remember` /
 `recall` / `rag_context` as MCP tools (JSON-RPC 2.0 over stdio, `2025-11-25`
 handshake), memories as **resources** (`memory://{layer}/{key}`), recall with
 opaque `nextCursor` pagination, retrieval **modes** (`semantic`/`lexical`/
 `hybrid`), **typed hits** (`format=json` — estruturados p/ consumo máquina;
-`remember(type=)` — seam de write), and tool annotations (`readOnlyHint`/
-`destructiveHint`/`idempotentHint`) — connectable to Claude Code, Cursor and
-OpenCode:
+`remember(type=)` — seam de write), `era_report` + `health` onboarding, and
+tool annotations (`readOnlyHint`/`destructiveHint`/`idempotentHint`).
+
+### Cursor (Windows)
+
+1. `cargo build --release --example mcp_server`
+2. Abra o repo no Cursor — `.cursor/mcp.json` usa `scripts/mcp-server.ps1`
+   (binário release, **sem** `cargo` no PATH do IDE).
+3. Recarregue MCP se rebuildar o binário.
+
+**Troubleshooting:** binário ausente → rebuild; recall vazio → `era_report`;
+22 tools → binário desatualizado; ver [`docs/MCP.md`](docs/MCP.md).
+
+### Scope / entidades (exemplo)
+
+```json
+{"name":"remember","arguments":{"key":"fact/diet","text":"vegan","scope":"user:bob","entities":["preference/diet"]}}
+{"name":"recall","arguments":{"query":"diet","k":3,"scope":"user:bob"}}
+```
+
+Recall global (sem `scope`) não vaza scopes. Entidades exigem strings idênticas
+em escrita e `recall_entities`.
+
+### Outros IDEs
 
 ```bash
-# Claude Code
-claude mcp add neural-sgdb -- cargo run --release --example mcp_server
+# macOS/Linux — launcher no repo
+chmod +x scripts/mcp-server.sh
+# Claude Code (ajuste o caminho)
+claude mcp add neural-sgdb -- /path/to/neural-sgdb/scripts/mcp-server.sh
 ```
 
 ⚠️ The MCP recall embedding is a **demo** (character-trigram hash); for real
-semantic recall, provide your own embeddings via `remember_semantic` / `recall`.
+semantic recall, provide your own embeddings via `remember`/`recall` or see
+[`examples/embedder_http.rs`](examples/embedder_http.rs).
 
 ## Benchmarks
 
@@ -202,7 +242,9 @@ avoid stale/unreproducible claims).
   Storage (05), Cognitive API (06) — documents the shipped cognitive memory
   system; [`docs/implementation-status.md`](docs/implementation-status.md)
   tracks capability vs code
-- **AI agent guides** — `AGENTS.md`, `CLAUDE.md`, `codemap.md` (atlas)
+- **AI agent guides** — `AGENTS.md`, `CLAUDE.md`, `codemap.md` (atlas),
+  [`docs/MCP.md`](docs/MCP.md) (instalação MCP)
+- **Contributing** — [`CONTRIBUTING.md`](CONTRIBUTING.md)
 - **Governance** — [`SECURITY.md`](SECURITY.md) (policy + trust model),
   [`VERSIONING.md`](VERSIONING.md) (SemVer + release process),
   [`MIGRATIONS.md`](MIGRATIONS.md) (format migrations),

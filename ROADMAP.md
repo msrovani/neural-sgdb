@@ -2,7 +2,7 @@
 
 Status: **v1.1.x maintenance line shipped (2026-08-19, features até v1.1.6)** —
 stable API, zero deps, `no_std` + `std`, CI gates green. Crate version mantém
-**1.1.0**; feature releases v1.1.2–v1.1.6 são commits/unreleased no
+**1.1.6**; histórico v1.1.2–v1.1.6 no `CHANGELOG.md` e commits na branch
 `CHANGELOG.md`. This roadmap is honest about what is DONE, what is NEXT, and
 what is deliberately NOT planned.
 
@@ -47,7 +47,7 @@ Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
 ✅ **v1.1.4 — Memory landscape** (itens 1–10): ADD-only contrato,
    `remember_episodic`/`feedback`/`diary`/`profile`/`expire_old`, scoping
    multi-agente (MDM1 v4), retrieval modes (semantic/lexical/hybrid),
-   `recall_temporal`, entidades 1-hop (MDM1 v5). Hot test 84/0; MCP 22 tools.
+   `recall_temporal`, entidades 1-hop (MDM1 v5). Hot test 90/0; MCP 23 tools.
 ✅ **v1.1.5 — Era guard (ADR-0007, write-side)**: `remember_semantic` fora da
    era → `Invalid`; `Sgdb::era_report()` (src/era.rs) + MCP `era_report`
    (tool 23). Hot test 81/0.

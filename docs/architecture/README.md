@@ -1,7 +1,7 @@
 # Architecture — neural-sgdb
 
 > Status: **current (v1.1.6)** — these documents describe the **shipped**
-> cognitive memory system. Crate version in `Cargo.toml` is **1.1.0**; feature
+> cognitive memory system. Crate version in `Cargo.toml` is **1.1.6**; feature
 > releases through **v1.1.6** are documented in `CHANGELOG.md` and
 > `docs/api.md`. Sections marked **implemented** reflect code + tests; **remaining**
 > marks honest gaps or deliberate non-goals.

@@ -4,7 +4,7 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
-## [Unreleased] — v1.1.6 (hits TIPADOS para o consumidor máquina)
+## [1.1.6] — 2026-08-20 (hits TIPADOS + ergonomia MCP)
 
 O retorno de recall é lido por OUTRA inteligência (não por humano) — e o canal
 carrega dados que NÃO são palavras humanas (JSON de intenção máquina→máquina,
@@ -54,6 +54,19 @@ verdes, hot test 90/0 exit 0.
   parseia JSON verbatim, segue `rel=` e re-lê o payload do primário, consome o
   binário cru pela key (nunca `from_utf8_lossy`). Determinístico (InMemory,
   sem LLM, embedding LCG do exemplo). Exit 0 sse 16/16.
+- **MCP ergonomics (instalação Cursor/Windows)**: [`docs/MCP.md`](docs/MCP.md)
+  (guia completo), [`.cursor/mcp.json`](.cursor/mcp.json) +
+  [`scripts/mcp-server.ps1`](scripts/mcp-server.ps1) /
+  [`scripts/mcp-server.sh`](scripts/mcp-server.sh) (launchers stdio via binário
+  release — não dependem de `cargo` no PATH do IDE), [`scripts/mcp-smoke.sh`](
+  scripts/mcp-smoke.sh) (23 tools + `era_report` + schemas + `health`
+  onboarding), step de smoke no CI, [`CONTRIBUTING.md`](CONTRIBUTING.md)
+  (identidade Git + gates locais).
+- **MCP `health` onboarding**: JSON com `db_path`, `embedder`, dims indexadas,
+  `mcp_tool_count`, `mcp_contract_version`, passos iniciais e link para
+  embedder HTTP (`examples/embedder_http.rs`).
+- **`mcp_actionable_error`**: erros de dim/era apontam `era_report`; erros de
+  embedding citam contrato same-model-on-write-and-query.
 
 ### Changed
 - **MCP `remember(type=)`** (item 2): declara o tipo no write (schema enum).
@@ -68,6 +81,8 @@ verdes, hot test 90/0 exit 0.
 - **MCP `fmt_hit`** unificado p/ recall (todos os modes) + temporal +
   entities; `payload=..` só aparece quando difere de `type` (datum real ≠
   projeção).
+- **`Cargo.toml` → 1.1.6**; `serverInfo.version` → 1.1.6; README checklist
+  pós-clone; docs de versão alinhados (`VERSIONING.md`, `docs/api.md`).
 
 ### Fixed
 - **BUGFIX companion L5 (bughunt #13)**: o lookup do texto companion fazia

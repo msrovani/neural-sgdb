@@ -235,6 +235,84 @@ fn error_response(id: &Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
 }
 
+/// Número de tools expostas — mantido em sync com `tools/list` + CI smoke.
+const EXPECTED_MCP_TOOL_COUNT: usize = 23;
+const MCP_CONTRACT_VERSION: &str = "1.1.6";
+
+fn embedder_label() -> String {
+    std::env::var("NEURAL_SGDB_EMBEDDER").unwrap_or_else(|_| "demo".into())
+}
+
+/// Erros acionáveis para o agente (S1/era guard, contrato de embedding).
+fn mcp_actionable_error(e: impl std::fmt::Display) -> String {
+    let msg = e.to_string();
+    let lower = msg.to_ascii_lowercase();
+    if lower.contains("indexed_embedding_dims")
+        || lower.contains("era_report")
+        || lower.contains("era do corpus")
+        || (lower.contains("invalid") && lower.contains("dim"))
+    {
+        return format!(
+            "{msg}\n\nacao: chame a tool `era_report` (read-only) para veredito \
+             empty/ok/mixed_dims, dims indexadas e custo estimado de migracao."
+        );
+    }
+    if lower.contains("embedding") || lower.contains("dimens") {
+        return format!(
+            "{msg}\n\ncontrato: use o MESMO modelo/dimensao em remember e recall, \
+             ou forneca `embedding` explicito no payload de ambos."
+        );
+    }
+    msg
+}
+
+fn health_payload(db: &mut Sgdb, db_path: &str, embedder: &str) -> Value {
+    let h = db.health();
+    let dims: Vec<usize> = db.indexed_embedding_dims().into_iter().collect();
+    json!({
+        "backend": h.backend,
+        "node_id": h.node_id,
+        "storage_ok": h.storage_ok,
+        "doc_count": h.doc_count,
+        "bq_len": h.bq_len,
+        "ram_len": h.ram_len,
+        "open_conflicts": h.open_conflicts,
+        "db_path": db_path,
+        "embedder": embedder,
+        "mcp_contract_version": MCP_CONTRACT_VERSION,
+        "mcp_tool_count": EXPECTED_MCP_TOOL_COUNT,
+        "indexed_embedding_dims": dims,
+        "contract": "same embedding model/dimension on write and query; demo trigram is NOT semantic",
+        "onboarding": [
+            "1. remember(text=...) then recall(query=...) with the SAME words (demo embedder)",
+            "2. remember(scope=..., entities=[...]) for multi-agent / recall_entities 1-hop",
+            "3. recall(format=json) or rag_context(format=json) for typed machine hits",
+            "4. remember(type=json|code|embedding|binary) to declare payload type (MDM1 v6)",
+            "5. era_report after any dimension/era Invalid error (ADR-0007)"
+        ],
+        "http_embedder": "cargo run --release --example embedder_http — see docs/MCP.md"
+    })
+}
+
+fn recall_for_mcp(
+    db: &mut Sgdb,
+    mode: &str,
+    scope: &str,
+    emb: &[f32],
+    query: &str,
+    need: usize,
+) -> Result<Vec<neural_sgdb::Hit>, String> {
+    let r = match (mode, scope.is_empty()) {
+        ("lexical", true) => db.recall_lexical(query, need),
+        ("lexical", false) => db.recall_lexical_scoped(query, need, scope),
+        ("hybrid", true) => db.recall_hybrid(emb, query, need),
+        ("hybrid", false) => db.recall_hybrid_scoped(emb, query, need, scope),
+        (_, true) => db.recall(emb, need),
+        _ => db.recall_scoped(emb, need, scope),
+    };
+    r.map_err(mcp_actionable_error)
+}
+
 fn main() {
     let db_path = std::env::var("NEURAL_SGDB_DB").unwrap_or_else(|_| "sgdb_memory.db".into());
 
@@ -262,8 +340,9 @@ fn main() {
             std::process::exit(1);
         }
     };
-    eprintln!("[neural-sgdb] MCP server pronto — db={db_path} backend={}", db.backend());
+    eprintln!("[neural-sgdb] MCP server pronto — db={db_path} backend={} tools={EXPECTED_MCP_TOOL_COUNT}", db.backend());
     let embedder = load_embedder();
+    let embedder_name = embedder_label();
 
     let stdin = io::stdin();
     for line in stdin.lock().lines() {
@@ -294,7 +373,7 @@ fn main() {
                 send(&json!({"jsonrpc":"2.0","id":id,"result":{
                     "protocolVersion":"2025-11-25",
                     "capabilities":{"tools":{}},
-                    "serverInfo":{"name":"neural-sgdb","version":"1.1.0"}
+                    "serverInfo":{"name":"neural-sgdb","version":MCP_CONTRACT_VERSION}
                 }}));
             }
             "notifications/initialized" | "notifications/cancelled" | "notifications/progress" => {
@@ -448,7 +527,7 @@ fn main() {
                          "target":{"type":"string","description":"Chave nova (vazia = gerada)"}},
                        "required":["a","b"]}},
                     {"name":"health",
-                     "description":"Estado observavel do banco: backend, node_id, sonda de storage, contagens (docs/BQ/RAM) e conflitos abertos.",
+                     "description":"Onboarding + estado observavel: backend, db_path, embedder ativo, dims indexadas (era), mcp_tool_count, contrato same-model-on-write-and-query, passos iniciais e link para embedder HTTP. Chame primeiro apos instalar o MCP.",
                      "inputSchema":{"type":"object","properties":{}},
                      "annotations":{"readOnlyHint":true}},
                     {"name":"diary",
@@ -544,7 +623,7 @@ fn main() {
                             Ok(e) => e,
                             Err(e) => {
                                 send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                    "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}}));
+                                    "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}}));
                                 continue;
                             }
                         };
@@ -556,7 +635,7 @@ fn main() {
                                 if !scope.is_empty() {
                                     if let Err(e) = db.set_scope(&format!("md/L4/{key}"), scope) {
                                         send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                            "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}}));
+                                            "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}}));
                                         continue;
                                     }
                                 }
@@ -569,7 +648,7 @@ fn main() {
                                 if !entities.is_empty() {
                                     if let Err(e) = db.set_entities(&format!("md/L4/{key}"), &entities) {
                                         send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                            "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}}));
+                                            "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}}));
                                         continue;
                                     }
                                 }
@@ -579,7 +658,7 @@ fn main() {
                                 if let Some(ct) = args["type"].as_str() {
                                     if let Err(e) = db.set_content_type(&format!("md/L4/{key}"), ct) {
                                         send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                            "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}}));
+                                            "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}}));
                                         continue;
                                     }
                                 }
@@ -592,7 +671,7 @@ fn main() {
                                     "isError":false}}))
                             }
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
+                                "content":[{"type":"text","text":mcp_actionable_error(&e)}],"isError":true}})),
                         }
                     }
                     "remember_episodic" => {
@@ -613,7 +692,7 @@ fn main() {
                                 "content":[{"type":"text","text":format!("episodio verbatim armazenado:\nuser: {ku}\nasst: {ka}")}],
                                 "isError":false}})),
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
+                                "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}})),
                         }
                     }
                     "recall" => {
@@ -634,7 +713,7 @@ fn main() {
                                 Ok(e) => e,
                                 Err(e) => {
                                     send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                        "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}}));
+                                        "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}}));
                                     continue;
                                 }
                             }
@@ -657,17 +736,13 @@ fn main() {
                         // v1.1.4 item 7 — scope opcional: filtro DENTRO do
                         // pipeline (candidatos de outro scope não competem).
                         let scope = args["scope"].as_str().unwrap_or("");
-                        let all = match (mode, scope.is_empty()) {
-                            ("lexical", true) => db.recall_lexical(query, need).unwrap_or_default(),
-                            ("lexical", false) => {
-                                db.recall_lexical_scoped(query, need, scope).unwrap_or_default()
+                        let all = match recall_for_mcp(&mut db, mode, scope, &emb, query, need) {
+                            Ok(h) => h,
+                            Err(e) => {
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                    "content":[{"type":"text","text":e}],"isError":true}}));
+                                continue;
                             }
-                            ("hybrid", true) => db.recall_hybrid(&emb, query, need).unwrap_or_default(),
-                            ("hybrid", false) => {
-                                db.recall_hybrid_scoped(&emb, query, need, scope).unwrap_or_default()
-                            }
-                            (_, true) => db.recall(&emb, need).unwrap_or_default(),
-                            _ => db.recall_scoped(&emb, need, scope).unwrap_or_default(),
                         };
                         let (page, next) = paginate(&all, args["cursor"].as_str(), size);
                         // v1.1.6: `format=json` devolve hits ESTRUTURADOS para
@@ -709,7 +784,7 @@ fn main() {
                                 Ok(e) => e,
                                 Err(e) => {
                                     send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                        "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}}));
+                                        "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}}));
                                     continue;
                                 }
                             }
@@ -737,24 +812,33 @@ fn main() {
                                 }
                             }
                             _ => {
-                                // format=json: hits estruturados; default: core
-                                // rag_context (prosa compacta p/ prompt);
-                                // rerank=true (item 4): ancoragem lexical no
-                                // pool ampliado (lição P1/P5).
-                                let hits = db.recall(&emb, k).unwrap_or_default();
-                                if json_fmt {
-                                    hits_json(&hits)
-                                } else if hits.is_empty() {
-                                    "nenhum contexto recuperado".into()
-                                } else if args["rerank"].as_bool().unwrap_or(false) {
-                                    db.rag_context_reranked(&emb, query, k)
-                                        .unwrap_or_else(|e| format!("erro: {e}"))
-                                } else {
-                                    db.rag_context(&emb, k).unwrap_or_else(|e| format!("erro: {e}"))
+                                match recall_for_mcp(&mut db, "semantic", "", &emb, query, k) {
+                                    Err(e) => {
+                                        send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                            "content":[{"type":"text","text":e}],"isError":true}}));
+                                        continue;
+                                    }
+                                    Ok(hits) => {
+                                        if json_fmt {
+                                            hits_json(&hits)
+                                        } else if hits.is_empty() {
+                                            "nenhum contexto recuperado".into()
+                                        } else if args["rerank"].as_bool().unwrap_or(false) {
+                                            db.rag_context_reranked(&emb, query, k)
+                                                .map_err(mcp_actionable_error)
+                                                .unwrap_or_else(|e| e)
+                                        } else {
+                                            db.rag_context(&emb, k)
+                                                .map_err(mcp_actionable_error)
+                                                .unwrap_or_else(|e| e)
+                                        }
+                                    }
                                 }
                             }
                         };
-                        let is_err = result_text.starts_with("erro: ");
+                        let is_err = result_text.contains("acao: chame a tool `era_report`")
+                            || result_text.starts_with("contrato:")
+                            || result_text.starts_with("erro:");
                         send(&json!({"jsonrpc":"2.0","id":id,"result":{
                             "content":[{"type":"text","text":result_text}],
                             "isError":is_err}}));
@@ -771,7 +855,7 @@ fn main() {
                             Ok(e) => e,
                             Err(e) => {
                                 send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                    "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}}));
+                                    "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}}));
                                 continue;
                             }
                         };
@@ -797,7 +881,7 @@ fn main() {
                                     "content":[{"type":"text","text":text}],"isError":false}}))
                             }
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
+                                "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}})),
                         }
                     }
                     "recall_entities" => {
@@ -837,7 +921,7 @@ fn main() {
                                     "content":[{"type":"text","text":text}],"isError":false}}))
                             }
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
+                                "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}})),
                         }
                     }
                     "explain" => {
@@ -858,7 +942,7 @@ fn main() {
                                     "validity": ex.validity, "children": ex.children})).unwrap_or_default()}],
                                 "isError":false}})),
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
+                                "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}})),
                         }
                     }
                     "reinforce" => {
@@ -872,7 +956,7 @@ fn main() {
                             Ok(()) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":format!("reforcada: {key} (+{delta})")}],"isError":false}})),
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
+                                "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}})),
                         }
                     }
                     "forget" => {
@@ -885,7 +969,7 @@ fn main() {
                             Ok(()) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":format!("arquivada: {key} (historia preservada)")}],"isError":false}})),
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
+                                "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}})),
                         }
                     }
                     "feedback" => {
@@ -903,7 +987,7 @@ fn main() {
                                     "content":[{"type":"text","text":format!("feedback aplicado ({verb} {amount}): {key}")}],"isError":false}}))
                             }
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
+                                "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}})),
                         }
                     }
                     "associate" => {
@@ -922,7 +1006,7 @@ fn main() {
                             Ok(()) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":format!("relacao: {a} --{kind:?}--> {b}")}],"isError":false}})),
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
+                                "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}})),
                         }
                     }
                     "related_to" => {
@@ -960,7 +1044,7 @@ fn main() {
                             Ok(()) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":format!("{old} superseded por {new}")}],"isError":false}})),
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
+                                "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}})),
                         }
                     }
                     "conflicts" => {
@@ -985,7 +1069,7 @@ fn main() {
                             Ok(()) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":format!("conflito {cid} resolvido -> {winner}")}],"isError":false}})),
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
+                                "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}})),
                         }
                     }
                     "merge_memories" => {
@@ -1000,17 +1084,13 @@ fn main() {
                             Ok(sk) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":format!("fundidas em {sk}")}],"isError":false}})),
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
+                                "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}})),
                         }
                     }
                     "health" => {
-                        let h = db.health();
+                        let payload = health_payload(&mut db, &db_path, &embedder_name);
                         send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                            "content":[{"type":"text","text":serde_json::to_string_pretty(&json!({
-                                "backend": h.backend, "node_id": h.node_id,
-                                "storage_ok": h.storage_ok, "doc_count": h.doc_count,
-                                "bq_len": h.bq_len, "ram_len": h.ram_len,
-                                "open_conflicts": h.open_conflicts})).unwrap_or_default()}],
+                            "content":[{"type":"text","text":serde_json::to_string_pretty(&payload).unwrap_or_default()}],
                             "isError":false}}));
                     }
                     "diary" => {
@@ -1028,7 +1108,7 @@ fn main() {
                                     "content":[{"type":"text","text":text}],"isError":false}}));
                             }
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
+                                "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}})),
                         }
                     }
                     "profile" => {
@@ -1047,7 +1127,7 @@ fn main() {
                                     "content":[{"type":"text","text":text}],"isError":false}}));
                             }
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
+                                "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}})),
                         }
                     }
                     "expire_old" => {
@@ -1061,7 +1141,7 @@ fn main() {
                             Ok(n) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":format!("{n} memorias expiradas em now={now}")}],"isError":false}})),
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
+                                "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}})),
                         }
                     }
                     "validate" => {
@@ -1080,7 +1160,7 @@ fn main() {
                             Ok(lines) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":lines.join("\n")}],"isError":false}})),
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("erro: {e}")}],"isError":true}})),
+                                "content":[{"type":"text","text":format!("{}", mcp_actionable_error(&e))}],"isError":true}})),
                         }
                     }
                     _ => send(&error_response(&id, -32602, "Unknown tool")),
@@ -1191,5 +1271,16 @@ mod tests {
         // sem duplicatas entre páginas
         let uniq: std::collections::HashSet<_> = collected.iter().collect();
         assert_eq!(uniq.len(), 12, "paginação repetiu hits");
+    }
+
+    #[test]
+    fn mcp_contract_tool_count() {
+        assert_eq!(EXPECTED_MCP_TOOL_COUNT, 23);
+    }
+
+    #[test]
+    fn mcp_actionable_error_hints_era_report() {
+        let msg = mcp_actionable_error("Invalid: query dims not in indexed_embedding_dims()");
+        assert!(msg.contains("era_report"), "{msg}");
     }
 }

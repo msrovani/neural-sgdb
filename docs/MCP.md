@@ -1,0 +1,168 @@
+# MCP — neural-sgdb
+
+Guia de instalação, contrato e troubleshooting do servidor MCP
+(`examples/mcp_server.rs`).
+
+## Contrato atual (v1.1.6)
+
+| Campo | Valor |
+|-------|-------|
+| Protocolo | JSON-RPC 2.0 over **stdio** (uma linha JSON por mensagem) |
+| Handshake | `initialize` → `protocolVersion: 2025-11-25` |
+| `serverInfo.version` | `1.1.6` |
+| Tools | **23** (inclui `era_report`, `health`, `validate`) |
+| Embedder default | `NEURAL_SGDB_EMBEDDER=demo` (trigrama — **não** é modelo semântico real) |
+| DB default | `NEURAL_SGDB_DB=.nsgdb/memory.db` (relativo ao cwd do processo) |
+
+### Tools (23)
+
+`remember`, `remember_episodic`, `recall`, `rag_context`, `recall_temporal`,
+`recall_entities`, `feedback`, `diary`, `profile`, `expire_old`, `explain`,
+`reinforce`, `forget`, `associate`, `related_to`, `contradicts`, `supersede`,
+`conflicts`, `resolve_conflict`, `merge_memories`, `health`, `validate`,
+`era_report`.
+
+### Parâmetros importantes
+
+- **`remember`**: `scope`, `entities` (lista de strings canônicas), `type`
+  (`text`|`json`|`code`|`embedding`|`binary`), `embedding` opcional.
+- **`recall` / `rag_context` / `recall_temporal` / `recall_entities`**:
+  `scope`, `mode` (`semantic`|`lexical`|`hybrid`), `format=json` para hits
+  estruturados (consumo máquina).
+- **`health`**: onboarding JSON (`db_path`, `embedder`, dims indexadas,
+  `mcp_tool_count`, link para embedder HTTP).
+
+## Build (obrigatório antes do IDE)
+
+```bash
+cargo build --release --example mcp_server
+```
+
+O launcher do repo usa o **binário release** — não depende de `cargo` no PATH
+do Cursor/Claude Code.
+
+## Cursor
+
+### Windows (recomendado)
+
+O repo inclui [`.cursor/mcp.json`](../.cursor/mcp.json) apontando para
+[`scripts/mcp-server.ps1`](../scripts/mcp-server.ps1):
+
+```json
+{
+  "mcpServers": {
+    "neural-sgdb": {
+      "type": "stdio",
+      "command": "powershell",
+      "args": [
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+        "${workspaceFolder}/scripts/mcp-server.ps1"
+      ],
+      "env": { "NEURAL_SGDB_EMBEDDER": "demo" }
+    }
+  }
+}
+```
+
+**Troubleshooting Windows**
+
+1. **`cargo` não encontrado no IDE** — use o script `.ps1` (binário release),
+   não `cargo run` no `command`.
+2. **`${workspaceFolder}` no `command`** — no Windows, mantenha `command`:
+   `powershell` e o script em `args` (como acima).
+3. **Binário ausente** — rode `cargo build --release --example mcp_server`.
+4. **Tools desatualizadas (22 vs 23)** — rebuild release e recarregue MCP nas
+   configurações do Cursor.
+5. **Recall vazio / dim mismatch** — chame `era_report`; use o **mesmo**
+   embedder/dimensão em `remember` e `recall`.
+
+### macOS / Linux
+
+[`scripts/mcp-server.sh`](../scripts/mcp-server.sh):
+
+```bash
+chmod +x scripts/mcp-server.sh
+```
+
+Config global ou `.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "neural-sgdb": {
+      "type": "stdio",
+      "command": "/caminho/absoluto/neural-sgdb/scripts/mcp-server.sh",
+      "env": { "NEURAL_SGDB_EMBEDDER": "demo" }
+    }
+  }
+}
+```
+
+## Claude Code / OpenCode
+
+```bash
+claude mcp add neural-sgdb -- /path/to/neural-sgdb/scripts/mcp-server.sh
+```
+
+Ou defina `NEURAL_SGDB_DB` e aponte para o binário release diretamente.
+
+## Smoke test local
+
+```bash
+bash scripts/mcp-smoke.sh
+```
+
+Verifica: 23 tools, presença de `era_report`, schemas `remember(type=)` e
+`recall(format=json)`, e `health` com `onboarding`.
+
+## Embedder HTTP (modelo real)
+
+O core não embute modelo de embedding. Para plugar um endpoint HTTP:
+
+```bash
+cargo run --release --example embedder_http
+```
+
+Leia [`examples/embedder_http.rs`](../examples/embedder_http.rs): o trait
+`Embedder` deve ser o **mesmo** na escrita e na busca (contrato S1 — dimensão
+indexada). Configure `NEURAL_SGDB_EMBEDDER` conforme o exemplo MCP ou forneça
+`embedding` explícito em cada `remember`/`recall`.
+
+## Erros acionáveis
+
+Erros de dimensão/era incluem hint para chamar `era_report`. Erros de embedding
+citam o contrato same-model. Exemplo:
+
+```
+Invalid: query dims not in indexed_embedding_dims()
+
+acao: chame a tool `era_report` (read-only) para veredito empty/ok/mixed_dims...
+```
+
+## Scope e entidades (multi-agente)
+
+```json
+{"name":"remember","arguments":{
+  "key":"pref/theme",
+  "text":"user prefers dark mode",
+  "scope":"user:alice",
+  "entities":["preference/theme"]
+}}
+```
+
+```json
+{"name":"recall","arguments":{
+  "query":"dark mode",
+  "k":5,
+  "scope":"user:alice"
+}}
+```
+
+Recall **global** (sem `scope`) não vaza memórias escopadas. Entidades exigem
+strings **idênticas** na escrita e em `recall_entities`.
+
+## Referências
+
+- Contrato API: [`docs/api.md`](api.md)
+- Hot test: [`docs/hot_test.md`](hot_test.md)
+- Contribuição: [`CONTRIBUTING.md`](../CONTRIBUTING.md)

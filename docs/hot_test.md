@@ -18,8 +18,8 @@
 
 ## Checklist funcional (cada via)
 
-- [x] handshake `initialize` → `protocolVersion: 2025-11-25`, ServerInfo v1.1.0
-- [x] `tools/list` → 15 tools (health/validate presentes)
+- [x] handshake `initialize` → `protocolVersion: 2025-11-25`, ServerInfo v1.1.6
+- [x] `tools/list` → 23 tools (`era_report`, `health` onboarding, `validate`)
 - [x] `remember` → memória armazenada com key única (`md/L4/mcp/{ms*1000+seq}`)
 - [x] `recall` → hit semântico certo no top-k, com storage key + proveniência
 - [x] `rag_context` → contexto formatado para prompt
@@ -274,3 +274,20 @@ binários). Cada item com regressão; **hot test 90/0 exit 0**; matriz **229+1 /
 - **MCP `fmt_hit`** unificado (recall/temporal/entities): prefixo `- {key} | `
   e sufixo ` [state=` preservados (invariantes de paginação); `payload=..` só
   quando difere de `type`.
+
+---
+
+## Follow-up v1.1.6 — Ergonomia MCP (instalação Cursor/Windows)
+
+Lições da instalação real na IDE (memorizadas em `md/L4/mcp/...`, ver
+[`docs/MCP.md`](MCP.md)):
+
+| Problema | Causa | Correção |
+|----------|-------|----------|
+| `cargo` não encontrado no Cursor | IDE não herda PATH do shell | Launcher `scripts/mcp-server.ps1` / `.sh` usa binário **release** |
+| `${workspaceFolder}` no `command` | Windows quebra path | `command: powershell` + script em `args` (`.cursor/mcp.json`) |
+| 22 tools / sem `era_report` | binário desatualizado ou `.exe` locked pelo MCP | rebuild + reload MCP; smoke `scripts/mcp-smoke.sh` |
+| `health` sem onboarding | build antiga | v1.1.6: JSON com `mcp_tool_count`, `embedder`, passos iniciais |
+| commit falha pós-clone | `user.name`/`user.email` ausentes | [`CONTRIBUTING.md`](../CONTRIBUTING.md) |
+
+CI: step `bash scripts/mcp-smoke.sh` após `cargo build --release --examples`.
