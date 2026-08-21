@@ -1,6 +1,6 @@
-# neural-sgdb — Implementation Status
+﻿# neural-sgdb — Implementation Status
 
-> **Current snapshot (2026-08-20, v1.1.10).** Capability matrix vs the shipped
+> **Current snapshot (2026-08-21, v1.1.11).** Capability matrix vs the shipped
 > codebase. For the public contract see [`docs/api.md`](api.md); for architecture
 > narrative see [`docs/architecture/README.md`](architecture/README.md).
 
@@ -55,6 +55,11 @@
 | Score breakdown (v1.1.10) | IMPLEMENTED | `recall_weighted_full`, `Hit.score_breakdown`, trust weights |
 | Audit hash-chain (v1.1.10) | IMPLEMENTED | `sys/audit/` (AUD1), `audit_verify`, `rollback_to` |
 | Write-path hardening (v1.1.10) | IMPLEMENTED | `validate_written` on all write seams |
+| Host scheduler (v1.1.11) | IMPLEMENTED | `examples/host_scheduler.rs` (expire/decay/consolidate/audit) |
+| Backfill helper (v1.1.11) | IMPLEMENTED | `examples/backfill_helper.rs` (L3→L4 re-embed + rebuild) |
+| Storage batch (v1.1.11) | IMPLEMENTED | `Storage::put_many` + `FileStorage::put_batch` (1 write por remember_exchange) |
+| Lexical fast (v1.1.11) | IMPLEMENTED | `LexicalIndex::search_fast` (dedup, sem matched_terms) |
+| Recall heap (v1.1.11) | IMPLEMENTED | `recall_weighted_full` select_nth_unstable |
 | Arbitration policy seam | IMPLEMENTED | `ArbitrationPolicy`, no LLM in core |
 | Embedder seam | IMPLEMENTED | trait + DemoEmbedder + HTTP example |
 | MCP server | IMPLEMENTED | 4 tools (+ aliases), lexical-first (ADR-0008), `nsgdb://session` |
@@ -65,7 +70,7 @@
 | Production crypto transport | REMAINING | seam only (ADR-0006) |
 | Residual BQ / sharding | REMAINING | benchmark-driven, not scheduled |
 | Relation inference | REMAINING | deliberate non-goal |
-| Automatic lifecycle scheduler | REMAINING | explicit `tick()` only |
+| Automatic lifecycle scheduler | PARTIAL | core explicit `tick()` only; host `host_scheduler.rs` (v1.1.11) automates expire/decay/consolidate/audit |
 | State-driven retention GC | REMAINING | compaction reclaims tombstones only |
 
 ## Subsystem notes

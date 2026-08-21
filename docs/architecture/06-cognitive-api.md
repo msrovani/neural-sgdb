@@ -1,6 +1,6 @@
 ﻿# 06 — Cognitive API
 
-> Status: **current (v1.1.10)** — the cognitive surface ships in `Sgdb` +
+> Status: **current (v1.1.11)** — the cognitive surface ships in `Sgdb` +
 > MCP server (**4 tools**, aliases for the 23 legacy names). **implemented** =
 > code + tests; **remaining** = honest gap. All English per repo policy.
 

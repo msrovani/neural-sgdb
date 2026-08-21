@@ -1,6 +1,6 @@
 ﻿# 05 — Storage Architecture
 
-> Status: **current (v1.1.10)** — `Storage` trait + three backends + durability
+> Status: **current (v1.1.11)** — `Storage` trait + three backends + durability
 > levels ship in production code. **implemented** = code + tests; **remaining**
 > = honest gap. All English per repo policy.
 

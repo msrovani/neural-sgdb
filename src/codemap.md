@@ -15,20 +15,20 @@ Layered architecture with injectable seams (replacing the origin kernel):
 | `memory_doc.rs` | `MemoryDoc` (NMD1 format), zero-copy `MemoryDocView`, `VectorClock`, `MemoryLayer` L0–L7, `MemoryMeta`/`MemoryRecord` (MDM1 **v6**: version_id, last_reinforced, scope, entities, content_type) | Binary contract byte-identical to the OS |
 | `art.rs` | `ArtIndex` — Adaptive Radix Tree Node4/16/48/256, prefix scan, tombstone delete | Radix Tree (Leis 2013) |
 | `bq.rs` | `BqFlatIndex` — binary quantization (1-bit) + top-k by Hamming, `MihIndex` | Quantized flat scan |
-| `hamming_dispatch.rs` | SIMD dispatch scalar/AVX2/AVX-512 (`#[target_feature]`), seam `cpu_caps()`/`set_cpu_caps()` | Runtime strategy |
+| `hamming_dispatch.rs` | SIMD dispatch scalar/AVX2/AVX-512 (`#[target_feature]`), `#[inline(always)]` hot (v1.1.11), seam `cpu_caps()`/`set_cpu_caps()` | Runtime strategy |
 | `ctype.rs` | **v1.1.6**: `ContentType` (Text/Json/Code/Embedding(dim)/Binary), `RecallPath`, `detect_content_type`, `stable_label`/`parse_stable_label`/`renders_prose` — tipagem do datum p/ consumidor máquina | HINT derivation (no_std-safe) |
 | `engine.rs` | `AiosDatabaseEngine` — RAM L0/L1 + Storage L2–L7, ART/BQ indexing, rebuild, side-tables, relations, `entity_index` | Persistence engine |
-| `sgdb.rs` | `Sgdb` — public facade; `remember_text_with` (v1.1.9 lexical write); `remember_semantic_with`/`RememberOutcome`/`recall_empty_hint` (v1.1.7); `Hit` tipado v1.1.6; **v1.1.10**: `decay_importance`/`consolidate_recurrences`/`recall_weighted_full` (`Hit.score_breakdown`)/`audit_checkpoint`/`audit_verify`/`rollback_to` + `validate_written` | Facade |
+| `sgdb.rs` | `Sgdb` — public facade; `remember_text_with` (v1.1.9 lexical write); `remember_semantic_with`/`RememberOutcome`/`recall_empty_hint` (v1.1.7); `Hit` tipado v1.1.6; **v1.1.10**: `decay_importance`/`consolidate_recurrences`/`recall_weighted_full` (`Hit.score_breakdown`)/`audit_checkpoint`/`audit_verify`/`rollback_to` + `validate_written`; **v1.1.11**: `Storage::put_many` batch, `recall_weighted_full` select_nth, `search_fast` | Facade |
 | `audit.rs` | **v1.1.10**: ledger hash-chain `sys/audit/<seq:016x>` (wire `AUD1`), `AuditEntry`/`AuditSnapshotItem`, `audit_key`/`audit_seq_from_key` — base do rollback cognitivo | Append-only ledger |
 | `doctrine.rs` | **v1.1.8**: agent doctrine (`DOCTRINE`, key/scope/entities) — source `docs/doctrine.md` | Compile-time include |
 | `era.rs` | **v1.1.5**: `Sgdb::era_report()`/`era_report_lines()` — era do corpus, veredito, custo estimado de migração | Read-only diagnostic |
-| `lexical.rs` | Inverted BM25 index over L2/L3 texts; `search` → `(key, score, matched_terms)` (v1.1.6) | Inverted index |
+| `lexical.rs` | Inverted BM25 index over L2/L3 texts; `search` → `(key, score, matched_terms)` (v1.1.6) + `search_fast` (v1.1.11, sem matched_terms) | Inverted index |
 | `lifecycle.rs` | `MemoryLifecycle` — deterministic tick (commit/promote/semanticize/decay/archive) | Deterministic engine |
 | `arbitration.rs` | `ArbitrationPolicy` trait + deterministic `Arbitrator` (no LLM in core) | Policy |
 | `conflict.rs` | `ConflictRecord` (CFL1), conflict detection/preservation/resolution | CRDT adjunct |
 | `limits.rs` | **P1-3**: centralized storage/embedding ceilings | Constants |
 | `metrics.rs` | Runtime metrics counters | Observability |
-| `storage.rs` | `Storage` trait (4 methods) + `InMemory` + `FileStorage` (CRC32 append-log crash-safe) + `SgdbError` | Pluggable trait / Strategy |
+| `storage.rs` | `Storage` trait (4+1 methods: `put_many` v1.1.11) + `InMemory` + `FileStorage` (`put_batch` CRC32 append-log) + `SgdbError` | Pluggable trait / Strategy |
 | `tickv.rs` | Byte-exact TKLV/TKCK codec of the OS TickvLite + `TickvFile` backend | Format interop |
 | `trust.rs` | `SignedEnvelope`/`Signer`/`TrustStore` reference signed-transport flow (P2-3, p2p) | Auth seam (no crypto in core) |
 | `crdt.rs` | `CrdtMemorySync` (LWW) + `Transport` trait + `UdpTransport` (`p2p` feature) | CRDT / Observer |

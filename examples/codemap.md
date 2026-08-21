@@ -21,7 +21,7 @@ protocols that codify HOW to use the DB.
 
 ## mcp_client.rs — HOT TEST
 - `cargo run --release --example mcp_client` — drives `mcp_server` like an IDE;
-  **95/0 checks exit 0** (v1.1.10). Covers 4-tool surface + aliases, lexical
+  **95/0 checks exit 0** (v1.1.10, ainda 95 em 1.1.11). Covers 4-tool surface + aliases, lexical
   default (ADR-0008), `format=json`, `remember(type=)`, temporal, entities,
   lazy pagination, scope, persistence across restart, e **fase 6b (metadado
   cognitivo)**: `curate` ops `consolidate`/`audit_checkpoint`/`audit_verify`/
@@ -45,6 +45,7 @@ protocols that codify HOW to use the DB.
 - **v1.1.10 (curate ops)**: `decay` (Ebbinghaus), `consolidate`, 
   `audit_checkpoint`/`audit_verify` (ledger hash-chain + structuredContent),
   `rollback_to` (cognitivo — payloads intocados).
+- **v1.1.11 (host)**: `host_scheduler` (expire/decay/consolidate/audit) + `backfill_helper` (L3→L4 re-embed) + `Storage::put_many` (`FileStorage::put_batch`); core MG1 `recall_weighted_full` select_nth, MG2 `lexical::search_fast` dedup, MG3 `hamming` inline, MG4 batch.
 - Persistence: `FileStorage` via env `NEURAL_SGDB_DB` (default `sgdb_memory.db`)
 - Protocol: `initialize` (echo 2025-11-25) → `notifications/initialized`
   (ignore) → `tools/list` → `tools/call` → `ping`; unknown → `-32601`

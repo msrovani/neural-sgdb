@@ -1,13 +1,15 @@
 # Roadmap — neural-sgdb
 
-Status: **v1.1.x maintenance line (2026-08-20, crate v1.1.10)** —
+Status: **v1.1.x maintenance line (2026-08-21, crate v1.1.11)** —
 stable API, zero deps, `no_std` + `std`, CI gates green. Crate version
-**1.1.10**; histórico v1.1.2–v1.1.10 no `CHANGELOG.md`. This roadmap is honest
+**1.1.11**; histórico v1.1.2–v1.1.11 no `CHANGELOG.md`. This roadmap is honest
 about what is DONE, what is NEXT, and what is deliberately NOT planned.
 
 Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
 
 ## v1.x maintenance (2026-08-13 — ongoing)
+
+✅ **v1.1.11 — Host governance + micro-ganhos core (2026-08-21)** — stable `v1.1.10` guardada como tag + bench baseline (`BENCH_STABLE_1.1.10.txt`); host: `host_scheduler` (expire/decay/consolidate/audit) + `backfill_helper` (L3→L4 re-embed) + `Storage::put_many`/`FileStorage::put_batch`; core MG1-4: `recall_weighted_full` select_nth, `lexical` dedup+search_fast, `hamming` inline. Gates 243/289/195+1, hot 95/0. Bench compare em `BENCH_COMPARE_1.1.10_vs_1.1.11.md`.
 
 ✅ **v1.1.10 — Cognitive metadata (2026-08-20)** — cinco itens de
    `docs/future-horizons.md` entregues com regressão cada: (1) decay de

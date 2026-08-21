@@ -1,6 +1,6 @@
 ﻿# 03 — Retrieval Architecture
 
-> Status: **current (v1.1.10)** — ART + BQ + lexical + entities + typed hits
+> Status: **current (v1.1.11)** — ART + BQ + lexical + entities + typed hits
 > ship in production code. MCP default retrieval is **lexical** (ADR-0008).
 > **implemented** = code + tests; **remaining** =
 > honest gap. All English per repo policy.

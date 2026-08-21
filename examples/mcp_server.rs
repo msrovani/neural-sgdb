@@ -272,7 +272,7 @@ fn error_response(id: &Value, code: i64, message: &str) -> Value {
 
 /// Número de tools em `tools/list` (aliases antigos ainda funcionam em tools/call).
 const EXPECTED_MCP_TOOL_COUNT: usize = 4;
-const MCP_CONTRACT_VERSION: &str = "1.1.10";
+const MCP_CONTRACT_VERSION: &str = "1.1.11";
 const BUILD_GIT: &str = env!("NEURAL_SGDB_BUILD_GIT");
 
 /// Lista pública: 4 tools. Os 23 nomes antigos continuam válidos em `tools/call`.

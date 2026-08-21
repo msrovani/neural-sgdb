@@ -1,6 +1,6 @@
 ﻿# 02 — Memory Lifecycle
 
-> Status: **current (v1.1.10)** — the lifecycle engine ships in `src/lifecycle.rs`.
+> Status: **current (v1.1.11)** — the lifecycle engine ships in `src/lifecycle.rs`.
 > **implemented** = code + tests; **remaining** = honest gap. All English per
 > repo policy.
 

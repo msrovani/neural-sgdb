@@ -36,11 +36,8 @@ filesystem, no external runtime.
 
 ## Status
 
-**v1.1.10** ✅ — cognitive metadata: `decay_importance` (Ebbinghaus),
-`consolidate_recurrences`, `recall_weighted_full` (`Hit.score_breakdown`),
-auditoria hash-chain (`audit_checkpoint`/`audit_verify`/`rollback_to`) e
-write-path hardening. Herda o MCP lexical-first (ADR-0008).
-Crate em `Cargo.toml`: **1.1.10**.
+**v1.1.11** ✅ — host governance + micro-ganhos core (stable `v1.1.10` guardada como tag + bench `BENCH_STABLE_1.1.10.txt`): `host_scheduler` (expire/decay/consolidate/audit), `backfill_helper` (L3→L4 re-embed), `Storage::put_many`/`put_batch`, lexical dedup+`search_fast`, `hamming` inline, `recall_weighted_full` select_nth. Herda 1.1.10 cognitive metadata.
+Crate em `Cargo.toml`: **1.1.11**.
 
 - `cargo test` on host: **243+ lib tests + doc-test** (plus p2p / no_std matrix)
 - `cargo check --no-default-features --target x86_64-unknown-none`: **clean**
@@ -195,7 +192,7 @@ lists conflicts / superseded / unseen scopes.
 
 Host adapters for claw-like apps (Hermes provider, OpenClaw skeleton, shared
 MCP client) live in [`connectors/`](connectors/README.md) — **outside** crate
-SemVer; core stays 1.1.10.
+SemVer; core stays 1.1.11.
 
 ### Cursor (Windows)
 
@@ -247,7 +244,7 @@ avoid stale/unreproducible claims).
   (LaTeX, two-column article; **compiled [`neural-sgdb-telepathy.pdf`](docs/paper/neural-sgdb-telepathy.pdf)**,
   8 TikZ figures + design rationale, threats to validity, case study, appendix;
   upload the `.tex` source to arXiv)
-- **Architecture (v1.1.10)** — [`docs/architecture/`](docs/architecture/)
+- **Architecture (v1.1.11)** — [`docs/architecture/`](docs/architecture/)
   — Memory Model (01), Lifecycle (02), Retrieval (03), Distributed (04),
   Storage (05), Cognitive API (06) — documents the shipped cognitive memory
   system; [`docs/implementation-status.md`](docs/implementation-status.md)
