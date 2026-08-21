@@ -1,0 +1,30 @@
+[package]
+name = "nsgdb-wasm"
+version = "0.1.0"
+edition = "2021"
+description = "WASM Storage backend for neural-sgdb — IndexedDB/OPFS via wasm-bindgen (stub hoje, sem quebrar no_std do lib)"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/msrovani/neural-sgdb"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+neural-sgdb = { path = "../.." }
+
+[dependencies.wasm-bindgen]
+version = "0.2"
+optional = true
+
+[dependencies.js-sys]
+version = "0.3"
+optional = true
+
+[dependencies.web-sys]
+version = "0.3"
+optional = true
+features = ["Window", "Storage", "IdbDatabase", "IdbObjectStore"]
+
+[features]
+default = []
+wasm = ["wasm-bindgen", "js-sys", "web-sys"]

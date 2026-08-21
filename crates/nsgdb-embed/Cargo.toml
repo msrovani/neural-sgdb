@@ -1,0 +1,14 @@
+[package]
+name = "nsgdb-embed"
+version = "0.1.0"
+edition = "2021"
+description = "Local embedder for neural-sgdb — deterministic stub (384-dim) proving the Embedder seam; candle/ONNX feature will replace the hash without touching the core"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/msrovani/neural-sgdb"
+
+[dependencies]
+neural-sgdb = { path = "../.." }
+
+[features]
+default = []
+# futuro: candle = ["dep:candle-core", "dep:candle-transformers"]
