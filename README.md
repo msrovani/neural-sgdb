@@ -250,7 +250,7 @@ avoid stale/unreproducible claims).
   system; [`docs/implementation-status.md`](docs/implementation-status.md)
   tracks capability vs code
 - **AI agent guides** — `AGENTS.md`, `CLAUDE.md`, `codemap.md` (atlas),
-  [`docs/MCP.md`](docs/MCP.md) (instalação MCP)
+  [`docs/MCP.md`](docs/MCP.md) (instalação MCP), [`docs/browser-extension.md`](docs/browser-extension.md) (extensão local-first, 1 clique)
 - **Contributing** — [`CONTRIBUTING.md`](CONTRIBUTING.md)
 - **Governance** — [`SECURITY.md`](SECURITY.md) (policy + trust model),
   [`VERSIONING.md`](VERSIONING.md) (SemVer + release process),
