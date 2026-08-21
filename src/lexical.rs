@@ -110,12 +110,18 @@ impl LexicalIndex {
     /// termos da query que casaram) desc (determinístico por key no empate).
     /// Os termos casados são o grounding do hit (v1.1.6) — o consumidor vê o
     /// "porquê" do casamento sem re-tokenizar.
+    #[inline]
     pub fn search(&self, query: &str, k: usize) -> Vec<(String, f32, Vec<String>)> {
         let toks = tokenize(query);
+        // dedup query termos: evita m.contains() O(n) por hit quando query repete
+        let mut uniq: BTreeMap<String, ()> = BTreeMap::new();
+        for t in toks {
+            uniq.insert(t, ());
+        }
         let mut scores: BTreeMap<String, f32> = BTreeMap::new();
         let mut matched: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let n = self.n_docs.max(1) as f32;
-        for t in &toks {
+        for t in uniq.keys() {
             let Some(plist) = self.postings.get(t) else {
                 continue;
             };
@@ -124,17 +130,45 @@ impl LexicalIndex {
             for (key, f) in plist {
                 let tf = 1.0 + ln_f32(*f as f32);
                 *scores.entry(key.clone()).or_insert(0.0) += tf * idf;
-                // termo casado, deduplicado por doc (query pode repetir termo)
-                let m = matched.entry(key.clone()).or_default();
-                if !m.contains(t) {
-                    m.push(t.clone());
-                }
+                matched.entry(key.clone()).or_default().push(t.clone());
             }
         }
         let mut out: Vec<(String, f32, Vec<String>)> = scores
             .into_iter()
             .map(|(k, s)| (k.clone(), s, matched.remove(&k).unwrap_or_default()))
             .collect();
+        out.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(core::cmp::Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        out.truncate(k);
+        out
+    }
+
+    /// Fast path sem `matched_terms` — para rerank interno e oversample onde o
+    /// grounding não é necessário. Evita alloc de `Vec<String>` por hit (MG2).
+    #[inline]
+    pub fn search_fast(&self, query: &str, k: usize) -> Vec<(String, f32)> {
+        let toks = tokenize(query);
+        let mut uniq: BTreeMap<String, ()> = BTreeMap::new();
+        for t in toks {
+            uniq.insert(t, ());
+        }
+        let mut scores: BTreeMap<String, f32> = BTreeMap::new();
+        let n = self.n_docs.max(1) as f32;
+        for t in uniq.keys() {
+            let Some(plist) = self.postings.get(t) else {
+                continue;
+            };
+            let df = plist.len() as f32;
+            let idf = ln_f32((n + 1.0) / (df + 1.0)) + 1.0;
+            for (key, f) in plist {
+                let tf = 1.0 + ln_f32(*f as f32);
+                *scores.entry(key.clone()).or_insert(0.0) += tf * idf;
+            }
+        }
+        let mut out: Vec<(String, f32)> = scores.into_iter().collect();
         out.sort_by(|a, b| {
             b.1.partial_cmp(&a.1)
                 .unwrap_or(core::cmp::Ordering::Equal)

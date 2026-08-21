@@ -1903,10 +1903,17 @@ impl Sgdb {
             });
             scored.push((total, h));
         }
+        // MG1: top-k via select_nth_unstable (O(N) + O(k log k)) em vez de sort total O(N log N)
+        if k > 0 && scored.len() > k {
+            scored.select_nth_unstable_by(k - 1, |a, b| {
+                a.0.total_cmp(&b.0).then_with(|| a.1.key.cmp(&b.1.key))
+            });
+            scored.truncate(k);
+        }
         scored.sort_by(|a, b| {
             a.0.total_cmp(&b.0).then_with(|| a.1.key.cmp(&b.1.key))
         });
-        Ok(scored.into_iter().take(k).map(|(_, h)| h).collect())
+        Ok(scored.into_iter().map(|(_, h)| h).collect())
     }
 
     /// Decay de importância (v1.1.10 item 1, Ebbinghaus/FSFM): a importância

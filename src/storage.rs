@@ -79,6 +79,15 @@ pub trait Storage {
     fn sync_durable(&mut self) -> Result<(), SgdbError> {
         Ok(())
     }
+
+    /// Batch put — default: loop de `put`; backends `Flushed` podem sobrescrever
+    /// para um único `write_all` + `flush` (MG4). Mantém contrato CRUD.
+    fn put_many(&mut self, items: &[(&[u8], &[u8])]) -> Result<(), SgdbError> {
+        for (k, v) in items {
+            self.put(k, v)?;
+        }
+        Ok(())
+    }
 }
 
 /// RAM-only (testes/prototipagem). Volátil — não persiste.
@@ -158,6 +167,7 @@ fn crc32_update(crc: u32, data: &[u8]) -> u32 {
     crc
 }
 
+#[inline(always)]
 pub fn crc32(data: &[u8]) -> u32 {
     !crc32_update(0xFFFF_FFFF, data)
 }
@@ -302,6 +312,53 @@ impl FileStorage {
         Ok(FileStorage { path, map, file: None })
     }
 
+    /// MG4: batch append — escreve N records com um único `write_all` + `flush`.
+    /// Mantém `Flushed` por lote, não por record. Usado por `remember_exchange`
+    /// (L1+L2) e pelo host scheduler (`compact`+batch). Sem quebrar o trait.
+    #[allow(dead_code)]
+    pub fn put_batch(&mut self, items: &[(&[u8], &[u8])]) -> Result<(), SgdbError> {
+        use std::io::Write;
+        if items.is_empty() {
+            return Ok(());
+        }
+        for (k, v) in items {
+            if k.len() > MAX_KLEN || v.len() > MAX_VLEN {
+                return Err(SgdbError::Storage("limits"));
+            }
+        }
+        // monta buffer contíguo para um único syscall
+        let total: usize = items.iter().map(|(k, v)| 12 + k.len() + v.len()).sum();
+        let mut buf = Vec::with_capacity(total);
+        for (key, val) in items {
+            let vlen = if val.is_empty() { TOMBSTONE } else { val.len() as u32 };
+            buf.extend_from_slice(&(key.len() as u32).to_le_bytes());
+            buf.extend_from_slice(&vlen.to_le_bytes());
+            buf.extend_from_slice(&crc32_parts(key, val).to_le_bytes());
+            buf.extend_from_slice(key);
+            buf.extend_from_slice(val);
+        }
+        if self.file.is_none() {
+            self.file = Some(
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&self.path)
+                    .map_err(|_| SgdbError::Storage("open append"))?,
+            );
+        }
+        let f = self.file.as_mut().unwrap();
+        f.write_all(&buf).map_err(|_| SgdbError::Storage("write"))?;
+        f.flush().map_err(|_| SgdbError::Storage("flush"))?;
+        for (key, val) in items {
+            if val.is_empty() {
+                self.map.remove(*key);
+            } else {
+                self.map.insert(key.to_vec(), val.to_vec());
+            }
+        }
+        Ok(())
+    }
+
     fn append(&mut self, key: &[u8], val: &[u8]) -> Result<(), SgdbError> {
         use std::io::Write;
         // Bounds check ANTES do append (bughunt #11): um valor/chave acima dos
@@ -402,6 +459,10 @@ impl Storage for FileStorage {
             .map_err(|_| SgdbError::Storage("open sync"))?;
         f.sync_all().map_err(|_| SgdbError::Storage("sync_all"))
     }
+    fn put_many(&mut self, items: &[(&[u8], &[u8])]) -> Result<(), SgdbError> {
+        self.put_batch(items)
+    }
+
     fn put(&mut self, key: &[u8], val: &[u8]) -> Result<(), SgdbError> {
         self.append(key, val)?;
         // Valor vazio == tombstone no log (vlen u32::MAX) — o mapa deve

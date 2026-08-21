@@ -81,6 +81,7 @@ pub fn select_best_hamming_kernel() {
     }
 }
 
+#[inline(always)]
 fn ensure_selected() {
     // load+store em vez de swap(true): o swap é um RMW com `lock` no x86 —
     // medido dominando hamming() de vetores curtos (loop de N vetores no
@@ -92,6 +93,7 @@ fn ensure_selected() {
     }
 }
 
+#[inline(always)]
 pub fn path_name() -> &'static str {
     ensure_selected();
     match HAMMING_PATH.load(Ordering::Relaxed) {
@@ -101,6 +103,7 @@ pub fn path_name() -> &'static str {
     }
 }
 
+#[inline(always)]
 pub fn active_kernel() -> HammingFn {
     ensure_selected();
     match HAMMING_PATH.load(Ordering::Relaxed) {
@@ -110,13 +113,13 @@ pub fn active_kernel() -> HammingFn {
     }
 }
 
-#[inline]
+#[inline(always)]
 pub fn hamming(a: &[u64], b: &[u64]) -> u32 {
     active_kernel()(a, b)
 }
 
 /// 1024-dim = 16×u64 — caminho hot L4/L5.
-#[inline]
+#[inline(always)]
 pub fn hamming_1024(v1: &[u64; 16], v2: &[u64; 16]) -> u32 {
     hamming(v1.as_slice(), v2.as_slice())
 }

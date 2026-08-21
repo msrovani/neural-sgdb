@@ -1,0 +1,25 @@
+﻿cargo :     Finished `release` profile [optimized] target(s) in 0.04s
+No linha:1 caractere:1
++ cargo run --release --example bench 2>&1 | ForEach-Object { $_; Out-F ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (    Finished `r...get(s) in 0.04s:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+     Running `target\release\examples\bench.exe`
+neural-sgdb bench ÔÇö SIMD kernel: avx2_xor
+ART insert  100000 keys : P50=700ns P99=14.1┬Ás len=100000
+ART get     100000 keys : P50=200ns P99=900ns hits=100000/100000
+BQ top-5    10000 vec x 1024 dims : 97.227┬Ás avg/query (kernel=avx2_xor)
+BQ top-k    heap(k=5)=102.117┬Ás vs full-sort(k=N)=305.994┬Ás ÔÇö bounded heap evita o O(N log N) do ranking
+recall@5    BQ coarse (correlated 1024-dim): oversample=1  22% (44/200; rescore FP32 re-ordena os candidatos)
+recall@5    BQ coarse (correlated 1024-dim): oversample=2  22% (45/200; rescore FP32 re-ordena os candidatos)
+recall@5    BQ coarse (correlated 1024-dim): oversample=4  24% (49/200; rescore FP32 re-ordena os candidatos)
+recall@5    BQ coarse (correlated 1024-dim): oversample=8  30% (60/200; rescore FP32 re-ordena os candidatos)
+recall@5    BQ coarse (correlated 1024-dim): oversample=16 35% (70/200; rescore FP32 re-ordena os candidatos)
+crc32   1MiB x100       : 1.929548ms avg  518 MiB/s (acc=00000000)
+tickv open (churn: 35k recs, 5k live) : fast-mount(ckpt)=14.7665ms  full-scan(stale)=25.7225ms  (1.7x)
+Sgdb open: 0 docs reindexados (ART/BQ)
+Sgdb 1k exchanges: 118.3729ms total
+
+Bench completo. Kernel SIMD: avx2_xor
+Metodologia, ambiente e n├║meros reproduzidos: BENCHMARKS.md (os valores aqui dependem do hardware local).

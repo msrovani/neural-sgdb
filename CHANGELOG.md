@@ -6,6 +6,24 @@ All notable changes to this project. Format based on
 
 ## [Unreleased]
 
+## [1.1.11] — 2026-08-21 (host governance + micro-ganhos core)
+
+Stable **1.1.10** guardada como tag `v1.1.10` (BENCH_STABLE_1.1.10.txt).
+Bench baseline em `BENCHMARKS.md` §Environment 2026-08-13 + nova captura.
+
+**Host (sugestões sem quebrar contratos):**
+- `examples/host_scheduler.rs` — daemon que governa: `expire_old` + `decay_importance` (Ebbinghaus) + `consolidate_recurrences` + `audit_checkpoint`/`audit_verify` + `health`/`validate`. 5/5 checks PASS.
+- `examples/backfill_helper.rs` — migra L3 lexical → L4 semântico via re-embed do texto preservado em `md/L2/<id>` + `rebuild_indices()` (caminho explícito de era migration, não `remember_semantic` guarded).
+- `Storage::put_many` + `FileStorage::put_batch` — batch `write_all` único para `remember_exchange` (L1+L2) e scheduler; `Flushed` por lote, não por record.
+
+**Core micro-ganhos (sem quebrar NMD1/TKLV/MDM1, no_std, zero deps):**
+- **MG1** `sgdb.rs:recall_weighted_full` — `select_nth_unstable_by` + truncate para top-k (`O(N)+O(k log k)` vs `O(N log N)`), heap já existia em `BqFlatIndex::top_k`.
+- **MG2** `lexical.rs:search` — dedup de query termos + `search_fast` sem `matched_terms` (evita `Vec<String>` por hit no rerank interno).
+- **MG3** `hamming_dispatch.rs` — `#[inline(always)]` em `hamming`/`hamming_1024`/`ensure_selected`/`path_name` + `active_kernel` (hot path).
+- **MG4** `storage.rs` — `FileStorage::put_batch` + `Storage::put_many` trait (default loop, FileStorage sobrescreve).
+
+Gates: 243+1 / 289+1 / 195+1, clippy `-D warnings`, no_std `x86_64-unknown-none`, `cargo doc -D warnings`, hot test 95/0.
+
 ### Added (host layer — does **not** bump crate SemVer)
 - **`connectors/`** — adapters claw — `mcp_server` without touching `src/`,
   NMD1, or TKLV. Shared Python MCP/stdio client (handshake `2025-11-25`,
