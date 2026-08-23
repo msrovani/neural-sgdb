@@ -36,7 +36,9 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
       - name: no_std gate (x86_64-unknown-none)
-        run: cargo check --no-default-features --target x86_64-unknown-none
+        # `cargo check` não emite nativo e mascara crash de codegen SIMD
+        # (`STATUS_ILLEGAL_INSTRUCTION` em `#[target_feature]` + target none).
+        run: cargo build --release --no-default-features --target x86_64-unknown-none
 
       - name: build examples
         run: cargo build --release --examples

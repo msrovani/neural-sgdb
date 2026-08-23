@@ -1,6 +1,9 @@
 //! ADR-0063 D1 — Despachante Hamming: scalar | AVX2 XOR | AVX-512.
-//! Runtime adaptive: `#[target_feature]` permite compilar kernels SIMD mesmo em
-//! build soft-float. `select_best_hamming_kernel()` escolhe baseado na CPU.
+//! Runtime adaptive no **host**: `#[target_feature]` emite kernels SIMD para
+//! despacho após `cpu_caps()`. Em `x86_64-unknown-none` os intrins **não**
+//! compilam — `#[target_feature]` não re-legaliza target soft-float e o LLVM
+//! crasha o rustc no codegen (`STATUS_ILLEGAL_INSTRUCTION`).
+//! `select_best_hamming_kernel()` escolhe baseado na CPU (none → sempre scalar).
 //!
 //! Seam: `cpu_caps()` — em `std` detecta via `is_x86_feature_detected!`; em
 //! `no_std` retorna caps conservadoras (scalar) salvo `set_cpu_caps()` chamada
@@ -71,12 +74,19 @@ pub type HammingFn = fn(&[u64], &[u64]) -> u32;
 
 /// Escolhe o melhor kernel disponível (idempotente, lazy).
 pub fn select_best_hamming_kernel() {
-    let caps = cpu_caps();
-    if caps.avx512 {
-        HAMMING_PATH.store(PATH_AVX512, Ordering::Relaxed);
-    } else if caps.avx2 {
-        HAMMING_PATH.store(PATH_AVX2_XOR, Ordering::Relaxed);
-    } else {
+    #[cfg(all(target_arch = "x86_64", not(target_os = "none")))]
+    {
+        let caps = cpu_caps();
+        if caps.avx512 {
+            HAMMING_PATH.store(PATH_AVX512, Ordering::Relaxed);
+        } else if caps.avx2 {
+            HAMMING_PATH.store(PATH_AVX2_XOR, Ordering::Relaxed);
+        } else {
+            HAMMING_PATH.store(PATH_SCALAR, Ordering::Relaxed);
+        }
+    }
+    #[cfg(not(all(target_arch = "x86_64", not(target_os = "none"))))]
+    {
         HAMMING_PATH.store(PATH_SCALAR, Ordering::Relaxed);
     }
 }
@@ -107,7 +117,9 @@ pub fn path_name() -> &'static str {
 pub fn active_kernel() -> HammingFn {
     ensure_selected();
     match HAMMING_PATH.load(Ordering::Relaxed) {
+        #[cfg(all(target_arch = "x86_64", not(target_os = "none")))]
         PATH_AVX512 => hamming_avx512_or_fallback,
+        #[cfg(all(target_arch = "x86_64", not(target_os = "none")))]
         PATH_AVX2_XOR => hamming_avx2_or_fallback,
         _ => hamming_scalar,
     }
@@ -138,10 +150,10 @@ pub fn hamming_scalar(a: &[u64], b: &[u64]) -> u32 {
 }
 
 // ─── AVX2 kernel ──────────────────────────────────────────────
-// Compilado via #[target_feature(enable = "avx2")] mesmo em build soft-float.
-// Runtime: só chamado se cpu_has_avx2(). fallback → hamming_scalar.
+// Host only: `#[target_feature(enable = "avx2")]` crasha o codegen em
+// `x86_64-unknown-none`. Runtime: só chamado se cpu_has_avx2().
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", not(target_os = "none")))]
 fn hamming_avx2_or_fallback(a: &[u64], b: &[u64]) -> u32 {
     if cpu_has_avx2() {
         // SAFETY: cpu_has_avx2() confirmou suporte runtime ao AVX2; o kernel só
@@ -154,7 +166,7 @@ fn hamming_avx2_or_fallback(a: &[u64], b: &[u64]) -> u32 {
 }
 
 /// AVX2: XOR YMM + popcount via GPR extract (sem VPSHUFB, sem store p/ mem).
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", not(target_os = "none")))]
 #[target_feature(enable = "avx2")]
 // SAFETY: requer AVX2 habilitado (target_feature) E suporte runtime — o
 // chamador deve ter verificado cpu_has_avx2(). a/b precisam de pelo menos
@@ -191,7 +203,7 @@ unsafe fn hamming_avx2_xor(a: &[u64], b: &[u64]) -> u32 {
 
 // ─── AVX-512 kernels ──────────────────────────────────────────
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", not(target_os = "none")))]
 fn hamming_avx512_or_fallback(a: &[u64], b: &[u64]) -> u32 {
     if cpu_has_avx512() {
         // SAFETY: cpu_has_avx512() confirmou AVX-512F runtime; o dispatch
@@ -211,7 +223,7 @@ fn hamming_avx512_or_fallback(a: &[u64], b: &[u64]) -> u32 {
 // cpu_has_avx512()). Usa __cpuid_count (intrínseco, instrução CPUID) para
 // decidir entre kernels AVX-512 — `has_vpop` é o bit 14 do leaf 7/ecx
 // (AVX512_VPOPCNTDQ). a/b são slices válidos; bounds internos em cada kernel.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", not(target_os = "none")))]
 unsafe fn hamming_avx512_dispatch(a: &[u64], b: &[u64]) -> u32 {
     let leaf7 = core::arch::x86_64::__cpuid_count(7, 0);
     let has_vpop = (leaf7.ecx & (1 << 14)) != 0;
@@ -222,7 +234,7 @@ unsafe fn hamming_avx512_dispatch(a: &[u64], b: &[u64]) -> u32 {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", not(target_os = "none")))]
 #[target_feature(enable = "avx512f", enable = "avx512vpopcntdq")]
 // SAFETY: requer AVX-512F + AVX-512VPOPCNTDQ (target_feature) e suporte
 // runtime — chamador verificou cpu_has_avx512() E o dispatch confirmou o bit
@@ -256,7 +268,7 @@ unsafe fn hamming_avx512_vpopcnt(a: &[u64], b: &[u64]) -> u32 {
     d
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", not(target_os = "none")))]
 #[target_feature(enable = "avx512f")]
 // SAFETY: requer AVX-512F (target_feature) e suporte runtime — chamador
 // verificou cpu_has_avx512() e o dispatch NÃO viu o bit vpopcnt (sem VPOPCNTDQ,

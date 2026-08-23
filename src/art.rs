@@ -1,6 +1,8 @@
 //! ADR-0063 Q2 — ART intermediário: Node4/16/48/256 + leaf tombstone delete.
 //! Honesty: não claim 10M P99<100ns.
 //! Seam: SSE2 Node16 gateado por `cpu_has_avx2()` (injetável).
+//! Compile-time: intrins SSE só em `x86_64` **não**-`none` — `#[target_feature]`
+//! não re-legaliza `x86_64-unknown-none` (LLVM crash no codegen release).
 
 use alloc::boxed::Box;
 use alloc::string::String;
@@ -59,7 +61,7 @@ fn find_child_byte16(keys: &[u8; 16], n: u8, byte: u8) -> Option<usize> {
     if n == 0 {
         return None;
     }
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", not(target_os = "none")))]
     {
         if crate::hamming_dispatch::cpu_has_avx2() {
             // SAFETY: cpu_has_avx2() garantiu suporte runtime (AVX2 ⊃ SSE2); o
@@ -72,7 +74,7 @@ fn find_child_byte16(keys: &[u8; 16], n: u8, byte: u8) -> Option<usize> {
     keys[..n].iter().position(|&k| k == byte)
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", not(target_os = "none")))]
 #[target_feature(enable = "sse2")]
 // SAFETY: requer SSE2 (target_feature) e suporte runtime — chamador verificou
 // cpu_has_avx2() (superset do SSE2). `keys` precisa ter 16 bytes legíveis
