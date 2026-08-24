@@ -1,21 +1,21 @@
-//! Hot SGDB Test — Via 3: client cru (raw JSON-RPC over stdio).
+﻿//! Hot SGDB Test â€” Via 3: client cru (raw JSON-RPC over stdio).
 //!
 //! Audita o `mcp_server` EXATAMENTE como um IDE/agente faria: spawna o
-//! binário, faz o handshake `2025-11-25`, lista as 15 tools, exerce
-//! memória/recall/relações/observabilidade, cobra caminhos de erro,
-//! paginação, resources e — o teste a quente de verdade — PERSISTÊNCIA:
+//! binÃ¡rio, faz o handshake `2025-11-25`, lista as 15 tools, exerce
+//! memÃ³ria/recall/relaÃ§Ãµes/observabilidade, cobra caminhos de erro,
+//! paginaÃ§Ã£o, resources e â€” o teste a quente de verdade â€” PERSISTÃŠNCIA:
 //! mata o processo, respawna com o mesmo `NEURAL_SGDB_DB` e prova que a
-//! memória sobrevive (cross-process / cross-session).
+//! memÃ³ria sobrevive (cross-process / cross-session).
 //!
 //! Uso:
 //! ```text
-//! cargo build --release --example mcp_server      # o binário que vamos dirigir
+//! cargo build --release --example mcp_server      # o binÃ¡rio que vamos dirigir
 //! cargo run --release --example mcp_client        # a cobaia
 //! ```
 //!
-//! O binário do server é resolvido via env `NEURAL_SGDB_MCP_BIN` ou
-//! `target/{release,debug}/examples/mcp_server{.exe}`. Cada asserção falha
-//! imprime FAIL; o exit code é 0 sse TODAS passaram.
+//! O binÃ¡rio do server Ã© resolvido via env `NEURAL_SGDB_MCP_BIN` ou
+//! `target/{release,debug}/examples/mcp_server{.exe}`. Cada asserÃ§Ã£o falha
+//! imprime FAIL; o exit code Ã© 0 sse TODAS passaram.
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -32,7 +32,7 @@ fn storage_key_from_remember(txt: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Cliente JSON-RPC mínimo: uma linha = uma mensagem; id ecoado verbatim.
+/// Cliente JSON-RPC mÃ­nimo: uma linha = uma mensagem; id ecoado verbatim.
 struct Mcp {
     child: Child,
     stdin: ChildStdin,
@@ -47,7 +47,7 @@ impl Mcp {
         let mut child = Command::new(bin)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit()) // logs do server visíveis (stderr)
+            .stderr(Stdio::inherit()) // logs do server visÃ­veis (stderr)
             .env("NEURAL_SGDB_DB", db)
             .spawn()
             .expect("spawn do mcp_server falhou");
@@ -56,7 +56,7 @@ impl Mcp {
         Mcp { child, stdin, stdout, id: 0, startup_ms: t.elapsed().as_millis() }
     }
 
-    /// Envia um request e lê até o response com o MESMO id (id ecoado).
+    /// Envia um request e lÃª atÃ© o response com o MESMO id (id ecoado).
     fn rpc(&mut self, method: &str, params: Value) -> Value {
         self.id += 1;
         let req = json!({"jsonrpc":"2.0","id":self.id,"method":method,"params":params});
@@ -66,14 +66,14 @@ impl Mcp {
             let mut line = String::new();
             let n = self.stdout.read_line(&mut line).expect("read rpc");
             assert!(n > 0, "server fechou stdout antes da resposta (id {})", self.id);
-            let msg: Value = serde_json::from_str(&line).expect("resposta JSON-RPC inválida");
+            let msg: Value = serde_json::from_str(&line).expect("resposta JSON-RPC invÃ¡lida");
             if msg.get("id") == Some(&Value::Number(self.id.into())) {
                 return msg;
             }
         }
     }
 
-    /// tools/call → extrai `result.content[0].text` + `result.isError`.
+    /// tools/call â†’ extrai `result.content[0].text` + `result.isError`.
     fn tool(&mut self, name: &str, args: Value) -> (String, bool) {
         let r = self.rpc("tools/call", json!({"name": name, "arguments": args}));
         let res = &r["result"];
@@ -99,7 +99,7 @@ impl Mcp {
     }
 }
 
-/// Reporte de auditoria: asserções + tempos por fase.
+/// Reporte de auditoria: asserÃ§Ãµes + tempos por fase.
 struct Report {
     checks: Vec<(String, bool, String)>,
     phases: Vec<(String, u128)>,
@@ -127,7 +127,7 @@ impl Report {
         let fails = self.checks.iter().filter(|(_, ok, _)| !ok).count();
         println!("\n=== Hot SGDB Test (Via 3) ===");
         println!("fases: {}", self.phases.iter().map(|(n, ms)| format!("{n}={ms}ms")).collect::<Vec<_>>().join(", "));
-        println!("asserções: {} total, {} falhas", self.checks.len(), fails);
+        println!("asserÃ§Ãµes: {} total, {} falhas", self.checks.len(), fails);
         if fails > 0 {
             println!("RESULTADO: FALHOU (exit 1)");
         } else {
@@ -162,7 +162,7 @@ fn server_bin() -> String {
         }
     }
     panic!(
-        "binário do mcp_server não encontrado. Rode: cargo build --release --example mcp_server \
+        "binÃ¡rio do mcp_server nÃ£o encontrado. Rode: cargo build --release --example mcp_server \
          (ou set NEURAL_SGDB_MCP_BIN)"
     );
 }
@@ -172,9 +172,9 @@ fn main() {
     let db = std::env::var("NEURAL_SGDB_DB").unwrap_or_else(|_| {
         format!("{}/hot_sgdb_test_{}.db", std::env::temp_dir().display(), std::process::id())
     });
-    let _ = std::fs::remove_file(&db); // estado limpo entre execuções
+    let _ = std::fs::remove_file(&db); // estado limpo entre execuÃ§Ãµes
 
-    println!("=== Hot SGDB Test (Via 3) — server={bin} db={db}");
+    println!("=== Hot SGDB Test (Via 3) â€” server={bin} db={db}");
     let mut rep = Report { checks: Vec::new(), phases: Vec::new() };
     let t = Instant::now();
 
@@ -190,8 +190,8 @@ fn main() {
     rep.check("initialize responde", !r.get("error").is_some(), r.to_string());
     rep.check("protocolVersion 2025-11-25",
         r["result"]["protocolVersion"] == "2025-11-25", r.to_string());
-    rep.check("serverInfo version 1.1.11",
-        r["result"]["serverInfo"]["version"] == "1.1.11", r.to_string());
+    rep.check("serverInfo version 1.1.13",
+        r["result"]["serverInfo"]["version"] == "1.1.13", r.to_string());
     rep.check("serverInfo mcp_tool_count 4",
         r["result"]["serverInfo"]["mcp_tool_count"] == 4, r.to_string());
     let instr = r["result"]["instructions"].as_str().unwrap_or("");
@@ -230,7 +230,7 @@ fn main() {
         !is_err && txt.contains("md/L4/nsgdb/doctrine"), txt.clone());
     rep.phase("doctrine seed", &t);
 
-    // ---------- fase 3: memória (remember) ----------
+    // ---------- fase 3: memÃ³ria (remember) ----------
     let t = Instant::now();
     let (txt, is_err) = srv.tool("remember", json!({"text": "hot test alpha: P2 hardening landed com fuzz central e clippy zero-warnings"}));
     rep.check("remember alpha", !is_err, txt.clone());
@@ -248,34 +248,34 @@ fn main() {
     let t = Instant::now();
     let (txt, is_err) = srv.tool("recall", json!({"query": "telepatia converge", "k": 3}));
     rep.check("recall acha beta no top", !is_err && txt.contains("hot test beta"), txt.clone());
-    rep.check("recall default expõe storage key L3 (lexical write)", txt.contains("md/L3/mcp/"), txt.clone());
-    rep.check("recall expõe proveniência", txt.contains("[state="), txt.clone());
+    rep.check("recall default expÃµe storage key L3 (lexical write)", txt.contains("md/L3/mcp/"), txt.clone());
+    rep.check("recall expÃµe proveniÃªncia", txt.contains("[state="), txt.clone());
     let (txt, is_err) = srv.tool("recall", json!({"query": "clippy zero-warnings", "k": 3}));
     rep.check("recall acha alpha", !is_err && txt.contains("hot test alpha"), txt.clone());
     let (txt, is_err) = srv.tool("recall", json!({"query": "telepatia", "k": 3, "mode": "semantic"}));
-    rep.check("recall mode=semantic sem embedding → ADR-0008",
+    rep.check("recall mode=semantic sem embedding â†’ ADR-0008",
         is_err && txt.contains("ADR-0008"), txt.clone());
     rep.phase("recall", &t);
 
     // ---------- fase 4d: modos de retrieval (v1.1.4 item 8, cognee) ----------
-    // lexical (BM25, sem embedding) e hybrid (semântico + lexical) são
-    // selecionáveis por `mode` no mesmo tool `recall`.
+    // lexical (BM25, sem embedding) e hybrid (semÃ¢ntico + lexical) sÃ£o
+    // selecionÃ¡veis por `mode` no mesmo tool `recall`.
     let t = Instant::now();
     let (txt, is_err) = srv.tool("recall", json!({"query": "telepatia converge", "k": 3, "mode": "lexical"}));
     rep.check("recall mode=lexical acha beta sem embedding",
         !is_err && txt.contains("hot test beta"), txt.clone());
-    rep.check("hits lexicais são TIPADOS (v1.1.6): path/type/terms",
+    rep.check("hits lexicais sÃ£o TIPADOS (v1.1.6): path/type/terms",
         !is_err && txt.contains("path=Lexical") && txt.contains("type=Text") && txt.contains("terms="), txt.clone());
     let (txt, is_err) = srv.tool("recall", json!({"query": "telepatia converge", "k": 3, "mode": "hybrid"}));
-    rep.check("recall mode=hybrid sem embedding → ADR-0008",
+    rep.check("recall mode=hybrid sem embedding â†’ ADR-0008",
         is_err && txt.contains("ADR-0008"), txt.clone());
     let q_emb: Vec<f64> = demo_embed("telepatia converge").iter().map(|x| *x as f64).collect();
     let (txt, is_err) = srv.tool("recall", json!({"query": "telepatia converge", "k": 3, "mode": "hybrid", "embedding": q_emb}));
     rep.check("recall mode=hybrid com embedding acha beta (uniao lexical)",
         !is_err && txt.contains("hot test beta"), txt.clone());
-    rep.check("hits híbridos exibem path/type (v1.1.6)",
+    rep.check("hits hÃ­bridos exibem path/type (v1.1.6)",
         !is_err && txt.contains("path=") && txt.contains("type="), txt.clone());
-    // v1.1.6 item 1: format=json — hits ESTRUTURADOS para consumo máquina.
+    // v1.1.6 item 1: format=json â€” hits ESTRUTURADOS para consumo mÃ¡quina.
     let (txt, is_err) = srv.tool("recall", json!({"query": "telepatia converge", "k": 3, "format": "json"}));
     let parsed: Value = serde_json::from_str(&txt).unwrap_or(Value::Null);
     let arr = parsed.as_array();
@@ -287,9 +287,9 @@ fn main() {
             && arr.is_some_and(|a| a[0]["type"].as_str().is_some())
             && arr.is_some_and(|a| a[0]["dist"].is_number()),
         txt.clone());
-    // v1.1.6 item 3: payload_type/payload_dim — o datum REAL do primário
-    // (Embedding(dim)) vs a projeção (type=Text do companion). A linha 206
-    // mostrou key=/L4/ (primário sem companion) → payload_type=embedding.
+    // v1.1.6 item 3: payload_type/payload_dim â€” o datum REAL do primÃ¡rio
+    // (Embedding(dim)) vs a projeÃ§Ã£o (type=Text do companion). A linha 206
+    // mostrou key=/L4/ (primÃ¡rio sem companion) â†’ payload_type=embedding.
     let (txt, is_err) = srv.tool("recall", json!({"query": "telepatia converge", "k": 3, "format": "json", "mode": "lexical"}));
     let parsed: Value = serde_json::from_str(&txt).unwrap_or(Value::Null);
     let arr = parsed.as_array();
@@ -302,9 +302,9 @@ fn main() {
     let (txt, is_err) = srv.tool("rag_context", json!({"query": "telepatia converge", "k": 2, "rerank": true}));
     rep.check("rag_context default lexical acha beta",
         !is_err && txt.contains("hot test beta") && !txt.contains("erro:"), txt.clone());
-    // v1.1.6 item 2: seam de WRITE — remember(type=json) declara o datum; o
-    // consumidor vê type=json SEM depender do detector ("42" não é delimitado
-    // {…}/[…], o detector diria text — a declaração vence).
+    // v1.1.6 item 2: seam de WRITE â€” remember(type=json) declara o datum; o
+    // consumidor vÃª type=json SEM depender do detector ("42" nÃ£o Ã© delimitado
+    // {â€¦}/[â€¦], o detector diria text â€” a declaraÃ§Ã£o vence).
     let (txt, is_err) = srv.tool("remember", json!({"text": "42", "type": "json"}));
     rep.check("remember type=json aceita a declaracao",
         !is_err && txt.contains("md/L3/mcp/"), txt.clone());
@@ -317,10 +317,10 @@ fn main() {
         txt.clone());
     rep.phase("recall modes", &t);
 
-    // ---------- fase 4e: retrieval temporal com intenção (v1.1.4 item 9) ----
-    // recall_temporal(query, at): responde "qual era o estado em T?" — as
-    // memórias VÁLIDAS em `at` sobem. O server indexa a memória de validade
-    // que testamos via remember + set_validity no hot test? Não — aqui só
+    // ---------- fase 4e: retrieval temporal com intenÃ§Ã£o (v1.1.4 item 9) ----
+    // recall_temporal(query, at): responde "qual era o estado em T?" â€” as
+    // memÃ³rias VÃLIDAS em `at` sobem. O server indexa a memÃ³ria de validade
+    // que testamos via remember + set_validity no hot test? NÃ£o â€” aqui sÃ³
     // validamos que o tool existe e responde para um at no passado sem crash.
     let t = Instant::now();
     let t_emb: Vec<f64> = demo_embed("telepatia converge").iter().map(|x| *x as f64).collect();
@@ -330,12 +330,12 @@ fn main() {
     rep.check("recall_temporal existe e responde",
         !is_err && !txt.contains("obrigatorio"), txt.clone());
     let (txt2, is_err2) = srv.tool("recall_temporal", json!({"query": "telepatia converge"}));
-    rep.check("recall_temporal sem at → -32602 parâmetro obrigatório",
+    rep.check("recall_temporal sem at â†’ -32602 parÃ¢metro obrigatÃ³rio",
         is_err2 && txt2.contains("obrigatorio"), txt2.clone());
     rep.phase("recall temporal", &t);
 
     // ---------- fase 4f: recall por entidades (v1.1.4 item 10, 1-hop) -------
-    // O server aceita `entities` no remember e expõe `recall_entities` — o
+    // O server aceita `entities` no remember e expÃµe `recall_entities` â€” o
     // core nunca extrai entidade de texto: as strings devem casar exatamente.
     let t = Instant::now();
     let (txt, is_err) = srv.tool("remember", json!({
@@ -357,25 +357,25 @@ fn main() {
     rep.check("recall_entities por uma entidade acha os dois docs",
         !is_err && txt.contains("roteiro") && txt.contains("design do agente"), txt.clone());
     let (txt, is_err) = srv.tool("recall_entities", json!({"entities": []}));
-    rep.check("recall_entities sem entities → -32602 obrigatório",
+    rep.check("recall_entities sem entities â†’ -32602 obrigatÃ³rio",
         is_err && txt.contains("obrigatorio"), txt.clone());
     let (txt, is_err) = srv.tool("recall_entities", json!({"entities": ["entidade/inexistente"]}));
-    rep.check("recall_entities com entidade inexistente → vazio",
+    rep.check("recall_entities com entidade inexistente â†’ vazio",
         !is_err && txt.contains("nenhuma"), txt.clone());
     rep.phase("recall entities", &t);
 
     // ---------- fase 4b: embedding FORNECIDO pelo agente (v1.1 P4) ----------
-    // O server aceita `embedding` no payload — a camada superior pluga um
-    // modelo real; o demo é só o fallback. ADR-0007: o vetor do agente deve
-    // pertencer à ERA do corpus (mesma dim) — dim estrangeira é REJEITADA no
-    // write (width-lock truncaria em silêncio); quem fornece embedding usa o
-    // MESMO modelo na gravação e na busca (contrato P4, agora enforced).
+    // O server aceita `embedding` no payload â€” a camada superior pluga um
+    // modelo real; o demo Ã© sÃ³ o fallback. ADR-0007: o vetor do agente deve
+    // pertencer Ã  ERA do corpus (mesma dim) â€” dim estrangeira Ã© REJEITADA no
+    // write (width-lock truncaria em silÃªncio); quem fornece embedding usa o
+    // MESMO modelo na gravaÃ§Ã£o e na busca (contrato P4, agora enforced).
     let t = Instant::now();
     let foreign = srv.tool("remember", json!({
         "text": "vetor customizado do agente",
         "embedding": [1.0, -1.0, 1.0, -1.0]
     }));
-    rep.check("era guard: embedding de outra dim → Invalid + hint era_report",
+    rep.check("era guard: embedding de outra dim â†’ Invalid + hint era_report",
         foreign.1 && foreign.0.contains("era_report"), foreign.0.clone());
     let agent_emb: Vec<f32> = demo_embed("vetor customizado do agente");
     let agent_emb_json: Vec<f64> = agent_emb.iter().map(|x| *x as f64).collect();
@@ -392,11 +392,11 @@ fn main() {
     }));
     rep.check("recall com embedding do agente acha o doc",
         !is_err && txt.contains("vetor customizado do agente"), txt.clone());
-    // contrato P4: default recall é lexical — acha o texto sem precisar do vetor
+    // contrato P4: default recall Ã© lexical â€” acha o texto sem precisar do vetor
     let (txt, is_err) = srv.tool("recall", json!({"query": "vetor customizado do agente", "k": 3}));
     rep.check("recall lexical (default) acha doc do agente pelo texto",
         !is_err && txt.contains("vetor customizado do agente"), txt.clone());
-    // sem embedding e sem host embedder: L3 lexical, não L4 demo
+    // sem embedding e sem host embedder: L3 lexical, nÃ£o L4 demo
     let (txt, is_err) = srv.tool("remember", json!({"text": "doc demo do servidor com trigram"}));
     rep.check("remember sem embedding indexa lexical L3", !is_err && txt.contains("md/L3/mcp/"), txt.clone());
     let (txt, is_err) = srv.tool("recall", json!({"query": "doc demo trigram", "k": 3}));
@@ -406,11 +406,11 @@ fn main() {
     rep.check("forget limpa o doc customizado", !is_err, txt.clone());
     rep.phase("embedding do agente", &t);
 
-    // ---------- fase 4c: paginação LAZY do recall (v1.1.3 S5) ----------
-    // O server computa só off+size+1 hits por página (em vez de top-100 fixo)
-    // e usa cursor opaco de offset. Páginas fatiam o MESMO top-k determinístico
-    // → sem repetição e sem buraco entre páginas. Usamos rpc() cru para ver o
-    // campo `nextCursor` (top-level, o tool() só devolve content[0].text).
+    // ---------- fase 4c: paginaÃ§Ã£o LAZY do recall (v1.1.3 S5) ----------
+    // O server computa sÃ³ off+size+1 hits por pÃ¡gina (em vez de top-100 fixo)
+    // e usa cursor opaco de offset. PÃ¡ginas fatiam o MESMO top-k determinÃ­stico
+    // â†’ sem repetiÃ§Ã£o e sem buraco entre pÃ¡ginas. Usamos rpc() cru para ver o
+    // campo `nextCursor` (top-level, o tool() sÃ³ devolve content[0].text).
     let t = Instant::now();
     let mut paged_keys: Vec<String> = Vec::new();
     for i in 0..4 {
@@ -431,12 +431,12 @@ fn main() {
     }}));
     let t1 = r1["result"]["content"][0]["text"].as_str().unwrap_or("").to_string();
     let cur = r1["result"]["nextCursor"].as_str().unwrap_or("").to_string();
-    rep.check("recall página 1 (pageSize=2) tem nextCursor",
+    rep.check("recall pÃ¡gina 1 (pageSize=2) tem nextCursor",
         !t1.is_empty() && !cur.is_empty(), format!("cur={cur} | {t1}"));
     for hit_key in t1.split("- ").skip(1).filter_map(|s| s.split(" | ").next().map(|k| k.trim().to_string())) {
         paged_keys.push(hit_key);
     }
-    rep.check("página 1 devolve 2 hits", paged_keys.len() == 2, format!("{paged_keys:?}"));
+    rep.check("pÃ¡gina 1 devolve 2 hits", paged_keys.len() == 2, format!("{paged_keys:?}"));
     let r2 = srv.rpc("tools/call", json!({"name": "recall", "arguments": {
         "query": "memoria paginada embedding do agente",
         "embedding": q_emb,
@@ -445,20 +445,20 @@ fn main() {
         "cursor": cur
     }}));
     let t2 = r2["result"]["content"][0]["text"].as_str().unwrap_or("").to_string();
-    rep.check("recall página 2 segue o cursor (hits ou fim)",
+    rep.check("recall pÃ¡gina 2 segue o cursor (hits ou fim)",
         !t2.is_empty() && !t2.contains("nenhuma memoria similar"), t2.clone());
     for hit_key in t2.split("- ").skip(1).filter_map(|s| s.split(" | ").next().map(|k| k.trim().to_string())) {
-        rep.check(&format!("página 2 não repete hit da página 1: {hit_key}"),
+        rep.check(&format!("pÃ¡gina 2 nÃ£o repete hit da pÃ¡gina 1: {hit_key}"),
             !paged_keys.contains(&hit_key), t2.clone());
     }
-    rep.phase("paginação lazy do recall", &t);
+    rep.phase("paginaÃ§Ã£o lazy do recall", &t);
 
     // ---------- fase 5: rag_context + explain ----------
     let t = Instant::now();
     let (txt, is_err) = srv.tool("rag_context", json!({"query": "integridade banco", "k": 2}));
     rep.check("rag_context recupera gamma (integridade)", !is_err && txt.contains("hot test gamma"), txt.clone());
     // v1.1.6: rag_context com mode=lexical (BM25, sem embedding) devolve hits
-    // TIPADOS — o caminho lexical funciona no contexto também.
+    // TIPADOS â€” o caminho lexical funciona no contexto tambÃ©m.
     let (txt, is_err) = srv.tool("rag_context", json!({"query": "telepatia converge", "k": 2, "mode": "lexical"}));
     rep.check("rag_context mode=lexical acha beta sem embedding",
         !is_err && txt.contains("hot test beta") && txt.contains("path=Lexical"), txt.clone());
@@ -471,26 +471,26 @@ fn main() {
     let (txt, is_err) = srv.tool("explain", json!({"key": key_a}));
     rep.check("explain retorna metadados", !is_err && txt.contains("memory_id") && txt.contains("version_id"), txt.clone());
     let (txt, is_err) = srv.tool("explain", json!({"key": "md/L4/nao-existe"}));
-    rep.check("explain de chave inexistente → erro amigável", is_err && (txt.contains("erro") || txt.contains("invalid") || txt.contains("no memory")), txt.clone());
+    rep.check("explain de chave inexistente â†’ erro amigÃ¡vel", is_err && (txt.contains("erro") || txt.contains("invalid") || txt.contains("no memory")), txt.clone());
     rep.phase("rag_context+explain", &t);
 
-    // ---------- fase 6: reforço e linhagem (reinforce/supersede/associate) ----------
+    // ---------- fase 6: reforÃ§o e linhagem (reinforce/supersede/associate) ----------
     let t = Instant::now();
     let (txt, is_err) = srv.tool("reinforce", json!({"key": key_a, "delta": 0.1}));
     rep.check("reinforce +0.1", !is_err && txt.contains("reforcada"), txt.clone());
     let (txt, is_err) = srv.tool("associate", json!({"a": key_a, "kind": "related_to", "b": key_b}));
     rep.check("associate L6", !is_err && txt.contains("relacao"), txt.clone());
     let (txt, is_err) = srv.tool("related_to", json!({"key": key_a}));
-    rep.check("related_to vê o alvo (chave beta)", !is_err && txt.contains(&key_b), txt.clone());
+    rep.check("related_to vÃª o alvo (chave beta)", !is_err && txt.contains(&key_b), txt.clone());
     let (txt, is_err) = srv.tool("supersede", json!({"old": key_b, "new": key_a}));
     rep.check("supersede (linhagem causal)", !is_err && txt.contains("superseded"), txt.clone());
     rep.phase("linhagem", &t);
 
     // ---------- fase 6b: metadado cognitivo (v1.1.10 itens 1/2/5) ----------
-    // Decay de importância (Ebbinghaus), consolidação por recorrência e
-    // auditoria (hash-chain + rollback cognitivo) — novos ops do curate.
+    // Decay de importÃ¢ncia (Ebbinghaus), consolidaÃ§Ã£o por recorrÃªncia e
+    // auditoria (hash-chain + rollback cognitivo) â€” novos ops do curate.
     let t = Instant::now();
-    // consolidação: 3 episódicos L2 com MESMO texto normalizado
+    // consolidaÃ§Ã£o: 3 episÃ³dicos L2 com MESMO texto normalizado
     for i in 0..3 {
         let (txt, is_err) = srv.tool("remember", json!({
             "user": "qual o andar da sala de reunioes?",
@@ -501,7 +501,7 @@ fn main() {
     }
     let (txt, is_err) = srv.tool("curate", json!({"op": "consolidate", "min_repeats": 3, "min_len": 1, "max_new": 8}));
     rep.check("consolidate: 1 fato L3 consolidado", !is_err && txt.contains("1 episodios"), txt.clone());
-    // auditoria: checkpoint → mutação → rollback
+    // auditoria: checkpoint â†’ mutaÃ§Ã£o â†’ rollback
     let (txt, is_err) = srv.tool("remember", json!({"text": "hot audit alpha"}));
     rep.check("remember p/ auditoria", !is_err && txt.contains("md/L3/"), txt.clone());
     let audit_key = storage_key_from_remember(&txt);
@@ -510,23 +510,23 @@ fn main() {
     let (txt, is_err) = srv.tool("feedback", json!({"key": audit_key, "positive": false, "amount": 0.3}));
     rep.check("feedback derruba o metadado", !is_err, txt.clone());
     let (txt, is_err) = srv.tool("curate", json!({"op": "audit_verify"}));
-    rep.check("audit_verify detecta divergência pós-escrita",
+    rep.check("audit_verify detecta divergÃªncia pÃ³s-escrita",
         !is_err && txt.contains("estado diverge"), txt.clone());
     let (txt, is_err) = srv.tool("curate", json!({"op": "rollback_to", "seq": 0}));
     rep.check("rollback_to restaura o metadado", !is_err && txt.contains("restaurados"), txt.clone());
     let (txt, is_err) = srv.tool("curate", json!({"op": "audit_verify"}));
     rep.check("audit_verify confirma estado==checkpoint",
         !is_err && txt.contains("estado == ultimo checkpoint"), txt.clone());
-    // decay em now=0 é fator 1 → 0 mudanças (idempotente/determinístico)
+    // decay em now=0 Ã© fator 1 â†’ 0 mudanÃ§as (idempotente/determinÃ­stico)
     let (txt, is_err) = srv.tool("curate", json!({"op": "decay", "now": 0}));
-    rep.check("decay em now=0 é no-op", !is_err && txt.contains("0 memorias"), txt.clone());
+    rep.check("decay em now=0 Ã© no-op", !is_err && txt.contains("0 memorias"), txt.clone());
     rep.phase("metadado cognitivo", &t);
 
     // ---------- fase 7: observabilidade (health/validate) ----------
     let t = Instant::now();
     let (txt, is_err) = srv.tool("health", json!({}));
     rep.check("health: storage_ok", !is_err && txt.contains("\"storage_ok\": true"), txt.clone());
-    rep.check("health: doc_count ≥ 6 (3 docs L4 + 3 companions L2)",
+    rep.check("health: doc_count â‰¥ 6 (3 docs L4 + 3 companions L2)",
         !is_err && txt.contains("doc_count"), txt.clone());
     let hr = srv.rpc("tools/call", json!({"name": "health", "arguments": {}}));
     rep.check(
@@ -535,7 +535,7 @@ fn main() {
             && hr["result"]["structuredContent"]["onboarding"].is_array(),
         hr.to_string(),
     );
-    // scope hint: memória escopada não aparece em recall global
+    // scope hint: memÃ³ria escopada nÃ£o aparece em recall global
     let (scoped_txt, scoped_err) = srv.tool(
         "remember",
         json!({"text": "xyzzy-plugh unique scoped fact", "scope": "hot-test/scope"}),
@@ -557,11 +557,11 @@ fn main() {
         scoped_recall.clone(),
     );
     let (txt, is_err) = srv.tool("validate", json!({}));
-    rep.check("validate: banco saudável", !is_err && txt.contains("saudavel"), txt.clone());
+    rep.check("validate: banco saudÃ¡vel", !is_err && txt.contains("saudavel"), txt.clone());
     // era_report (ADR-0007): veredito de era + custo estimado aplicando a
-    // fórmula ao total de registros — a LLM gestora decide migrar/esperar.
+    // fÃ³rmula ao total de registros â€” a LLM gestora decide migrar/esperar.
     let (txt, is_err) = srv.tool("era_report", json!({}));
-    rep.check("era_report: verdict ok (era única 256-dim)",
+    rep.check("era_report: verdict ok (era Ãºnica 256-dim)",
         !is_err && txt.contains("verdict: ok"), txt.clone());
     rep.check("era_report: estimativa de custo exposta (formula + db-side)",
         txt.contains("estimated db-side") && txt.contains("formula"), txt.clone());
@@ -578,44 +578,44 @@ fn main() {
             && session_txt.contains("tensions"), session_txt.to_string());
     rep.phase("health/validate", &t);
 
-    // ---------- fase 8: resources + paginação ----------
+    // ---------- fase 8: resources + paginaÃ§Ã£o ----------
     let t = Instant::now();
     let r = srv.rpc("resources/list", json!({"pageSize": 4}));
     let res = r["result"]["resources"].as_array().map(|v| v.len()).unwrap_or(0);
     let has_next = r["result"]["nextCursor"].is_string();
-    rep.check("resources/list página 1 (4 itens, nextCursor)",
+    rep.check("resources/list pÃ¡gina 1 (4 itens, nextCursor)",
         res == 4 && has_next, r.to_string());
     let cur = r["result"]["nextCursor"].as_str().unwrap_or("").to_string();
     let r = srv.rpc("resources/list", json!({"pageSize": 4, "cursor": cur}));
     let res2 = r["result"]["resources"].as_array().map(|v| v.len()).unwrap_or(0);
-    rep.check("resources/list página 2 avança", res2 > 0, r.to_string());
+    rep.check("resources/list pÃ¡gina 2 avanÃ§a", res2 > 0, r.to_string());
     let uri = r["result"]["resources"][0]["uri"].as_str().unwrap_or("").to_string();
     let r = srv.rpc("resources/read", json!({"uri": uri}));
     rep.check("resources/read devolve texto",
         r["result"]["contents"][0]["text"].as_str().is_some_and(|s| !s.is_empty()), r.to_string());
-    rep.phase("resources+paginação", &t);
+    rep.phase("resources+paginaÃ§Ã£o", &t);
 
     // ---------- fase 9: caminhos de erro ----------
     let t = Instant::now();
     let r = srv.rpc("server/discover", json!({}));
-    rep.check("method desconhecido → -32601", r["error"]["code"] == -32601, r.to_string());
+    rep.check("method desconhecido â†’ -32601", r["error"]["code"] == -32601, r.to_string());
     let (txt, is_err) = srv.tool("tool_inexistente", json!({}));
-    rep.check("tool desconhecida → erro", is_err && txt.contains("-32602"), txt.clone());
+    rep.check("tool desconhecida â†’ erro", is_err && txt.contains("-32602"), txt.clone());
     let r = srv.rpc("tools/call", json!({"name": "remember"}));
-    rep.check("parametro faltando → -32602", r["error"]["code"] == -32602, r.to_string());
+    rep.check("parametro faltando â†’ -32602", r["error"]["code"] == -32602, r.to_string());
     rep.phase("erros", &t);
 
-    // ---------- fase 10: PERSISTÊNCIA (o teste a quente de verdade) ----------
+    // ---------- fase 10: PERSISTÃŠNCIA (o teste a quente de verdade) ----------
     let t = Instant::now();
-    srv.stop(); // mata o processo — memória só sobrevive se FileStorage+checkpoint OK
+    srv.stop(); // mata o processo â€” memÃ³ria sÃ³ sobrevive se FileStorage+checkpoint OK
     let mut srv2 = Mcp::spawn(&bin, &db);
     let (txt, is_err) = srv2.tool("recall", json!({"query": "hot test alpha", "k": 3}));
-    rep.check("PERSISTÊNCIA: alpha lembrado após restart do processo",
+    rep.check("PERSISTÃŠNCIA: alpha lembrado apÃ³s restart do processo",
         !is_err && txt.contains("hot test alpha"), txt.clone());
     let (txt, _) = srv2.tool("validate", json!({}));
-    rep.check("validate pós-restart: saudável", txt.contains("saudavel"), txt.clone());
+    rep.check("validate pÃ³s-restart: saudÃ¡vel", txt.contains("saudavel"), txt.clone());
     srv2.stop();
-    rep.phase("persistência (restart)", &t);
+    rep.phase("persistÃªncia (restart)", &t);
 
     let _ = std::fs::remove_file(&db);
     std::process::exit(rep.finish());

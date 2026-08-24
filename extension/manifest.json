@@ -1,0 +1,11 @@
+﻿{
+  "manifest_version": 3,
+  "name": "nsgdb memory",
+  "version": "1.1.13",
+  "description": "MemÃ³ria local-first do navegador â€” 100% local, sem nuvem (nsgdb WasmStorage)",
+  "permissions": ["history", "tabs", "storage", "scripting"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_popup": "popup.html", "default_title": "nsgdb" },
+  "icons": { "128": "icon128.png" }
+}

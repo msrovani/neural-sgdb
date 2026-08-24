@@ -1,0 +1,16 @@
+[Unit]
+Description=nsgdb host scheduler — expire/decay/consolidate/audit (local-first)
+After=network.target
+
+[Service]
+Type=oneshot
+# Roda a cada hora via timer (nsgdb-scheduler.timer)
+ExecStart=/usr/local/bin/nsgdb-scheduler
+Environment=NEURAL_SGDB_DB=/var/lib/nsgdb/memory.db
+# Lock cooperativo: host_scheduler.rs usa .nsgdb/scheduler.lock (connectors/README.md:.connector.lock)
+# Se já houver instância, sai 0 sem sobrepor
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

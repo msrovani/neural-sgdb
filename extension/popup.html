@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>nsgdb</title>
+<style>
+  body { width: 360px; font: 13px system-ui; margin: 12px; }
+  input { width: 100%; padding: 8px; margin: 6px 0; }
+  button { padding: 6px 10px; }
+  #hits { margin-top: 8px; }
+  .hit { padding: 6px; border-bottom: 1px solid #eee; }
+  .muted { color: #666; font-size: 11px; }
+</style>
+<h3>nsgdb — memória do navegador</h3>
+<input id="q" placeholder="o que vi sobre café ontem?">
+<button id="search">Buscar</button>
+<span id="count" class="muted"></span>
+<div id="hits"></div>
+<script src="popup.js"></script>

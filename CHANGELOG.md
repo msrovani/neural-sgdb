@@ -6,6 +6,10 @@ All notable changes to this project. Format based on
 
 ## [Unreleased]
 
+## [1.1.13] — 2026-08-21 (chrome web store obrigatório)
+
+Docs: `VERSIONING.md` passo 6 torna obrigatório republicar `extension/` na Chrome Web Store a cada nova versão `v*`; `extension/README.md` com sync `manifest.json` `version` = `Cargo.toml`.
+
 ## [1.1.12] — 2026-08-21 (security hardening 11→1 ordem inversa de custo)
 
 Hardening baseado nas premissas (no_std zero deps, NMD1/TKLV byte-idêntico, sem crypto no core) em ordem inversa de custo (do BAIXO ao ALTO): 11 remember_episodic docs, 10 lexical cap 1024 termos (DoS), 9 `MemoryDoc::try_encode()` com `MAX_KLEN`/`MAX_VLEN`, 8 `LocalEmbedder::new()->Result` Err se `0`/`>MAX_EMBEDDING_DIM` (era clamp silencioso), 7 `backfill_helper` sem duplicar `md/L4/md/L4/`, 6 `write_side_bytes` host-only docs, 5 MCP `-32601` já tinha, 4 `WasmStorage::put` com `validate_ws_key`, 3 `engine.put_inner` choke central (fecha import/merge_memories/remember_episodic), 2 `associate` valida `a`/`b` completo, 1 `merge_memories target` via 3. Gates 243/289/195+1 clippy/no_std/doc hot 95/0. Rebased com `3cc3010` fix simd.

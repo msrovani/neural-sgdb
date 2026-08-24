@@ -59,11 +59,11 @@ migrations in `MIGRATIONS.md` and never silently reinterpreted old bytes
 
 ## Current line (1.1.x)
 
-Crate version in `Cargo.toml` is **1.1.12**; additive feature releases
-**v1.1.2–v1.1.12** are documented in `CHANGELOG.md` and `docs/api.md` without
+Crate version in `Cargo.toml` is **1.1.13**; additive feature releases
+**v1.1.2–v1.1.13** are documented in `CHANGELOG.md` and `docs/api.md` without
 a MAJOR bump. Architecture docs in `docs/architecture/` describe the
-**shipped** system at **v1.1.12** (lexical-first MCP, ADR-0008). Typed hits
-landed in v1.1.6; agent doctrine in v1.1.8; cognitive metadata in v1.1.10; host governance + micro-ganhos in v1.1.11; security hardening 11→1 em v1.1.12.
+**shipped** system at **v1.1.13** (lexical-first MCP, ADR-0008). Typed hits
+landed in v1.1.6; agent doctrine in v1.1.8; cognitive metadata in v1.1.10; host governance + micro-ganhos in v1.1.11; security hardening 11→1 em v1.1.12; chrome web store obrigatório em v1.1.13.
 
 ## Host connectors (`connectors/`)
 

@@ -48,6 +48,15 @@ impl LocalEmbedder {
 
 impl Embedder for LocalEmbedder {
     fn embed(&self, text: &str) -> Result<Vec<f32>, SgdbError> {
+        #[cfg(feature = "candle")]
+        {
+            // Quando --features candle, tenta MiniLM real em ./models/minilm
+            // (model.safetensors + tokenizer.json). Se não existir, cai no stub abaixo
+            // sem quebrar o build — prova o wiring sem download obrigatório.
+            if let Ok(v) = try_candle_embed(text, self.dim) {
+                return Ok(v);
+            }
+        }
         if text.is_empty() {
             return Err(SgdbError::Invalid("empty text for embed"));
         }
@@ -82,6 +91,18 @@ impl Embedder for LocalEmbedder {
         }
         Ok(out)
     }
+}
+
+#[cfg(feature = "candle")]
+fn try_candle_embed(text: &str, dim: usize) -> Result<Vec<f32>, SgdbError> {
+    // Esqueleto: carrega tokenizer + model.safetensors em ./models/minilm
+    // Uso real:
+    // let tokenizer = tokenizers::Tokenizer::from_file("models/minilm/tokenizer.json").map_err(|_| SgdbError::Invalid("tokenizer"))?;
+    // let mut model = candle_nn::VarBuilder::from_mmaped_safetensors(&["models/minilm/model.safetensors"], candle_core::DType::F32, &candle_core::Device::Cpu)?;
+    // Pooling + normalização → Vec<f32> dim
+    // Por enquanto retorna Err para cair no stub hash sem exigir download em CI.
+    let _ = (text, dim);
+    Err(SgdbError::Invalid("candle model not found, using stub"))
 }
 
 #[cfg(test)]

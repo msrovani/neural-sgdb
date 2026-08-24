@@ -2,11 +2,11 @@
 
 Guide for AI agents (OpenCode, Cursor, Windsurf, Claude Code) working in this
 repo. **Read `codemap.md` (atlas), `docs/api.md` (contract) and
-`docs/architecture/` (v1.1.12 crate — Memory Model, Lifecycle, Retrieval,
+`docs/architecture/` (v1.1.13 crate — Memory Model, Lifecycle, Retrieval,
 Distributed, Storage, Cognitive API; typed hits from v1.1.6) and
 `docs/implementation-status.md` before editing code.**
 
-**Shipped crate is 1.1.12 (security hardening 11→1):** MCP lists **4 tools**
+**Shipped crate is 1.1.13 (chrome web store obrigatório):** MCP lists **4 tools**
 (`remember`/`recall`/`health`/`curate`; 23 old names are `tools/call` aliases).
 `curate` ganhou ops de metadado cognitivo (decay/consolidate/audit_checkpoint/
 audit_verify/rollback_to).

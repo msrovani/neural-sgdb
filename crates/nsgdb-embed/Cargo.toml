@@ -9,6 +9,18 @@ repository = "https://github.com/msrovani/neural-sgdb"
 [dependencies]
 neural-sgdb = { path = "../.." }
 
+[dependencies.candle-core]
+version = "0.6"
+optional = true
+
+[dependencies.candle-nn]
+version = "0.6"
+optional = true
+
+[dependencies.tokenizers]
+version = "0.20"
+optional = true
+
 [features]
 default = []
-# futuro: candle = ["dep:candle-core", "dep:candle-transformers"]
+candle = ["candle-core", "candle-nn", "tokenizers"]

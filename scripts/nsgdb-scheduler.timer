@@ -1,0 +1,10 @@
+[Unit]
+Description=Run nsgdb scheduler hourly
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+Unit=nsgdb-scheduler.service
+
+[Install]
+WantedBy=timers.target

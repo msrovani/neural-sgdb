@@ -36,8 +36,8 @@ filesystem, no external runtime.
 
 ## Status
 
-**v1.1.12** ✅ — security hardening 11→1 ordem inversa de custo (lexical cap, `try_encode`, `LocalEmbedder` Result, `WasmStorage` validate, `engine.put_inner` choke central). Herda 1.1.11 host governance + micro-ganhos.
-Crate em `Cargo.toml`: **1.1.12**.
+**v1.1.13** ✅ — chrome web store obrigatório (VERSIONING passo 6). Herda 1.1.12 security hardening 11→1.
+Crate em `Cargo.toml`: **1.1.13**.
 
 - `cargo test` on host: **243+ lib tests + doc-test** (plus p2p / no_std matrix)
 - `cargo check --no-default-features --target x86_64-unknown-none`: **clean**

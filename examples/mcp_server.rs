@@ -1,4 +1,4 @@
-//! MCP server (roadmap item 5) — exposes neural-sgdb to AI agents
+﻿//! MCP server (roadmap item 5) â€” exposes neural-sgdb to AI agents
 //! (Claude Code, Cursor, OpenCode) via the Model Context Protocol over stdio.
 //!
 //! Run with: `cargo run --release --example mcp_server` and point the MCP
@@ -9,8 +9,8 @@
 //! `NEURAL_SGDB_EMBEDDER=demo`. Pass `embedding=` for cosine / L4.
 //!
 //! Protocolo: JSON-RPC 2.0 sobre stdio, uma mensagem por linha (`\n`), stdout
-//! SÓ com mensagens MCP (logs → stderr). Handshake legado `2025-11-25`
-//! (initialize → initialized → tools/list → tools/call), ver spec em
+//! SÃ“ com mensagens MCP (logs â†’ stderr). Handshake legado `2025-11-25`
+//! (initialize â†’ initialized â†’ tools/list â†’ tools/call), ver spec em
 //! https://modelcontextprotocol.io/specification/2025-11-25/
 
 use std::io::{self, BufRead, Write};
@@ -24,11 +24,11 @@ use neural_sgdb::FileStorage;
 use neural_sgdb::InMemory;
 use serde_json::{json, Value};
 
-/// Contador monotônico para chaves de `remember` (fix #10: mesma chave ms
-/// colide — ms*1000 + seq garante unicidade no mesmo milissegundo).
+/// Contador monotÃ´nico para chaves de `remember` (fix #10: mesma chave ms
+/// colide â€” ms*1000 + seq garante unicidade no mesmo milissegundo).
 static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// `NEURAL_SGDB_EMBEDDER=demo` → trigram explícito (ADR-0008). Unset = nenhum
+/// `NEURAL_SGDB_EMBEDDER=demo` â†’ trigram explÃ­cito (ADR-0008). Unset = nenhum
 /// embedder de host: remember sem `embedding=` vai para L3 lexical.
 fn load_embedder() -> Option<Box<dyn Embedder>> {
     match std::env::var("NEURAL_SGDB_EMBEDDER") {
@@ -38,7 +38,7 @@ fn load_embedder() -> Option<Box<dyn Embedder>> {
         }
         Ok(other) if !other.is_empty() => {
             eprintln!(
-                "[neural-sgdb] embedder '{other}' ainda nao plugado — sem host embedder \
+                "[neural-sgdb] embedder '{other}' ainda nao plugado â€” sem host embedder \
                  (passe embedding= ou NEURAL_SGDB_EMBEDDER=demo)"
             );
             None
@@ -56,8 +56,8 @@ fn has_caller_embedding(payload: &Value) -> bool {
         .is_some_and(|a| !a.is_empty())
 }
 
-/// ADR-0008: sem `mode` e sem `embedding=` → lexical. semantic/hybrid exigem
-/// vetor do caller ou host embedder explícito.
+/// ADR-0008: sem `mode` e sem `embedding=` â†’ lexical. semantic/hybrid exigem
+/// vetor do caller ou host embedder explÃ­cito.
 fn resolve_retrieval_mode(args: &Value, has_host_embedder: bool) -> Result<String, String> {
     let caller = has_caller_embedding(args);
     match args["mode"].as_str() {
@@ -83,7 +83,7 @@ fn resolve_retrieval_mode(args: &Value, has_host_embedder: bool) -> Result<Strin
 }
 
 /// Embedding para um texto: usa o fornecido pelo agente (payload) se
-/// presente/validável, senão o embedder ativo do server.
+/// presente/validÃ¡vel, senÃ£o o embedder ativo do server.
 fn embed_for(host: Option<&dyn Embedder>, text: &str, payload: &Value) -> Result<Vec<f32>, String> {
     if let Some(arr) = payload["embedding"].as_array() {
         if !arr.is_empty() && arr.len() <= neural_sgdb::MAX_EMBEDDING_DIM {
@@ -104,14 +104,14 @@ fn embed_for(host: Option<&dyn Embedder>, text: &str, payload: &Value) -> Result
     match host {
         Some(e) => e.embed(text).map_err(|e| format!("embedding falhou: {e}")),
         None => Err(
-            "ADR-0008: sem `embedding` e sem NEURAL_SGDB_EMBEDDER=demo — use mode=lexical \
+            "ADR-0008: sem `embedding` e sem NEURAL_SGDB_EMBEDDER=demo â€” use mode=lexical \
              ou passe o vetor."
                 .into(),
         ),
     }
 }
 
-/// #8 — parse do URI de resource `memory://{layer}/{key}` (ex: memory://L2/ts/0000).
+/// #8 â€” parse do URI de resource `memory://{layer}/{key}` (ex: memory://L2/ts/0000).
 fn parse_resource_uri(uri: &str) -> Option<(neural_sgdb::MemoryLayer, String)> {
     let rest = uri.strip_prefix("memory://")?;
     let (layer, key) = rest.split_once('/')?;
@@ -129,9 +129,9 @@ fn parse_resource_uri(uri: &str) -> Option<(neural_sgdb::MemoryLayer, String)> {
     Some((layer, String::from(key)))
 }
 
-/// #8 — paginação com cursor opaco (offset). Retorna (página, nextCursor).
+/// #8 â€” paginaÃ§Ã£o com cursor opaco (offset). Retorna (pÃ¡gina, nextCursor).
 /// `size` vem do JSON-RPC (entrada externa hostil): clampar impede DoS por
-/// alocação gigante; `saturating_add` impede overflow de `off + size`.
+/// alocaÃ§Ã£o gigante; `saturating_add` impede overflow de `off + size`.
 fn paginate<T: Clone>(items: &[T], cursor: Option<&str>, size: usize) -> (Vec<T>, Option<String>) {
     const MAX_PAGE_SIZE: usize = 1000;
     let size = size.min(MAX_PAGE_SIZE);
@@ -148,15 +148,15 @@ fn send(msg: &Value) {
     let _ = out.flush();
 }
 
-/// Projeção PROSA de um hit (v1.1.6) — o consumidor é outra inteligência
-/// (máquina), então o sufixo é parseável e TIPADO, não só prosa, no formato
+/// ProjeÃ§Ã£o PROSA de um hit (v1.1.6) â€” o consumidor Ã© outra inteligÃªncia
+/// (mÃ¡quina), entÃ£o o sufixo Ã© parseÃ¡vel e TIPADO, nÃ£o sÃ³ prosa, no formato
 /// `- {key} | {text} (d=..) [state=.. imp=.. conf=.. src=.. path=.. type=..
 /// terms=.. rel=.. valid=..]`.
 /// Invariantes preservadas do formato anterior (hot test): prefixo `- {key} | `
-/// (a paginação fatia `split(" | ").next()`) e sufixo que abre em ` [state=`
+/// (a paginaÃ§Ã£o fatia `split(" | ").next()`) e sufixo que abre em ` [state=`
 /// (assert `txt.contains("[state=")`).
-/// Datum não-prosa (Embedding/Binary): `text` vazio no core — o consumidor
-/// vê `type=Embedding(256)` e sabe que o datum é o payload binário do doc,
+/// Datum nÃ£o-prosa (Embedding/Binary): `text` vazio no core â€” o consumidor
+/// vÃª `type=Embedding(256)` e sabe que o datum Ã© o payload binÃ¡rio do doc,
 /// nunca prosa lossy.
 fn fmt_hit(h: &neural_sgdb::Hit) -> String {
     let mut tags = Vec::new();
@@ -180,7 +180,7 @@ fn fmt_hit(h: &neural_sgdb::Hit) -> String {
     tags.push(format!("path={:?}", h.path));
     tags.push(format!("type={:?}", h.content_type));
     if h.payload_type != h.content_type {
-        // datum real do primário (Embedding(dim) p/ L4/L5) vs projeção
+        // datum real do primÃ¡rio (Embedding(dim) p/ L4/L5) vs projeÃ§Ã£o
         tags.push(format!("payload={:?}", h.payload_type));
     }
     if !h.matched_terms.is_empty() {
@@ -198,8 +198,8 @@ fn fmt_hit(h: &neural_sgdb::Hit) -> String {
     format!("- {} | {} (d={:.3}) [{}]", h.key, h.text, h.dist, tags.join(" "))
 }
 
-/// Strings ESTÁVEIS (machine-parseable) para o `format=json` — o consumidor
-/// casa por valor, não por `Debug` (que pode mudar entre versões).
+/// Strings ESTÃVEIS (machine-parseable) para o `format=json` â€” o consumidor
+/// casa por valor, nÃ£o por `Debug` (que pode mudar entre versÃµes).
 fn path_str(p: RecallPath) -> &'static str {
     match p {
         RecallPath::Semantic => "semantic",
@@ -218,10 +218,10 @@ fn content_type_json(ct: ContentType) -> Value {
     }
 }
 
-/// Hit estruturado (v1.1.6+) — o retorno primário para consumo máquina→
-/// máquina: o consumidor parseia JSON e vê o datum (`type`), o caminho
-/// (`path`), o grounding (`matched_terms`) e a proveniência, sem depender
-/// da projeção prosa.
+/// Hit estruturado (v1.1.6+) â€” o retorno primÃ¡rio para consumo mÃ¡quinaâ†’
+/// mÃ¡quina: o consumidor parseia JSON e vÃª o datum (`type`), o caminho
+/// (`path`), o grounding (`matched_terms`) e a proveniÃªncia, sem depender
+/// da projeÃ§Ã£o prosa.
 fn hit_json(h: &neural_sgdb::Hit) -> Value {
     let mut obj = json!({
         "key": h.key,
@@ -236,7 +236,7 @@ fn hit_json(h: &neural_sgdb::Hit) -> Value {
     let ct = content_type_json(h.content_type);
     obj["type"] = ct["type"].clone();
     obj["dim"] = ct.get("dim").cloned().unwrap_or(Value::Null);
-    // item 3 — datum real do primário (Embedding(dim)) vs projeção (type)
+    // item 3 â€” datum real do primÃ¡rio (Embedding(dim)) vs projeÃ§Ã£o (type)
     let pct = content_type_json(h.payload_type);
     obj["payload_type"] = pct["type"].clone();
     obj["payload_dim"] = pct.get("dim").cloned().unwrap_or(Value::Null);
@@ -270,12 +270,12 @@ fn error_response(id: &Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
 }
 
-/// Número de tools em `tools/list` (aliases antigos ainda funcionam em tools/call).
+/// NÃºmero de tools em `tools/list` (aliases antigos ainda funcionam em tools/call).
 const EXPECTED_MCP_TOOL_COUNT: usize = 4;
-const MCP_CONTRACT_VERSION: &str = "1.1.11";
+const MCP_CONTRACT_VERSION: &str = "1.1.13";
 const BUILD_GIT: &str = env!("NEURAL_SGDB_BUILD_GIT");
 
-/// Lista pública: 4 tools. Os 23 nomes antigos continuam válidos em `tools/call`.
+/// Lista pÃºblica: 4 tools. Os 23 nomes antigos continuam vÃ¡lidos em `tools/call`.
 fn expand_tool(name: &str, args: &Value) -> String {
     match name {
         "remember"
@@ -302,7 +302,7 @@ fn expand_tool(name: &str, args: &Value) -> String {
 fn mcp_listed_tools() -> Value {
     json!([
         {"name":"remember",
-         "description":"Write. Sem embedding= grava L3 lexical (ADR-0008, nao abre era BQ). embedding= ou NEURAL_SGDB_EMBEDDER=demo → L4. user+response= episodico L2. scope nao vaza no recall global. Devolve storage key + recall_hint.",
+         "description":"Write. Sem embedding= grava L3 lexical (ADR-0008, nao abre era BQ). embedding= ou NEURAL_SGDB_EMBEDDER=demo â†’ L4. user+response= episodico L2. scope nao vaza no recall global. Devolve storage key + recall_hint.",
          "inputSchema":{"type":"object","properties":{
            "text":{"type":"string"},
            "user":{"type":"string","description":"Com `response`: episodio L2 verbatim"},
@@ -335,13 +335,13 @@ fn mcp_listed_tools() -> Value {
          }},
          "annotations":{"readOnlyHint":true}},
         {"name":"health",
-         "description":"Observabilidade. view=status (default): onboarding+doutrina+dims. view=validate: integridade. view=era: era_report ADR-0007. view=tensions: conflitos, superseded, scopes invisíveis. Chame cedo. Resource nsgdb://session.",
+         "description":"Observabilidade. view=status (default): onboarding+doutrina+dims. view=validate: integridade. view=era: era_report ADR-0007. view=tensions: conflitos, superseded, scopes invisÃ­veis. Chame cedo. Resource nsgdb://session.",
          "inputSchema":{"type":"object","properties":{
            "view":{"type":"string","enum":["status","validate","era","tensions"],"default":"status"}
          }},
          "annotations":{"readOnlyHint":true}},
         {"name":"curate",
-         "description":"Mutacao pontual / grafo L6 + metadado cognitivo. op= explain|reinforce|feedback|forget|expire_old|decay|consolidate|diary|profile|associate|related_to|contradicts|supersede|conflicts|resolve_conflict|merge_memories|audit_checkpoint|audit_verify|rollback_to. Use a storage key completa md/L4/.... Nao hoarde: so depois de evidência.",
+         "description":"Mutacao pontual / grafo L6 + metadado cognitivo. op= explain|reinforce|feedback|forget|expire_old|decay|consolidate|diary|profile|associate|related_to|contradicts|supersede|conflicts|resolve_conflict|merge_memories|audit_checkpoint|audit_verify|rollback_to. Use a storage key completa md/L4/.... Nao hoarde: so depois de evidÃªncia.",
          "inputSchema":{"type":"object","properties":{
            "op":{"type":"string","enum":["explain","reinforce","feedback","forget","expire_old","decay","consolidate","diary","profile","associate","related_to","contradicts","supersede","conflicts","resolve_conflict","merge_memories","audit_checkpoint","audit_verify","rollback_to"]},
            "key":{"type":"string"},
@@ -397,7 +397,7 @@ fn embedder_label() -> String {
     std::env::var("NEURAL_SGDB_EMBEDDER").unwrap_or_else(|_| "none".into())
 }
 
-/// Erros acionáveis para o agente (S1/era guard, contrato de embedding).
+/// Erros acionÃ¡veis para o agente (S1/era guard, contrato de embedding).
 fn mcp_actionable_error(e: impl std::fmt::Display) -> String {
     let msg = e.to_string();
     let lower = msg.to_ascii_lowercase();
@@ -446,7 +446,7 @@ fn health_payload(db: &mut Sgdb, db_path: &str, embedder: &str) -> Value {
         "binary_path": binary_path,
         "binary_mtime_unix": binary_mtime,
         "contract": "ADR-0008: default recall is lexical; demo trigram is NOT semantic and is not implied",
-        "http_embedder": "cargo run --release --example embedder_http — see docs/MCP.md",
+        "http_embedder": "cargo run --release --example embedder_http â€” see docs/MCP.md",
         "doctrine_scope": neural_sgdb::DOCTRINE_SCOPE,
         "doctrine_key": format!("md/L4/{}", neural_sgdb::DOCTRINE_KEY),
         "doctrine_entities": neural_sgdb::DOCTRINE_ENTITIES,
@@ -558,7 +558,7 @@ fn main() {
     let db_path = std::env::var("NEURAL_SGDB_DB").unwrap_or_else(|_| "sgdb_memory.db".into());
 
     // Backend concreto por feature: `FileStorage` (persistente) ou `InMemory`
-    // (demo volátil) — `Sgdb::open(impl Storage)` aceita ambos sem boxing.
+    // (demo volÃ¡til) â€” `Sgdb::open(impl Storage)` aceita ambos sem boxing.
     #[cfg(feature = "file-storage")]
     let storage = match FileStorage::open(&db_path) {
         Ok(s) => s,
@@ -570,7 +570,7 @@ fn main() {
 
     #[cfg(not(feature = "file-storage"))]
     let storage = {
-        eprintln!("[neural-sgdb] file-storage desativada — usando InMemory (volátil)");
+        eprintln!("[neural-sgdb] file-storage desativada â€” usando InMemory (volÃ¡til)");
         InMemory::new()
     };
 
@@ -588,7 +588,7 @@ fn main() {
     }
     let embedder = load_embedder();
     let embedder_name = embedder_label();
-    // Doutrina: seed L4 com DemoEmbedder interno (texto canônico, não o default do produto).
+    // Doutrina: seed L4 com DemoEmbedder interno (texto canÃ´nico, nÃ£o o default do produto).
     match DemoEmbedder.embed(DOCTRINE) {
         Ok(emb) => match db.ensure_doctrine(&emb) {
             Ok(true) => eprintln!("[neural-sgdb] doctrine seeded (scope={DOCTRINE_SCOPE})"),
@@ -628,7 +628,7 @@ fn main() {
 
         match method {
             "initialize" => {
-                // Version negotiation: respondemos o legado estável 2025-11-25
+                // Version negotiation: respondemos o legado estÃ¡vel 2025-11-25
                 // (clients 2026 modernos fazem fallback ao ver -32601 em
                 // server/discover antes do initialize).
                 send(&json!({"jsonrpc":"2.0","id":id,"result":{
@@ -645,7 +645,7 @@ fn main() {
                 }}));
             }
             "notifications/initialized" | "notifications/cancelled" | "notifications/progress" => {
-                // fire-and-forget — sem resposta
+                // fire-and-forget â€” sem resposta
             }
             "ping" => {
                 send(&json!({"jsonrpc":"2.0","id":id,"result":{}}));
@@ -654,8 +654,8 @@ fn main() {
                 send(&json!({"jsonrpc":"2.0","id":id,"result":{"tools": mcp_listed_tools()}}));
             }
             "resources/list" => {
-                // #8: expõe as memórias como resources `memory://{layer}/{key}`
-                // com paginação por cursor opaco (offset).
+                // #8: expÃµe as memÃ³rias como resources `memory://{layer}/{key}`
+                // com paginaÃ§Ã£o por cursor opaco (offset).
                 let cursor = msg["params"]["cursor"].as_str();
                 let size = msg["params"]["pageSize"].as_u64().unwrap_or(20).max(1) as usize;
                 let mut all: Vec<Value> = Vec::new();
@@ -827,22 +827,22 @@ fn main() {
                                 }
                             }
                         };
-                        // v1.1.3 S5 — paginação LAZY: computa só o que a página
+                        // v1.1.3 S5 â€” paginaÃ§Ã£o LAZY: computa sÃ³ o que a pÃ¡gina
                         // pede. Antes buscava top-100 fixo e paginava sobre ele
-                        // (custo fixo + teto artificial de 100 hits). Top-k é
-                        // determinístico (score, key) — top-(off+size) da busca
-                        // completa = os mesmos itens de top-100, então a página
+                        // (custo fixo + teto artificial de 100 hits). Top-k Ã©
+                        // determinÃ­stico (score, key) â€” top-(off+size) da busca
+                        // completa = os mesmos itens de top-100, entÃ£o a pÃ¡gina
                         // fatia o prefixo correto sem custo extra.
                         let size = args["pageSize"].as_u64().unwrap_or(k as u64).max(1) as usize;
                         let off = args["cursor"]
                             .as_str()
                             .and_then(|c| c.parse::<usize>().ok())
                             .unwrap_or(0);
-                        // +1 = hit "sentinela" além da página: sem ele, uma
-                        // página exatamente preenchida pareceria a última
+                        // +1 = hit "sentinela" alÃ©m da pÃ¡gina: sem ele, uma
+                        // pÃ¡gina exatamente preenchida pareceria a Ãºltima
                         // (paginate usa items.len() como "conjunto inteiro").
                         let need = off.saturating_add(size).saturating_add(1);
-                        // v1.1.4 item 7 — scope: explícito ou default (env/core).
+                        // v1.1.4 item 7 â€” scope: explÃ­cito ou default (env/core).
                         let scope = db.resolve_scope_param(args["scope"].as_str());
                         let all = match recall_for_mcp(&mut db, &mode, &scope, &emb, query, need) {
                             Ok(h) => h,
@@ -1311,7 +1311,7 @@ fn main() {
                                     "chain intacta; estado == ultimo checkpoint"
                                 };
                                 let text = format!(
-                                    "auditoria: {} elo(s), last_seq={:?} — {verdict}",
+                                    "auditoria: {} elo(s), last_seq={:?} â€” {verdict}",
                                     r.entries, r.last_seq
                                 );
                                 send(&json!({"jsonrpc":"2.0","id":id,"result":{
@@ -1336,7 +1336,7 @@ fn main() {
                         };
                         match db.rollback_to(seq) {
                             Ok(n) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("rollback para seq={seq}: {n} metadados restaurados (payloads intocados — ADD-only)")}],"isError":false}})),
+                                "content":[{"type":"text","text":format!("rollback para seq={seq}: {n} metadados restaurados (payloads intocados â€” ADD-only)")}],"isError":false}})),
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
                         }
@@ -1364,17 +1364,17 @@ fn main() {
                 }
             }
             "" => {
-                // notificação sem method válido / malformada
+                // notificaÃ§Ã£o sem method vÃ¡lido / malformada
                 send(&error_response(&id, -32600, "Invalid request"));
             }
             _ => {
-                // -32601 em server/discover → client moderno faz fallback p/ initialize
+                // -32601 em server/discover â†’ client moderno faz fallback p/ initialize
                 send(&error_response(&id, -32601, "Method not found"));
             }
         }
     }
     // EOF no stdin = shutdown
-    eprintln!("[neural-sgdb] stdin fechado — encerrando");
+    eprintln!("[neural-sgdb] stdin fechado â€” encerrando");
 }
 
 #[cfg(test)]
@@ -1402,8 +1402,8 @@ mod tests {
         assert_eq!(c2.as_deref(), Some("8"));
         let (p3, c3) = paginate(&items, c2.as_deref(), 4);
         assert_eq!(p3, vec![8, 9]);
-        assert_eq!(c3, None, "última página não tem nextCursor");
-        // cursor inválido → volta ao início
+        assert_eq!(c3, None, "Ãºltima pÃ¡gina nÃ£o tem nextCursor");
+        // cursor invÃ¡lido â†’ volta ao inÃ­cio
         let (p, _) = paginate(&items, Some("xyz"), 2);
         assert_eq!(p, vec![0, 1]);
     }
@@ -1411,16 +1411,16 @@ mod tests {
     #[test]
     fn paginate_hostile_size_does_not_panic() {
         let items: Vec<u32> = (0..10).collect();
-        // pageSize hostil (u64::MAX → usize::MAX) com cursor ≥ 1 não pode
-        // estourar `off + size` nem alocar além dos itens (regressão P0-8).
+        // pageSize hostil (u64::MAX â†’ usize::MAX) com cursor â‰¥ 1 nÃ£o pode
+        // estourar `off + size` nem alocar alÃ©m dos itens (regressÃ£o P0-8).
         let (p, next) = paginate(&items, Some("1"), usize::MAX);
-        assert_eq!(p.len(), items.len() - 1, "clamp: página limitada aos itens");
-        assert_eq!(next, None, "cursor 1 + tudo → não há next");
+        assert_eq!(p.len(), items.len() - 1, "clamp: pÃ¡gina limitada aos itens");
+        assert_eq!(next, None, "cursor 1 + tudo â†’ nÃ£o hÃ¡ next");
         // cursor no fim + size hostil
         let (p, next) = paginate(&items, Some("9"), usize::MAX);
         assert_eq!(p, vec![9]);
         assert_eq!(next, None);
-        // tamanho acima do clamp não muda semântica legítima (page 0)
+        // tamanho acima do clamp nÃ£o muda semÃ¢ntica legÃ­tima (page 0)
         let (p, next) = paginate(&items, None, 2000);
         assert_eq!(p, items);
         assert_eq!(next, None);
@@ -1428,10 +1428,10 @@ mod tests {
 
     #[test]
     fn lazy_recall_pages_match_full_topk() {
-        // v1.1.3 S5: a paginação lazy busca `off+size` hits em vez de top-100
-        // fixo. O contrato é que a página do prefixo lazy == a página do
-        // top-k completo (recall é determinístico por (score, key) — top-(n+1)
-        // é um prefixo de top-N). Pina o invariante contra regressão futura.
+        // v1.1.3 S5: a paginaÃ§Ã£o lazy busca `off+size` hits em vez de top-100
+        // fixo. O contrato Ã© que a pÃ¡gina do prefixo lazy == a pÃ¡gina do
+        // top-k completo (recall Ã© determinÃ­stico por (score, key) â€” top-(n+1)
+        // Ã© um prefixo de top-N). Pina o invariante contra regressÃ£o futura.
         let mut db = neural_sgdb::Sgdb::open(neural_sgdb::InMemory::new()).unwrap();
         let mut texts = Vec::new();
         for i in 0..12 {
@@ -1440,8 +1440,8 @@ mod tests {
             db.remember_semantic(&format!("k{:02}", i), &t, &[1.0, -1.0, 1.0, -1.0]).unwrap();
         }
         let q = [1.0, -1.0, 1.0, -1.0];
-        // "top-k completo" = o teto antigo (100); lazy = off+size+1 por página
-        // (a sentinela +1 só sonda a próxima página — não muda o conteúdo).
+        // "top-k completo" = o teto antigo (100); lazy = off+size+1 por pÃ¡gina
+        // (a sentinela +1 sÃ³ sonda a prÃ³xima pÃ¡gina â€” nÃ£o muda o conteÃºdo).
         let full = db.recall(&q, 100).unwrap();
         assert_eq!(full.len(), 12);
         let mut cursor: Option<String> = None;
@@ -1452,10 +1452,10 @@ mod tests {
             let need = off.saturating_add(size).saturating_add(1);
             let all = db.recall(&q, need).unwrap();
             let (page, next) = paginate(&all, cursor.as_deref(), size);
-            assert!(!page.is_empty(), "página vazia antes do fim do conjunto");
-            // cada página lazy == fatia do top-k completo (determinismo)
+            assert!(!page.is_empty(), "pÃ¡gina vazia antes do fim do conjunto");
+            // cada pÃ¡gina lazy == fatia do top-k completo (determinismo)
             for (i, h) in page.iter().enumerate() {
-                assert_eq!(h.key, full[off + i].key, "página lazy divergiu do top-k");
+                assert_eq!(h.key, full[off + i].key, "pÃ¡gina lazy divergiu do top-k");
             }
             collected.extend(page.into_iter().map(|h| h.key));
             cursor = next;
@@ -1465,9 +1465,9 @@ mod tests {
         }
         assert_eq!(cursor, None, "deve ter iterado o conjunto inteiro");
         assert_eq!(collected.len(), 12);
-        // sem duplicatas entre páginas
+        // sem duplicatas entre pÃ¡ginas
         let uniq: std::collections::HashSet<_> = collected.iter().collect();
-        assert_eq!(uniq.len(), 12, "paginação repetiu hits");
+        assert_eq!(uniq.len(), 12, "paginaÃ§Ã£o repetiu hits");
     }
 
     #[test]
