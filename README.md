@@ -36,8 +36,8 @@ filesystem, no external runtime.
 
 ## Status
 
-**v1.1.11** ✅ — host governance + micro-ganhos core (stable `v1.1.10` guardada como tag + bench `BENCH_STABLE_1.1.10.txt`): `host_scheduler` (expire/decay/consolidate/audit), `backfill_helper` (L3→L4 re-embed), `Storage::put_many`/`put_batch`, lexical dedup+`search_fast`, `hamming` inline, `recall_weighted_full` select_nth. Herda 1.1.10 cognitive metadata.
-Crate em `Cargo.toml`: **1.1.11**.
+**v1.1.12** ✅ — security hardening 11→1 ordem inversa de custo (lexical cap, `try_encode`, `LocalEmbedder` Result, `WasmStorage` validate, `engine.put_inner` choke central). Herda 1.1.11 host governance + micro-ganhos.
+Crate em `Cargo.toml`: **1.1.12**.
 
 - `cargo test` on host: **243+ lib tests + doc-test** (plus p2p / no_std matrix)
 - `cargo check --no-default-features --target x86_64-unknown-none`: **clean**
@@ -84,13 +84,13 @@ Crate em `Cargo.toml`: **1.1.11**.
   candidate, `resolve_conflict` via evidence, `dismiss_conflict`),
   **cognitive API** (`reinforce`/`forget`/`explain`/`transfer_to`/
   `merge_memories`/`conflicts`/`resolve_conflict`/`feedback`/`diary`/
-  `profile`/`expire_old`) and **MCP 4 tools** (`remember`/`recall`/`health`/`curate`;
-  `health`/`validate` observability, `era_report`, `remember_episodic`,
-  retrieval modes semantic/lexical/hybrid, `recall_temporal`,
-  `recall_entities`, ServerInfo v1.1.10, curate ops de metadado cognitivo) + **write-side era guard** (S1 no
-  write também — `remember_semantic` fora da era do corpus vivo é `Invalid`)
-  + **seams de conteúdo** (`Embedder` trait, `entities`, `content_type` —
-  quem fornece declara)
+   `profile`/`expire_old`) and **MCP 4 tools** (`remember`/`recall`/`health`/`curate`;
+   `health`/`validate` observability, `era_report`, `remember_episodic`,
+   retrieval modes semantic/lexical/hybrid, `recall_temporal`,
+   `recall_entities`, ServerInfo v1.1.12, curate ops de metadado cognitivo: `decay`/`consolidate`/`audit_checkpoint`/`audit_verify`/`rollback_to`) + **write-side era guard** (S1 no
+   write também — `remember_semantic` fora da era do corpus vivo é `Invalid`)
+   + **seams de conteúdo** (`Embedder` trait, `entities`, `content_type` —
+   quem fornece declara) + **security hardening 11→1** (`engine.put_inner` choke central, `validate_written`, `WasmStorage` bounds, `MCP -32601`)
 - **Interfaces**: MCP server with `memory://{layer}/{key}` + `nsgdb://doctrine`
   + `nsgdb://session` resources, `nextCursor` pagination, **4 tools**
   (`remember`/`recall`/`health`/`curate`; 23 legacy names as `tools/call`
@@ -148,7 +148,7 @@ More: `cargo run --release --example bench` (benchmarks), `--example stress`
 (100k-op stress), `--example mcp_server` (MCP), `--example two_ai_protocol`
 (máquina→máquina: IA-A grava datum declarado, IA-B lê tipado, 16/16 checks),
 `--example agent_protocol` (protocolo de decisão), `--example
-memory_arena_eval` (utilidade da memória), and **telepathy** —
+memory_arena_eval` (utilidade da memória), `--example host_scheduler` (governança) + `--example backfill_helper` (L3→L4), `cargo run --manifest-path crates/nsgdb-embed/Cargo.toml --example demo` (embed local), and **telepathy** —
 `cargo run --release --example p2p_telepathy --features p2p` exchanges
 memories between two `Sgdb` instances via CRDT version sync + record pull
 (`export_record` → `merge_remote` — state/validity/lineage travel too;
@@ -192,7 +192,8 @@ lists conflicts / superseded / unseen scopes.
 
 Host adapters for claw-like apps (Hermes provider, OpenClaw skeleton, shared
 MCP client) live in [`connectors/`](connectors/README.md) — **outside** crate
-SemVer; core stays 1.1.11.
+SemVer; `crates/nsgdb-embed` (LocalEmbedder 384-dim, `cargo run --manifest-path crates/nsgdb-embed/Cargo.toml --example demo`) and `crates/nsgdb-wasm` (WasmStorage IndexedDB stub) are host crates — core stays 1.1.12.
+Browser extension 1-clique local-first: [`docs/browser-extension.md`](docs/browser-extension.md).
 
 ### Cursor (Windows)
 
@@ -244,7 +245,7 @@ avoid stale/unreproducible claims).
   (LaTeX, two-column article; **compiled [`neural-sgdb-telepathy.pdf`](docs/paper/neural-sgdb-telepathy.pdf)**,
   8 TikZ figures + design rationale, threats to validity, case study, appendix;
   upload the `.tex` source to arXiv)
-- **Architecture (v1.1.11)** — [`docs/architecture/`](docs/architecture/)
+- **Architecture (v1.1.12)** — [`docs/architecture/`](docs/architecture/)
   — Memory Model (01), Lifecycle (02), Retrieval (03), Distributed (04),
   Storage (05), Cognitive API (06) — documents the shipped cognitive memory
   system; [`docs/implementation-status.md`](docs/implementation-status.md)
@@ -269,13 +270,18 @@ Licensed under **MIT** **or** **Apache-2.0** (dual license), your choice.
 - [x] CRDT memory sync as optional `p2p` feature (`CrdtMemorySync` +
       `Transport` trait + std `UdpTransport`; symmetric LWW merge)
 - [x] Published benchmarks (`cargo run --release --example bench` — ART
-      P50/P99, BQ top-k, recall BQ vs FP32)
+      P50/P99, BQ top-k, recall BQ vs FP32) — `BENCHMARKS.md` + `BENCH_STABLE_1.1.10.txt` + `BENCH_COMPARE_1.1.10_vs_1.1.11.md`
 - [x] MCP server layer (`cargo run --release --example mcp_server` — 4 tools
       `remember`/`recall`/`health`/`curate`; default retrieval lexical;
       optional explicit `NEURAL_SGDB_EMBEDDER=demo`)
 - [x] **Byte-exact TKLV/TKCK storage interop with the OS** (`src/tickv.rs`:
       byte-exact codec + OS-readable `TickvFile` backend; golden test +
       `scan_volume` re-parse; NMD1 and TKLV interoperable)
+- [x] **v1.1.10 cognitive metadata** — `decay_importance` (Ebbinghaus) + `consolidate_recurrences` + `recall_weighted_full` (`Hit.score_breakdown`) + audit hash-chain `sys/audit/` + write-path hardening
+- [x] **v1.1.11 host governance + micro-ganhos** — `host_scheduler` + `backfill_helper` + `Storage::put_many`/`put_batch` + `lexical` dedup/`search_fast` + `hamming` inline + `recall` select_nth
+- [x] **v1.1.12 security hardening 11→1** — `engine.put_inner` choke central, `WasmStorage` bounds, `LocalEmbedder::new()->Result`, `MCP -32601`, `try_encode` limites
+- [x] **Host crates** — `crates/nsgdb-embed` + `crates/nsgdb-wasm` (sem quebrar core `no_std` zero deps)
+- [x] **Browser extension** — `docs/browser-extension.md` (1-clique local-first, auto-captura `history`/`tabs` → `WasmStorage` IndexedDB)
 
 ## Interop with neural-os-core
 
