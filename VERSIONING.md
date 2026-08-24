@@ -45,6 +45,7 @@ commit** (see `docs/api.md` §Format versioning and `MIGRATIONS.md`).
 4. Tag `v<MAJOR.MINOR.PATCH>`; push tag + branch.
 5. If the release touches a binary format, update `docs/api.md` format
    changelog, `MIGRATIONS.md`, and the golden tests in the SAME commit.
+6. **Obrigatório — republicar na Chrome Web Store:** toda nova versão (`v*`) com `extension/` deve ser re-empacotada (`zip -r nsgdb-ext.zip extension/`) e re-enviada em https://chrome.google.com/webstore/devconsole (1 clique para o usuário). `docs/browser-extension.md` e `extension/README.md` descrevem o `Load unpacked` local; a Store é o canal prático para iniciantes.
 
 ## Pre-1.0 note (history)
 
@@ -58,11 +59,11 @@ migrations in `MIGRATIONS.md` and never silently reinterpreted old bytes
 
 ## Current line (1.1.x)
 
-Crate version in `Cargo.toml` is **1.1.11**; additive feature releases
-**v1.1.2–v1.1.11** are documented in `CHANGELOG.md` and `docs/api.md` without
+Crate version in `Cargo.toml` is **1.1.12**; additive feature releases
+**v1.1.2–v1.1.12** are documented in `CHANGELOG.md` and `docs/api.md` without
 a MAJOR bump. Architecture docs in `docs/architecture/` describe the
-**shipped** system at **v1.1.11** (lexical-first MCP, ADR-0008). Typed hits
-landed in v1.1.6; agent doctrine in v1.1.8; cognitive metadata in v1.1.10; host governance + micro-ganhos in v1.1.11.
+**shipped** system at **v1.1.12** (lexical-first MCP, ADR-0008). Typed hits
+landed in v1.1.6; agent doctrine in v1.1.8; cognitive metadata in v1.1.10; host governance + micro-ganhos in v1.1.11; security hardening 11→1 em v1.1.12.
 
 ## Host connectors (`connectors/`)
 
