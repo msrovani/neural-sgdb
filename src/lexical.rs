@@ -113,9 +113,12 @@ impl LexicalIndex {
     #[inline]
     pub fn search(&self, query: &str, k: usize) -> Vec<(String, f32, Vec<String>)> {
         let toks = tokenize(query);
-        // dedup query termos: evita m.contains() O(n) por hit quando query repete
+        // dedup + cap (DoS bound 10): query gigante (1MiB tokenizada ~100k termos) sem cap aloca O(N)
         let mut uniq: BTreeMap<String, ()> = BTreeMap::new();
         for t in toks {
+            if uniq.len() >= 1024 {
+                break;
+            }
             uniq.insert(t, ());
         }
         let mut scores: BTreeMap<String, f32> = BTreeMap::new();
@@ -153,6 +156,9 @@ impl LexicalIndex {
         let toks = tokenize(query);
         let mut uniq: BTreeMap<String, ()> = BTreeMap::new();
         for t in toks {
+            if uniq.len() >= 1024 {
+                break;
+            }
             uniq.insert(t, ());
         }
         let mut scores: BTreeMap<String, f32> = BTreeMap::new();

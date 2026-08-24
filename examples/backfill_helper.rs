@@ -43,7 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let emb = embedder.embed(&text)?;
         let mut new_doc = MemoryDoc::new(
             MemoryLayer::L4Semantic,
-            &format!("md/L4/{id_part}"),
+            id_part,
             doc.payload.clone(),
         );
         new_doc.clock = doc.clock.clone();

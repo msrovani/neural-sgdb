@@ -38,11 +38,36 @@ impl WasmStorage {
     }
 }
 
+fn validate_ws_key(key: &[u8]) -> Result<(), SgdbError> {
+    if key.is_empty() || key.len() > 4096 {
+        return Err(SgdbError::Invalid("key length"));
+    }
+    if key.contains(&b'#') || key.contains(&0) {
+        return Err(SgdbError::Invalid("key contains # or NUL"));
+    }
+    for b in key {
+        if *b < 0x20 || *b == 0x7F {
+            return Err(SgdbError::Invalid("key contains control"));
+        }
+    }
+    // .. / . por componente
+    for part in key.split(|&b| b == b'/') {
+        if part == b"." || part == b".." {
+            return Err(SgdbError::Invalid("key contains . or .."));
+        }
+    }
+    Ok(())
+}
+
 impl Storage for WasmStorage {
     fn name(&self) -> &'static str {
         "wasm"
     }
     fn put(&mut self, key: &[u8], val: &[u8]) -> Result<(), SgdbError> {
+        validate_ws_key(key)?;
+        if val.len() > 1024 * 1024 {
+            return Err(SgdbError::Invalid("value too large"));
+        }
         // TODO(wasm): quando `cfg(all(target_arch="wasm32", feature="wasm"))`,
         // gravar em IndexedDB `self.namespace` / `key` → `val` via `web-sys`.
         // Hoje: RAM para provar o wiring sem deps obrigatórias.

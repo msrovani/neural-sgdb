@@ -248,6 +248,20 @@ impl AiosDatabaseEngine {
     /// relógio próprio nem promove o watermark — o receptor nunca vira
     /// "escritor" de uma memória que não criou (sem inflação causal).
     fn put_inner(&mut self, mut doc: MemoryDoc, tick_local: bool) -> Result<u64, SgdbError> {
+        // 11→1: central choke (inverso custo) — valida toda escrita antes de storage/índice,
+        // fecha `merge_memories target`/`import`/`remember_episodic` bypass da facade.
+        if doc.key.is_empty() || doc.key.len() > 4096 {
+            return Err(SgdbError::Invalid("key length"));
+        }
+        if doc.key.contains('#') || doc.key.contains('\0') {
+            return Err(SgdbError::Invalid("key contains # or NUL"));
+        }
+        if doc.key.split('/').any(|p| p == "." || p == "..") {
+            return Err(SgdbError::Invalid("key contains . or .."));
+        }
+        if doc.key.bytes().any(|b| b < 0x20 || b == 0x7F) {
+            return Err(SgdbError::Invalid("key contains control"));
+        }
         if tick_local {
             doc.clock.tick(self.node_id);
             // Monotonia do contador próprio através de overwrites e restarts:
@@ -901,8 +915,20 @@ impl AiosDatabaseEngine {
         rel: RelationKind,
         b: &str,
     ) -> Result<(), SgdbError> {
-        if a.contains('#') || b.contains('#') {
-            return Err(SgdbError::Invalid("relation key contains reserved '#'"));
+        // 11→1: valida `a`/`b` como escrita (mesma regra de `validate_written`)
+        for k in [a, b] {
+            if k.is_empty() || k.len() > 4096 {
+                return Err(SgdbError::Invalid("relation key length"));
+            }
+            if k.contains('#') || k.contains('\0') {
+                return Err(SgdbError::Invalid("relation key contains reserved '#' or NUL"));
+            }
+            if k.split('/').any(|p| p == "." || p == "..") {
+                return Err(SgdbError::Invalid("relation key contains . or .."));
+            }
+            if k.bytes().any(|b| b < 0x20 || b == 0x7F) {
+                return Err(SgdbError::Invalid("relation key contains control"));
+            }
         }
         let sk = rel_storage_key(rel, a, b);
         // Regra 4: as chaves ART `rel/…`/`rev/…` também não podem ser prefixo

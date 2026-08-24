@@ -2798,6 +2798,9 @@ impl Sgdb {
         self.engine.read_side_bytes(key)
     }
 
+    /// Escape hatch host-only: escreve bytes crus numa side-table sem `validate_written`.
+    /// Não valida `key` (pode injetar `sys/audit/`/`md/L4/../traversal`) — caller host deve
+    /// garantir `key` já validada ou restrita a `sys/` interno. Não é API pública de memória.
     pub fn write_side_bytes(&mut self, key: &str, bytes: &[u8]) -> Result<(), SgdbError> {
         self.engine.write_side_bytes(key, bytes)
     }

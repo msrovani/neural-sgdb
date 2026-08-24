@@ -19,7 +19,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  - {} | {} d={:.3}", h.key, h.text, h.dist);
     }
 
-    let wrong = LocalEmbedder::new(128).embed("sol")?;
+    let wrong = LocalEmbedder::new(128)?.embed("sol")?;
     assert!(db.remember_semantic("bad", "x", &wrong).is_err());
     println!("[demo] era guard OK");
     Ok(())

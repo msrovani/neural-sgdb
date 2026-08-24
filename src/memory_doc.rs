@@ -731,6 +731,17 @@ impl MemoryDoc {
         out
     }
 
+    /// Try-encode com limites (DoS bound 9): rejeita `key>MAX_KLEN` e `payload>MAX_VLEN` antes de alocar.
+    pub fn try_encode(&self) -> Result<Vec<u8>, &'static str> {
+        if self.key.len() > crate::limits::MAX_KLEN {
+            return Err("key exceeds MAX_KLEN");
+        }
+        if self.payload.len() > crate::limits::MAX_VLEN {
+            return Err("payload exceeds MAX_VLEN");
+        }
+        Ok(self.encode())
+    }
+
     pub fn decode(data: &[u8]) -> Result<Self, &'static str> {
         if data.len() < 5 || &data[0..4] != MAGIC {
             return Err("bad magic");

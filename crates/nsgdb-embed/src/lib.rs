@@ -9,7 +9,7 @@
 //! ```rust
 //! use nsgdb_embed::LocalEmbedder;
 //! use neural_sgdb::embedder::Embedder;
-//! let e = LocalEmbedder::new(384);
+//! let e = LocalEmbedder::new(384).unwrap();
 //! let v = e.embed("ola mundo").unwrap();
 //! assert_eq!(v.len(), 384);
 //! ```
@@ -29,12 +29,20 @@ pub struct LocalEmbedder {
 }
 
 impl LocalEmbedder {
-    pub fn new(dim: usize) -> Self {
-        Self { dim: dim.max(1).min(4096) }
+    pub fn new(dim: usize) -> Result<Self, SgdbError> {
+        if dim == 0 || dim > 4096 {
+            return Err(SgdbError::Invalid("dim exceeds MAX_EMBEDDING_DIM"));
+        }
+        Ok(Self { dim })
     }
     /// 384-dim é o default prático (compatível com MiniLM/BGE small)
     pub fn default_384() -> Self {
-        Self::new(384)
+        Self { dim: 384 }
+    }
+    /// Construtor unchecked para testes internos (clamp, não falha)
+    #[cfg(test)]
+    pub fn new_unchecked(dim: usize) -> Self {
+        Self { dim: dim.max(1).min(4096) }
     }
 }
 
@@ -81,7 +89,7 @@ mod tests {
     use super::*;
     #[test]
     fn deterministic_and_dim() {
-        let e = LocalEmbedder::new(384);
+        let e = LocalEmbedder::new(384).unwrap();
         let a = e.embed("ola mundo").unwrap();
         let b = e.embed("ola mundo").unwrap();
         assert_eq!(a.len(), 384);
@@ -92,10 +100,16 @@ mod tests {
     #[test]
     fn same_model_contract() {
         // mesmo texto, mesma dim → mesmo vetor; dim diferente → vetor diferente
-        let e384 = LocalEmbedder::new(384);
-        let e256 = LocalEmbedder::new(256);
+        let e384 = LocalEmbedder::new(384).unwrap();
+        let e256 = LocalEmbedder::new(256).unwrap();
         let a = e384.embed("teste").unwrap();
         let b = e256.embed("teste").unwrap();
         assert_ne!(a.len(), b.len());
+    }
+    #[test]
+    fn dim_bounds() {
+        assert!(LocalEmbedder::new(0).is_err());
+        assert!(LocalEmbedder::new(4097).is_err());
+        assert!(LocalEmbedder::new(4096).is_ok());
     }
 }
