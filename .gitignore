@@ -14,3 +14,6 @@ sgdb_memory.db
 
 # FreeBuff tool state (local-only, not project code)
 .freebuff/
+
+# Chrome extension build artifact (gerado via Compress-Archive)
+nsgdb-ext.zip
