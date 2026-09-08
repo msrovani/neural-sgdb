@@ -40,6 +40,25 @@ fn validity_key(sk: &str) -> Vec<u8> {
     k
 }
 
+/// TTL per-key (v1.1.15 §4 P1): `sys/ttl/<sk>` → 8B `expires_at u64le`.
+/// Expirado = candidato a GC físico (delete), distinto de invalidar-não-deletar.
+fn ttl_key(sk: &str) -> Vec<u8> {
+    let mut k = Vec::with_capacity(8 + sk.len());
+    k.extend_from_slice(b"sys/ttl/");
+    k.extend_from_slice(sk.as_bytes());
+    k
+}
+
+/// Evento temporal (v1.1.15 §4 P2, mem0 jul/26): `sys/event/<sk>` →
+/// `state_key u16len+bytes | event_end u64le`. Liga memórias do MESMO fato
+/// evolutivo (timeline limpa, `recall_timeline`); `event_end=0` = aberto.
+fn event_key(sk: &str) -> Vec<u8> {
+    let mut k = Vec::with_capacity(10 + sk.len());
+    k.extend_from_slice(b"sys/event/");
+    k.extend_from_slice(sk.as_bytes());
+    k
+}
+
 /// Namespace lateral de metadados de memória (`sys/meta/<storage_key>` →
 /// MemoryMeta codec "MDM1", v0.6). Identidade + proveniência FORA do NMD1
 /// (contrato byte-idêntico com o OS). Anexado no `get`; viaja com o doc na
@@ -372,6 +391,8 @@ impl AiosDatabaseEngine {
                     scope: String::new(),
                     entities: Vec::new(),
                     content_type: None,
+                    scope_dims: crate::memory_doc::ScopeDims::new(),
+                    model_id: String::new(),
                 }
             }
         };
@@ -477,6 +498,43 @@ impl AiosDatabaseEngine {
         String::new()
     }
 
+    /// Escopo multi-dim EFETIVO (v1.1.14): mesma regra do companion que
+    /// `effective_scope`, mas sobre `ScopeDims`. Legado `scope!=""` com dims
+    /// vazias já foi mapeado para `user` no decode — aqui basta herdar.
+    pub fn effective_scope_dims(&mut self, sk: &str) -> crate::memory_doc::ScopeDims {
+        if let Some(m) = self.read_meta(sk) {
+            if !m.scope_dims.is_global() {
+                return m.scope_dims;
+            }
+            if !m.scope.is_empty() {
+                return crate::memory_doc::ScopeDims {
+                    user: m.scope,
+                    agent: String::new(),
+                    app: String::new(),
+                    run: String::new(),
+                };
+            }
+        }
+        if let Some(rest) = sk.strip_prefix("md/L2/") {
+            for prim in ["md/L4/", "md/L5/", "md/L3/"] {
+                if let Some(m) = self.read_meta(&format!("{prim}{rest}")) {
+                    if !m.scope_dims.is_global() {
+                        return m.scope_dims;
+                    }
+                    if !m.scope.is_empty() {
+                        return crate::memory_doc::ScopeDims {
+                            user: m.scope,
+                            agent: String::new(),
+                            app: String::new(),
+                            run: String::new(),
+                        };
+                    }
+                }
+            }
+        }
+        crate::memory_doc::ScopeDims::new()
+    }
+
     /// Resolve um `version_id` à (storage key, meta DAQUELA VERSÃO) — DAG
     /// causal, base de `Sgdb::lineage`. Derivado de `sys/version/` (escrito
     /// no persist_meta, reconstruído no rebuild). `None` = versão não
@@ -550,6 +608,8 @@ impl AiosDatabaseEngine {
             scope: String::new(),
             entities: Vec::new(),
             content_type: None,
+            scope_dims: crate::memory_doc::ScopeDims::new(),
+            model_id: String::new(),
         };
         // índice reverso também é derivado na migração (DAG consultável)
         self.storage
@@ -1121,6 +1181,74 @@ impl AiosDatabaseEngine {
         self.set_validity(sk, from, now)
     }
 
+    /// TTL per-key (v1.1.15): `expires_at` em `now`-units. `expires_at=0`
+    /// limpa (sem TTL = retenção infinita, default).
+    pub fn set_ttl(&mut self, sk: &str, expires_at: u64) -> Result<(), SgdbError> {
+        let k = ttl_key(sk);
+        if expires_at == 0 {
+            self.storage.delete(&k)?;
+        } else {
+            self.storage.put(&k, &expires_at.to_le_bytes())?;
+        }
+        Ok(())
+    }
+
+    /// Lê o TTL bruto (`None` = sem TTL).
+    pub fn ttl_of(&mut self, sk: &str) -> Option<u64> {
+        match self.storage.get(&ttl_key(sk)) {
+            Ok(Some(b)) if b.len() == 8 => Some(u64::from_le_bytes([
+                b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+            ])),
+            _ => None,
+        }
+    }
+
+    /// Expirado em `now` (`expires_at <= now`, `0` nunca expira).
+    #[allow(dead_code)]
+    pub fn ttl_expired(&mut self, sk: &str, now: u64) -> bool {
+        matches!(self.ttl_of(sk), Some(e) if e != 0 && e <= now)
+    }
+
+    /// Evento temporal (v1.1.15): liga `sk` ao fato evolutivo `state_key`
+    /// (`event_end=0` = aberto). `state_key` vazio limpa a marcação.
+    pub fn set_event(
+        &mut self,
+        sk: &str,
+        state_key: &str,
+        event_end: u64,
+    ) -> Result<(), SgdbError> {
+        let k = event_key(sk);
+        if state_key.is_empty() {
+            self.storage.delete(&k)?;
+            return Ok(());
+        }
+        if state_key.len() > crate::limits::MAX_KLEN {
+            return Err(SgdbError::Invalid("state_key exceeds MAX_KLEN"));
+        }
+        let mut v = Vec::with_capacity(2 + state_key.len() + 8);
+        v.extend_from_slice(&(state_key.len() as u16).to_le_bytes());
+        v.extend_from_slice(state_key.as_bytes());
+        v.extend_from_slice(&event_end.to_le_bytes());
+        self.storage.put(&k, &v)?;
+        Ok(())
+    }
+
+    /// Lê `(state_key, event_end)` (`None` = sem evento).
+    pub fn event_of(&mut self, sk: &str) -> Option<(String, u64)> {
+        let b = self.storage.get(&event_key(sk)).ok()??;
+        if b.len() < 10 {
+            return None;
+        }
+        let slen = u16::from_le_bytes([b[0], b[1]]) as usize;
+        if b.len() != 2 + slen + 8 {
+            return None;
+        }
+        let s = core::str::from_utf8(&b[2..2 + slen]).ok()?;
+        let mut end = [0u8; 8];
+        end.copy_from_slice(&b[2 + slen..]);
+        Some((String::from(s), u64::from_le_bytes(end)))
+    }
+
     /// Deleção FÍSICA por storage key canônica (`md/Lx/...`): remove do
     /// Storage (tombstone) + side-tables (`sys/state/`, `sys/validity/`) +
     /// índices derivados (ART, lexical, id→sk).
@@ -1141,6 +1269,8 @@ impl AiosDatabaseEngine {
         // side-tables da memória morrem com ela (estado + validade + meta)
         self.storage.delete(&state_key(sk))?;
         self.storage.delete(&validity_key(sk))?;
+        self.storage.delete(&ttl_key(sk))?;
+        self.storage.delete(&event_key(sk))?;
         // índice reverso da versão morre com a memória (DAG causal)
         if let Ok(Some(b)) = self.storage.get(&meta_key(sk)) {
             if let Ok(m) = MemoryMeta::decode(&b) {
@@ -1248,6 +1378,12 @@ fn meta_for_import(doc: &MemoryDoc) -> MemoryMeta {
             .meta
             .as_ref()
             .and_then(|m| m.content_type.clone()),
+        scope_dims: doc
+            .meta
+            .as_ref()
+            .map(|m| m.scope_dims.clone())
+            .unwrap_or_default(),
+        model_id: doc.meta.as_ref().map(|m| m.model_id.clone()).unwrap_or_default(),
     }
 }
 

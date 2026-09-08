@@ -102,6 +102,96 @@ impl InMemory {
     }
 }
 
+/// Snapshot RAM com export/import determinístico (v1.1.15 §4 P1, WASM/OPFS).
+/// Mesmo contrato `Storage` do `InMemory`, mas serializa o mapa em bytes
+/// (`to_bytes`/`from_bytes`: `u32le N + (klen u32le + key + vlen u32le + val)*`)
+/// para o host persistir onde quiser (OPFS/IndexedDB/localStorage) sem DEP do
+/// lib. `from_bytes` rejeita truncamento (nunca panic).
+#[derive(Default)]
+pub struct SnapshotStorage {
+    map: BTreeMap<Vec<u8>, Vec<u8>>,
+}
+
+impl SnapshotStorage {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&(self.map.len() as u32).to_le_bytes());
+        for (k, v) in self.map.iter() {
+            out.extend_from_slice(&(k.len() as u32).to_le_bytes());
+            out.extend_from_slice(k);
+            out.extend_from_slice(&(v.len() as u32).to_le_bytes());
+            out.extend_from_slice(v);
+        }
+        out
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, SgdbError> {
+        let rd = |off: usize| -> Option<u32> {
+            if off + 4 > bytes.len() {
+                return None;
+            }
+            Some(u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]))
+        };
+        let n = rd(0).ok_or(SgdbError::Corrupt)? as usize;
+        if n > 1_000_000 {
+            return Err(SgdbError::Corrupt);
+        }
+        let mut off = 4usize;
+        let mut map = BTreeMap::new();
+        for _ in 0..n {
+            let kl = rd(off).ok_or(SgdbError::Corrupt)? as usize;
+            off += 4;
+            if kl > crate::limits::MAX_KLEN || off + kl > bytes.len() {
+                return Err(SgdbError::Corrupt);
+            }
+            let k = bytes[off..off + kl].to_vec();
+            off += kl;
+            let vl = rd(off).ok_or(SgdbError::Corrupt)? as usize;
+            off += 4;
+            if vl > crate::limits::MAX_VLEN || off + vl > bytes.len() {
+                return Err(SgdbError::Corrupt);
+            }
+            let v = bytes[off..off + vl].to_vec();
+            off += vl;
+            map.insert(k, v);
+        }
+        if off != bytes.len() {
+            return Err(SgdbError::Corrupt);
+        }
+        Ok(Self { map })
+    }
+}
+
+impl Storage for SnapshotStorage {
+    fn name(&self) -> &'static str {
+        "snapshot"
+    }
+    fn put(&mut self, key: &[u8], val: &[u8]) -> Result<(), SgdbError> {
+        self.map.insert(key.to_vec(), val.to_vec());
+        Ok(())
+    }
+    fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, SgdbError> {
+        Ok(self.map.get(key).cloned())
+    }
+    fn scan_prefix(&mut self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, SgdbError> {
+        let mut out = Vec::new();
+        for (k, v) in self.map.iter() {
+            if k.starts_with(prefix) {
+                out.push((k.clone(), v.clone()));
+            }
+        }
+        Ok(out)
+    }
+    fn delete(&mut self, key: &[u8]) -> Result<(), SgdbError> {
+        self.map.remove(key);
+        Ok(())
+    }
+}
+
 impl Storage for InMemory {
     fn name(&self) -> &'static str {
         "in-memory"

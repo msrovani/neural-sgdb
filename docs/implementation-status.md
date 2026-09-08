@@ -1,6 +1,6 @@
 ﻿# neural-sgdb — Implementation Status
 
-> **Current snapshot (2026-08-21, v1.1.13).** Capability matrix vs the shipped
+> **Current snapshot (2026-09-08, v1.1.15).** Capability matrix vs the shipped
 > codebase. For the public contract see [`docs/api.md`](api.md); for architecture
 > narrative see [`docs/architecture/README.md`](architecture/README.md).
 
@@ -17,9 +17,9 @@
 
 | Check | Command | Result |
 |---|---|---|
-| Default tests | `cargo test` | **243+ lib + 1 doc-test** |
-| P2P tests | `cargo test --features p2p` | **289 lib + 1 doc-test** |
-| no_std tests | `cargo test --no-default-features` | **195 lib + 1 doc-test** |
+| Default tests | `cargo test` | **256 lib + 1 doc-test** |
+| P2P tests | `cargo test --features p2p` | **302 lib + 1 doc-test** |
+| no_std tests | `cargo test --no-default-features` | **208 lib + 1 doc-test** |
 | no_std target | `cargo check --no-default-features --target x86_64-unknown-none` | **ok** |
 | Hot test (MCP) | `cargo run --release --example mcp_client` | **95/0 exit 0** |
 | Machine protocol | `cargo run --release --example two_ai_protocol` | **16/16 exit 0** |
@@ -32,6 +32,13 @@
 |---|---|---|
 | MemoryDoc NMD1 | IMPLEMENTED | `src/memory_doc.rs`, golden tests |
 | MDM1 v6 side-table meta | IMPLEMENTED | scope, entities, content_type, version_id, … |
+| MDM1 v7 scope_dims+model_id (v1.1.14/15) | IMPLEMENTED | `ScopeDims{user,agent,app,run}`, `model_id`, `mixed_models` verdict |
+| Hybrid RRF + rerank seam (v1.1.14) | IMPLEMENTED | `recall_hybrid_rrf`, `Reranker`, `recall_reranked` |
+| Local embedder crate (v1.1.14) | IMPLEMENTED | `nsgdb-embed` 384d, `LOCAL_MODEL_ID` |
+| TTL per-key + GC (v1.1.15) | IMPLEMENTED | `sys/ttl/`, `expire_ttl`, `GcConfig/collect_garbage` |
+| Temporal event timeline (v1.1.15) | IMPLEMENTED | `sys/event/`, `set_event/close_event/recall_timeline` |
+| ANN IVF-Flat + HNSW-lite (v1.1.15) | IMPLEMENTED | `src/ann.rs`, `recall_ann_ivf`, no_std zero-dep |
+| Snapshot/WASM seam (v1.1.15) | IMPLEMENTED | `SnapshotStorage`, `src/wasm_storage.rs`, `examples/wasm_backend.rs` |
 | L0–L7 layers | IMPLEMENTED | `MemoryLayer`, layer-aware merge policy |
 | L6 associative memory | IMPLEMENTED | `sys/rel/`, `associate`/`related_to`/… |
 | MemoryState lifecycle | IMPLEMENTED | `sys/state/`, active-only recall default |
@@ -70,8 +77,8 @@
 | Production crypto transport | REMAINING | seam only (ADR-0006) |
 | Residual BQ / sharding | REMAINING | benchmark-driven, not scheduled |
 | Relation inference | REMAINING | deliberate non-goal |
-| Automatic lifecycle scheduler | PARTIAL | core explicit `tick()` only; host `host_scheduler.rs` (v1.1.11) automates expire/decay/consolidate/audit |
-| State-driven retention GC | REMAINING | compaction reclaims tombstones only |
+| Automatic lifecycle scheduler | PARTIAL | core explicit `tick()` only; host `host_scheduler.rs` (v1.1.11) automates expire/decay/consolidate/audit; v1.1.15 adds `collect_garbage` (TTL+GC) |
+| State-driven retention GC | IMPLEMENTED | v1.1.15 `GcConfig/collect_garbage` (Decayed/Archived + TTL); compaction reclaims tombstones |
 
 ## Subsystem notes
 

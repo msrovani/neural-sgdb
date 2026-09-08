@@ -65,6 +65,10 @@ pub struct EraReport {
     pub indexed_dims: Vec<usize>,
     /// Record count per dimensionality, sorted by dim.
     pub docs_per_dim: Vec<(usize, usize)>,
+    /// Modelos declarados (`model_id` MDM1 v7), ordenados.
+    pub model_ids: Vec<String>,
+    /// Contagem por modelo, ordenada por modelo.
+    pub docs_per_model: Vec<(String, usize)>,
     /// BQ width lock (words per vector).
     pub bq_words_per_vec: usize,
     /// Fraction of embedding-declared docs with preserved `/L2/` text.
@@ -72,7 +76,8 @@ pub struct EraReport {
     /// Total preserved text bytes.
     pub text_bytes: usize,
     /// `"empty"` (no embeddings yet — first write defines the era) |
-    /// `"ok"` (single era) | `"mixed_dims"` (needs migration or a new base).
+    /// `"ok"` (single era) | `"mixed_dims"` (needs migration or a new base) |
+    /// `"mixed_models"` (same dim, different model_id — silent degrade).
     pub verdict: &'static str,
     /// Migration plan (ADR-0007) when needed; empty when `ok`.
     pub plan: Vec<&'static str>,
@@ -91,6 +96,13 @@ pub fn era_report_lines(r: &EraReport) -> Vec<String> {
         .map(|(d, c)| format!("{d}dim={c}"))
         .collect();
     out.push(format!("docs_per_dim: [{}]", per.join(", ")));
+    out.push(format!("model_ids: {:?}", r.model_ids));
+    let pm: Vec<String> = r
+        .docs_per_model
+        .iter()
+        .map(|(m, c)| format!("{m}={c}"))
+        .collect();
+    out.push(format!("docs_per_model: [{}]", pm.join(", ")));
     out.push(format!("bq_words_per_vec: {}", r.bq_words_per_vec));
     out.push(format!(
         "companion_coverage: {:.3} ({}/{} preserved)",
@@ -152,6 +164,11 @@ mod tests {
         let r = EraReport {
             indexed_dims: vec![256, 384],
             docs_per_dim: vec![(256, 40_000), (384, 8_231)],
+            model_ids: vec!["demo-256".into(), "all-MiniLM-L6-v2-384".into()],
+            docs_per_model: vec![
+                ("demo-256".into(), 40_000),
+                ("all-MiniLM-L6-v2-384".into(), 8_231),
+            ],
             bq_words_per_vec: 4,
             companion_coverage: 0.97,
             text_bytes: 22_000_000,

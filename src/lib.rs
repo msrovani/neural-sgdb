@@ -71,6 +71,7 @@ pub mod art;
 pub mod arbitration;
 pub mod audit;
 pub mod bq;
+pub mod ann;
 pub mod conflict;
 pub mod ctype;
 pub mod doctrine;
@@ -84,6 +85,7 @@ pub mod metrics;
 pub mod storage;
 pub mod tickv;
 pub mod trust;
+pub mod wasm_storage;
 
 #[cfg(feature = "p2p")]
 pub mod crdt;
@@ -96,6 +98,7 @@ mod sgdb;
 mod wire_fuzz;
 
 pub use art::ArtIndex;
+pub use ann::{HnswLite, IvfFlat};
 pub use audit::{
     audit_key, audit_seq_from_key, AuditEntry, AuditSnapshotItem, AUDIT_OP_CHECKPOINT,
     AUDIT_OP_ROLLBACK,
@@ -112,16 +115,17 @@ pub use hamming_dispatch::{
     cpu_caps, cpu_has_avx2, cpu_has_avx512, path_name as hamming_kernel_name,
     select_best_hamming_kernel, CpuCaps,
 };
-pub use lexical::LexicalIndex;
+pub use lexical::{tokenize_for_rerank, LexicalIndex};
 pub use memory_doc::{
     generate_memory_id, LineageEntry, MemoryDoc, MemoryDocView, MemoryLayer, MemoryMeta,
-    MemoryRecord, MemoryState, RelationKind, VectorClock,
+    MemoryRecord, MemoryState, RelationKind, ScopeDims, ScopeFilter, VectorClock,
 };
 pub use sgdb::{
-    AuditReport, ConsolidateConfig, DecayConfig, HealthReport, Hit, HitProvenance, RecallWeights,
-    RememberOptions, RememberOutcome, ScoreBreakdown, ScopeDistribution, Sgdb, ValidateIssue,
+    AuditReport, ConsolidateConfig, DecayConfig, GcConfig, GcReport, HealthReport, Hit,
+    HitProvenance, LexicalAnchorReranker, RecallWeights, RememberOptions, RememberOutcome,
+    Reranker, ScoreBreakdown, ScopeDistribution, Sgdb, ValidateIssue,
 };
-pub use storage::{InMemory, Storage, SgdbError};
+pub use storage::{InMemory, SnapshotStorage, Storage, SgdbError};
 pub use limits::{
     DEFAULT_SCAN_PAGE_SIZE, MAX_EMBEDDING_DIM, MAX_KLEN, MAX_RAG_CONTEXT_BYTES, MAX_VLEN,
 };

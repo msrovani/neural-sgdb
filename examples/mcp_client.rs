@@ -273,7 +273,7 @@ fn main() {
     let (txt, is_err) = srv.tool("recall", json!({"query": "telepatia converge", "k": 3, "mode": "hybrid", "embedding": q_emb}));
     rep.check("recall mode=hybrid com embedding acha beta (uniao lexical)",
         !is_err && txt.contains("hot test beta"), txt.clone());
-    rep.check("hits hÃ­bridos exibem path/type (v1.1.6)",
+    rep.check("hits hibridos exibem path/type (v1.1.6)",
         !is_err && txt.contains("path=") && txt.contains("type="), txt.clone());
     // v1.1.6 item 1: format=json â€” hits ESTRUTURADOS para consumo mÃ¡quina.
     let (txt, is_err) = srv.tool("recall", json!({"query": "telepatia converge", "k": 3, "format": "json"}));

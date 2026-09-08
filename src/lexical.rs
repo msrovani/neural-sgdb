@@ -25,6 +25,11 @@ pub(crate) fn tokenize(text: &str) -> Vec<String> {
     out
 }
 
+/// Wrapper `no_std` do tokenizer para o seam `Reranker` (v1.1.14).
+pub fn tokenize_for_rerank(text: &str) -> Vec<String> {
+    tokenize(text)
+}
+
 /// `ln` para no_std (f32::ln não existe no core p/ bare-metal — ponytail,
 /// como o `sqrt_f32`): expoente IEEE + série no mantissa. Precisão ~1e-5,
 /// suficiente p/ ranking BM25 (ordenação, não valor exato).

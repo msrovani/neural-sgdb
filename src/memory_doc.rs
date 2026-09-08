@@ -274,6 +274,105 @@ impl VectorClock {
     }
 }
 
+/// Escopo multi-dimensional (v1.1.14 — mem0 4-dim): isolamento por
+/// `user/agent/app/run`. Vazio = global naquela dimensão. Mantém `scope`
+/// legado (v4) como alias de `user` na leitura para compat v1–v6.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ScopeDims {
+    pub user: String,
+    pub agent: String,
+    pub app: String,
+    pub run: String,
+}
+
+impl ScopeDims {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn is_global(&self) -> bool {
+        self.user.is_empty() && self.agent.is_empty() && self.app.is_empty() && self.run.is_empty()
+    }
+    /// Constrói `Some(dims)` se ao menos uma dimensão não vazia, senão `None`.
+    /// Usado pelo MCP (`scope_user/agent/app/run`) sem alocar quando global.
+    pub fn from_args(
+        user: Option<&str>,
+        agent: Option<&str>,
+        app: Option<&str>,
+        run: Option<&str>,
+    ) -> Option<Self> {
+        let u = user.unwrap_or("");
+        let a = agent.unwrap_or("");
+        let ap = app.unwrap_or("");
+        let r = run.unwrap_or("");
+        if u.is_empty() && a.is_empty() && ap.is_empty() && r.is_empty() {
+            None
+        } else {
+            Some(Self {
+                user: String::from(u),
+                agent: String::from(a),
+                app: String::from(ap),
+                run: String::from(r),
+            })
+        }
+    }
+    /// Filtro multi-dim: `None` = wildcard na dimensão, `Some("")` = exige
+    /// global na dimensão, `Some(s)` = exige valor exato.
+    pub fn matches(&self, filter: &ScopeFilter) -> bool {
+        if let Some(ref u) = filter.user {
+            if &self.user != u {
+                return false;
+            }
+        }
+        if let Some(ref a) = filter.agent {
+            if &self.agent != a {
+                return false;
+            }
+        }
+        if let Some(ref ap) = filter.app {
+            if &self.app != ap {
+                return false;
+            }
+        }
+        if let Some(ref r) = filter.run {
+            if &self.run != r {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// Seletor de escopo para recalls `_dims` (v1.1.14). Filtro vazio
+/// (tudo `None`) = só globais (null-scoping mem0 preservado).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ScopeFilter {
+    pub user: Option<String>,
+    pub agent: Option<String>,
+    pub app: Option<String>,
+    pub run: Option<String>,
+}
+
+impl ScopeFilter {
+    pub fn global() -> Self {
+        Self::default()
+    }
+    pub fn single(scope: &str) -> Self {
+        if scope.is_empty() {
+            Self::default()
+        } else {
+            Self {
+                user: Some(String::from(scope)),
+                agent: None,
+                app: None,
+                run: None,
+            }
+        }
+    }
+    pub fn is_global_only(&self) -> bool {
+        self.user.is_none() && self.agent.is_none() && self.app.is_none() && self.run.is_none()
+    }
+}
+
 /// Proveniência/identidade de memória (v0.6 — Phase 1: memory identity +
 /// provenance). SOMENTE em memória: **não é serializado no NMD1** (contrato
 /// byte-idêntico com o OS) — persiste em side-table `sys/meta/` e viaja com
@@ -341,6 +440,14 @@ pub struct MemoryMeta {
     /// Side-table MDM1 v6 — NMD1 intacto; v1–v5 decodificam com `None`
     /// (migração explícita, nunca reinterpreta bytes antigos).
     pub content_type: Option<String>,
+    /// Escopo multi-dimensional (v1.1.14 MDM1 v7): `user/agent/app/run`.
+    /// Vazio = global. Legado `scope` (v4) mantido; na leitura v1–v6 com
+    /// `scope!=""` e dims vazias, `user` herda o legado.
+    pub scope_dims: ScopeDims,
+    /// Modelo de embedding que gerou o vetor (v1.1.14 MDM1 v7, ADR-0007):
+    /// ex. `"all-MiniLM-L6-v2-384"`, `"demo-256"`. Vazio = desconhecido
+    /// (registros pré-v7). Mesma dim + `model_id` diferente → era distinta.
+    pub model_id: String,
 }
 
 /// Um elo da linhagem causal (Phase 3, v0.7): a versão corrente e seus
@@ -359,9 +466,9 @@ pub struct LineageEntry {
 const META_MAGIC: &[u8; 4] = b"MDM1";
 /// v1 (v0.6): memória + proveniência · v2 (v0.7): version_id · v3 (v0.9):
 /// last_reinforced · v4 (v1.1.4): scope · v5 (v1.1.4): entities · v6
-/// (v1.1.6): content_type declarado. `decode` aceita as seis — migração
-/// explícita, nunca reinterpreta bytes antigos.
-const META_VERSION: u8 = 6;
+/// (v1.1.6): content_type declarado · v7 (v1.1.14): scope_dims + model_id.
+/// `decode` aceita as sete — migração explícita, nunca reinterpreta bytes antigos.
+const META_VERSION: u8 = 7;
 
 impl MemoryMeta {
     pub fn encode(&self) -> Vec<u8> {
@@ -405,6 +512,17 @@ impl MemoryMeta {
             }
             None => out.extend_from_slice(&0u16.to_le_bytes()),
         }
+        // v7: escopo multi-dim (4× u16+bytes) + model_id (u16+bytes)
+        out.extend_from_slice(&(self.scope_dims.user.len() as u16).to_le_bytes());
+        out.extend_from_slice(self.scope_dims.user.as_bytes());
+        out.extend_from_slice(&(self.scope_dims.agent.len() as u16).to_le_bytes());
+        out.extend_from_slice(self.scope_dims.agent.as_bytes());
+        out.extend_from_slice(&(self.scope_dims.app.len() as u16).to_le_bytes());
+        out.extend_from_slice(self.scope_dims.app.as_bytes());
+        out.extend_from_slice(&(self.scope_dims.run.len() as u16).to_le_bytes());
+        out.extend_from_slice(self.scope_dims.run.as_bytes());
+        out.extend_from_slice(&(self.model_id.len() as u16).to_le_bytes());
+        out.extend_from_slice(self.model_id.as_bytes());
         out
     }
 
@@ -413,7 +531,7 @@ impl MemoryMeta {
             return Err("bad meta magic");
         }
         let ver = data[4];
-        if !(1..=6).contains(&ver) {
+        if !(1..=7).contains(&ver) {
             return Err("bad meta version");
         }
         let mut off = 5;
@@ -510,6 +628,8 @@ impl MemoryMeta {
             Vec::new()
         };
         // v6: tipo de conteúdo declarado (v1–v5 = não declarado)
+        // Disciplina "todo campo avança off": o ramo None (len 0) também
+        // avançou +2 acima (ctlen lido), nunca reinterpreta bytes antigos.
         let content_type = if ver >= 6 {
             let clen = rd_u16(data, off).ok_or("trunc ctlen")? as usize;
             off += 2;
@@ -520,10 +640,59 @@ impl MemoryMeta {
                     return Err("trunc content_type");
                 }
                 let s = core::str::from_utf8(&data[off..off + clen]).map_err(|_| "utf8 ct")?;
+                off += clen;
                 Some(String::from(s))
             }
         } else {
             None
+        };
+        // v7: scope_dims (4× u16+bytes) + model_id (u16+bytes).
+        // v1–v6 = dims vazias + model vazio; legado `scope!=""` mapeia user.
+        let (scope_dims, model_id) = if ver >= 7 {
+            let mut dims = [String::new(), String::new(), String::new(), String::new()];
+            for d in dims.iter_mut() {
+                let llen = rd_u16(data, off).ok_or("trunc scopedimlen")? as usize;
+                off += 2;
+                if off + llen > data.len() {
+                    return Err("trunc scopedim");
+                }
+                *d = String::from(
+                    core::str::from_utf8(&data[off..off + llen]).map_err(|_| "utf8 scopedim")?,
+                );
+                off += llen;
+            }
+            let mlen = rd_u16(data, off).ok_or("trunc modelidlen")? as usize;
+            off += 2;
+            if off + mlen > data.len() {
+                return Err("trunc modelid");
+            }
+            let mid = String::from(
+                core::str::from_utf8(&data[off..off + mlen]).map_err(|_| "utf8 modelid")?,
+            );
+            off += mlen;
+            let _ = off;
+            (
+                ScopeDims {
+                    user: dims[0].clone(),
+                    agent: dims[1].clone(),
+                    app: dims[2].clone(),
+                    run: dims[3].clone(),
+                },
+                mid,
+            )
+        } else {
+            (ScopeDims::new(), String::new())
+        };
+        // Compat: v1–v6 com scope legado alimenta user quando dims vazias.
+        let scope_dims = if scope_dims.is_global() && !scope.is_empty() {
+            ScopeDims {
+                user: scope.clone(),
+                agent: String::new(),
+                app: String::new(),
+                run: String::new(),
+            }
+        } else {
+            scope_dims
         };
         Ok(MemoryMeta {
             memory_id,
@@ -538,6 +707,8 @@ impl MemoryMeta {
             scope,
             entities,
             content_type,
+            scope_dims,
+            model_id,
         })
     }
 }
@@ -1324,6 +1495,13 @@ mod tests {
                 String::from("neural-sgdb"),
             ],
             content_type: Some(String::from("json")),
+            scope_dims: ScopeDims {
+                user: String::from("ana"),
+                agent: String::from("planner"),
+                app: String::from("loja"),
+                run: String::from("s1"),
+            },
+            model_id: String::from("all-MiniLM-L6-v2-384"),
         }
     }
 
@@ -1362,8 +1540,10 @@ mod tests {
         let scope = sample_meta().scope;
         let ents: usize = sample_meta().entities.iter().map(|e| 2 + e.len()).sum();
         let ct: usize = 2 + sample_meta().content_type.as_ref().unwrap().len();
-        // v1: remove v6 (ct) + v5 (entities) + v4 (scope) + v3 (lr) + v2 (vid)
-        let cut = enc_full.len() - ct - ents - 2 - scope.len() - 8 - 2 - sample_meta().version_id.len();
+        // v7: 4 dims + model_id no fim
+        let v7tail: usize = [sample_meta().scope_dims.user.len(), sample_meta().scope_dims.agent.len(), sample_meta().scope_dims.app.len(), sample_meta().scope_dims.run.len(), sample_meta().model_id.len()].iter().sum::<usize>() + 5 * 2;
+        // v1: remove v7 + v6 (ct) + v5 (entities) + v4 (scope) + v3 (lr) + v2 (vid)
+        let cut = enc_full.len() - v7tail - ct - ents - 2 - scope.len() - 8 - 2 - sample_meta().version_id.len();
         let mut enc = enc_full.clone();
         enc.truncate(cut);
         enc[4] = 1;
@@ -1376,7 +1556,7 @@ mod tests {
         assert!(dec.content_type.is_none(), "v1 = tipo não declarado");
         // v2 (sem lr/scope/entities/ct) também decodifica
         let mut enc2 = enc_full.clone();
-        let cut2 = enc2.len() - ct - ents - 2 - scope.len() - 8;
+        let cut2 = enc2.len() - v7tail - ct - ents - 2 - scope.len() - 8;
         enc2.truncate(cut2);
         enc2[4] = 2;
         let dec2 = MemoryMeta::decode(&enc2).unwrap();
@@ -1387,7 +1567,7 @@ mod tests {
         assert_eq!(dec2.version_id, sample_meta().version_id);
         // v3 (sem scope/entities/ct) decodifica com scope=""
         let mut enc3 = enc_full.clone();
-        let cut3 = enc3.len() - ct - ents - 2 - scope.len();
+        let cut3 = enc3.len() - v7tail - ct - ents - 2 - scope.len();
         enc3.truncate(cut3);
         enc3[4] = 3;
         let dec3 = MemoryMeta::decode(&enc3).unwrap();
@@ -1397,7 +1577,7 @@ mod tests {
         assert!(dec3.content_type.is_none());
         // v4 (sem entities/ct) decodifica com lista vazia
         let mut enc4 = enc_full.clone();
-        let cut4 = enc4.len() - ct - ents;
+        let cut4 = enc4.len() - v7tail - ct - ents;
         enc4.truncate(cut4);
         enc4[4] = 4;
         let dec4 = MemoryMeta::decode(&enc4).unwrap();
@@ -1406,15 +1586,23 @@ mod tests {
         assert!(dec4.content_type.is_none());
         // v5 (sem ct) decodifica com tipo não declarado — migração v6 explícita
         let mut enc5 = enc_full.clone();
-        let cut5 = enc5.len() - ct;
+        let cut5 = enc5.len() - v7tail - ct;
         enc5.truncate(cut5);
         enc5[4] = 5;
         let dec5 = MemoryMeta::decode(&enc5).unwrap();
         assert_eq!(dec5.entities, sample_meta().entities, "v5 preserva entidades");
         assert!(dec5.content_type.is_none(), "v5 = tipo não declarado");
+        // v6 (sem dims/model) decodifica com dims do legado + model vazio
+        let mut enc6 = enc_full.clone();
+        let cut6 = enc6.len() - v7tail;
+        enc6.truncate(cut6);
+        enc6[4] = 6;
+        let dec6 = MemoryMeta::decode(&enc6).unwrap();
+        assert_eq!(dec6.scope_dims.user, sample_meta().scope, "v6 legado mapeia user");
+        assert!(dec6.model_id.is_empty(), "v6 = model desconhecido");
         // versão desconhecida → Err
         let mut bad = enc_full.clone();
-        bad[4] = 7;
+        bad[4] = 8;
         assert!(MemoryMeta::decode(&bad).is_err());
         // truncado no vid → Err, nunca panic
         let full = enc_full;
@@ -1650,6 +1838,8 @@ mod prop_tests {
                 scope: String::new(),
                 entities: Vec::new(),
                 content_type: None,
+                scope_dims: ScopeDims::new(),
+                model_id: String::new(),
             };
             let dec = MemoryMeta::decode(&m.encode()).unwrap();
             assert_eq!(dec, m);

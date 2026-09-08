@@ -272,7 +272,7 @@ fn error_response(id: &Value, code: i64, message: &str) -> Value {
 
 /// NÃºmero de tools em `tools/list` (aliases antigos ainda funcionam em tools/call).
 const EXPECTED_MCP_TOOL_COUNT: usize = 4;
-const MCP_CONTRACT_VERSION: &str = "1.1.13";
+const MCP_CONTRACT_VERSION: &str = "1.1.15";
 const BUILD_GIT: &str = env!("NEURAL_SGDB_BUILD_GIT");
 
 /// Lista pÃºblica: 4 tools. Os 23 nomes antigos continuam vÃ¡lidos em `tools/call`.
@@ -302,20 +302,25 @@ fn expand_tool(name: &str, args: &Value) -> String {
 fn mcp_listed_tools() -> Value {
     json!([
         {"name":"remember",
-         "description":"Write. Sem embedding= grava L3 lexical (ADR-0008, nao abre era BQ). embedding= ou NEURAL_SGDB_EMBEDDER=demo â†’ L4. user+response= episodico L2. scope nao vaza no recall global. Devolve storage key + recall_hint.",
+         "description":"Write. Sem embedding= grava L3 lexical (ADR-0008, nao abre era BQ). embedding= ou NEURAL_SGDB_EMBEDDER=demo → L4. user+response= episodico L2. scope/scope_user/agent/app/run nao vaza no recall global. Devolve storage key + recall_hint.",
          "inputSchema":{"type":"object","properties":{
            "text":{"type":"string"},
            "user":{"type":"string","description":"Com `response`: episodio L2 verbatim"},
            "response":{"type":"string"},
            "now":{"type":"integer"},
            "embedding":{"type":"array","items":{"type":"number"}},
-           "scope":{"type":"string"},
+           "scope":{"type":"string","description":"Legado (alias user)"},
+           "scope_user":{"type":"string"},
+           "scope_agent":{"type":"string"},
+           "scope_app":{"type":"string"},
+           "scope_run":{"type":"string"},
+           "model_id":{"type":"string","description":"Era do vetor (MDM1 v7)"},
            "entities":{"type":"array","items":{"type":"string"}},
            "type":{"type":"string","enum":["text","json","code","embedding","binary"]}
          }},
          "annotations":{"destructiveHint":true,"idempotentHint":true}},
         {"name":"recall",
-         "description":"Read. Default mode=lexical (ADR-0008) se nao houver embedding=. semantic/hybrid exigem vetor. entities[]= 1-hop; at= temporal; rag=true. Sem scope= so globais. format=json hits tipados. Session: resource nsgdb://session.",
+         "description":"Read. Default mode=lexical (ADR-0008) se nao houver embedding=. semantic/hybrid exigem vetor (hybrid usa RRF). entities[]= 1-hop; at= temporal; rag=true. Sem scope= so globais. format=json hits tipados. Session: resource nsgdb://session.",
          "inputSchema":{"type":"object","properties":{
            "query":{"type":"string"},
            "mode":{"type":"string","enum":["semantic","lexical","hybrid"],"default":"lexical"},
@@ -323,6 +328,10 @@ fn mcp_listed_tools() -> Value {
            "embedding":{"type":"array","items":{"type":"number"}},
            "k":{"type":"integer","minimum":1,"maximum":20,"default":5},
            "scope":{"type":"string"},
+           "scope_user":{"type":"string"},
+           "scope_agent":{"type":"string"},
+           "scope_app":{"type":"string"},
+           "scope_run":{"type":"string"},
            "cursor":{"type":"string"},
            "pageSize":{"type":"integer","minimum":1,"maximum":20,"default":5},
            "entities":{"type":"array","items":{"type":"string"},"description":"Se nao-vazio: recall_entities (query opcional)"},
@@ -335,15 +344,15 @@ fn mcp_listed_tools() -> Value {
          }},
          "annotations":{"readOnlyHint":true}},
         {"name":"health",
-         "description":"Observabilidade. view=status (default): onboarding+doutrina+dims. view=validate: integridade. view=era: era_report ADR-0007. view=tensions: conflitos, superseded, scopes invisÃ­veis. Chame cedo. Resource nsgdb://session.",
+         "description":"Observabilidade. view=status (default): onboarding+doutrina+dims. view=validate: integridade. view=era: era_report ADR-0007. view=tensions: conflitos, superseded, scopes invisiveis. Chame cedo. Resource nsgdb://session.",
          "inputSchema":{"type":"object","properties":{
            "view":{"type":"string","enum":["status","validate","era","tensions"],"default":"status"}
          }},
          "annotations":{"readOnlyHint":true}},
         {"name":"curate",
-         "description":"Mutacao pontual / grafo L6 + metadado cognitivo. op= explain|reinforce|feedback|forget|expire_old|decay|consolidate|diary|profile|associate|related_to|contradicts|supersede|conflicts|resolve_conflict|merge_memories|audit_checkpoint|audit_verify|rollback_to. Use a storage key completa md/L4/.... Nao hoarde: so depois de evidÃªncia.",
+         "description":"Mutacao pontual / grafo L6 + metadado cognitivo. op= explain|reinforce|feedback|forget|expire_old|decay|consolidate|diary|profile|associate|related_to|contradicts|supersede|conflicts|resolve_conflict|merge_memories|audit_checkpoint|audit_verify|rollback_to|set_ttl|expire_ttl|set_event|close_event|timeline|gc|recall_ann. Use a storage key completa md/L4/.... Nao hoarde: so depois de evidencia.",
          "inputSchema":{"type":"object","properties":{
-           "op":{"type":"string","enum":["explain","reinforce","feedback","forget","expire_old","decay","consolidate","diary","profile","associate","related_to","contradicts","supersede","conflicts","resolve_conflict","merge_memories","audit_checkpoint","audit_verify","rollback_to"]},
+           "op":{"type":"string","enum":["explain","reinforce","feedback","forget","expire_old","decay","consolidate","diary","profile","associate","related_to","contradicts","supersede","conflicts","resolve_conflict","merge_memories","audit_checkpoint","audit_verify","rollback_to","set_ttl","expire_ttl","set_event","close_event","timeline","gc","recall_ann"]},
            "key":{"type":"string"},
            "delta":{"type":"number"},
            "positive":{"type":"boolean"},
@@ -546,8 +555,8 @@ fn recall_for_mcp(
     let r = match (mode, scope.is_empty()) {
         ("lexical", true) => db.recall_lexical(query, need),
         ("lexical", false) => db.recall_lexical_scoped(query, need, scope),
-        ("hybrid", true) => db.recall_hybrid(emb, query, need),
-        ("hybrid", false) => db.recall_hybrid_scoped(emb, query, need, scope),
+        ("hybrid", true) => db.recall_hybrid_rrf(emb, query, need),
+        ("hybrid", false) => db.recall_hybrid_rrf_scoped(emb, query, need, scope),
         (_, true) => db.recall(emb, need),
         _ => db.recall_scoped(emb, need, scope),
     };
@@ -742,6 +751,13 @@ fn main() {
                             scope: Some(scope_resolved.as_str()),
                             entities: &entities,
                             content_type: args["type"].as_str(),
+                            scope_dims: neural_sgdb::ScopeDims::from_args(
+                                args["scope_user"].as_str(),
+                                args["scope_agent"].as_str(),
+                                args["scope_app"].as_str(),
+                                args["scope_run"].as_str(),
+                            ),
+                            model_id: args["model_id"].as_str(),
                         };
                         let semantic = has_caller_embedding(args) || embedder.is_some();
                         let written = if semantic {
@@ -1336,7 +1352,104 @@ fn main() {
                         };
                         match db.rollback_to(seq) {
                             Ok(n) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("rollback para seq={seq}: {n} metadados restaurados (payloads intocados â€” ADD-only)")}],"isError":false}})),
+                                "content":[{"type":"text","text":format!("rollback para seq={seq}: {n} metadados restaurados (payloads intocados — ADD-only)")}],"isError":false}})),
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
+                        }
+                    }
+                    "set_ttl" => {
+                        let key = args["key"].as_str().unwrap_or("");
+                        let now = args["now"].as_u64().unwrap_or(0);
+                        // expires_at absoluto ou relativo? contrato: now + ttl relativo via "amount"? usa "now" como expires_at direto
+                        let exp = args["seq"].as_u64().or(args["now"].as_u64()).unwrap_or(0);
+                        let _ = now;
+                        match db.set_ttl(key, exp) {
+                            Ok(()) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":format!("ttl {key} -> {exp}")}],"isError":false}})),
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
+                        }
+                    }
+                    "expire_ttl" => {
+                        let now = args["now"].as_u64().unwrap_or_else(|| {
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis() as u64)
+                                .unwrap_or(0)
+                        });
+                        match db.expire_ttl(now) {
+                            Ok(n) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":format!("{n} TTLs expirados em now={now}")}],"isError":false}})),
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
+                        }
+                    }
+                    "set_event" => {
+                        let key = args["key"].as_str().unwrap_or("");
+                        let state = args["target"].as_str().unwrap_or(args["new"].as_str().unwrap_or(""));
+                        let end = args["now"].as_u64().unwrap_or(0);
+                        match db.set_event(key, state, end) {
+                            Ok(()) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":format!("evento {key} -> {state} end={end}")}],"isError":false}})),
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
+                        }
+                    }
+                    "close_event" => {
+                        let key = args["key"].as_str().unwrap_or("");
+                        let now = args["now"].as_u64().unwrap_or(0);
+                        match db.close_event(key, now) {
+                            Ok(()) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":format!("evento {key} fechado em {now}")}],"isError":false}})),
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
+                        }
+                    }
+                    "timeline" => {
+                        let state = args["target"].as_str().unwrap_or(args["key"].as_str().unwrap_or(""));
+                        let limit = args["limit"].as_u64().unwrap_or(20) as usize;
+                        match db.recall_timeline(state, limit) {
+                            Ok(tl) => {
+                                let text = tl.iter().map(|(k, w)| format!("- {k} valid={w:?}")).collect::<Vec<_>>().join("\n");
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                    "content":[{"type":"text","text":if text.is_empty() { "(vazio)".into() } else { text }}],"isError":false}}))
+                            }
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
+                        }
+                    }
+                    "gc" => {
+                        let now = args["now"].as_u64().unwrap_or_else(|| {
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis() as u64)
+                                .unwrap_or(0)
+                        });
+                        let cfg = neural_sgdb::GcConfig {
+                            collect_decayed: args["decay_confidence"].as_bool().unwrap_or(false),
+                            collect_archived: true,
+                            min_age_ticks: args["seq"].as_u64().unwrap_or(0),
+                            max_per_pass: args["limit"].as_u64().unwrap_or(64) as usize,
+                        };
+                        match db.collect_garbage(now, &cfg) {
+                            Ok(r) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":format!("gc: invalidated={} ttl={} state={}", r.invalidated, r.ttl_collected, r.state_collected)}],"isError":false}})),
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
+                        }
+                    }
+                    "recall_ann" => {
+                        let k = args["limit"].as_u64().unwrap_or(5) as usize;
+                        let emb = match args["embedding"].as_array() {
+                            Some(a) => a.iter().filter_map(|v| v.as_f64().map(|x| x as f32)).collect::<Vec<_>>(),
+                            None => Vec::new(),
+                        };
+                        match db.recall_ann_ivf(&emb, k, 0, 1) {
+                            Ok(hits) => {
+                                let text = hits.iter().map(|h| format!("- {} | {} (d={:.3})", h.key, h.text, h.dist)).collect::<Vec<_>>().join("\n");
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                    "content":[{"type":"text","text":if text.is_empty() { "(vazio)".into() } else { text }}],"isError":false}}))
+                            }
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
                         }

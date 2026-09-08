@@ -6,6 +6,29 @@ All notable changes to this project. Format based on
 
 ## [Unreleased]
 
+## [1.1.15] — 2026-09-08 (leva 2: TTL/GC + timeline + ANN + WASM)
+
+MDM1 v7 (v1.1.14) + governança/temporal/escala:
+
+- **MDM1 v7**: `ScopeDims{user,agent,app,run}` + `model_id` (ADR-0007 fecha
+  misma-dim-mesmo-modelo: veredito `mixed_models`); legado `scope` mapeia
+  `user`; decode v1-7.
+- **Retrieval**: `recall_hybrid_rrf(_scoped)` (RRF k=60), `Reranker` seam +
+  `LexicalAnchorReranker` + `recall_reranked`, `recall_scoped_dims/
+  lexical_dims/entities_dims`, `recall_ann_ivf` (IVF-Flat) + `ann::HnswLite`.
+- **Temporal/GC**: `sys/ttl/` (`set_ttl/ttl_of/expire_ttl`), `sys/event/`
+  (`set_event/event_of/close_event/recall_timeline`), `GcConfig/GcReport/
+  collect_garbage`; `validate` cobre `sys/ttl|event`; `delete` limpa.
+- **WASM**: `SnapshotStorage::to_bytes/from_bytes` + `src/wasm_storage.rs`
+  + `examples/wasm_backend.rs`; `nsgdb-embed` 384 local (`LOCAL_MODEL_ID`).
+- **MCP**: `remember/recall(scope_user/agent/app/run, model_id)`,
+  `hybrid=RRF`, `curate=set_ttl|expire_ttl|set_event|close_event|timeline|
+  gc|recall_ann`; contract `1.1.15`.
+- Gates: 256 lib / 302 p2p / 208 no_std +1 doc-test, no_std target ok,
+  clippy lib `-D warnings`, doc `-D warnings`, `wasm_backend` OK.
+
+## [1.1.14] — 2026-09-08 (MDM1 v7 base, RRF, rerank, embedder)
+
 ## [1.1.13] — 2026-08-21 (chrome web store obrigatório)
 
 Docs: `VERSIONING.md` passo 6 torna obrigatório republicar `extension/` na Chrome Web Store a cada nova versão `v*`; `extension/README.md` com sync `manifest.json` `version` = `Cargo.toml`.

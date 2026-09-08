@@ -15,6 +15,7 @@ use crate::engine::AiosDatabaseEngine;
 use crate::era::{estimate_era_migration, era_report_lines, EraReport};
 use crate::memory_doc::{
     LineageEntry, MemoryDoc, MemoryLayer, MemoryMeta, MemoryRecord, MemoryState, RelationKind,
+    ScopeDims, ScopeFilter,
 };
 use crate::storage::{Storage, SgdbError};
 
@@ -67,6 +68,10 @@ pub struct HitProvenance {
     pub scope: String,
     /// Entidades nomeadas declaradas (v1.1.4 item 10).
     pub entities: Vec<String>,
+    /// Escopo multi-dimensional (v1.1.14): user/agent/app/run.
+    pub scope_dims: ScopeDims,
+    /// Modelo de embedding da era (v1.1.14, ADR-0007).
+    pub model_id: String,
 }
 
 /// Estado observável de uma instância `Sgdb` (P2-3, substitui o `ready()`
@@ -95,6 +100,8 @@ pub struct HealthReport {
     pub scope_labels: Vec<(String, usize)>,
     /// Dimensões de embedding indexadas no corpus vivo (era ADR-0007).
     pub indexed_embedding_dims: Vec<usize>,
+    /// Modelos declarados (`model_id` MDM1 v7) no corpus vivo.
+    pub indexed_model_ids: Vec<String>,
 }
 
 /// Distribuição de memórias por escopo (multi-agente / mem0 null-scoping).
@@ -112,6 +119,10 @@ pub struct RememberOptions<'a> {
     pub scope: Option<&'a str>,
     pub entities: &'a [&'a str],
     pub content_type: Option<&'a str>,
+    /// Escopo multi-dim (v1.1.14): se presente, vence `scope` legado.
+    pub scope_dims: Option<ScopeDims>,
+    /// Modelo de embedding da era (v1.1.14): ex. "all-MiniLM-L6-v2-384".
+    pub model_id: Option<&'a str>,
 }
 
 /// Resultado estruturado de uma escrita semântica — útil p/ agentes e MCP.
@@ -122,8 +133,41 @@ pub struct RememberOutcome {
     pub scope: String,
     pub entities: Vec<String>,
     pub content_type: Option<String>,
+    /// Escopo multi-dim efetivo (v1.1.14).
+    pub scope_dims: ScopeDims,
+    /// Modelo da era (v1.1.14).
+    pub model_id: String,
     /// Hint de retrieval quando escopo ≠ global.
     pub recall_hint: String,
+}
+
+/// Seam de rerank (v1.1.14 §4 P0): o core ordena por RRF/BM25/cosseno;
+/// o host injeta precisão (cross-encoder, âncora lexical, instruções).
+/// `score` maior = mais relevante. Nunca panic; empates = ordem estável.
+pub trait Reranker {
+    fn score(&self, query_text: &str, hit: &Hit) -> f32;
+}
+
+/// Rerank por ancoragem lexical (default no_std, v1.1.6 item 4): fração de
+/// tokens da query presentes no texto do hit (substring lowercased).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LexicalAnchorReranker;
+
+impl Reranker for LexicalAnchorReranker {
+    fn score(&self, query_text: &str, hit: &Hit) -> f32 {
+        let toks = crate::lexical::tokenize_for_rerank(query_text);
+        if toks.is_empty() || hit.text.is_empty() {
+            return 0.0;
+        }
+        let low = hit.text.to_ascii_lowercase();
+        let mut m = 0usize;
+        for t in &toks {
+            if low.contains(t.as_str()) {
+                m += 1;
+            }
+        }
+        m as f32 / toks.len() as f32
+    }
 }
 
 /// Config de DECAY de importância (v1.1.10 item 1, Ebbinghaus): a importância
@@ -155,6 +199,41 @@ impl Default for DecayConfig {
             decay_confidence: true,
         }
     }
+}
+
+/// Config do coletor periódico (v1.1.15 §4 P1, GDPR).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GcConfig {
+    /// Coleta `Decayed` com idade ≥ `min_age_ticks` (delete físico).
+    pub collect_decayed: bool,
+    /// Coleta `Archived` com idade ≥ `min_age_ticks`.
+    pub collect_archived: bool,
+    /// Idade mínima (now − created_tick) para GC por estado.
+    pub min_age_ticks: u64,
+    /// Teto de deletes por passada (churn bounded).
+    pub max_per_pass: usize,
+}
+
+impl Default for GcConfig {
+    fn default() -> Self {
+        Self {
+            collect_decayed: false,
+            collect_archived: false,
+            min_age_ticks: 30 * 24 * 3600 * 1000,
+            max_per_pass: 64,
+        }
+    }
+}
+
+/// Relatório do `collect_garbage` (determinístico, auditável).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GcReport {
+    /// Janelas fechadas marcadas `Invalidated` (`expire_old`).
+    pub invalidated: usize,
+    /// TTLs expirados deletados (`expire_ttl`).
+    pub ttl_collected: usize,
+    /// `Decayed/Archived` antigos deletados.
+    pub state_collected: usize,
 }
 
 /// Config de CONSOLIDAÇÃO por recorrência (v1.1.10 item 2, SCM/sono-like):
@@ -417,6 +496,201 @@ impl Sgdb {
             global_count: global,
             scoped: scoped.into_iter().collect(),
         })
+    }
+
+    /// Distribuição por dims (v1.1.14): `(user/agent/app/run, count)`.
+    /// Derivado de `sys/meta/` (fonte da verdade), determinístico.
+    pub fn scope_distribution_dims(&mut self) -> Result<Vec<(String, usize)>, SgdbError> {
+        use alloc::collections::BTreeMap;
+        let metas = self.engine.scan_prefix_storage(b"sys/meta/")?;
+        let mut map: BTreeMap<String, usize> = BTreeMap::new();
+        for (mk, bytes) in metas {
+            let sk = match mk.strip_prefix(b"sys/meta/") {
+                Some(s) => String::from_utf8_lossy(s).into_owned(),
+                None => continue,
+            };
+            if !(sk.starts_with("md/L3/") || sk.starts_with("md/L4/") || sk.starts_with("md/L5/")) {
+                continue;
+            }
+            let Ok(m) = MemoryMeta::decode(&bytes) else {
+                continue;
+            };
+            if m.scope_dims.is_global() && m.scope.is_empty() {
+                continue;
+            }
+            let label = alloc::format!(
+                "{}/{}/{}/{}",
+                m.scope_dims.user, m.scope_dims.agent, m.scope_dims.app, m.scope_dims.run
+            );
+            *map.entry(label).or_insert(0) += 1;
+        }
+        Ok(map.into_iter().collect())
+    }
+
+    /// Modelos declarados no corpus vivo (v1.1.14, MDM1 v7).
+    pub fn indexed_model_ids(&mut self) -> Vec<String> {
+        use alloc::collections::BTreeSet;
+        let mut set: BTreeSet<String> = BTreeSet::new();
+        let Ok(metas) = self.engine.scan_prefix_storage(b"sys/meta/") else {
+            return Vec::new();
+        };
+        for (_, bytes) in metas {
+            if let Ok(m) = MemoryMeta::decode(&bytes) {
+                if !m.model_id.is_empty() {
+                    set.insert(m.model_id);
+                }
+            }
+        }
+        set.into_iter().collect()
+    }
+
+    /// Recall com rerank injetável (v1.1.14 §4): pool ampliado (oversample)
+    /// + `Reranker::score` + desempate por `dist`.
+    ///
+    /// O default `LexicalAnchorReranker` reproduz `rag_context_reranked`.
+    pub fn recall_reranked<R: Reranker>(
+        &mut self,
+        query_emb: &[f32],
+        query_text: &str,
+        k: usize,
+        reranker: &R,
+    ) -> Result<Vec<Hit>, SgdbError> {
+        let mut pool = self.recall_hybrid_rrf(query_emb, query_text, k.max(1) * 4)?;
+        pool.sort_by(|a, b| {
+            reranker
+                .score(query_text, b)
+                .total_cmp(&reranker.score(query_text, a))
+                .then_with(|| a.dist.total_cmp(&b.dist))
+        });
+        pool.truncate(k.max(1));
+        Ok(pool)
+    }
+
+    /// Coleta vetores vivos L4/L5 (`storage key`, payload f32) para ANN.
+    /// Usado por `recall_ann_ivf` (índice derivado, rebuild sob demanda).
+    pub fn collect_vectors(&mut self) -> Result<Vec<(String, Vec<f32>)>, SgdbError> {
+        let mut out = Vec::new();
+        for layer in [MemoryLayer::L4Semantic, MemoryLayer::L5Procedural] {
+            let prefix = alloc::format!("md/{}/", layer.as_str());
+            for (sk, _) in self.engine.art.scan_prefix(&prefix) {
+                let Some(doc) = self.engine.get_by_storage_key(&sk)? else {
+                    continue;
+                };
+                if doc.payload.len() < 4 || doc.payload.len() % 4 != 0 {
+                    continue;
+                }
+                let n = doc.payload.len() / 4;
+                let mut v = Vec::with_capacity(n);
+                for i in 0..n {
+                    let o = i * 4;
+                    v.push(f32::from_le_bytes([
+                        doc.payload[o],
+                        doc.payload[o + 1],
+                        doc.payload[o + 2],
+                        doc.payload[o + 3],
+                    ]));
+                }
+                out.push((sk, v));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Recall ANN IVF-Flat (v1.1.15 §4 P1): poda sub-linear por centróides +
+    /// rescore L2 exato nas `nprobe` listas. `nlist=0` = `sqrt(N)+1`;
+    /// `nprobe=0` = 1. `Hit`s active-only na ordem ANN.
+    pub fn recall_ann_ivf(
+        &mut self,
+        query: &[f32],
+        k: usize,
+        nlist: usize,
+        nprobe: usize,
+    ) -> Result<Vec<Hit>, SgdbError> {
+        use crate::ann::IvfFlat;
+        let vecs = self.collect_vectors()?;
+        if vecs.is_empty() || query.is_empty() {
+            return Ok(Vec::new());
+        }
+        if !vecs.iter().all(|(_, v)| v.len() == query.len()) {
+            return Err(SgdbError::Invalid(
+                "query dimensionality does not match any indexed embedding \
+                 (use the SAME model on write and query — see indexed_embedding_dims; \
+                 run era_report() for the migration plan + cost estimate)",
+            ));
+        }
+        let nl = if nlist == 0 {
+            // isqrt inteiro (core-safe, sem f64::sqrt que não existe no bare-metal)
+            vecs.len().isqrt() + 1
+        } else {
+            nlist
+        };
+        let indexed: Vec<(u64, Vec<f32>)> = vecs
+            .iter()
+            .enumerate()
+            .map(|(i, (_, v))| (i as u64, v.clone()))
+            .collect();
+        let mut ivf = IvfFlat::new();
+        ivf.train(&indexed, nl);
+        let hits = ivf.search(query, k.max(1) * 2, if nprobe == 0 { 1 } else { nprobe });
+        let mut out = Vec::new();
+        for (pos, d2) in hits {
+            let sk = match vecs.get(pos as usize) {
+                Some((s, _)) => s.clone(),
+                None => continue,
+            };
+            if self.engine.get_state(&sk) != MemoryState::Active {
+                continue;
+            }
+            let doc = self.engine.get_by_storage_key(&sk)?.unwrap();
+            let ck = if sk.starts_with("md/L4/") {
+                sk.replacen("/L4/", "/L2/", 1)
+            } else {
+                sk.replacen("/L5/", "/L2/", 1)
+            };
+            let text = self
+                .engine
+                .get_texts_batch(&alloc::vec![ck])
+                .values()
+                .next()
+                .cloned()
+                .unwrap_or_default();
+            let prov = doc.meta.as_ref().map(|m| HitProvenance {
+                memory_id: m.memory_id.clone(),
+                version_id: m.version_id.clone(),
+                layer: doc.layer,
+                state: MemoryState::Active,
+                source: m.source,
+                confidence: m.confidence,
+                importance: m.importance,
+                created_tick: m.created_tick,
+                parent_ids: m.parent_ids.clone(),
+                last_reinforced: m.last_reinforced,
+                scope: m.scope.clone(),
+                entities: m.entities.clone(),
+                scope_dims: m.scope_dims.clone(),
+                model_id: m.model_id.clone(),
+            });
+            let dist = sqrt_f32(d2.max(0.0) / (query.len() as f32 * 4.0)).min(1.0);
+            let validity = self.engine.validity_window(&sk);
+            out.push(Hit {
+                key: sk,
+                text,
+                dist,
+                provenance: prov,
+                path: RecallPath::Semantic,
+                content_type: ContentType::Text,
+                payload_type: ContentType::Embedding(query.len() as u32),
+                score: d2,
+                matched_terms: Vec::new(),
+                validity,
+                rel: None,
+                score_breakdown: None,
+            });
+            if out.len() >= k.max(1) {
+                break;
+            }
+        }
+        Ok(out)
     }
 
     /// Hint acionável quando recall retorna vazio mas o corpus tem docs.
@@ -697,6 +971,51 @@ impl Sgdb {
         Ok(self.engine.meta(&sk)?.map(|m| m.scope).unwrap_or_default())
     }
 
+    /// Escopo multi-dimensional (v1.1.14, MDM1 v7): `user/agent/app/run`.
+    /// Vazio em todas = global. Valida cada dimensão como path (`..`, NUL,
+    /// control, `#`, `MAX_KLEN` rejeitados). Sincroniza o legado `scope`
+    /// com `user` para leitura por clientes antigos.
+    pub fn set_scope_dims(&mut self, key: &str, dims: &ScopeDims) -> Result<(), SgdbError> {
+        for d in [&dims.user, &dims.agent, &dims.app, &dims.run] {
+            if !d.is_empty() {
+                validate_written(d)?;
+            }
+        }
+        let sk = self.resolve_known_key(key);
+        let mut m = self.engine.ensure_meta(&sk)?;
+        m.scope_dims = dims.clone();
+        m.scope = dims.user.clone();
+        self.engine.write_meta(&sk, &m)
+    }
+
+    /// Lê as dimensões de escopo (global = tudo vazio).
+    pub fn scope_dims_of(&mut self, key: &str) -> Result<ScopeDims, SgdbError> {
+        let sk = self.resolve_known_key(key);
+        Ok(self
+            .engine
+            .meta(&sk)?
+            .map(|m| m.scope_dims)
+            .unwrap_or_default())
+    }
+
+    /// Modelo da era (v1.1.14, ADR-0007): quem gerou o vetor declara
+    /// (`"all-MiniLM-L6-v2-384"`, `"demo-256"`). Vazio = desconhecido.
+    pub fn set_model_id(&mut self, key: &str, model_id: &str) -> Result<(), SgdbError> {
+        if !model_id.is_empty() {
+            validate_written(model_id)?;
+        }
+        let sk = self.resolve_known_key(key);
+        let mut m = self.engine.ensure_meta(&sk)?;
+        m.model_id = model_id.to_string();
+        self.engine.write_meta(&sk, &m)
+    }
+
+    /// Lê o `model_id` declarado (vazio = pré-v7).
+    pub fn model_id_of(&mut self, key: &str) -> Result<String, SgdbError> {
+        let sk = self.resolve_known_key(key);
+        Ok(self.engine.meta(&sk)?.map(|m| m.model_id).unwrap_or_default())
+    }
+
     /// Entidades nomeadas da memória (v1.1.4 item 10, 1-hop): lista de strings
     /// declaradas pela camada superior (`remember`/`set_entities`) — o core
     /// NUNCA extrai entidade de texto (mesmo contrato do `Embedder`: quem
@@ -889,6 +1208,8 @@ impl Sgdb {
                             last_reinforced: m.last_reinforced,
                             scope: m.scope.clone(),
                             entities: m.entities.clone(),
+                            scope_dims: m.scope_dims.clone(),
+                            model_id: m.model_id.clone(),
                         }),
                         ct,
                         declared,
@@ -1334,6 +1655,14 @@ impl Sgdb {
         if !scope.is_empty() {
             self.set_scope(&sk, &scope)?;
         }
+        // v1.1.14: escopo multi-dim vence o legado quando presente.
+        let mut scope_dims = opts.scope_dims.clone().unwrap_or_default();
+        if scope_dims.is_global() && !scope.is_empty() {
+            scope_dims.user = scope.clone();
+        }
+        if !scope_dims.is_global() {
+            self.set_scope_dims(&sk, &scope_dims)?;
+        }
         let mut entities = Vec::new();
         if !opts.entities.is_empty() {
             self.set_entities(&sk, opts.entities)?;
@@ -1344,6 +1673,10 @@ impl Sgdb {
             if !ct.is_empty() {
                 self.set_content_type(&sk, ct)?;
             }
+        }
+        let model_id = opts.model_id.map(str::to_string).unwrap_or_default();
+        if !model_id.is_empty() {
+            self.set_model_id(&sk, &model_id)?;
         }
         let recall_hint = if lexical {
             if scope.is_empty() {
@@ -1366,6 +1699,8 @@ impl Sgdb {
             scope,
             entities,
             content_type,
+            scope_dims,
+            model_id,
             recall_hint,
         })
     }
@@ -1394,6 +1729,8 @@ impl Sgdb {
                 scope: Some(crate::doctrine::DOCTRINE_SCOPE),
                 entities: crate::doctrine::DOCTRINE_ENTITIES,
                 content_type: Some("text"),
+                scope_dims: None,
+                model_id: None,
             },
         )?;
         Ok(true)
@@ -1503,6 +1840,7 @@ impl Sgdb {
         // docs por dim: só docs L4/L5 embedding-declarados (bitvec ou payload ≥4B,
         // mesma regra do `index_doc` / guard S1) — texto re-interpretado é ruído.
         let mut docs_per_dim: BTreeMap<usize, usize> = BTreeMap::new();
+        let mut docs_per_model: BTreeMap<String, usize> = BTreeMap::new();
         let mut total_embed = 0usize;
         let mut companion_keys: BTreeSet<String> = BTreeSet::new();
         for layer in [MemoryLayer::L4Semantic, MemoryLayer::L5Procedural] {
@@ -1515,12 +1853,25 @@ impl Sgdb {
                     let dim = doc.payload.len() / 4;
                     *docs_per_dim.entry(dim).or_insert(0) += 1;
                     total_embed += 1;
+                    let mid = doc
+                        .meta
+                        .as_ref()
+                        .map(|m| m.model_id.clone())
+                        .unwrap_or_default();
+                    let mid = if mid.is_empty() {
+                        String::from("unknown")
+                    } else {
+                        mid
+                    };
+                    *docs_per_model.entry(mid).or_insert(0) += 1;
                     let raw = sk.trim_start_matches(&prefix);
                     companion_keys.insert(alloc::format!("md/L2/{raw}"));
                 }
             }
         }
         let docs_per_dim: Vec<(usize, usize)> = docs_per_dim.into_iter().collect();
+        let docs_per_model: Vec<(String, usize)> = docs_per_model.into_iter().collect();
+        let model_ids: Vec<String> = docs_per_model.iter().map(|(m, _)| m.clone()).collect();
 
         // passada dos companions: text_bytes (para a estimativa do lado do modelo)
         // + cobertura (viabilidade da migração por re-embed)
@@ -1540,7 +1891,20 @@ impl Sgdb {
 
         let (verdict, plan): (&'static str, Vec<&'static str>) = match indexed_dims.len() {
             0 => ("empty", Vec::new()),
-            1 => ("ok", Vec::new()),
+            1 => {
+                if model_ids.len() > 1 {
+                    (
+                        "mixed_models",
+                        vec![
+                            "same dim, different model_id — silent cosine degrade",
+                            "re-embed with ONE model_id or open a new base per era",
+                            "rebuild_indices() to reset the BQ width",
+                        ],
+                    )
+                } else {
+                    ("ok", Vec::new())
+                }
+            }
             _ => (
                 "mixed_dims",
                 vec![
@@ -1556,6 +1920,8 @@ impl Sgdb {
         Ok(EraReport {
             indexed_dims,
             docs_per_dim,
+            model_ids,
+            docs_per_model,
             bq_words_per_vec: bq_words,
             companion_coverage,
             text_bytes,
@@ -1743,6 +2109,8 @@ impl Sgdb {
                         last_reinforced: m.last_reinforced,
                         scope: m.scope.clone(),
                         entities: m.entities.clone(),
+                        scope_dims: m.scope_dims.clone(),
+                        model_id: m.model_id.clone(),
                     });
                     // v1.1.6 — tipo do datum: o payload L4/L5 é o embedding
                     // (floats NÃO viram prosa); o companion fornece o texto
@@ -2297,6 +2665,180 @@ impl Sgdb {
         Ok(expired)
     }
 
+    /// TTL per-key (v1.1.15 §4 P1): `expires_at` em units de `now`.
+    /// `0` limpa (retenção infinita). TTL expirado = GC físico (delete),
+    /// distinto de `expire_old` (invalidar-não-deletar).
+    pub fn set_ttl(&mut self, key: &str, expires_at: u64) -> Result<(), SgdbError> {
+        let sk = self.resolve_known_key(key);
+        // TTL só em doc vivo (não cria side-table órfã — AUDIT 1.3).
+        if self.engine.get_by_storage_key(&sk)?.is_none() {
+            return Err(SgdbError::Invalid(
+                "no memory at key (use the full canonical storage key, e.g. md/L4/<key> — remember returns it)",
+            ));
+        }
+        self.engine.set_ttl(&sk, expires_at)
+    }
+
+    /// Lê o TTL (`None` = sem TTL).
+    pub fn ttl_of(&mut self, key: &str) -> Result<Option<u64>, SgdbError> {
+        let sk = self.resolve_known_key(key);
+        Ok(self.engine.ttl_of(&sk))
+    }
+
+    /// Expira TTLs (`expires_at <= now` → delete físico). Idempotente;
+    /// devolve quantas foram coletadas. Chaves companion `/L2/` sem primário
+    /// são varridas junto (higiene de órfãos).
+    pub fn expire_ttl(&mut self, now: u64) -> Result<usize, SgdbError> {
+        let rows = self.engine.scan_prefix_storage(b"sys/ttl/")?;
+        let mut collected = 0usize;
+        for (tk, bytes) in rows {
+            if bytes.len() != 8 {
+                continue;
+            }
+            let exp = u64::from_le_bytes([
+                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+            ]);
+            if exp == 0 || exp > now {
+                continue;
+            }
+            let sk = String::from_utf8_lossy(&tk[8..]).into_owned();
+            if self.delete(&sk)? {
+                collected += 1;
+            } else {
+                // side-table órfã sem doc — limpa direto
+                let _ = self.engine_mut().delete_side_key(b"sys/ttl/", &sk);
+            }
+        }
+        Ok(collected)
+    }
+
+    /// Evento temporal (v1.1.15 §4 P2): liga a memória ao fato evolutivo
+    /// `state_key` (`event_end=0` = aberto). Ex.: `cargo/sp0669` com
+    /// `from/until` por instância. `state_key` vazio limpa.
+    pub fn set_event(
+        &mut self,
+        key: &str,
+        state_key: &str,
+        event_end: u64,
+    ) -> Result<(), SgdbError> {
+        let sk = self.resolve_known_key(key);
+        if self.engine.get_by_storage_key(&sk)?.is_none() {
+            return Err(SgdbError::Invalid(
+                "no memory at key (use the full canonical storage key, e.g. md/L4/<key> — remember returns it)",
+            ));
+        }
+        if !state_key.is_empty() {
+            crate::sgdb::validate_written(state_key)?;
+        }
+        self.engine.set_event(&sk, state_key, event_end)
+    }
+
+    /// Lê `(state_key, event_end)` (`None` = sem evento).
+    pub fn event_of(&mut self, key: &str) -> Result<Option<(String, u64)>, SgdbError> {
+        let sk = self.resolve_known_key(key);
+        Ok(self.engine.event_of(&sk))
+    }
+
+    /// Fecha o evento (`event_end = now`), preservando `state_key`.
+    /// Sem evento prévio → `Invalid`.
+    pub fn close_event(&mut self, key: &str, now: u64) -> Result<(), SgdbError> {
+        let sk = self.resolve_known_key(key);
+        let Some((skey, _)) = self.engine.event_of(&sk) else {
+            return Err(SgdbError::Invalid("no event on key (set_event first)"));
+        };
+        self.engine.set_event(&sk, &skey, now)
+    }
+
+    /// Timeline do fato evolutivo (v1.1.15): todas as memórias com
+    /// `state_key` igual, ordenadas por `validity.from` (sem janela = 0),
+    /// desempate por key asc. Determinística, active+inactive.
+    #[allow(clippy::type_complexity)]
+    pub fn recall_timeline(
+        &mut self,
+        state_key: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, Option<(u64, u64)>)>, SgdbError> {
+        let rows = self.engine.scan_prefix_storage(b"sys/event/")?;
+        let mut out: Vec<(String, u64, Option<(u64, u64)>)> = Vec::new();
+        for (ek, bytes) in rows {
+            if bytes.len() < 10 {
+                continue;
+            }
+            let slen = u16::from_le_bytes([bytes[0], bytes[1]]) as usize;
+            if bytes.len() != 2 + slen + 8 {
+                continue;
+            }
+            let s = match core::str::from_utf8(&bytes[2..2 + slen]) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            if s != state_key {
+                continue;
+            }
+            let sk = String::from_utf8_lossy(&ek[10..]).into_owned();
+            if self.engine.get_by_storage_key(&sk)?.is_none() {
+                continue;
+            }
+            let w = self.engine.validity_window(&sk);
+            out.push((sk, w.map(|(f, _)| f).unwrap_or(0), w));
+        }
+        out.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        out.truncate(limit.max(1));
+        Ok(out.into_iter().map(|(sk, _, w)| (sk, w)).collect())
+    }
+
+    /// Coletor periódico (v1.1.15 §4 P1, GDPR/mnemos): `expire_old` +
+    /// `expire_ttl` + varredura de `Decayed/Archived` antigos (delete físico
+    /// com linhagem preservada em `sys/version/`). Determinístico, idempotente.
+    pub fn collect_garbage(&mut self, now: u64, cfg: &GcConfig) -> Result<GcReport, SgdbError> {
+        let invalidated = self.expire_old(now)?;
+        let ttl_collected = self.expire_ttl(now)?;
+        let mut state_collected = 0usize;
+        if cfg.collect_decayed || cfg.collect_archived {
+            let metas = self.engine.scan_prefix_storage(b"sys/meta/")?;
+            let mut victims: Vec<String> = Vec::new();
+            for (mk, _) in metas {
+                let sk = match mk.strip_prefix(b"sys/meta/") {
+                    Some(s) => String::from_utf8_lossy(s).into_owned(),
+                    None => continue,
+                };
+                if !(sk.starts_with("md/")) {
+                    continue;
+                }
+                let st = self.engine.get_state(&sk);
+                let take = match st {
+                    MemoryState::Decayed => cfg.collect_decayed,
+                    MemoryState::Archived => cfg.collect_archived,
+                    _ => false,
+                };
+                if !take {
+                    continue;
+                }
+                // idade pela meta (created_tick) — sem relógio wall, usa `now`.
+                let age_ok = match self.engine.meta(&sk)? {
+                    Some(m) => now.saturating_sub(m.created_tick) >= cfg.min_age_ticks,
+                    None => false,
+                };
+                if age_ok {
+                    victims.push(sk);
+                }
+                if victims.len() >= cfg.max_per_pass {
+                    break;
+                }
+            }
+            for sk in victims {
+                if self.delete(&sk)? {
+                    state_collected += 1;
+                }
+            }
+        }
+        Ok(GcReport {
+            invalidated,
+            ttl_collected,
+            state_collected,
+        })
+    }
+
     /// Recall **lexical contextual** (#7, BM25-style sobre o índice invertido
     /// dos textos L2/L3): recupera casamentos de termos que o BQ perde.
     /// `dist` = 1 − score normalizado (0 = melhor hit lexical). Default =
@@ -2376,6 +2918,8 @@ impl Sgdb {
                     last_reinforced: m.last_reinforced,
                     scope: m.scope.clone(),
                     entities: m.entities.clone(),
+                    scope_dims: m.scope_dims.clone(),
+                    model_id: m.model_id.clone(),
                 });
                 let own_ct = detect_content_type(&doc.payload, None);
                 // v1.1.6 — datum TIPADO: projeção prosa só para Text/Json/Code;
@@ -2488,6 +3032,273 @@ impl Sgdb {
             }
         }
         out.truncate(k.max(1));
+        Ok(out)
+    }
+
+    /// Fusão RRF (v1.1.14, §4 P0): `score = Σ 1/(k_rrf + rank)` sobre as
+    /// listas semantic + lexical (rank 1-indexed, `k_rrf=60` default Qdrant).
+    /// Rank, não score bruto — BM25 e cosseno não são comparáveis.
+    pub fn rrf_fuse(semantic: Vec<Hit>, lexical: Vec<Hit>, k: usize, k_rrf: f32) -> Vec<Hit> {
+        use alloc::collections::BTreeMap;
+        let mut acc: BTreeMap<String, (f32, Hit)> = BTreeMap::new();
+        for (rank, h) in semantic.into_iter().enumerate() {
+            let s = 1.0 / (k_rrf + (rank as f32 + 1.0));
+            acc.insert(h.key.clone(), (s, h));
+        }
+        for (rank, h) in lexical.into_iter().enumerate() {
+            let s = 1.0 / (k_rrf + (rank as f32 + 1.0));
+            acc.entry(h.key.clone())
+                .and_modify(|e| e.0 += s)
+                .or_insert((s, h));
+        }
+        let mut v: Vec<(f32, Hit)> = acc.into_values().collect();
+        v.sort_by(|a, b| b.0.total_cmp(&a.0));
+        v.truncate(k.max(1));
+        v.into_iter()
+            .map(|(s, mut h)| {
+                h.score = s;
+                h
+            })
+            .collect()
+    }
+
+    /// Recall híbrido com RRF (v1.1.14): semântico ∪ lexical fundidos por
+    /// rank. `k_rrf=60.0` é o default robusto (Cormack/Elasticsearch).
+    pub fn recall_hybrid_rrf(
+        &mut self,
+        query_emb: &[f32],
+        query_text: &str,
+        k: usize,
+    ) -> Result<Vec<Hit>, SgdbError> {
+        let sem = self.recall_oversampled(query_emb, k.max(1) * 4, 4).unwrap_or_default();
+        let lex = self
+            .recall_lexical(query_text, k.max(1) * 4)
+            .unwrap_or_default();
+        Ok(Self::rrf_fuse(sem, lex, k, 60.0))
+    }
+
+    /// Recall híbrido RRF escopado (v1.1.14): mesma fusão, pools restritos.
+    pub fn recall_hybrid_rrf_scoped(
+        &mut self,
+        query_emb: &[f32],
+        query_text: &str,
+        k: usize,
+        scope: &str,
+    ) -> Result<Vec<Hit>, SgdbError> {
+        let sem = self
+            .recall_scoped(query_emb, k.max(1) * 4, scope)
+            .unwrap_or_default();
+        let lex = self
+            .recall_lexical_scoped(query_text, k.max(1) * 4, scope)
+            .unwrap_or_default();
+        Ok(Self::rrf_fuse(sem, lex, k, 60.0))
+    }
+
+    /// Recall multi-dim (v1.1.14): filtro `ScopeFilter` dentro do pool.
+    /// `filter=None` nas dims = wildcard; filtro totalmente vazio = só globais.
+    pub fn recall_scoped_dims(
+        &mut self,
+        query: &[f32],
+        k: usize,
+        filter: &ScopeFilter,
+    ) -> Result<Vec<Hit>, SgdbError> {
+        self.recall_impl_dims(query, k, 4, true, filter)
+    }
+
+    /// Recall lexical multi-dim (v1.1.14).
+    pub fn recall_lexical_dims(
+        &mut self,
+        query_text: &str,
+        k: usize,
+        filter: &ScopeFilter,
+    ) -> Result<Vec<Hit>, SgdbError> {
+        let pool = self.recall_lexical(query_text, k.max(1) * 4)?;
+        let mut out = Vec::new();
+        for h in pool {
+            let dims = self.engine.effective_scope_dims(&h.key);
+            if filter.is_global_only() {
+                if !dims.is_global() {
+                    continue;
+                }
+            } else if !dims.matches(filter) {
+                continue;
+            }
+            out.push(h);
+            if out.len() >= k.max(1) {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    /// Recall por entidades multi-dim (v1.1.14): 1-hop + filtro de dims.
+    pub fn recall_entities_dims(
+        &mut self,
+        entities: &[&str],
+        k: usize,
+        filter: &ScopeFilter,
+    ) -> Result<Vec<Hit>, SgdbError> {
+        let pool = self.recall_entities(entities, k.max(1) * 4)?;
+        let mut out = Vec::new();
+        for h in pool {
+            let dims = self.engine.effective_scope_dims(&h.key);
+            if filter.is_global_only() {
+                if !dims.is_global() {
+                    continue;
+                }
+            } else if !dims.matches(filter) {
+                continue;
+            }
+            out.push(h);
+            if out.len() >= k.max(1) {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    /// Núcleo semântico com filtro multi-dim (v1.1.14): mesmo pipeline do
+    /// `recall_impl`, mas o filtro de escopo usa `ScopeDims::matches`.
+    fn recall_impl_dims(
+        &mut self,
+        query: &[f32],
+        k: usize,
+        oversample: usize,
+        active_only: bool,
+        filter: &ScopeFilter,
+    ) -> Result<Vec<Hit>, SgdbError> {
+        if query.is_empty() {
+            return Ok(Vec::new());
+        }
+        for &x in query {
+            if !x.is_finite() {
+                return Err(SgdbError::Invalid("query contains NaN/Inf"));
+            }
+        }
+        if query.len() > crate::bq::MAX_EMBEDDING_DIM {
+            return Err(SgdbError::Invalid("query exceeds MAX_EMBEDDING_DIM"));
+        }
+        if !self.engine.indexed_dims.is_empty() && !self.engine.indexed_dims.contains(&query.len())
+        {
+            return Err(SgdbError::Invalid(
+                "query dimensionality does not match any indexed embedding \
+                 (use the SAME model on write and query — see indexed_embedding_dims; \
+                 run era_report() for the migration plan + cost estimate)",
+            ));
+        }
+        self.metrics.recalls += 1;
+        let k = k.max(1);
+        let cand = k.saturating_mul(oversample.max(1));
+        let wide = self.engine.bq_top_k_f32(query, cand);
+        let ham_max = (self.engine.bq.words_per_vec.max(1) * 64) as f32;
+        let mut pending: Vec<(u32, String, f32, MemoryState)> = Vec::new();
+        let mut companion_keys: Vec<String> = Vec::new();
+        for (id, ham) in wide {
+            let Some(sk) = self.engine.storage_key_of(id).map(String::from) else {
+                continue;
+            };
+            let dims = self.engine.effective_scope_dims(&sk);
+            if filter.is_global_only() {
+                if !dims.is_global() {
+                    continue;
+                }
+            } else if !dims.matches(filter) {
+                continue;
+            }
+            let Ok(Some(doc)) = self.engine.get_by_storage_key(&sk) else {
+                continue;
+            };
+            let (score, dist) = match Self::fp32_dist_u32(query, &doc.payload) {
+                Some(d) => (d, d as f32 / 10_000.0),
+                None => (ham, (ham as f32 / ham_max).min(1.0)),
+            };
+            let state = self.engine.get_state(&sk);
+            if active_only && state != MemoryState::Active {
+                continue;
+            }
+            pending.push((score, sk.clone(), dist, state));
+            // companion L2 para projeção prosa (mesma regra do recall_impl)
+            let ck = if sk.starts_with("md/L4/") {
+                sk.replacen("/L4/", "/L2/", 1)
+            } else if sk.starts_with("md/L5/") {
+                sk.replacen("/L5/", "/L2/", 1)
+            } else {
+                sk.clone()
+            };
+            companion_keys.push(ck);
+        }
+        pending.sort_by_key(|a| a.0);
+        pending.truncate(k);
+        // batch de textos (map companion -> texto)
+        let keep: Vec<String> = pending.iter().map(|(_, sk, _, _)| {
+            if sk.starts_with("md/L4/") {
+                sk.replacen("/L4/", "/L2/", 1)
+            } else if sk.starts_with("md/L5/") {
+                sk.replacen("/L5/", "/L2/", 1)
+            } else {
+                sk.clone()
+            }
+        }).collect();
+        let texts = self.engine.get_texts_batch(&keep);
+        let mut out = Vec::new();
+        for (score, sk, dist, state) in pending {
+            let doc = self.engine.get_by_storage_key(&sk)?.unwrap();
+            let prov = doc.meta.as_ref().map(|m| HitProvenance {
+                memory_id: m.memory_id.clone(),
+                version_id: m.version_id.clone(),
+                layer: doc.layer,
+                state,
+                source: m.source,
+                confidence: m.confidence,
+                importance: m.importance,
+                created_tick: m.created_tick,
+                parent_ids: m.parent_ids.clone(),
+                last_reinforced: m.last_reinforced,
+                scope: m.scope.clone(),
+                entities: m.entities.clone(),
+                scope_dims: m.scope_dims.clone(),
+                model_id: m.model_id.clone(),
+            });
+            let ct_fallback = detect_content_type(
+                &doc.payload,
+                embedding_dim_of(&doc.payload, doc.bitvec.is_some()),
+            );
+            let declared = doc
+                .meta
+                .as_ref()
+                .and_then(|m| m.content_type.as_deref())
+                .and_then(parse_stable_label);
+            let ck = if sk.starts_with("md/L4/") {
+                sk.replacen("/L4/", "/L2/", 1)
+            } else if sk.starts_with("md/L5/") {
+                sk.replacen("/L5/", "/L2/", 1)
+            } else {
+                sk.clone()
+            };
+            let raw_text = texts.get(&ck).cloned().unwrap_or_default();
+            let content_type = resolve_content_type(declared, &raw_text, ct_fallback);
+            let text = if renders_prose(content_type) {
+                raw_text
+            } else {
+                String::new()
+            };
+            let validity = self.engine.validity_window(&sk);
+            out.push(Hit {
+                key: sk,
+                text,
+                dist,
+                provenance: prov,
+                path: RecallPath::Semantic,
+                content_type,
+                payload_type: ct_fallback,
+                score: score as f32,
+                matched_terms: Vec::new(),
+                validity,
+                rel: None,
+                score_breakdown: None,
+            });
+        }
+        let _ = companion_keys.len();
         Ok(out)
     }
 
@@ -3140,6 +3951,8 @@ impl Sgdb {
         scope_labels.truncate(8);
         let mut indexed_embedding_dims: Vec<usize> = self.engine.indexed_dims.iter().copied().collect();
         indexed_embedding_dims.sort_unstable();
+        let mut indexed_model_ids = self.indexed_model_ids();
+        indexed_model_ids.sort();
         HealthReport {
             backend: self.engine.backend_name(),
             node_id: self.engine.node_id,
@@ -3152,6 +3965,7 @@ impl Sgdb {
             scoped_memory_count,
             scope_labels,
             indexed_embedding_dims,
+            indexed_model_ids,
         }
     }
 
@@ -3217,7 +4031,13 @@ impl Sgdb {
         // 3. side-tables não órfãs: cada sys/state|validity|meta aponta para
         // um doc `md/` que existe (o inverso é permitido: doc sem meta =
         // pré-v0.6, meta lazy).
-        for prefix in ["sys/state/", "sys/validity/", "sys/meta/"] {
+        for prefix in [
+            "sys/state/",
+            "sys/validity/",
+            "sys/meta/",
+            "sys/ttl/",
+            "sys/event/",
+        ] {
             if let Ok(rows) = self.engine.scan_prefix_storage(prefix.as_bytes()) {
                 for (sk, _) in rows {
                     let target = String::from_utf8_lossy(&sk[prefix.len()..]).into_owned();
@@ -5517,6 +6337,8 @@ mod tests {
                     scope: Some("agent/a"),
                     entities: &["ent/x"],
                     content_type: Some("text"),
+                    scope_dims: None,
+                    model_id: None,
                 },
             )
             .unwrap();
@@ -5542,6 +6364,8 @@ mod tests {
                     scope: Some("agent/a"),
                     entities: &["ent/lex"],
                     content_type: Some("text"),
+                    scope_dims: None,
+                    model_id: None,
                 },
             )
             .unwrap();
@@ -5643,6 +6467,235 @@ mod tests {
         assert_eq!(h.global_memory_count, 1);
         assert_eq!(h.scoped_memory_count, 1);
         assert_eq!(h.indexed_embedding_dims, vec![4]);
+    }
+
+    #[test]
+    fn scope_dims_isolate_and_match_wildcard() {
+        use crate::memory_doc::{ScopeDims, ScopeFilter};
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic_with(
+            "a",
+            "fato ana loja",
+            &[1.0, -1.0, 1.0, -1.0],
+            RememberOptions {
+                scope_dims: Some(ScopeDims {
+                    user: "ana".into(),
+                    agent: String::new(),
+                    app: "loja".into(),
+                    run: String::new(),
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        db.remember_semantic_with(
+            "b",
+            "fato bob loja",
+            &[1.0, -1.0, 1.0, -1.0],
+            RememberOptions {
+                scope_dims: Some(ScopeDims {
+                    user: "bob".into(),
+                    agent: String::new(),
+                    app: "loja".into(),
+                    run: String::new(),
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // global não vaza escopado
+        let global = db.recall(&[1.0, -1.0, 1.0, -1.0], 5).unwrap();
+        assert!(global.is_empty());
+        // filtro user=ana acha só A
+        let ana = db
+            .recall_scoped_dims(
+                &[1.0, -1.0, 1.0, -1.0],
+                5,
+                &ScopeFilter {
+                    user: Some("ana".into()),
+                    agent: None,
+                    app: None,
+                    run: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(ana.len(), 1);
+        assert_eq!(ana[0].key, "md/L4/a");
+        assert_eq!(ana[0].provenance.as_ref().unwrap().scope_dims.user, "ana");
+        // wildcard app=loja acha A+B
+        let loja = db
+            .recall_scoped_dims(
+                &[1.0, -1.0, 1.0, -1.0],
+                5,
+                &ScopeFilter {
+                    user: None,
+                    agent: None,
+                    app: Some("loja".into()),
+                    run: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(loja.len(), 2);
+    }
+
+    #[test]
+    fn hybrid_rrf_fuses_ranks_not_scores() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("k1", "ERR_2043 rotate credentials", &[1.0, 0.0, 0.0, 0.0])
+            .unwrap();
+        db.remember_text_with(
+            "k2",
+            "ERR_2043 rotate credentials report",
+            RememberOptions::default(),
+        )
+        .unwrap();
+        let fused = db
+            .recall_hybrid_rrf(&[1.0, 0.0, 0.0, 0.0], "ERR_2043", 5)
+            .unwrap();
+        assert!(!fused.is_empty());
+        assert!(fused.iter().any(|h| h.key.contains("k1") || h.key.contains("k2")));
+        assert!(fused[0].score > 0.0);
+    }
+
+    #[test]
+    fn era_mixed_models_verdict_is_loud() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic_with(
+            "a",
+            "texto a",
+            &[1.0, 0.0, 0.0, 0.0],
+            RememberOptions {
+                model_id: Some("model-a"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // mesmo dim, modelo distinto: permitido escrever, era acusa
+        db.remember_semantic_with(
+            "b",
+            "texto b",
+            &[0.0, 1.0, 0.0, 0.0],
+            RememberOptions {
+                model_id: Some("model-b"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let r = db.era_report().unwrap();
+        assert_eq!(r.verdict, "mixed_models");
+        assert_eq!(r.model_ids.len(), 2);
+    }
+
+    #[test]
+    fn reranked_prefers_lexical_anchor() {
+        use crate::sgdb::LexicalAnchorReranker;
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("k1", "gato dorme no sofa", &[1.0, 0.0, 0.0, 0.0])
+            .unwrap();
+        db.remember_semantic("k2", "quântica entrelaçada fóton", &[1.0, 0.0, 0.0, 0.0])
+            .unwrap();
+        let out = db
+            .recall_reranked(
+                &[1.0, 0.0, 0.0, 0.0],
+                "gato sofa",
+                2,
+                &LexicalAnchorReranker,
+            )
+            .unwrap();
+        assert_eq!(out.len(), 2);
+        assert!(out[0].text.contains("gato") || out[0].key.contains("k1"));
+    }
+
+    #[test]
+    fn ttl_expires_to_physical_delete_idempotent() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("tmp", "sessao volatil", &[1.0, 0.0, 0.0, 0.0])
+            .unwrap();
+        db.set_ttl("md/L4/tmp", 100).unwrap();
+        assert_eq!(db.ttl_of("md/L4/tmp").unwrap(), Some(100));
+        assert_eq!(db.expire_ttl(99).unwrap(), 0);
+        assert_eq!(db.expire_ttl(100).unwrap(), 1);
+        assert!(db.get(MemoryLayer::L4Semantic, "tmp").unwrap().is_none());
+        assert_eq!(db.expire_ttl(200).unwrap(), 0, "idempotente");
+        // TTL em fantasma recusa (sem side-table orfa)
+        assert!(db.set_ttl("md/L4/fantasma", 10).is_err());
+    }
+
+    #[test]
+    fn event_timeline_orders_by_validity_from() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("p1", "cargo sp antiga", &[1.0, 0.0, 0.0, 0.0])
+            .unwrap();
+        db.remember_semantic("p2", "cargo sp nova", &[1.0, 0.0, 0.0, 0.0])
+            .unwrap();
+        db.set_validity("md/L4/p1", 1000, 2000).unwrap();
+        db.set_validity("md/L4/p2", 3000, 4000).unwrap();
+        db.set_event("md/L4/p1", "cargo/sp0669", 2000).unwrap();
+        db.set_event("md/L4/p2", "cargo/sp0669", 0).unwrap();
+        let tl = db.recall_timeline("cargo/sp0669", 10).unwrap();
+        assert_eq!(tl.len(), 2);
+        assert_eq!(tl[0].0, "md/L4/p1");
+        assert_eq!(tl[1].0, "md/L4/p2");
+        db.close_event("md/L4/p2", 4000).unwrap();
+        assert_eq!(db.event_of("md/L4/p2").unwrap().unwrap().1, 4000);
+    }
+
+    #[test]
+    fn collect_garbage_combines_expire_and_state_gc() {
+        use crate::sgdb::{GcConfig, MemoryState};
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("a", "fato a", &[1.0, 0.0, 0.0, 0.0])
+            .unwrap();
+        db.remember_semantic("b", "fato b", &[0.0, 1.0, 0.0, 0.0])
+            .unwrap();
+        db.set_validity("md/L4/a", 0, 10).unwrap();
+        db.set_ttl("md/L4/b", 5).unwrap();
+        let rep = db
+            .collect_garbage(
+                10,
+                &GcConfig {
+                    collect_decayed: false,
+                    collect_archived: false,
+                    min_age_ticks: 0,
+                    max_per_pass: 64,
+                },
+            )
+            .unwrap();
+        assert_eq!(rep.invalidated, 1);
+        assert_eq!(rep.ttl_collected, 1);
+        // GC por estado: arquiva e coleta com idade 0
+        db.remember_semantic("c", "fato c", &[0.0, 0.0, 1.0, 0.0])
+            .unwrap();
+        db.forget("md/L4/c").unwrap();
+        assert_eq!(db.get_state("md/L4/c").unwrap(), MemoryState::Archived);
+        let rep2 = db
+            .collect_garbage(
+                999,
+                &GcConfig {
+                    collect_decayed: false,
+                    collect_archived: true,
+                    min_age_ticks: 0,
+                    max_per_pass: 64,
+                },
+            )
+            .unwrap();
+        assert_eq!(rep2.state_collected, 1);
+    }
+
+    #[test]
+    fn ann_ivf_finds_live_member_and_rejects_dim_mismatch() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        for i in 0..12 {
+            let v = [i as f32 * 0.1, 0.0, 0.0, 0.0];
+            db.remember_semantic(&alloc::format!("k{i:02}"), "cluster a", &v)
+                .unwrap();
+        }
+        let q = [0.5, 0.0, 0.0, 0.0];
+        let hits = db.recall_ann_ivf(&q, 3, 3, 2).unwrap();
+        assert!(!hits.is_empty());
+        assert!(hits.len() <= 3);
+        assert!(db.recall_ann_ivf(&[1.0, 0.0], 3, 0, 0).is_err());
+        assert!(db.recall_ann_ivf(&[], 3, 0, 0).unwrap().is_empty());
     }
 
     #[test]

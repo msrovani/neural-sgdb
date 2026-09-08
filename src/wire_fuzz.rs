@@ -126,6 +126,8 @@ fn sample_meta(state: &mut u64) -> MemoryMeta {
             2 => Some("json".into()),
             _ => Some("embedding".into()),
         },
+        scope_dims: crate::memory_doc::ScopeDims::new(),
+        model_id: String::new(),
     }
 }
 
