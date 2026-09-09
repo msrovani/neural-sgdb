@@ -36,8 +36,9 @@ filesystem, no external runtime.
 
 ## Status
 
-**v1.1.13** ✅ — chrome web store obrigatório (VERSIONING passo 6). Herda 1.1.12 security hardening 11→1.
-Crate em `Cargo.toml`: **1.1.13**.
+**v1.1.15** — substrate **agêntico** (MCP 4 tools, doutrina, hits tipados,
+TTL/GC, timeline, ANN). Extensão de browser / Store **estacionadas**
+(não são produto nem gate de release). Crate em `Cargo.toml`: **1.1.15**.
 
 - `cargo test` on host: **243+ lib tests + doc-test** (plus p2p / no_std matrix)
 - `cargo check --no-default-features --target x86_64-unknown-none`: **clean**
@@ -192,8 +193,8 @@ lists conflicts / superseded / unseen scopes.
 
 Host adapters for claw-like apps (Hermes provider, OpenClaw skeleton, shared
 MCP client) live in [`connectors/`](connectors/README.md) — **outside** crate
-SemVer; `crates/nsgdb-embed` (LocalEmbedder 384-dim, `cargo run --manifest-path crates/nsgdb-embed/Cargo.toml --example demo`) and `crates/nsgdb-wasm` (WasmStorage IndexedDB stub) are host crates — core stays 1.1.12.
-Browser extension 1-clique local-first: [`docs/browser-extension.md`](docs/browser-extension.md).
+SemVer; `crates/nsgdb-embed` (LocalEmbedder 384-dim, `cargo run --manifest-path crates/nsgdb-embed/Cargo.toml --example demo`) and `crates/nsgdb-wasm` (`Storage` stub) are host crates — core stays 1.1.15.
+Protocolo do agente: `examples/agent_protocol.rs` (23 checks), `two_ai_protocol.rs` (16), `memory_arena_eval.rs`.
 
 ### Cursor (Windows)
 
@@ -251,7 +252,7 @@ avoid stale/unreproducible claims).
   system; [`docs/implementation-status.md`](docs/implementation-status.md)
   tracks capability vs code
 - **AI agent guides** — `AGENTS.md`, `CLAUDE.md`, `codemap.md` (atlas),
-  [`docs/MCP.md`](docs/MCP.md) (instalação MCP), [`docs/browser-extension.md`](docs/browser-extension.md) (extensão local-first, 1 clique)
+  [`docs/MCP.md`](docs/MCP.md) (instalação MCP), [`docs/doctrine.md`](docs/doctrine.md) (o core não decide)
 - **Contributing** — [`CONTRIBUTING.md`](CONTRIBUTING.md)
 - **Governance** — [`SECURITY.md`](SECURITY.md) (policy + trust model),
   [`VERSIONING.md`](VERSIONING.md) (SemVer + release process),
@@ -281,7 +282,7 @@ Licensed under **MIT** **or** **Apache-2.0** (dual license), your choice.
 - [x] **v1.1.11 host governance + micro-ganhos** — `host_scheduler` + `backfill_helper` + `Storage::put_many`/`put_batch` + `lexical` dedup/`search_fast` + `hamming` inline + `recall` select_nth
 - [x] **v1.1.12 security hardening 11→1** — `engine.put_inner` choke central, `WasmStorage` bounds, `LocalEmbedder::new()->Result`, `MCP -32601`, `try_encode` limites
 - [x] **Host crates** — `crates/nsgdb-embed` + `crates/nsgdb-wasm` (sem quebrar core `no_std` zero deps)
-- [x] **Browser extension** — `docs/browser-extension.md` (1-clique local-first, auto-captura `history`/`tabs` → `WasmStorage` IndexedDB)
+- [ ] **Browser extension** — estacionada (`extension/` stub; auto-captura comentada). Produto = agente via MCP, não scraper de abas.
 
 ## Interop with neural-os-core
 

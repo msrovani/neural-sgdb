@@ -136,7 +136,9 @@ Direções onde ainda não há produto nem paper consolidado — o "além" do ro
    (`consolidate_recurrences`: versão determinística exata do modelo RecMem).
 3. ✅ **Breakdown de score por sinal no `Hit`** — **entregue em v1.1.10**
    (`recall_weighted_full` + `Hit.score_breakdown`: sem/rec/imp/conf/src).
-4. **WASM + backend IndexedDB/OPFS** (médio) — habilita browser (mnem/Kurumi).
+4. **WASM + backend IndexedDB/OPFS** (médio) — seam `crates/nsgdb-wasm`.
+   Extensão de browser / Store **estacionadas** (não são o produto; agentes
+   falam MCP).
 5. ✅ **Trilha de auditoria hash-chain + rollback** — **entregue em v1.1.10**
    (`src/audit.rs` + `sys/audit/`: `audit_checkpoint`/`audit_verify`/
    `rollback_to`, ADR-0006).

@@ -73,8 +73,8 @@ records them so future work does not re-derive them. Landscape research
 - **Browser WASM**: the `no_std` core compiles to wasm32; `IndexedDB`/OPFS as a
   `Storage` backend — the session's memory persists across page loads
   (mnem and Kurumi already ship this pattern).
-- **Browser extension**: memory of what the user read/navigated, recalled via
-  `recall_temporal`/`recall_entities`.
+- ~~**Browser extension**~~ **(estacionado):** não é o produto. Agentes falam
+  MCP; o core não captura abas. Ver `extension/README.md`.
 - **Edge / embedded**: `no_std` + zero deps → runs on minimal Linux devices;
   NMD1/TKLV keep the OS interop contract.
 

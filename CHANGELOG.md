@@ -6,6 +6,14 @@ All notable changes to this project. Format based on
 
 ## [Unreleased]
 
+- **Parked (browser):** extensão / Chrome Web Store **não** são produto nem
+  gate de release. Auto-captura em `extension/background.js` comentada.
+  Foco: NSGDB **agêntico** — MCP 4 tools, doutrina (`nsgdb://doctrine`),
+  `agent_protocol` / `two_ai_protocol` / `memory_arena_eval`.
+- **Hot test:** `examples/mcp_client.rs` pin `serverInfo.version` =
+  `MCP_CONTRACT_VERSION` (`1.1.15`). Bump de contrato sem atualizar o client
+  → 94/1 (servidor certo, check velho).
+
 ## [1.1.15] — 2026-09-08 (leva 2: TTL/GC + timeline + ANN + WASM)
 
 MDM1 v7 (v1.1.14) + governança/temporal/escala:

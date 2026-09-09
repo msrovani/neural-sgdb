@@ -1,15 +1,16 @@
 # Roadmap — neural-sgdb
 
-Status: **v1.1.x maintenance line (2026-08-21, crate v1.1.13)** —
+Status: **v1.1.x maintenance line (crate v1.1.15)** —
 stable API, zero deps, `no_std` + `std`, CI gates green. Crate version
-**1.1.13**; histórico v1.1.2–v1.1.13 no `CHANGELOG.md`. This roadmap is honest
+**1.1.15**; histórico v1.1.2–v1.1.15 no `CHANGELOG.md`. This roadmap is honest
 about what is DONE, what is NEXT, and what is deliberately NOT planned.
 
 Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
 
 ## v1.x maintenance (2026-08-13 — ongoing)
 
-✅ **v1.1.13 — Chrome Web Store obrigatório (2026-08-21)** — `VERSIONING.md` passo 6: toda `v*` com `extension/` deve ser re-empacotada e re-enviada na Store; `extension/README.md` com sync `manifest.json` `version` = `Cargo.toml`.
+✅ **v1.1.13 — docs Store/extensão (2026-08-21)** — track **estacionado**:
+   não é gate de release; produto = agente via MCP. Ver non-goals abaixo.
 
 ✅ **v1.1.12 — Security hardening 11→1 ordem inversa de custo (2026-08-21)** — 11 remember_episodic docs, 10 lexical cap 1024, 9 `MemoryDoc::try_encode` com `MAX_KLEN`/`MAX_VLEN`, 8 `LocalEmbedder::new()->Result`, 7 `backfill_helper` sem `md/L4/md/L4/`, 6 `write_side_bytes` host-only, 5 MCP `-32601` já tinha, 4 `WasmStorage` validate, 3 `engine.put_inner` choke central, 2 `associate` valida `a`/`b`, 1 `merge_memories` via 3. Gates 243/289/195+1, hot 95/0.
 
@@ -100,6 +101,12 @@ Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
 - Conflict resolution policy bundles (deterministic arbiters outside the
   core; the core never decides semantic truth).
 
+🔜 **Agentic substrate (north star):**
+  o produto é o agente **usando** o DB — duas passadas (gather evidence,
+  depois remember), doutrina MCP (`nsgdb://doctrine` / `nsgdb://session`),
+  hits tipados `format=json`, `examples/agent_protocol.rs` (23),
+  `two_ai_protocol.rs` (16), `memory_arena_eval.rs`. Não hoarding.
+
 🔜 **Cognitive surface** (all policy-pluggable, none inside the core):
 - Real embedding backfill for L3→L4 consolidation (core never generates
   embeddings).
@@ -132,3 +139,5 @@ Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
 - **No silent format reinterpretation** — formats are byte-contracts
   (ADR-0004), side-tables are the extension mechanism.
 - **No prefix keys in the ART** — rejected at the API boundary (ADR-0005).
+- **No Chrome Web Store / browser auto-capture as product** — `extension/`
+  is parked (stub). Agents speak MCP; the core does not scrape tabs.

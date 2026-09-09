@@ -2,18 +2,20 @@
 
 Guide for AI agents (OpenCode, Cursor, Windsurf, Claude Code) working in this
 repo. **Read `codemap.md` (atlas), `docs/api.md` (contract) and
-`docs/architecture/` (v1.1.13 crate — Memory Model, Lifecycle, Retrieval,
+`docs/architecture/` (v1.1.15 crate — Memory Model, Lifecycle, Retrieval,
 Distributed, Storage, Cognitive API; typed hits from v1.1.6) and
 `docs/implementation-status.md` before editing code.**
 
-**Shipped crate is 1.1.13 (chrome web store obrigatório):** MCP lists **4 tools**
+**Shipped crate is 1.1.15 (agentic MCP):** MCP lists **4 tools**
 (`remember`/`recall`/`health`/`curate`; 23 old names are `tools/call` aliases).
 `curate` ganhou ops de metadado cognitivo (decay/consolidate/audit_checkpoint/
 audit_verify/rollback_to).
 Default retrieval is **lexical**. Unset `NEURAL_SGDB_EMBEDDER` = none;
 `=demo` only if requested. `remember(text=)` without a vector → L3
 (`remember_text_with`). Resources: `nsgdb://doctrine` + `nsgdb://session`.
-Hot test **95/0**. Lib tests **243+**.
+Hot test **95/0**. Lib tests **256+**.
+Bump `MCP_CONTRACT_VERSION` ⇒ pin `mcp_client` `serverInfo.version` no mesmo
+commit (senão hot test 94/1).
 
 ## Post-P2 hardening state (2026-08-13)
 
@@ -500,7 +502,9 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-
   `NEURAL_SGDB_EMBEDDER` = none; `=demo` is an explicit trigram hash — NOT
   cosine. `health(view=era)` = era_report; `health(view=tensions)` =
   conflicts/superseded/unseen scopes. Resources `nsgdb://doctrine` +
-  `nsgdb://session`. Windows launchers: PowerShell 5.1 — no `>&2`; use
+  `nsgdb://session`. **Pin:** `examples/mcp_client.rs` `serverInfo.version`
+  deve igualar `MCP_CONTRACT_VERSION` (`mcp_server.rs`) no mesmo bump.
+  Windows launchers: PowerShell 5.1 — no `>&2`; use
   `[Console]::Error.WriteLine`. **instalação**: [`docs/MCP.md`](docs/MCP.md);
   reload: [`docs/MCP-RELOAD.md`](docs/MCP-RELOAD.md).
 - **Wire-codec fuzz harness** (`src/wire_fuzz.rs`, P2-4): the single LCG
