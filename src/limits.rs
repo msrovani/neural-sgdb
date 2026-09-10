@@ -44,6 +44,18 @@ pub const MAX_RAG_CONTEXT_BYTES: usize = 8192;
 /// com `offset` crescente (ordem lexicográfica determinística).
 pub const DEFAULT_SCAN_PAGE_SIZE: usize = 100;
 
+/// Teto de ancestralidade causal por meta (`parent_ids`, fix AI-user audit).
+///
+/// 64 ancestrais mais recentes. Sem teto, cada overwrite do MESMO slot
+/// (`remember_exchange` → `last_user`/`last_asst`, o caminho mais quente do
+/// agente) empurra o `version_id` anterior para `parent_ids` e re-encodea o
+/// blob inteiro — o custo da meta cresce QUADRATICAMENTE com o nº de turnos
+/// (medido: 68 KB de meta aos 2k turnos, ~13 GB de lixo aos 20k, OOM no
+/// `stress`). A janela mantém os ancestrais MAIS RECENTES; o histórico
+/// completo permanece em `sys/version/` (scan_versions). Truncar o início
+/// da lista preserva o invariante DAG (cada pai é uma versão anterior).
+pub const MAX_PARENT_IDS: usize = 64;
+
 /// Limiar de órfãos do BQ para a recuperação proativa (v1.1.3 S4).
 ///
 /// O flat do BQ é append-only: `delete` físico deixa o id no índice (inofensivo,

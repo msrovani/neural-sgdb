@@ -7287,6 +7287,30 @@ mod tests {
     }
 
     #[test]
+    fn overwrite_lineage_window_bounded() {
+        // Fix AI-user audit: `persist_meta` (bump_version) empilhava um parent
+        // por overwrite do mesmo slot — a meta é re-encoda e re-grava a cada
+        // put, então `remember_exchange` (last_user/last_asst) crescia O(turns²)
+        // em bytes de log (medido: 68 KB de meta aos 2k turnos; ~13 GB aos 20k,
+        // OOM no stress). A janela MAX_PARENT_IDS mantém os ancestrais mais
+        // recentes; o histórico completo fica em sys/version/.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        for i in 0..200u32 {
+            db.remember_exchange(&format!("user {i}"), &format!("ai {i}")).unwrap();
+        }
+        let m = db.meta("md/L1/last_user").unwrap().expect("meta existe");
+        assert!(
+            m.parent_ids.len() <= crate::limits::MAX_PARENT_IDS,
+            "lineage deve ser limitada: {} > {}",
+            m.parent_ids.len(),
+            crate::limits::MAX_PARENT_IDS
+        );
+        assert!(!m.parent_ids.is_empty(), "overwrites ainda registram linhagem");
+        // o slot continua recuperável (overwrite não corrompe a memória)
+        assert_eq!(db.scan_prefix("md/L1/").unwrap().len(), 1);
+    }
+
+    #[test]
     fn audit_chain_verify_and_cognitive_rollback() {
         // v1.1.10 item 5 (ChronoMem/MemTxn): checkpoint + hash-chain +
         // rollback cognitivo das side-tables; tamper de elo e de estado

@@ -4,7 +4,35 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [1.1.16] — 2026-09-10 (AI-user audit: hardening + write-amplification fix)
+
+Avaliação agêntica completa (gates + stress/bench + protocolos + simulação de
+loop de agente). Duas correções com regressão; sem quebra de API (PATCH):
+
+- **no_std gate restaurado**: `wasm_backend` sem entrada `[[example]]` era
+  auto-buildado em `cargo test --no-default-features` e falhava
+  (`SgdbError: std::error::Error`) — `required-features = ["std"]`. Matriz:
+  **257+1 / 303+1 / 209+1**.
+- **Bomba de write-amplification no lineage (crítico p/ agentes)**:
+  `persist_meta` empilhava 1 parent por overwrite do mesmo slot e re-encodava
+  o meta inteiro — `remember_exchange` (last_user/last_asst, o caminho mais
+  quente do agente) crescia O(turns²): meta 68 KB aos 2k turnos, ~13 GB de
+  lixo aos 20k (OOM no stress), 22.5 ms/op. Janela `MAX_PARENT_IDS` (64,
+  `limits.rs`) mantém os ancestrais MAIS RECENTES; histórico completo
+  permanece em `sys/version/`. Pós-fix: meta 2.3 KB flat, **68.6 µs/op
+  (35×)**, 45 MiB em vez de 1.6 GiB no mesmo workload. Teste:
+  `overwrite_lineage_window_bounded`.
+- **Novo harness**: `examples/agent_sim.rs` — loop de agente real (latência
+  P50/P99 por turno, exact vs paraphrase, isolamento de scope). Paraphrase
+  MISSA no lexical (BM25, by design). Medição de gap (roadmap, não bug):
+  `Sgdb::open` rebuilda índices linearmente (~16 ms/500 docs) — falta
+  snapshot de índice no estilo fast-mount do TKCK.
+- **MCP**: `MCP_CONTRACT_VERSION` → 1.1.16; pin do `mcp_client` no mesmo
+  commit (disciplina do AGENTS.md — hot test 95/0).
+
 ## [Unreleased]
+
+- **Parked (browser):**
 
 - **Parked (browser):** extensão / Chrome Web Store **não** são produto nem
   gate de release. Auto-captura em `extension/background.js` comentada.

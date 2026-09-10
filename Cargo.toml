@@ -1,6 +1,6 @@
 [package]
 name = "neural-sgdb"
-version = "1.1.15"
+version = "1.1.16"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Persistent, transferable memory substrate for AI agents (no_std + std)"
@@ -77,6 +77,19 @@ required-features = ["file-storage"]
 # Host scheduler — governa a memória (decay/consolidate/expire/audit) sem tocar o core
 [[example]]
 name = "host_scheduler"
+required-features = ["file-storage"]
+
+# WASM/OPFS backend demo (v1.1.15 §4 P1) — ciclo snapshot export→import.
+# Precisa de std (SgdbError: std::error::Error no `?`) — excluído do build no_std.
+[[example]]
+name = "wasm_backend"
+required-features = ["std"]
+
+# AI-user simulation (audit) — loop de agente real: latência por turno
+# (remember+recall+rag), qualidade de recall (exato vs paráfrase), isolamento
+# de scope. Padrão de instrumentação para re-medir pós-mudanças.
+[[example]]
+name = "agent_sim"
 required-features = ["file-storage"]
 
 # Backfill helper — migra L3→L4 via re-embed do texto preservado em /L2/

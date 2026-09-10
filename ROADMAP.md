@@ -1,8 +1,8 @@
 # Roadmap — neural-sgdb
 
-Status: **v1.1.x maintenance line (crate v1.1.15)** —
+Status: **v1.1.x maintenance line (crate v1.1.16)** —
 stable API, zero deps, `no_std` + `std`, CI gates green. Crate version
-**1.1.15**; histórico v1.1.2–v1.1.15 no `CHANGELOG.md`. This roadmap is honest
+**1.1.16**; histórico v1.1.2–v1.1.16 no `CHANGELOG.md`. This roadmap is honest
 about what is DONE, what is NEXT, and what is deliberately NOT planned.
 
 Legend: ✅ done · 🔜 next · 💤 deliberate non-goal

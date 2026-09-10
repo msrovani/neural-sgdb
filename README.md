@@ -36,9 +36,9 @@ filesystem, no external runtime.
 
 ## Status
 
-**v1.1.15** — substrate **agêntico** (MCP 4 tools, doutrina, hits tipados,
+**v1.1.16** — substrate **agêntico** (MCP 4 tools, doutrina, hits tipados,
 TTL/GC, timeline, ANN). Extensão de browser / Store **estacionadas**
-(não são produto nem gate de release). Crate em `Cargo.toml`: **1.1.15**.
+(não são produto nem gate de release). Crate em `Cargo.toml`: **1.1.16**.
 
 - `cargo test` on host: **243+ lib tests + doc-test** (plus p2p / no_std matrix)
 - `cargo check --no-default-features --target x86_64-unknown-none`: **clean**
@@ -193,7 +193,7 @@ lists conflicts / superseded / unseen scopes.
 
 Host adapters for claw-like apps (Hermes provider, OpenClaw skeleton, shared
 MCP client) live in [`connectors/`](connectors/README.md) — **outside** crate
-SemVer; `crates/nsgdb-embed` (LocalEmbedder 384-dim, `cargo run --manifest-path crates/nsgdb-embed/Cargo.toml --example demo`) and `crates/nsgdb-wasm` (`Storage` stub) are host crates — core stays 1.1.15.
+SemVer; `crates/nsgdb-embed` (LocalEmbedder 384-dim, `cargo run --manifest-path crates/nsgdb-embed/Cargo.toml --example demo`) and `crates/nsgdb-wasm` (`Storage` stub) are host crates — core stays 1.1.16.
 Protocolo do agente: `examples/agent_protocol.rs` (23 checks), `two_ai_protocol.rs` (16), `memory_arena_eval.rs`.
 
 ### Cursor (Windows)

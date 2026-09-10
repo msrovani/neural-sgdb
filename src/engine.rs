@@ -349,6 +349,14 @@ impl AiosDatabaseEngine {
                     // a versão anterior vira parent (linhagem causal)
                     if !mm.parent_ids.contains(&mm.version_id) {
                         mm.parent_ids.push(mm.version_id.clone());
+                        // Janela de ancestralidade (fix AI-user audit): a meta é
+                        // re-encoda e re-grava A CADA put — sem teto, o custo
+                        // cresce O(turns²) no caminho overwrite (last_user/
+                        // last_asst). Mantém os ancestrais MAIS RECENTES; o
+                        // histórico completo permanece em sys/version/.
+                        while mm.parent_ids.len() > crate::limits::MAX_PARENT_IDS {
+                            mm.parent_ids.remove(0);
+                        }
                     }
                     mm.version_id = new_vid;
                 }

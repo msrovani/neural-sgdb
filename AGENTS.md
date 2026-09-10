@@ -2,11 +2,11 @@
 
 Guide for AI agents (OpenCode, Cursor, Windsurf, Claude Code) working in this
 repo. **Read `codemap.md` (atlas), `docs/api.md` (contract) and
-`docs/architecture/` (v1.1.15 crate — Memory Model, Lifecycle, Retrieval,
+`docs/architecture/` (v1.1.16 crate — Memory Model, Lifecycle, Retrieval,
 Distributed, Storage, Cognitive API; typed hits from v1.1.6) and
 `docs/implementation-status.md` before editing code.**
 
-**Shipped crate is 1.1.15 (agentic MCP):** MCP lists **4 tools**
+**Shipped crate is 1.1.16 (agentic MCP):** MCP lists **4 tools**
 (`remember`/`recall`/`health`/`curate`; 23 old names are `tools/call` aliases).
 `curate` ganhou ops de metadado cognitivo (decay/consolidate/audit_checkpoint/
 audit_verify/rollback_to).
@@ -372,6 +372,41 @@ B 3/3, A 0/3 (shopping/restrição escopada, formal/verbatim exato,
 lifecycle/estado corrente). Determinístico (InMemory, sem LLM), exit 0 sse
 quiz empata E SR(B) > SR(A) E sPS(B) > sPS(A).
 
+## AI-user audit (2026-09-10)
+
+Full agentic evaluation (all gates + stress/bench/protocols + agent-loop sim).
+Two production bugs found and fixed, each with a regression test:
+
+- **no_std gate broken (v1.1.15 regression)**: `examples/wasm_backend.rs` had
+  no `[[example]]` entry — auto-discovery built it under `cargo test
+  --no-default-features` and the `?` on `SgdbError` failed
+  (`std::error::Error` needs `std`). Fix: `required-features = ["std"]` in
+  `Cargo.toml`. Matrix restored: 257+1 / 303+1 / 209+1.
+- **Meta lineage write-amplification bomb (crítico p/ agentes)**:
+  `persist_meta` (bump_version) empilhava 1 parent em `parent_ids` por
+  overwrite e re-encodea o blob inteiro — `remember_exchange` (last_user/
+  last_asst, o caminho mais quente) crescia O(turns²): 68 KB de meta aos 2k
+  turnos, ~13 GB de lixo aos 20k (stress OOM), 22.5 ms/op. Fix: janela
+  `MAX_PARENT_IDS` (64, `limits.rs`) mantém os ancestrais MAIS RECENTES;
+  histórico completo permanece em `sys/version/`. Pós-fix: meta 2.3 KB flat,
+  68.6 µs/op (35×), 45 MiB em vez de 1.6 GiB no mesmo workload. Teste:
+  `overwrite_lineage_window_bounded`.
+
+Gaps medidos (NÃO bugs — roadmap):
+- **`Sgdb::open` rebuilda TODOS os índices**: ~16 ms/500 docs, linear
+  (~1.6 s @ 100k) pago em cada restart de sessão. O TickvFile já tem fast-mount
+  (TKCK) — falta o mesmo para ART/BQ (persistir snapshot do índice + delta).
+- **`stress` default (`STRESS_REOPEN=100k`) roda ~40 min** — cada open/rebuild
+  custa ~24 ms até num DB de 101 docs. Documentado no examples/codemap.
+- **recall@5 BQ coarse fica em 22–35% (1024 dims, clusters correlacionados)**
+  mesmo com oversample 16× — OpenSearch/Qdrant usam ADC (query full-precision
+  assimétrico) + random rotation. Hoje o rescore FP32 é o salvador: é filter,
+  não ranking (design honesto, mas recall@k do filtro é o teto).
+
+Harness novo: `examples/agent_sim.rs` — loop de agente real (P50/P99 por
+turno, exact vs paraphrase, isolamento de scope). Paraphrase MISSA no lexical
+(BM25, by design — agents precisam de rerank/semântico para paráfrase).
+
 ## Repository Map
 
 A full codemap is available at `codemap.md` in the project root.
@@ -451,7 +486,7 @@ let facts = db.scan_prefix("md/L3/")?;                 // ART prefix scan
 ```bash
 cargo run --release --example bench        # benchmarks (ART/BQ/recall vs FP32)
 cargo run --release --example mcp_server   # MCP server for AI agents
-cargo run --release --example mcp_client   # HOT TEST: drives mcp_server like an IDE (84/0)
+cargo run --release --example mcp_client   # HOT TEST: drives mcp_server like an IDE (95/0)
 cargo run --release --example agent_protocol  # DECISION PROTOCOL (itens 2–6 + P1–P6): como o agente USA o DB
 cargo run --release --example two_ai_protocol # PROTOCOLO MÁQUINA→MÁQUINA (v1.1.6 itens 1–5): IA-A grava datum declarado, IA-B lê tipado
 cargo run --release --example memory_arena_eval # MEMORY-ARENA EVAL (P7): utilidade da memória em tarefas interdependentes
@@ -475,9 +510,9 @@ hash, not a semantic model). Restart opencode after changing the config.
 ## Running tests
 
 ```bash
-cargo test                                 # 235+1 tests (InMemory/FileStorage/TickvFile)
-cargo test --features p2p                  # 275+1 (includes CRDT sync + mesh harness)
-cargo test --no-default-features           # 181+1 (no_std core, host test harness)
+cargo test                                 # 257+1 tests (InMemory/FileStorage/TickvFile)
+cargo test --features p2p                  # 303+1 (includes CRDT sync + mesh harness)
+cargo test --no-default-features           # 209+1 (no_std core, host test harness)
 cargo check --no-default-features --target x86_64-unknown-none   # no_std gate
 cargo clippy --all-targets --all-features -- -D warnings          # lint gate (P0-5)
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-6/P0-10)

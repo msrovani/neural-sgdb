@@ -13,7 +13,18 @@ protocols that codify HOW to use the DB.
 
 ## stress.rs
 - `cargo run --release --example stress` (requires `file-storage`)
+- Env-scalable: `STRESS_N`/`STRESS_REOPEN`/`STRESS_DEL`/`STRESS_SIMD` (default
+  100k/100k/20k/10k — **REOPEN default takes ~40 min** because every open
+  rebuilds indexes; use `STRESS_REOPEN=500` for a smoke pass)
 - 100k-op stress with reopen; verifies delete integrity
+
+## agent_sim.rs — AI-USER SIMULATION (audit harness)
+- `cargo run --release --example agent_sim` (requires `file-storage`; `N=` turns)
+- Realistic agent loop over FileStorage: per-turn P50/P99 (remember L3+L2
+  episodic+L4, recall lexical+semantic, rag_context), recall quality
+  exact-words vs paraphrase (lexical misses paraphrase by design — BM25),
+  demo-embedder semantic fallback, scope isolation (global recall never leaks
+  scoped memories). Use as the regression harness after perf changes.
 
 ## audit.rs
 - `cargo run --release --example audit` — battery 1: attack (ghost keys,

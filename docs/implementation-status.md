@@ -1,6 +1,6 @@
 ﻿# neural-sgdb — Implementation Status
 
-> **Current snapshot (2026-09-08, v1.1.15).** Capability matrix vs the shipped
+> **Current snapshot (2026-09-10, v1.1.16).** Capability matrix vs the shipped
 > codebase. For the public contract see [`docs/api.md`](api.md); for architecture
 > narrative see [`docs/architecture/README.md`](architecture/README.md).
 
@@ -17,11 +17,12 @@
 
 | Check | Command | Result |
 |---|---|---|
-| Default tests | `cargo test` | **256 lib + 1 doc-test** |
-| P2P tests | `cargo test --features p2p` | **302 lib + 1 doc-test** |
-| no_std tests | `cargo test --no-default-features` | **208 lib + 1 doc-test** |
+| Default tests | `cargo test` | **257 lib + 1 doc-test** |
+| P2P tests | `cargo test --features p2p` | **303 lib + 1 doc-test** |
+| no_std tests | `cargo test --no-default-features` | **209 lib + 1 doc-test** |
 | no_std target | `cargo check --no-default-features --target x86_64-unknown-none` | **ok** |
 | Hot test (MCP) | `cargo run --release --example mcp_client` | **95/0 exit 0** |
+| AI-user sim | `cargo run --release --example agent_sim` | loop real, scope isolado |
 | Machine protocol | `cargo run --release --example two_ai_protocol` | **16/16 exit 0** |
 | Agent protocol | `cargo run --release --example agent_protocol` | **23/23 exit 0** |
 | Clippy / doc gates | `-D warnings` | green |
