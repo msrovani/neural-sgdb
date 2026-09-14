@@ -63,13 +63,18 @@ same index. Hamming is SIMD (AVX2 `_mm_xor_si128` + popcount).
 
 ### recall@5 — BQ coarse vs true FP32 cosine (correlated clusters)
 
-| oversample | recall@5 |
-|---|---|
-| 1× | 22% |
-| 2× | 22% |
-| 4× | 24% |
-| 8× | 30% |
-| 16× | 35% |
+| oversample | recall@5 legado | recall@5 dual ADC-lite (v1.1.16) |
+|---|---|---|
+| 1× | 22% | 24% |
+| 2× | 22% | 25% |
+| 4× | 24% | 28% |
+| 8× | 30% | 34% |
+| 16× | 35% | 40% |
+
+Dual = união do top-(5×ov) legado (`sign(q)`) com o top-(5×ov) de query
+re-expressa (`sign(q − mean)`); o rescore FP32 re-ordena a união. Medido na
+mesma harness (`examples/bench.rs`, 8 clusters × 128 membros, 1024-dim,
+40 queries, 200 slots).
 
 Honest framing (see `src/art.rs`/`examples/bench.rs` comments): sign-BQ
 separates the **cluster**, not the exact member — dense clusters produce

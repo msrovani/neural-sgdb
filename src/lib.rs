@@ -104,7 +104,8 @@ pub use audit::{
     AUDIT_OP_ROLLBACK,
 };
 pub use bq::{
-    hamming, hamming_path, quantize_f32, quantize_f32_centered, BqFlatIndex, MihIndex,
+    hamming, hamming_path, quantize_f32, quantize_f32_centered, quantize_f32_minus_mean,
+    BqFlatIndex, MihIndex,
 };
 pub use conflict::{generate_conflict_id, ConflictRecord, ConflictStatus};
 pub use doctrine::{DOCTRINE, DOCTRINE_ENTITIES, DOCTRINE_KEY, DOCTRINE_SCOPE};

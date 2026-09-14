@@ -4,6 +4,24 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [Unreleased] (recall quality — ADC-lite dual-path + state-first)
+
+Sem mudança de formato, sem mudança de contrato MCP; APIs novas aditivas:
+
+- **ADC-lite dual-path** (`sign(q − mean)`): engine mantém a média dos
+  embeddings L4/L5 por dim (`corpus_sums`: insert soma, delete/overwrite
+  subtrai, rebuild reconstrói); recall une top-k legado + top-k centrado e o
+  rescore FP32 decide. Bitvecs intactos (era/`words_per_vec`/S1 intactos).
+  Medido (`examples/bench.rs`, mesma harness): recall@5 22→24 / 22→25 /
+  24→28 / 30→34 / 35→40% (oversample 1/2/4/8/16×). APIs:
+  `quantize_f32_minus_mean`, `top_k_f32_minus_mean`, `bq_top_k_f32_dual`,
+  `Sgdb::corpus_mean`.
+- **State-first**: ordenação final `(grupo de score, created_tick desc,
+  score, key)` — margem `SCORE_TIE_MARGIN=50` (≈0.005 cosseno); versão
+  corrente vence empates, conteúdo distinto continua dominando. Vale para
+  `recall_impl` e `recall_impl_dims`. Teste `recall_tie_break_by_key`
+  atualizado para o novo contrato.
+
 ## [1.1.16] — 2026-09-10 (AI-user audit: hardening + write-amplification fix)
 
 Avaliação agêntica completa (gates + stress/bench + protocolos + simulação de

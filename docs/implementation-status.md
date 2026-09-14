@@ -17,9 +17,9 @@
 
 | Check | Command | Result |
 |---|---|---|
-| Default tests | `cargo test` | **257 lib + 1 doc-test** |
-| P2P tests | `cargo test --features p2p` | **303 lib + 1 doc-test** |
-| no_std tests | `cargo test --no-default-features` | **209 lib + 1 doc-test** |
+| Default tests | `cargo test` | **260 lib + 1 doc-test** |
+| P2P tests | `cargo test --features p2p` | **306 lib + 1 doc-test** |
+| no_std tests | `cargo test --no-default-features` | **212 lib + 1 doc-test** |
 | no_std target | `cargo check --no-default-features --target x86_64-unknown-none` | **ok** |
 | Hot test (MCP) | `cargo run --release --example mcp_client` | **95/0 exit 0** |
 | AI-user sim | `cargo run --release --example agent_sim` | loop real, scope isolado |

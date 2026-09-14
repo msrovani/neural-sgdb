@@ -63,6 +63,24 @@ pub fn quantize_f32_centered(v: &[f32]) -> Vec<u64> {
     out
 }
 
+/// Quantiza a query re-expressa contra a MÉDIA DO CORPUS (ADC-lite, v1.1.16):
+/// `sign(query[i] - mean[i])`. Os bitvecs armazenados ficam INTACTOS
+/// (contrato `words_per_vec`/era) — só a query é re-calibrada, aproximando o
+/// comportamento ADC (query full-precision informativa contra bitvecs) sem
+/// estrutura nova no índice além da média mantida pelo engine. Dims além de
+/// `mean.len()` usam threshold 0 (comportamento legado).
+pub fn quantize_f32_minus_mean(query: &[f32], mean: &[f32]) -> Vec<u64> {
+    let n_words = query.len().div_ceil(64);
+    let mut out = vec![0u64; n_words];
+    for (i, &x) in query.iter().enumerate() {
+        let m = if i < mean.len() { mean[i] } else { 0.0 };
+        if x > m {
+            out[i / 64] |= 1u64 << (i % 64);
+        }
+    }
+    out
+}
+
 /// Quantiza para exatamente 16 words (1024 dims) — pad/trunc.
 pub fn quantize_f32_1024(v: &[f32]) -> [u64; 16] {
     let q = quantize_f32(v);
@@ -323,6 +341,18 @@ impl BqFlatIndex {
     /// offset; os bitvecs armazenados permanecem `sign(x)>0`.
     pub fn top_k_f32_centered(&self, query: &[f32], k: usize) -> Vec<(u64, u32)> {
         self.top_k(&quantize_f32_centered(query), k)
+    }
+
+    /// top-k com query re-expressa contra a média do corpus (ADC-lite,
+    /// v1.1.16): segundo path de candidatos do recall (`bq_top_k_f32_dual`
+    /// une este com o `top_k_f32` legado). Bitvecs intactos.
+    pub fn top_k_f32_minus_mean(
+        &self,
+        query: &[f32],
+        mean: &[f32],
+        k: usize,
+    ) -> Vec<(u64, u32)> {
+        self.top_k(&quantize_f32_minus_mean(query, mean), k)
     }
 
     pub fn len(&self) -> usize {

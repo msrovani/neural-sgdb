@@ -188,6 +188,39 @@ fn main() {
             hit as f64 * 100.0 / total as f64
         );
     }
+    // ── ADC-lite v1.1.16: dual-path (legado ∪ query − média do corpus) ──────
+    // Mesma harness, mesmos queries: a união dos dois top-(5×ov) deve conter
+    // ≥ membros do top-5 exato que o path legado sozinho (nunca menos —
+    // a união é um superconjunto; o rescore FP32 decide o ranking final).
+    let mut cmean = vec![0f64; DIM];
+    for v in cvectors.iter() {
+        for (d, x) in v.iter().enumerate() {
+            cmean[d] += *x as f64;
+        }
+    }
+    let cmean: Vec<f32> = cmean.iter().map(|s| (s / VECS as f64) as f32).collect();
+    for ov in [1usize, 2, 4, 8, 16] {
+        let mut hit = 0usize;
+        for (i, &q) in queries.iter().enumerate() {
+            let mut cand: BTreeSet<u64> = bqc
+                .top_k_f32(&cvectors[q], 5 * ov)
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect();
+            cand.extend(
+                bqc
+                    .top_k_f32_minus_mean(&cvectors[q], &cmean, 5 * ov)
+                    .into_iter()
+                    .map(|(id, _)| id),
+            );
+            hit += exact[i].iter().filter(|id| cand.contains(id)).count();
+        }
+        let total = queries.len() * 5;
+        println!(
+            "recall@5    BQ dual ADC-lite (correlated 1024-dim): oversample={ov:<2} {:.0}% ({hit}/{total}; uniao legado ∪ sign(q-mean))",
+            hit as f64 * 100.0 / total as f64
+        );
+    }
 
     // ── CRC32: throughput (custo de todo put + recovery de storage) ─────────
     let buf: Vec<u8> = (0..1024 * 1024).map(|i| (i % 251) as u8).collect();

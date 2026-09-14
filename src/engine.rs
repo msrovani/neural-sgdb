@@ -172,6 +172,13 @@ pub struct AiosDatabaseEngine {
     /// verdade da dim. O recall avisa (em vez de silenciar) quando a query não
     /// casa com NENHUMA dim indexada: 4-dim ≠ 256-dim nunca casa por acidente.
     pub indexed_dims: BTreeSet<usize>,
+    /// Soma acumulada dos embeddings por dim + contagem (v1.1.16 ADC-lite):
+    /// `corpus_mean(dim)` = média dos vetores L4/L5 vivos, mantida por sessão
+    /// (insert soma, delete/overwrite subtrai, rebuild reconstrói). A média
+    /// re-expressa a QUERY (`sign(q - mean)`); os bitvecs ficam intactos.
+    /// Aproximada por construção (nunca fonte de ranking final — o rescore
+    /// FP32 decide); `f64` acumula sem deriva em `no_std`.
+    corpus_sums: BTreeMap<usize, (Vec<f64>, u64)>,
     /// Blobs L0/L1 encoded (storage_key → NMD1); não toca Storage até checkpoint.
     ram_l0l1: BTreeMap<String, Vec<u8>>,
     /// Puts L0/L1 que bypassaram Storage (métrica honesty).
@@ -206,6 +213,7 @@ impl AiosDatabaseEngine {
             clock_index: BTreeMap::new(),
             own_clock_watermark: 0,
             indexed_dims: BTreeSet::new(),
+            corpus_sums: BTreeMap::new(),
             storage,
         }
     }
@@ -306,6 +314,22 @@ impl AiosDatabaseEngine {
             ));
         }
         let blob = doc.encode();
+
+        // ADC-lite: overwrite de L4/L5 subtrai o vetor ANTIGO da média antes
+        // de somar o novo (sem isso o overwrite contaria 2x). Um get a mais
+        // no write (não-hot) mantém a média exata sem scan.
+        if matches!(
+            doc.layer,
+            MemoryLayer::L4Semantic | MemoryLayer::L5Procedural
+        ) {
+            if let Ok(Some(old)) = self.storage.get(sk.as_bytes()) {
+                if let Ok(old_doc) = MemoryDoc::decode(&old) {
+                    if let Some(v) = Self::payload_floats(&old_doc.payload) {
+                        self.unnote_vec(&v);
+                    }
+                }
+            }
+        }
 
         if is_ram_layer(doc.layer) {
             self.ram_l0l1.insert(sk.clone(), blob);
@@ -678,6 +702,11 @@ impl AiosDatabaseEngine {
                     // ruído, não dimensionalidade.
                     if doc.payload.len() >= 4 {
                         self.indexed_dims.insert(doc.payload.len() / 4);
+                        // ADC-lite: a média do corpus alimenta o segundo path
+                        // de candidatos (`sign(q - mean)`); bitvecs intactos.
+                        if let Some(v) = Self::payload_floats(&doc.payload) {
+                            self.note_vec(&v);
+                        }
                     }
                 } else if !doc.payload.is_empty() {
                     let n = doc.payload.len() / 4;
@@ -694,6 +723,7 @@ impl AiosDatabaseEngine {
                             f.push(w);
                         }
                         self.bq.insert_f32(id, &f);
+                        self.note_vec(&f);
                     }
                 }
                 self.art.insert(sk, id);
@@ -715,6 +745,7 @@ impl AiosDatabaseEngine {
         self.id_to_sk.clear();
         self.clock_index.clear();
         self.indexed_dims.clear();
+        self.corpus_sums.clear();
         // watermark reconstruído do storage (docs = fonte da verdade)
         self.own_clock_watermark = 0;
         // Reindex RAM L0/L1 first (logical ids fresh)
@@ -876,6 +907,120 @@ impl AiosDatabaseEngine {
 
     pub fn bq_top_k_f32(&self, query: &[f32], k: usize) -> Vec<(u64, u32)> {
         self.bq.top_k_f32(query, k)
+    }
+
+    /// Soma um vetor à média do corpus (insert L4/L5 com payload f32).
+    /// Vetores com qualquer não-finito são ignorados por inteiro (texto
+    /// reinterpretado como f32 gera NaN/Inf — não contamina a média);
+    /// dims além de `MAX_EMBEDDING_DIM` nunca chegam aqui (guard P1-1).
+    fn note_vec(&mut self, v: &[f32]) {
+        if v.is_empty() || v.iter().any(|x| !x.is_finite()) {
+            return;
+        }
+        let dim = v.len();
+        let (sum, count) = self
+            .corpus_sums
+            .entry(dim)
+            .or_insert_with(|| (alloc::vec![0.0f64; dim], 0));
+        for (i, s) in sum.iter_mut().enumerate() {
+            let x = v[i];
+            if x.is_finite() {
+                *s += x as f64;
+            }
+        }
+        *count = count.saturating_add(1);
+    }
+
+    /// Subtrai um vetor da média do corpus (delete/overwrite L4/L5).
+    /// Mesma regra de `note_vec`: não-finitos ignorados por inteiro.
+    /// Contador satura em 0; entrada zerada é removida (mapa limpo).
+    fn unnote_vec(&mut self, v: &[f32]) {
+        if v.is_empty() || v.iter().any(|x| !x.is_finite()) {
+            return;
+        }
+        let dim = v.len();
+        let remove = match self.corpus_sums.get_mut(&dim) {
+            Some((sum, count)) => {
+                for (i, s) in sum.iter_mut().enumerate() {
+                    let x = v[i];
+                    if x.is_finite() {
+                        *s -= x as f64;
+                    }
+                }
+                *count = count.saturating_sub(1);
+                *count == 0
+            }
+            None => false,
+        };
+        if remove {
+            self.corpus_sums.remove(&dim);
+        }
+    }
+
+    /// Decodifica o payload como vetor f32 (`None` se não for embedding:
+    /// vazio, `len % 4 != 0`). Mesma leitura do rescore FP32 — sem alloc
+    /// além do vetor de saída.
+    fn payload_floats(payload: &[u8]) -> Option<Vec<f32>> {
+        if payload.len() < 4 || !payload.len().is_multiple_of(4) {
+            return None;
+        }
+        let n = payload.len() / 4;
+        if n > crate::limits::MAX_EMBEDDING_DIM {
+            return None;
+        }
+        let mut out = Vec::with_capacity(n);
+        for i in 0..n {
+            let o = i * 4;
+            out.push(f32::from_le_bytes([
+                payload[o],
+                payload[o + 1],
+                payload[o + 2],
+                payload[o + 3],
+            ]));
+        }
+        Some(out)
+    }
+
+    /// Média dos embeddings vivos de `dim` (`None` = sem vetores nessa dim).
+    /// Observabilidade do path ADC-lite (`Sgdb::corpus_mean`); o recall usa
+    /// direto (sem cópia extra além desta).
+    pub fn corpus_mean(&self, dim: usize) -> Option<Vec<f32>> {
+        let (sum, count) = self.corpus_sums.get(&dim)?;
+        if *count == 0 {
+            return None;
+        }
+        Some(sum.iter().map(|s| (*s / *count as f64) as f32).collect())
+    }
+
+    /// Dual-path grosseiro (v1.1.16 ADC-lite): `top_k` legado ∪ `top_k`
+    /// com query re-expressa (`sign(q - mean)`), fundidos por id (menor
+    /// hamming vence) e ordenados por `(dist, id)`. Retorna até `2*k`;
+    /// o chamador trunca ao orçamento `cand` (rescore FP32 decide o ranking
+    /// final). Sem média para a dim → só o path legado (zero regressão).
+    pub fn bq_top_k_f32_dual(&self, query: &[f32], k: usize) -> Vec<(u64, u32)> {
+        let plain = self.bq_top_k_f32(query, k);
+        let Some(mean) = self.corpus_mean(query.len()) else {
+            return plain;
+        };
+        let centered = self.bq.top_k_f32_minus_mean(query, &mean, k);
+        if centered.is_empty() {
+            return plain;
+        }
+        let mut by_id: BTreeMap<u64, u32> = BTreeMap::new();
+        for (id, d) in plain.into_iter().chain(centered) {
+            by_id
+                .entry(id)
+                .and_modify(|e| {
+                    if d < *e {
+                        *e = d;
+                    }
+                })
+                .or_insert(d);
+        }
+        let mut out: Vec<(u64, u32)> = by_id.into_iter().collect();
+        out.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+        out.truncate(k.saturating_mul(2).max(1));
+        out
     }
 
     pub fn storage_key_of(&self, id: u64) -> Option<&str> {
@@ -1270,8 +1415,18 @@ impl AiosDatabaseEngine {
     /// Retorna `true` se o doc existia (RAM L0/L1 ou Storage) antes da
     /// remoção.
     pub fn delete(&mut self, sk: &str) -> Result<bool, SgdbError> {
-        let existed = self.ram_l0l1.contains_key(sk)
-            || self.storage.get(sk.as_bytes())?.is_some();
+        let old_bytes = self.storage.get(sk.as_bytes())?;
+        let existed = self.ram_l0l1.contains_key(sk) || old_bytes.is_some();
+        // ADC-lite: o vetor morto sai da média (média exata sem scan).
+        if let Some(b) = old_bytes {
+            if sk.starts_with("md/L4/") || sk.starts_with("md/L5/") {
+                if let Ok(d) = MemoryDoc::decode(&b) {
+                    if let Some(v) = Self::payload_floats(&d.payload) {
+                        self.unnote_vec(&v);
+                    }
+                }
+            }
+        }
         self.storage.delete(sk.as_bytes())?;
         self.ram_l0l1.remove(sk);
         // side-tables da memória morrem com ela (estado + validade + meta)

@@ -46,6 +46,33 @@ fn resolve_content_type(
     }
 }
 
+/// Margem de empate do state-first (v1.1.16): scores FP32 em u32
+/// (`dist * 10000`) a até esta distância contam como empate de conteúdo.
+/// ≈0.005 de cosseno — perto o bastante para o "fato corrente" ser a
+/// resposta certa, longe o bastante para nunca mascarar conteúdo distinto.
+const SCORE_TIE_MARGIN: u32 = 50;
+
+/// `created_tick` de um hit (0 = sem proveniência). Maior = versão corrente.
+fn hit_tick(h: &Hit) -> u64 {
+    h.provenance.as_ref().map(|p| p.created_tick).unwrap_or(0)
+}
+
+/// Ordenação state-first (v1.1.16, Mudança 2): `(grupo de score,
+/// created_tick desc, score asc, key asc)` — transitiva e determinística.
+/// O grupo (`score / (MARGIN+1)`) aproxima "scores próximos"; dentro dele a
+/// memória mais recente (sucessora de `supersede`) vence; entre grupos o
+/// conteúdo (score) continua dominando.
+fn rank_hits_by_score_state(ranked: &mut [(u32, Hit)]) {
+    ranked.sort_by(|a, b| {
+        let ga = a.0 / (SCORE_TIE_MARGIN + 1);
+        let gb = b.0 / (SCORE_TIE_MARGIN + 1);
+        ga.cmp(&gb)
+            .then_with(|| hit_tick(&b.1).cmp(&hit_tick(&a.1)))
+            .then_with(|| a.0.cmp(&b.0))
+            .then_with(|| a.1.key.cmp(&b.1.key))
+    });
+}
+
 /// Proveniência de um hit (v0.6 — Phase 9 parcial): epistemologia exposta ao
 /// caller — memórias com estados diferentes NÃO se parecem iguais no recall.
 #[derive(Clone, Debug, PartialEq)]
@@ -1813,6 +1840,14 @@ impl Sgdb {
         dims
     }
 
+    /// Média dos embeddings vivos de `dim` (v1.1.16 ADC-lite, observabilidade
+    /// do segundo path de candidatos). `None` = sem vetores nessa dim.
+    /// A média é exata por construção (insert soma, delete/overwrite subtrai,
+    /// rebuild reconstrói) — nunca fonte de ranking final.
+    pub fn corpus_mean(&self, dim: usize) -> Option<Vec<f32>> {
+        self.engine.corpus_mean(dim)
+    }
+
     /// ADR-0007: relatório estruturado da ERA do corpus para a LLM gestora.
     ///
     /// Detecta o estado de modelo do banco (dims indexadas, contagem por dim,
@@ -2019,6 +2054,10 @@ impl Sgdb {
     /// Núcleo do recall com modo de estado explícito. `active_only = true`:
     /// memórias inativas são descartadas ANTES do ranking (não consomem
     /// vagas do top-k); `false` = histórico (todas, com provenance exposta).
+    ///
+    /// Ordenação final = state-first (v1.1.16): o score continua dominante;
+    /// só dentro da margem de empate a versão corrente (maior `created_tick`)
+    /// passa à frente — legado nunca rouba vaga de fato corrente próximo.
     fn recall_impl(
         &mut self,
         query: &[f32],
@@ -2056,7 +2095,15 @@ impl Sgdb {
         self.metrics.recalls += 1;
         let k = k.max(1);
         let cand = k.saturating_mul(oversample.max(1));
-        let hits = self.engine.bq_top_k_f32(query, cand);
+        // v1.1.16 ADC-lite: candidatos = path legado ∪ path com query
+        // re-expressa (`sign(q - mean)`); o rescore FP32 abaixo decide o
+        // ranking final. Orçamento `cand` preservado (trunca a união).
+        let hits: Vec<(u64, u32)> = self
+            .engine
+            .bq_top_k_f32_dual(query, cand)
+            .into_iter()
+            .take(cand.max(1))
+            .collect();
         // Distância Hamming máxima de um vetor indexado (normaliza o fallback
         // p/ escala 0..1 do contrato de `Hit.dist` — bughunt #11).
         let ham_max = (self.engine.bq.words_per_vec.max(1) * 64) as f32;
@@ -2189,10 +2236,11 @@ impl Sgdb {
             }
         }
         // Sort determinístico: score u32 (paridade OS: fp32 0..10000 vs ham
-        // 0..64 no mesmo espaço) + tie-break estável por storage key — mesma
-        // DB + mesma query + mesmo k ⇒ mesmos resultados ordenados.
+        // 0..64 no mesmo espaço) + state-first v1.1.16 (scores dentro da
+        // margem contam como empate → versão corrente primeiro) + key.
+        // Mesma DB + mesma query + mesmo k ⇒ mesmos resultados ordenados.
         let mut ranked: Vec<(u32, Hit)> = best.into_values().collect();
-        ranked.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.key.cmp(&b.1.key)));
+        rank_hits_by_score_state(&mut ranked);
         Ok(ranked.into_iter().take(k).map(|(_, h)| h).collect())
     }
 
@@ -3189,9 +3237,15 @@ impl Sgdb {
         self.metrics.recalls += 1;
         let k = k.max(1);
         let cand = k.saturating_mul(oversample.max(1));
-        let wide = self.engine.bq_top_k_f32(query, cand);
+        // v1.1.16 ADC-lite: mesmo dual-path do `recall_impl`.
+        let wide: Vec<(u64, u32)> = self
+            .engine
+            .bq_top_k_f32_dual(query, cand)
+            .into_iter()
+            .take(cand.max(1))
+            .collect();
         let ham_max = (self.engine.bq.words_per_vec.max(1) * 64) as f32;
-        let mut pending: Vec<(u32, String, f32, MemoryState)> = Vec::new();
+        let mut pending: Vec<(u32, String, f32, MemoryState, u64)> = Vec::new();
         let mut companion_keys: Vec<String> = Vec::new();
         for (id, ham) in wide {
             let Some(sk) = self.engine.storage_key_of(id).map(String::from) else {
@@ -3216,7 +3270,12 @@ impl Sgdb {
             if active_only && state != MemoryState::Active {
                 continue;
             }
-            pending.push((score, sk.clone(), dist, state));
+            let tick = doc
+                .meta
+                .as_ref()
+                .map(|m| m.created_tick)
+                .unwrap_or(0);
+            pending.push((score, sk.clone(), dist, state, tick));
             // companion L2 para projeção prosa (mesma regra do recall_impl)
             let ck = if sk.starts_with("md/L4/") {
                 sk.replacen("/L4/", "/L2/", 1)
@@ -3227,10 +3286,18 @@ impl Sgdb {
             };
             companion_keys.push(ck);
         }
-        pending.sort_by_key(|a| a.0);
+        // state-first v1.1.16 (paridade com `recall_impl`): grupo de score,
+        // created_tick desc, score asc.
+        pending.sort_by(|a, b| {
+            let ga = a.0 / (SCORE_TIE_MARGIN + 1);
+            let gb = b.0 / (SCORE_TIE_MARGIN + 1);
+            ga.cmp(&gb)
+                .then_with(|| b.4.cmp(&a.4))
+                .then_with(|| a.0.cmp(&b.0))
+        });
         pending.truncate(k);
         // batch de textos (map companion -> texto)
-        let keep: Vec<String> = pending.iter().map(|(_, sk, _, _)| {
+        let keep: Vec<String> = pending.iter().map(|(_, sk, _, _, _)| {
             if sk.starts_with("md/L4/") {
                 sk.replacen("/L4/", "/L2/", 1)
             } else if sk.starts_with("md/L5/") {
@@ -3241,7 +3308,7 @@ impl Sgdb {
         }).collect();
         let texts = self.engine.get_texts_batch(&keep);
         let mut out = Vec::new();
-        for (score, sk, dist, state) in pending {
+        for (score, sk, dist, state, _) in pending {
             let doc = self.engine.get_by_storage_key(&sk)?.unwrap();
             let prov = doc.meta.as_ref().map(|m| HitProvenance {
                 memory_id: m.memory_id.clone(),
@@ -4895,19 +4962,140 @@ mod tests {
 
     #[test]
     fn recall_tie_break_by_key() {
-        // Scores empatados: tie-break determinístico por storage key
+        // Scores empatados: state-first v1.1.16 — dentro do grupo de empate
+        // a versão corrente (maior created_tick) vence; key só desempata
+        // ticks iguais. Ordem determinística em ambos os casos.
         let mut db = Sgdb::open(InMemory::new()).unwrap();
-        // embeddings idênticos → mesmo score; keys diferentes → ordem por key
+        // embeddings idênticos → mesmo score; escrita em ordem z, a, m →
+        // created_tick crescente → ordem reversa (m, a, z)
         db.remember_semantic("z", "z-doc", &[1.0, 1.0, 1.0, 1.0]).unwrap();
         db.remember_semantic("a", "a-doc", &[1.0, 1.0, 1.0, 1.0]).unwrap();
         db.remember_semantic("m", "m-doc", &[1.0, 1.0, 1.0, 1.0]).unwrap();
         let hits = db.recall(&[1.0, 1.0, 1.0, 1.0], 10).unwrap();
         let keys: Vec<&str> = hits.iter().map(|h| h.key.as_str()).collect();
-        // 3 entradas, ordenadas por key (a, m, z) no empate
+        // 3 entradas, versão corrente primeiro (m, a, z)
         assert_eq!(keys.len(), 3);
-        assert!(keys[0].ends_with("/a"), "esperava /a primeiro: {keys:?}");
-        assert!(keys[1].ends_with("/m"), "esperava /m segundo: {keys:?}");
+        assert!(keys[0].ends_with("/m"), "esperava /m primeiro: {keys:?}");
+        assert!(keys[1].ends_with("/a"), "esperava /a segundo: {keys:?}");
         assert!(keys[2].ends_with("/z"), "esperava /z terceiro: {keys:?}");
+    }
+
+    #[test]
+    fn dual_path_recovers_offset_cluster_member() {
+        // Mudança 1 (ADC-lite): 1 membro A + 7 membros B; query = A_0 com
+        // offset +1.5 (bits todos-1 → path legado casa o cluster errado B).
+        // O path centrado (`sign(q - mean)`) recupera A_0 no pool.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let a0 = [-1.0f32, -1.1, -0.9, -1.0, -1.0, -1.0, -1.0, -1.0];
+        db.remember_semantic("a0", "membro A", &a0).unwrap();
+        for i in 0..7 {
+            let n = (i as f32) * 0.02 - 0.06;
+            let b = [
+                1.0 + n,
+                1.1 - n,
+                0.9 + n,
+                1.0 - n,
+                1.0 + n,
+                1.1 - n,
+                0.9 + n,
+                1.0 + n,
+            ];
+            db.remember_semantic(&alloc::format!("b{i}"), "membro B", &b)
+                .unwrap();
+        }
+        let q: Vec<f32> = a0.iter().map(|x| x + 1.5).collect();
+        let plain_ids: Vec<u64> = db
+            .engine_mut()
+            .bq
+            .top_k_f32(&q, 3)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        let plain: Vec<String> = plain_ids
+            .iter()
+            .map(|id| db.engine_mut().storage_key_of(*id).unwrap().to_string())
+            .collect();
+        assert!(
+            !plain.iter().any(|k| k.ends_with("/a0")),
+            "path legado casa B (offset): {plain:?}"
+        );
+        let dual_ids: Vec<u64> = db
+            .engine_mut()
+            .bq_top_k_f32_dual(&q, 3)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        let dual: Vec<String> = dual_ids
+            .iter()
+            .map(|id| db.engine_mut().storage_key_of(*id).unwrap().to_string())
+            .collect();
+        assert!(
+            dual.iter().any(|k| k.ends_with("/a0")),
+            "dual recupera A_0: {dual:?}"
+        );
+        // média exata: dim0 = (A_0[0] + ΣB[i][0]) / 8; Σ dos ruídos
+        // (i*0.02-0.06, i=0..7) = 0 → (−1 + 7) / 8 = 0.75
+        let mean = db.corpus_mean(8).unwrap();
+        assert_eq!(mean.len(), 8);
+        assert!((mean[0] - 0.75).abs() < 1e-4, "media exata: {mean:?}");
+        assert!(mean.iter().any(|x| *x > 0.5), "media nao trivial: {mean:?}");
+    }
+
+    #[test]
+    fn corpus_mean_tracks_overwrite_and_delete() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("k1", "um", &[1.0, 0.0, 0.0, 0.0]).unwrap();
+        db.remember_semantic("k2", "dois", &[3.0, 0.0, 0.0, 0.0]).unwrap();
+        assert_eq!(db.corpus_mean(4).unwrap(), vec![2.0, 0.0, 0.0, 0.0]);
+        // overwrite não conta 2x: média de [5, k2=3] = 4
+        db.remember_semantic("k1", "um novo", &[5.0, 0.0, 0.0, 0.0])
+            .unwrap();
+        assert_eq!(db.corpus_mean(4).unwrap(), vec![4.0, 0.0, 0.0, 0.0]);
+        // delete subtrai: resta só k2
+        assert!(db.delete("md/L4/k1").unwrap());
+        assert_eq!(db.corpus_mean(4).unwrap(), vec![3.0, 0.0, 0.0, 0.0]);
+        assert!(db.delete("md/L4/k2").unwrap());
+        assert!(db.corpus_mean(4).is_none());
+    }
+
+    #[test]
+    fn recall_prefers_current_over_legacy_near_tie() {
+        // Mudança 2 (state-first): duas memórias ATIVAS sobre o mesmo fato
+        // (mesmas entidades, mesmo vetor → empate exato de score). A corrente
+        // (maior created_tick) vence mesmo com key lexicograficamente MAIOR
+        // (o tie-break antigo por key poria o legado primeiro); conteúdo
+        // distinto (score de outro grupo) continua dominando.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let q = [1.0f32, 0.0, 0.0, 0.0];
+        db.remember_semantic_with(
+            "a_leg",
+            "fato legado",
+            &[0.0, 1.0, 0.0, 0.0],
+            RememberOptions {
+                entities: &["fato/tema"],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        db.remember_semantic_with(
+            "z_cur",
+            "fato corrente",
+            &[0.0, 1.0, 0.0, 0.0],
+            RememberOptions {
+                entities: &["fato/tema"],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // terceiro doc com vetor PRÓXIMO da query (score de outro grupo)
+        db.remember_semantic("near3", "proximo", &[1.0, 0.01, 0.0, 0.0])
+            .unwrap();
+        let hits = db.recall(&q, 5).unwrap();
+        let keys: Vec<&str> = hits.iter().map(|h| h.key.as_str()).collect();
+        assert_eq!(keys.len(), 3, "{keys:?}");
+        assert!(keys[0].ends_with("/near3"), "conteúdo domina: {keys:?}");
+        assert!(keys[1].ends_with("/z_cur"), "corrente antes do legado: {keys:?}");
+        assert!(keys[2].ends_with("/a_leg"), "{keys:?}");
     }
 
     // ── Index rebuild: storage = verdade, índices = derivado (maturation P4c) ─
