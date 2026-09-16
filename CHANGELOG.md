@@ -69,6 +69,9 @@ loop de agente). Duas correções com regressão; sem quebra de API (PATCH):
 
 ## [Unreleased]
 
+- **ADR-0009** — Index snapshot on open; metrics-gated auto-adapt (design
+  Accepted; implementação ROADMAP Next). Ver
+  [`docs/adr/0009-index-snapshot-auto-adapt.md`](docs/adr/0009-index-snapshot-auto-adapt.md).
 - **Parked (browser):** extensão / Chrome Web Store **não** são produto nem
   gate de release. Auto-captura em `extension/background.js` comentada.
   Foco: NSGDB **agêntico** — MCP 4 tools, doutrina (`nsgdb://doctrine`),
@@ -79,8 +82,8 @@ loop de agente). Duas correções com regressão; sem quebra de API (PATCH):
   single_writer, telepathy_when, embedder_host); onboarding multi-agente;
   regra `.cursor/rules/nsgdb-agent.mdc`; `docs/MCP.md` §cold-start;
   `scripts/telepathy-demo.ps1`. Fix example `p2p_telepathy`: key `rev_of_m1`
-  (ADR-0005 — `m1b`/`m1_rev` eram prefixos de `m1`). Snapshot de índices /
-  ADC residual → ROADMAP Next.
+  (ADR-0005 — `m1b`/`m1_rev` eram prefixos de `m1`). Snapshot de índices →
+  **ADR-0009** / ROADMAP Next.
 
 ## [1.1.15] — 2026-09-08 (leva 2: TTL/GC + timeline + ANN + WASM)
 

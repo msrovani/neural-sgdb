@@ -11,7 +11,9 @@ Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
 
 🔜 **Index snapshot on `Sgdb::open`** — hoje rebuild linear de ART/BQ/lexical
    (~16 ms/500 docs). TickvFile já tem TKCK fast-mount; falta snapshot+delta
-   dos índices derivados (maior ROI de restart de sessão).
+   dos índices derivados. **Design aceite: [ADR-0009](docs/adr/0009-index-snapshot-auto-adapt.md)**
+   (métricas `open_ms`/`doc_count`/reopens; auto-adapt no próximo open;
+   storage = verdade; sem troca mid-query).
 
 🔜 **Recall@k residual pós ADC-lite** — dual-path v1.1.17 sobe legado 22–35%
    → 24–40% @1–16×; ainda é filtro+rescore. ANN IVF/`HnswLite` já existem

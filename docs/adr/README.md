@@ -27,6 +27,7 @@ decisions MUST add an ADR in the same commit as the code.
 | 0006 | No crypto in the core | Transport seam + `SignedEnvelope`; production plugs a real signer |
 | 0007 | Embedding model = era invariant | Model swaps are era transitions; migrate via re-embed + BQ rebuild, never mixed dims in a live BQ |
 | 0008 | Default retrieval is lexical; embeddings are host-side | MCP default = lexical; `DemoEmbedder` is not the product path; optional local HTTP embedder; never in the core |
+| 0009 | Index snapshot on open; metrics-gated auto-adapt | Storage = truth; TKCK-like index snapshot; measure `open_ms`/`doc_count`/reopens; auto persist+fast-mount when budget breaks — **not** mid-query; impl ROADMAP Next |
 
 ## Retrospective history
 
