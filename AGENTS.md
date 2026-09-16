@@ -18,6 +18,11 @@ Bump `MCP_CONTRACT_VERSION` ⇒ pin `mcp_client` `serverInfo.version` no mesmo
 commit (senão hot test 94/1). **v1.1.17:** ADC-lite dual-path + state-first
 ranking (`corpus_mean`, `bq_top_k_f32_dual`); bitvecs/era intactos.
 
+**Self-program (qualquer LLM/IDE):**
+[`docs/agent-self-program.md`](docs/agent-self-program.md) +
+[`docs/doctrine.md`](docs/doctrine.md); cold-start toda sessão; skill
+`.cursor/skills/nsgdb-full-usage/`.
+
 ## Post-P2 hardening state (2026-08-13)
 
 P0 (committed in `feat(v1.0): P0 hardening…`): docs aligned to v1.0.0, clippy

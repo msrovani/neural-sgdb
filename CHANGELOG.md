@@ -15,6 +15,11 @@ Sem mudança de formato / MCP contract (permanece **1.1.17** nas tools).
   `p2p_telepathy` OK; `telepathy_two_db` OK; `mesh_simulation` OK.
 - Docs: `telepathy-pt.md` / `telepathy.md` §5; `scripts/telepathy-demo.ps1`
   corre InMemory + 2-DB.
+- **Agent self-program (qualquer LLM/IDE):**
+  [`docs/agent-self-program.md`](docs/agent-self-program.md) — checklist de
+  auto-config, cold-start, pacote de memória, mapa de capacidade, snippets
+  user-rule/system-prompt; skill `.cursor/skills/nsgdb-full-usage/`; ponteiros
+  em `doctrine.md`, `MCP.md`, `README`, `.cursor/rules/nsgdb-agent.mdc`.
 
 ## [1.1.17] — 2026-09-16 (recall quality: ADC-lite dual-path + state-first)
 

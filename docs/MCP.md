@@ -71,6 +71,19 @@ O resource **`nsgdb://session`** inclui `cold_start`:
 
 Regra Cursor do repo: [`.cursor/rules/nsgdb-agent.mdc`](../.cursor/rules/nsgdb-agent.mdc).
 
+## Self-program (qualquer LLM / IDE)
+
+Pacote portátil para o agente **entender e auto-configurar** uso em capacidade
+total (cold-start, pacote de memória, mapa write/read/curate/p2p, snippets de
+user rule / system prompt):
+
+- Playbook: [`agent-self-program.md`](agent-self-program.md)
+- Doutrina curta (MCP `instructions`): [`doctrine.md`](doctrine.md)
+- Skill Cursor: [`.cursor/skills/nsgdb-full-usage/SKILL.md`](../.cursor/skills/nsgdb-full-usage/SKILL.md)
+
+Se o cliente MCP ignorar `initialize.instructions`, a user rule + o playbook
+são a rede de segurança.
+
 ## Build (obrigatório antes do IDE)
 
 Preferir install em path fixo (não conflita com MCP rodando no Windows):

@@ -5,13 +5,16 @@ alwaysApply: true
 
 # neural-sgdb — disciplina do agente
 
+Playbook completo (capacidade total): [`docs/agent-self-program.md`](../../docs/agent-self-program.md).
+Skill: [`.cursor/skills/nsgdb-full-usage/SKILL.md`](../skills/nsgdb-full-usage/SKILL.md).
+
 ## Cold-start (obrigatório no início da sessão)
 
 1. Ler resource `nsgdb://session` (campo `cold_start`) e `nsgdb://doctrine`.
 2. Para **cada** scope em `cold_start.scopes_to_probe` (não só o default):
-   `recall(mode=lexical, scope=..., k=5)` ou `recall(entities=[...], scope=...)`.
+   `recall(mode=lexical, scope=..., k=5, format=json)` ou `recall(entities=[...], scope=...)`.
 3. Preferências IDE: `pref/idioma`, `pref/memoria`, `nsgdb/usage` no scope default.
-4. Constraints do repo: `adr/index`, `roadmap/non-goals`, `docs/telepathy` em `project/neural-sgdb` (ou scope do projeto).
+4. Constraints do repo: `adr/index`, `roadmap/non-goals`, `docs/telepathy`, `adr/0009` em `project/neural-sgdb`.
 5. Só então `remember`. Não hoarde.
 
 Null-scoping: recall **sem** `scope` não vê memórias escopadas. `unseen_scopes` em tensions não é DB vazio.
@@ -21,7 +24,7 @@ Null-scoping: recall **sem** `scope` não vê memórias escopadas. `unseen_scope
 - Scope por agente/tarefa: `agent/<id>`, `project/<repo>`, `ide/cursor`.
 - Partilhar o mesmo `NEURAL_SGDB_DB` = memórias comuns (storage), **não** telepatia CRDT.
 - **Um** processo `mcp_server` writer por ficheiro. Dois writers no mesmo FileStorage = risco.
-- Dois agentes em máquinas/DBs distintos → feature `p2p` (`examples/p2p_telepathy`).
+- Dois agentes em máquinas/DBs distintos → feature `p2p` (`telepathy_two_db` / `p2p_telepathy`).
 
 ## Retrieval
 
