@@ -4,9 +4,10 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
-## [Unreleased] (recall quality — ADC-lite dual-path + state-first)
+## [1.1.17] — 2026-09-16 (recall quality: ADC-lite dual-path + state-first)
 
-Sem mudança de formato, sem mudança de contrato MCP; APIs novas aditivas:
+Sem mudança de formato (NMD1/TKLV intactos), sem mudança de contrato MCP
+(tipos/rotas idênticos); APIs novas aditivas. **MCP_CONTRACT_VERSION → 1.1.17**.
 
 - **ADC-lite dual-path** (`sign(q − mean)`): engine mantém a média dos
   embeddings L4/L5 por dim (`corpus_sums`: insert soma, delete/overwrite
@@ -21,6 +22,12 @@ Sem mudança de formato, sem mudança de contrato MCP; APIs novas aditivas:
   corrente vence empates, conteúdo distinto continua dominando. Vale para
   `recall_impl` e `recall_impl_dims`. Teste `recall_tie_break_by_key`
   atualizado para o novo contrato.
+- **13 testes de validação rec2+rec3** (edge cases, interação, regressão):
+  dual-path: corpus vazio, single doc, query=mean, dims mismatch, dedup,
+  mean preservada em rebuild (FileStorage). State-first: same tick→key,
+  content dominates, superseded filtered, deterministic. Interação:
+  dual-path honra state-first. Paridade recall/hybrid_rrf. Regressão:
+  1-dim e weighted. Matrix: **275+1 / 321+1 / 227+1**, gates verdes.
 
 ## [1.1.16] — 2026-09-10 (AI-user audit: hardening + write-amplification fix)
 
