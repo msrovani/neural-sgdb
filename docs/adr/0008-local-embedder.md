@@ -54,11 +54,11 @@ MCP `recall.mode` in `examples/mcp_server.rs` (implementation follows this ADR).
   (MINOR, documented contract); hosts that relied on demo same-word
   “semantic” must pass `mode=semantic` + `NEURAL_SGDB_EMBEDDER=demo` or a
   real `embedding`; one extra process if the host wants an era; same-dim
-  model swaps stay silent until `model_id` exists (**MDM1 v7** — v6 is
-  `content_type`).
-- Contract impact: none on NMD1/TKLV/`no_std`. MCP behavior change is MINOR
-  when implemented (`VERSIONING.md`). This ADR authorizes that change; it
-  does not by itself bump the crate version.
+  model swaps stay silent until the host sets **`model_id` (MDM1 v7)**; v6 is
+  `content_type` only. See ADR-0007 (updated).
+- Contract impact: none on NMD1/TKLV/`no_std`. MCP lexical-first is **shipped**
+  (v1.1.9+; contract version tracks separately). This ADR authorized that
+  MINOR behavior change (`VERSIONING.md`).
 
 ## Other uses of the memory (not just IDE dev)
 

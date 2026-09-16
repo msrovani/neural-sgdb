@@ -69,6 +69,10 @@ loop de agente). Duas correções com regressão; sem quebra de API (PATCH):
 
 ## [Unreleased]
 
+- **Docs ADR hygiene:** ADR-0007 updated — `model_id` / `mixed_models` are
+  **shipped** (MDM1 v7), not “optional future”; architecture `01-memory-model`
+  documents MDM1 v7 + side-tables ttl/event/audit; ADR-0008 consequence line
+  aligned; index ADR-0007 row refreshed.
 - **ADR-0009** — Index snapshot on open; metrics-gated auto-adapt (design
   Accepted; implementação ROADMAP Next). Ver
   [`docs/adr/0009-index-snapshot-auto-adapt.md`](docs/adr/0009-index-snapshot-auto-adapt.md).

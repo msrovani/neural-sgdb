@@ -24,12 +24,13 @@ MemoryDoc (on disk: NMD1 — byte-identical to neural-os-core)
 Golden test `golden_nmd1_bytes` pins the layout. **The NMD1 blob does not
 change** when metadata evolves — new fields live in side-tables (ADR-0003).
 
-### 1.2 Side-table metadata (implemented — MDM1 v6)
+### 1.2 Side-table metadata (implemented — MDM1 v7)
 
-Semantic state and provenance travel in `sys/meta/` (MDM1), not inside NMD1:
+Semantic state and provenance travel in `sys/meta/` (MDM1), not inside NMD1.
+v1–v6 decode with safe defaults; v7 adds scope dims + `model_id` (ADR-0007):
 
 ```text
-MemoryMeta (MDM1 v6, side-table sys/meta/)
+MemoryMeta (MDM1 v7, side-table sys/meta/)
  ├── memory_id          stable 32-hex identity
  ├── version_id         per-version identity (v2+)
  ├── source             creating node_id
@@ -38,9 +39,11 @@ MemoryMeta (MDM1 v6, side-table sys/meta/)
  ├── created_tick       creation counter
  ├── parent_ids         causal parents (merge DAG)
  ├── last_reinforced    (v3+, from reinforce())
- ├── scope              (v4+, multi-agent scoping)
+ ├── scope              (v4+, legacy string; maps to scope_dims.user in v7)
  ├── entities           (v5+, declared entity strings)
- └── content_type       (v6+, declared stable label)
+ ├── content_type       (v6+, declared stable label)
+ ├── scope_dims         (v7+, user/agent/app/run)
+ └── model_id           (v7+, embedding era label — mixed_models in era_report)
 ```
 
 Additional side-tables (same pattern — NMD1 untouched):
@@ -52,6 +55,9 @@ Additional side-tables (same pattern — NMD1 untouched):
 | `sys/rel/<kind>/` | L6 associative edges (forward + reverse ART index) |
 | `sys/version/` | reverse index: `(node, counter) → storage keys` |
 | `sys/conflict/` | first-class conflict records (CFL1) |
+| `sys/ttl/` | per-key TTL (v1.1.15) |
+| `sys/event/` | temporal event timeline (v1.1.15) |
+| `sys/audit/` | hash-chain cognitive audit (v1.1.10) |
 
 **Replication unit:** `MemoryRecord` (MDR1 wire) = doc + state + validity +
 meta — one import/export/merge unit (v0.6+).
