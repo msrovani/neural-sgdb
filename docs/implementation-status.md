@@ -1,6 +1,6 @@
 ﻿# neural-sgdb — Implementation Status
 
-> **Current snapshot (2026-09-16, v1.1.17).** Capability matrix vs the shipped
+> **Current snapshot (2026-09-16, v1.1.18).** Capability matrix vs the shipped
 > codebase. For the public contract see [`docs/api.md`](api.md); for architecture
 > narrative see [`docs/architecture/README.md`](architecture/README.md).
 

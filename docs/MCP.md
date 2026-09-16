@@ -61,8 +61,10 @@ O resource **`nsgdb://session`** inclui `cold_start`:
    `scope=agent/<id>` para isolar identidade sem rede.
 2. Dois writers no mesmo ficheiro FileStorage = **risco** (append-log). Prefira
    um servidor MCP por path de DB.
-3. Telepatia CRDT (já implementada):  
+3. Telepatia CRDT (já implementada e **verificada**):  
    `cargo run --release --example p2p_telepathy --features p2p`  
+   `cargo run --release --example telepathy_two_db --features p2p` (2 ficheiros + reopen)  
+   `powershell -File scripts/telepathy-demo.ps1`  
    Docs: [`telepathy-pt.md`](telepathy-pt.md) / [`telepathy.md`](telepathy.md).
 4. Embedder real: `examples/embedder_http` ou `crates/nsgdb-embed` — nunca no
    core; unset `NEURAL_SGDB_EMBEDDER` = lexical.

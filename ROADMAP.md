@@ -1,8 +1,8 @@
 # Roadmap — neural-sgdb
 
-Status: **v1.1.x maintenance line (crate v1.1.17)** —
+Status: **v1.1.x maintenance line (crate v1.1.18)** —
 stable API, zero deps, `no_std` + `std`, CI gates green. Crate version
-**1.1.17**; histórico v1.1.2–v1.1.17 no `CHANGELOG.md`. This roadmap is honest
+**1.1.18**; histórico v1.1.2–v1.1.18 no `CHANGELOG.md`. This roadmap is honest
 about what is DONE, what is NEXT, and what is deliberately NOT planned.
 
 Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
@@ -18,11 +18,12 @@ Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
    (v1.1.15); FAISS/HNSW externo continua 💤 (ADR-0002). Próximo salto =
    host-side / oversample / ANN, não deps no core.
 
-🔜 **Multi-agente operacional** — cold-start scoped + 1 writer por DB file
-   documentados em `docs/MCP.md` / `.cursor/rules/nsgdb-agent.mdc` /
-   `nsgdb://session.cold_start`. Piloto p2p entre DBs = example existente.
-
 ## v1.x maintenance (2026-08-13 — ongoing)
+
+✅ **v1.1.18 — telepathy 2-DB (2026-09-16)** — `examples/telepathy_two_db`
+   (dois FileStorage + CRDT + reopen); verificado p2p lib **321/0**,
+   `p2p_telepathy`, `mesh_simulation`. MCP contract permanece 1.1.17.
+   Multi-agente: DB partilhado MCP ≠ telepatia; 2 ficheiros = p2p.
 
 ✅ **v1.1.17 — recall quality (2026-09-16)** — ADC-lite dual-path
    (`sign(q) ∪ sign(q−mean)`, `corpus_mean` / `bq_top_k_f32_dual`) +

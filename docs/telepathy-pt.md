@@ -208,17 +208,26 @@ que apaga e um cérebro que decide com o histórico inteiro na mesa.
 ## 5. Como rodar
 
 ```bash
-# duas instâncias Sgdb trocam memórias (CRDT version sync + diff-pull)
+# InMemory — duas instâncias, sync CRDT + supersede (ADR-0005: keys sem prefixo)
 cargo run --release --example p2p_telepathy --features p2p
 
-# benchmarks / stress / MCP server
-cargo run --release --example bench
-cargo run --release --example stress
-cargo run --release --example mcp_server
+# Dois ficheiros FileStorage (multi-nó real) + reopen do disco
+cargo run --release --example telepathy_two_db --features p2p
+
+# Mesh multi-IA (8 agentes em camadas)
+cargo run --release --example mesh_simulation --features p2p
+
+# Windows: scripts/telepathy-demo.ps1 (InMemory + 2-DB)
+powershell -File scripts/telepathy-demo.ps1
 ```
 
-Implementação: `src/crdt.rs`, `examples/p2p_telepathy.rs`, `Sgdb::put` em
-`src/sgdb.rs`. Relacionados: `recall_weighted`, `recall_at`, `sys/validity/`
-(§3.3/§4), sync por delta (#10).
+**Quando usar 2-DB vs DB partilhado (MCP Cursor):** mesmo
+`NEURAL_SGDB_DB` = storage comum (1 writer). Agentes em máquinas/processos
+com ficheiros distintos → `telepathy_two_db` / `p2p`. Conflito preservado;
+arbitragem na leitura.
+
+Implementação: `src/crdt.rs`, `examples/p2p_telepathy.rs`,
+`examples/telepathy_two_db.rs`. Relacionados: `recall_weighted`, `recall_at`,
+`sys/validity/` (§3.3/§4), sync por delta (#10).
 
 Versão em inglês: [`telepathy.md`](telepathy.md).

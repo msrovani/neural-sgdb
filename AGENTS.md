@@ -6,7 +6,7 @@ repo. **Read `codemap.md` (atlas), `docs/api.md` (contract) and
 Distributed, Storage, Cognitive API; typed hits from v1.1.6) and
 `docs/implementation-status.md` before editing code.**
 
-**Shipped crate is 1.1.17 (agentic MCP):** MCP lists **4 tools**
+**Shipped crate is 1.1.18 (agentic MCP contract 1.1.17):** MCP lists **4 tools**
 (`remember`/`recall`/`health`/`curate`; 23 old names are `tools/call` aliases).
 `curate` ganhou ops de metadado cognitivo (decay/consolidate/audit_checkpoint/
 audit_verify/rollback_to).

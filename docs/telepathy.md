@@ -206,17 +206,25 @@ whole history on the table.
 ## 5. Running it
 
 ```bash
-# two Sgdb instances exchange memories (CRDT version sync + diff-pull)
+# InMemory — two instances, CRDT sync + supersede (ADR-0005: non-prefix keys)
 cargo run --release --example p2p_telepathy --features p2p
 
-# benchmarks / stress / MCP server
-cargo run --release --example bench
-cargo run --release --example stress
-cargo run --release --example mcp_server
+# Two FileStorage files (real multi-node) + reopen from disk
+cargo run --release --example telepathy_two_db --features p2p
+
+# Multi-AI mesh (8 layered agents)
+cargo run --release --example mesh_simulation --features p2p
+
+# Windows: scripts/telepathy-demo.ps1 (InMemory + 2-DB)
+powershell -File scripts/telepathy-demo.ps1
 ```
 
-Implementation: `src/crdt.rs`, `examples/p2p_telepathy.rs`, `Sgdb::put` in
-`src/sgdb.rs`. Related: `recall_weighted`, `recall_at`, `sys/validity/`
-(§3.3/§4), delta sync (#10).
+**Shared MCP DB vs 2-DB:** same `NEURAL_SGDB_DB` = shared storage (single
+writer). Separate files/machines → `telepathy_two_db` / `p2p`. Conflicts are
+preserved; arbitration is at read time.
+
+Implementation: `src/crdt.rs`, `examples/p2p_telepathy.rs`,
+`examples/telepathy_two_db.rs`. Related: `recall_weighted`, `recall_at`,
+`sys/validity/` (§3.3/§4), delta sync (#10).
 
 Português: [`telepathy-pt.md`](telepathy-pt.md).

@@ -109,9 +109,11 @@ protocols that codify HOW to use the DB.
   `from_utf8_lossy`). Deterministic (InMemory, no LLM, LCG embeddings). Exit 0
   sse 16/16.
 
-## p2p_telepathy / mesh_simulation / signed_peer (feature `p2p`)
+## p2p_telepathy / telepathy_two_db / mesh_simulation / signed_peer (feature `p2p`)
 - `cargo run --release --example p2p_telepathy --features p2p` — two-instance
-  convergence via CRDT version sync + record pull
+  convergence via CRDT version sync + record pull (ADR-0005 non-prefix keys)
+- `cargo run --release --example telepathy_two_db --features p2p` — two
+  FileStorage DBs + reopen; `scripts/telepathy-demo.ps1` runs both
 - `cargo run --release --example mesh_simulation --features p2p` — layered
   multi-AI telepathy mesh (P2-5)
 - `cargo run --release --example signed_peer --features p2p` — signed-transport

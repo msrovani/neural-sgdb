@@ -4,6 +4,18 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [1.1.18] — 2026-09-16 (telepathy 2-DB harness + verified p2p)
+
+Sem mudança de formato / MCP contract (permanece **1.1.17** nas tools).
+
+- **`examples/telepathy_two_db`**: dois `FileStorage` distintos + CRDT +
+  recall cruzado + supersede/validade + **reopen** do disco. Features
+  `p2p` + `file-storage`.
+- **Verificado:** `cargo test --lib --features p2p` **321/0**;
+  `p2p_telepathy` OK; `telepathy_two_db` OK; `mesh_simulation` OK.
+- Docs: `telepathy-pt.md` / `telepathy.md` §5; `scripts/telepathy-demo.ps1`
+  corre InMemory + 2-DB.
+
 ## [1.1.17] — 2026-09-16 (recall quality: ADC-lite dual-path + state-first)
 
 Sem mudança de formato (NMD1/TKLV intactos), sem mudança de contrato MCP
