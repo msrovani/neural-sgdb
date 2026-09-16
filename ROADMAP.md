@@ -1,13 +1,34 @@
 # Roadmap — neural-sgdb
 
-Status: **v1.1.x maintenance line (crate v1.1.16)** —
+Status: **v1.1.x maintenance line (crate v1.1.17)** —
 stable API, zero deps, `no_std` + `std`, CI gates green. Crate version
-**1.1.16**; histórico v1.1.2–v1.1.16 no `CHANGELOG.md`. This roadmap is honest
+**1.1.17**; histórico v1.1.2–v1.1.17 no `CHANGELOG.md`. This roadmap is honest
 about what is DONE, what is NEXT, and what is deliberately NOT planned.
 
 Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
 
+## Next (honest gaps — not this release)
+
+🔜 **Index snapshot on `Sgdb::open`** — hoje rebuild linear de ART/BQ/lexical
+   (~16 ms/500 docs). TickvFile já tem TKCK fast-mount; falta snapshot+delta
+   dos índices derivados (maior ROI de restart de sessão).
+
+🔜 **Recall@k residual pós ADC-lite** — dual-path v1.1.17 sobe legado 22–35%
+   → 24–40% @1–16×; ainda é filtro+rescore. ANN IVF/`HnswLite` já existem
+   (v1.1.15); FAISS/HNSW externo continua 💤 (ADR-0002). Próximo salto =
+   host-side / oversample / ANN, não deps no core.
+
+🔜 **Multi-agente operacional** — cold-start scoped + 1 writer por DB file
+   documentados em `docs/MCP.md` / `.cursor/rules/nsgdb-agent.mdc` /
+   `nsgdb://session.cold_start`. Piloto p2p entre DBs = example existente.
+
 ## v1.x maintenance (2026-08-13 — ongoing)
+
+✅ **v1.1.17 — recall quality (2026-09-16)** — ADC-lite dual-path
+   (`sign(q) ∪ sign(q−mean)`, `corpus_mean` / `bq_top_k_f32_dual`) +
+   ranking state-first (`SCORE_TIE_MARGIN`); bitvecs/era/S1 intactos.
+   recall@5 dual 24–40% (1×…16×). Matrix **275+1 / 321+1 / 227+1**,
+   MCP contract **1.1.17**, hot **95/0**.
 
 ✅ **v1.1.13 — docs Store/extensão (2026-08-21)** — track **estacionado**:
    não é gate de release; produto = agente via MCP. Ver non-goals abaixo.

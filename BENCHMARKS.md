@@ -63,7 +63,7 @@ same index. Hamming is SIMD (AVX2 `_mm_xor_si128` + popcount).
 
 ### recall@5 — BQ coarse vs true FP32 cosine (correlated clusters)
 
-| oversample | recall@5 legado | recall@5 dual ADC-lite (v1.1.16) |
+| oversample | recall@5 legado | recall@5 dual ADC-lite (v1.1.17) |
 |---|---|---|
 | 1× | 22% | 24% |
 | 2× | 22% | 25% |

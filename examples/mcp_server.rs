@@ -460,12 +460,13 @@ fn health_payload(db: &mut Sgdb, db_path: &str, embedder: &str) -> Value {
         "doctrine_key": format!("md/L4/{}", neural_sgdb::DOCTRINE_KEY),
         "doctrine_entities": neural_sgdb::DOCTRINE_ENTITIES,
         "onboarding": [
-            "0. cold-start: resource nsgdb://session + nsgdb://doctrine (or recall scope=nsgdb/doctrine mode=lexical)",
-            "1. remember(text=...) is lexical L3; recall(query=...) default mode=lexical (same words). Cosine: pass embedding= on both, or NEURAL_SGDB_EMBEDDER=demo",
-            "2. remember(scope=..., entities=[...]) for multi-agent / recall_entities 1-hop",
+            "0. cold-start: resource nsgdb://session (campo cold_start) + nsgdb://doctrine; recall CADA scope em health.scope_labels / cold_start.scopes_to_probe — default_scope NAO ve outros scopes",
+            "1. remember(text=...) is lexical L3; recall(query=...) default mode=lexical (same words). Cosine: pass embedding= on both, or NEURAL_SGDB_EMBEDDER=demo / embedder_http / nsgdb-embed (host, ADR-0008)",
+            "2. multi-agente: scope por agente/tarefa (agent/<id>, project/<repo>); 1 processo mcp_server writer por ficheiro DB — partilhar ficheiro != telepatia CRDT",
             "3. recall(format=json) for typed machine hits",
             "4. remember(type=json|code|embedding|binary) to declare payload type (MDM1 v6)",
-            "5. health(view=era) after dim/era Invalid; health(view=tensions) for conflicts/unseen scopes"
+            "5. health(view=era) after dim/era Invalid; health(view=tensions) for conflicts/unseen scopes",
+            "6. 2+ nos/DBs separados: feature p2p (examples/p2p_telepathy) — conflito preservado, arbitragem na leitura"
         ]
     })
 }
@@ -536,11 +537,48 @@ fn tensions_payload(db: &mut Sgdb) -> Value {
 }
 
 fn session_payload(db: &mut Sgdb, db_path: &str, embedder: &str) -> Value {
+    let health = health_payload(db, db_path, embedder);
+    let tensions = tensions_payload(db);
+    let default_scope = db.default_scope().unwrap_or("").to_string();
+    let mut scopes_to_probe: Vec<String> = Vec::new();
+    if let Some(labels) = health.get("scope_labels").and_then(|v| v.as_array()) {
+        for entry in labels {
+            if let Some(scope) = entry.get(0).and_then(|s| s.as_str()) {
+                if !scope.is_empty() && !scopes_to_probe.iter().any(|s| s == scope) {
+                    scopes_to_probe.push(scope.to_string());
+                }
+            }
+        }
+    }
+    if !default_scope.is_empty() && !scopes_to_probe.iter().any(|s| s == &default_scope) {
+        scopes_to_probe.insert(0, default_scope.clone());
+    }
+    // Always probe doctrine — seed exists even if scope_labels omitted it briefly.
+    if !scopes_to_probe.iter().any(|s| s == neural_sgdb::DOCTRINE_SCOPE) {
+        scopes_to_probe.push(neural_sgdb::DOCTRINE_SCOPE.to_string());
+    }
+    let cold_start = json!({
+        "protocol": "gather-then-act",
+        "steps": [
+            "1. Ler este resource (nsgdb://session) e nsgdb://doctrine",
+            "2. Para cada scope em scopes_to_probe: recall(mode=lexical, scope=..., k=5) OU recall(entities=[...], scope=...)",
+            "3. Preferencias IDE: entities pref/idioma, pref/memoria, nsgdb/usage no default_scope",
+            "4. Constraints de projeto: entities adr/index, roadmap/non-goals, docs/telepathy no scope do repo",
+            "5. So entao remember — nao hoarde; 1 writer por DB file"
+        ],
+        "default_scope": default_scope,
+        "scopes_to_probe": scopes_to_probe,
+        "unseen_scopes": tensions.get("unseen_scopes").cloned().unwrap_or(json!([])),
+        "single_writer": "Um processo mcp_server por ficheiro NEURAL_SGDB_DB; dois writers no mesmo FileStorage e risco. Partilha de ficheiro = memorias comuns, nao sync CRDT.",
+        "telepathy_when": "Dois ou mais Sgdb com DBs/nos distintos → cargo run --release --example p2p_telepathy --features p2p",
+        "embedder_host": "Semantic/hybrid: embedding= nas tools, ou NEURAL_SGDB_EMBEDDER=demo (trigrama), ou examples/embedder_http / crates/nsgdb-embed (ADR-0008 — nunca no core)"
+    });
     json!({
         "resource": "nsgdb://session",
         "recall_default": "lexical",
-        "health": health_payload(db, db_path, embedder),
-        "tensions": tensions_payload(db)
+        "cold_start": cold_start,
+        "health": health,
+        "tensions": tensions
     })
 }
 

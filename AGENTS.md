@@ -2,20 +2,21 @@
 
 Guide for AI agents (OpenCode, Cursor, Windsurf, Claude Code) working in this
 repo. **Read `codemap.md` (atlas), `docs/api.md` (contract) and
-`docs/architecture/` (v1.1.16 crate — Memory Model, Lifecycle, Retrieval,
+`docs/architecture/` (v1.1.17 crate — Memory Model, Lifecycle, Retrieval,
 Distributed, Storage, Cognitive API; typed hits from v1.1.6) and
 `docs/implementation-status.md` before editing code.**
 
-**Shipped crate is 1.1.16 (agentic MCP):** MCP lists **4 tools**
+**Shipped crate is 1.1.17 (agentic MCP):** MCP lists **4 tools**
 (`remember`/`recall`/`health`/`curate`; 23 old names are `tools/call` aliases).
 `curate` ganhou ops de metadado cognitivo (decay/consolidate/audit_checkpoint/
 audit_verify/rollback_to).
 Default retrieval is **lexical**. Unset `NEURAL_SGDB_EMBEDDER` = none;
 `=demo` only if requested. `remember(text=)` without a vector → L3
 (`remember_text_with`). Resources: `nsgdb://doctrine` + `nsgdb://session`.
-Hot test **95/0**. Lib tests **256+**.
+Hot test **95/0**. Lib tests **275+1 / 321+1 / 227+1** (default / p2p / no_std).
 Bump `MCP_CONTRACT_VERSION` ⇒ pin `mcp_client` `serverInfo.version` no mesmo
-commit (senão hot test 94/1).
+commit (senão hot test 94/1). **v1.1.17:** ADC-lite dual-path + state-first
+ranking (`corpus_mean`, `bq_top_k_f32_dual`); bitvecs/era intactos.
 
 ## Post-P2 hardening state (2026-08-13)
 
@@ -398,14 +399,22 @@ Gaps medidos (NÃO bugs — roadmap):
   (TKCK) — falta o mesmo para ART/BQ (persistir snapshot do índice + delta).
 - **`stress` default (`STRESS_REOPEN=100k`) roda ~40 min** — cada open/rebuild
   custa ~24 ms até num DB de 101 docs. Documentado no examples/codemap.
-- **recall@5 BQ coarse fica em 22–35% (1024 dims, clusters correlacionados)**
-  mesmo com oversample 16× — OpenSearch/Qdrant usam ADC (query full-precision
-  assimétrico) + random rotation. Hoje o rescore FP32 é o salvador: é filter,
-  não ranking (design honesto, mas recall@k do filtro é o teto).
+- **recall@5 BQ coarse (legado) 22–35%** — **v1.1.17 ADC-lite dual-path**
+  sobe para **24–40%** (1×…16×) sem mudar bitvecs; ainda é filtro+rescore,
+  não ANN denso. Gap residual: ADC full-precision / random rotation.
 
 Harness novo: `examples/agent_sim.rs` — loop de agente real (P50/P99 por
 turno, exact vs paraphrase, isolamento de scope). Paraphrase MISSA no lexical
 (BM25, by design — agents precisam de rerank/semântico para paráfrase).
+
+## Post-audit v1.1.17 (recall quality, 2026-09-16)
+
+- **ADC-lite dual-path**: `corpus_sums` por dim; `bq_top_k_f32_dual` =
+  `top_k_f32(q) ∪ top_k_f32_minus_mean(q, mean)`; FP32 rescore decide.
+  APIs: `quantize_f32_minus_mean`, `Sgdb::corpus_mean`.
+- **State-first**: empates dentro de `SCORE_TIE_MARGIN` ordenam por
+  `created_tick` desc (versão corrente antes do legado).
+- Matrix: **275+1 / 321+1 / 227+1**; `MCP_CONTRACT_VERSION` = **1.1.17**.
 
 ## Repository Map
 
@@ -510,9 +519,9 @@ hash, not a semantic model). Restart opencode after changing the config.
 ## Running tests
 
 ```bash
-cargo test                                 # 257+1 tests (InMemory/FileStorage/TickvFile)
-cargo test --features p2p                  # 303+1 (includes CRDT sync + mesh harness)
-cargo test --no-default-features           # 209+1 (no_std core, host test harness)
+cargo test                                 # 275+1 tests (InMemory/FileStorage/TickvFile)
+cargo test --features p2p                  # 321+1 (includes CRDT sync + mesh harness)
+cargo test --no-default-features           # 227+1 (no_std core, host test harness)
 cargo check --no-default-features --target x86_64-unknown-none   # no_std gate
 cargo clippy --all-targets --all-features -- -D warnings          # lint gate (P0-5)
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-6/P0-10)
@@ -600,7 +609,9 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-
 - **BQ recall-time extras (2026)**: `MihIndex` (multi-index hashing sobre os
   bitvecs existentes — candidatos sub-lineares, `candidates()`/`top_k` com
   probes); `quantize_f32_centered`/`top_k_f32_centered` (query re-centrada pela
-  média — bitvecs armazenados intactos); `recall()` usa auto-oversample por
+  média — bitvecs armazenados intactos); **v1.1.17 ADC-lite**:
+  `quantize_f32_minus_mean` / `bq_top_k_f32_dual` / `corpus_mean` (união
+  legado ∪ `sign(q−mean)`); `recall()` usa auto-oversample por
   dimensionalidade (1 word→16, 2-4→8, senão 4); `recall_weighted` =
   `w_sem·dist + w_rec·recência(/ts/hex) + w_imp·importância(doc, penalty 1−imp)`
 — v1.1.2 P2.

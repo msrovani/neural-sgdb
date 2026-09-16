@@ -575,7 +575,9 @@ fn main() {
     let session_txt = r["result"]["contents"][0]["text"].as_str().unwrap_or("");
     rep.check("resource nsgdb://session e cold-start JSON",
         session_txt.contains("recall_default") && session_txt.contains("lexical")
-            && session_txt.contains("tensions"), session_txt.to_string());
+            && session_txt.contains("tensions")
+            && session_txt.contains("cold_start")
+            && session_txt.contains("scopes_to_probe"), session_txt.to_string());
     rep.phase("health/validate", &t);
 
     // ---------- fase 8: resources + paginaÃ§Ã£o ----------

@@ -1,7 +1,7 @@
 ﻿# neural-sgdb — API Contract
 
 > Contract document for the extraction of the SGDB core from neural-os-core.
-> Status: **current public contract (crate v1.1.13)** —
+> Status: **current public contract (crate v1.1.17)** —
 > this document is the current public contract; roadmap items are explicitly
 > marked as such. The internal API lives in `crates/k_ai/src/sgdb/` of the
 > parent OS; this doc defines the public surface the community crate exposes
@@ -323,10 +323,10 @@ código, binários). Duas regras tornam o consumo determinístico:
    `Sgdb::primary_of(key)` resolve `md/L2/<id>` → primário existente para
    follow-ups.
 
-## Additive public surface (v1.1.2–v1.1.13)
+## Additive public surface (v1.1.2–v1.1.17)
 
 Everything below is **additive** (MINOR per VERSIONING.md) — no signature of a
-v1.0 method changed; crate version **1.1.13** in `Cargo.toml`. Key additions since the contract above:
+v1.0 method changed; crate version **1.1.17** in `Cargo.toml`. Key additions since the contract above:
 
 ```rust
 // ---- S1: recall is LOUD on dimension mismatch (v1.1.3) ----
@@ -471,6 +471,14 @@ pub fn rollback_to(&mut self, seq: u64) -> Result<usize, SgdbError>;
 // NUL/control (<0x20 or 0x7F), reserved `#` (sys/rel/ separator) or > MAX_KLEN
 // — in remember_semantic, remember_text_with, set_scope, set_entities,
 // Sgdb::put. SgdbError::Invalid with a STATIC message; nothing is written.
+
+// ---- ADC-lite dual-path + state-first (v1.1.17) ----
+// Candidate pool = top_k_f32(q) ∪ top_k_f32_minus_mean(q, corpus_mean);
+// FP32 rescore ranks the union. Bitvecs / words_per_vec / era / S1 unchanged.
+pub fn quantize_f32_minus_mean(query: &[f32], mean: &[f32]) -> Vec<u64>;
+pub fn corpus_mean(&self, dim: usize) -> Option<Vec<f32>>;
+// Engine::bq_top_k_f32_dual used by recall_impl / recall_impl_dims.
+// Final sort: score-group (SCORE_TIE_MARGIN) → created_tick desc → score → key.
 ```
 
 ## Format decision (v0.6)

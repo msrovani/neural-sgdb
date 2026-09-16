@@ -1,9 +1,10 @@
 ﻿# Architecture — neural-sgdb
 
-> Status: **current (v1.1.13)** — these documents describe the **shipped**
-> cognitive memory system. Crate version in `Cargo.toml` is **1.1.13**; typed
-> hits landed in **v1.1.6**; MCP is lexical-first (**ADR-0008**). Feature
-> releases through **v1.1.9** are documented in `CHANGELOG.md` and
+> Status: **current (v1.1.17)** — these documents describe the **shipped**
+> cognitive memory system. Crate version in `Cargo.toml` is **1.1.17**; typed
+> hits landed in **v1.1.6**; MCP is lexical-first (**ADR-0008**); recall quality
+> ADC-lite + state-first landed in **v1.1.17**. Feature
+> releases through **v1.1.17** are documented in `CHANGELOG.md` and
 > `docs/api.md`. Sections marked **implemented** reflect code + tests; **remaining**
 > marks honest gaps or deliberate non-goals.
 

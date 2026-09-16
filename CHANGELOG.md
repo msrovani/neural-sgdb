@@ -57,15 +57,18 @@ loop de agente). Duas correções com regressão; sem quebra de API (PATCH):
 
 ## [Unreleased]
 
-- **Parked (browser):**
-
 - **Parked (browser):** extensão / Chrome Web Store **não** são produto nem
   gate de release. Auto-captura em `extension/background.js` comentada.
   Foco: NSGDB **agêntico** — MCP 4 tools, doutrina (`nsgdb://doctrine`),
   `agent_protocol` / `two_ai_protocol` / `memory_arena_eval`.
-- **Hot test:** `examples/mcp_client.rs` pin `serverInfo.version` =
-  `MCP_CONTRACT_VERSION` (`1.1.15`). Bump de contrato sem atualizar o client
-  → 94/1 (servidor certo, check velho).
+- **Hot test pin:** `examples/mcp_client.rs` `serverInfo.version` deve
+  igualar `MCP_CONTRACT_VERSION` (**1.1.17**). Bump sem pin → 94/1.
+- **Agent ops (MCP):** `nsgdb://session` ganha `cold_start` (scopes_to_probe,
+  single_writer, telepathy_when, embedder_host); onboarding multi-agente;
+  regra `.cursor/rules/nsgdb-agent.mdc`; `docs/MCP.md` §cold-start;
+  `scripts/telepathy-demo.ps1`. Fix example `p2p_telepathy`: key `rev_of_m1`
+  (ADR-0005 — `m1b`/`m1_rev` eram prefixos de `m1`). Snapshot de índices /
+  ADC residual → ROADMAP Next.
 
 ## [1.1.15] — 2026-09-08 (leva 2: TTL/GC + timeline + ANN + WASM)
 

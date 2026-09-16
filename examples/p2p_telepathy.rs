@@ -176,8 +176,9 @@ fn main() -> Result<(), SgdbError> {
     );
 
     // ── side-metadata viaja (P0-5): A supersede m1 e marca validade ──────
-    a.remember("m1b", "eu sou a instancia A, memoria um (revisada)", &emb(5))?;
-    a.db.supersede("md/L4/m1", "md/L4/m1b")?;
+    // ADR-0005: nenhuma key pode ser prefixo de outra (m1 ⊂ m1_rev / m1b).
+    a.remember("rev_of_m1", "eu sou a instancia A, memoria um (revisada)", &emb(5))?;
+    a.db.supersede("md/L4/m1", "md/L4/rev_of_m1")?;
     a.db.set_validity("md/L4/m1", 0, 2000)?;
     a.crdt.record_change();
     let (ab4, ba4) = telepathy_round(&mut a, &mut b, 600)?;
@@ -187,8 +188,8 @@ fn main() -> Result<(), SgdbError> {
     assert_eq!(b.db.get_state("md/L4/m1").unwrap(), MemoryState::Superseded);
     assert!(b.db.validity_at("md/L4/m1", 1000).unwrap());
     assert!(!b.db.validity_at("md/L4/m1", 2500).unwrap());
-    // lineage viaja: m1b tem m1 como pai (DAG causal)
-    let parents = b.db.meta("md/L4/m1b").unwrap().unwrap().parent_ids;
+    // lineage viaja: rev_of_m1 tem m1 como pai (DAG causal)
+    let parents = b.db.meta("md/L4/rev_of_m1").unwrap().unwrap().parent_ids;
     assert!(parents.contains(&a.db.memory_id("md/L4/m1").unwrap().unwrap()));
     println!("[✓] estado/validade/lineage replicados em B (contradição #2 fechada)");
 

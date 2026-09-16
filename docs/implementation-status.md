@@ -17,9 +17,9 @@
 
 | Check | Command | Result |
 |---|---|---|
-| Default tests | `cargo test` | **260 lib + 1 doc-test** |
-| P2P tests | `cargo test --features p2p` | **306 lib + 1 doc-test** |
-| no_std tests | `cargo test --no-default-features` | **212 lib + 1 doc-test** |
+| Default tests | `cargo test` | **275 lib + 1 doc-test** |
+| P2P tests | `cargo test --features p2p` | **321 lib + 1 doc-test** |
+| no_std tests | `cargo test --no-default-features` | **227 lib + 1 doc-test** |
 | no_std target | `cargo check --no-default-features --target x86_64-unknown-none` | **ok** |
 | Hot test (MCP) | `cargo run --release --example mcp_client` | **95/0 exit 0** |
 | AI-user sim | `cargo run --release --example agent_sim` | loop real, scope isolado |
@@ -48,6 +48,7 @@
 | Provenance / identity | IMPLEMENTED | `memory_id`, `Hit.provenance`, MDM1 |
 | ART index | IMPLEMENTED | prefix guard, rebuild, delete reclaim |
 | BQ + FP32 recall | IMPLEMENTED | oversample, heap, MihIndex, era guard |
+| ADC-lite dual-path (v1.1.17) | IMPLEMENTED | `corpus_mean`, `bq_top_k_f32_dual`, `sign(q−mean)`; state-first ties |
 | Lexical BM25 | IMPLEMENTED | L2/L3, matched_terms, scoped |
 | Entity 1-hop recall | IMPLEMENTED | `entity_index`, exact string match |
 | Typed hits (v1.1.6) | IMPLEMENTED | `ContentType`, `RecallPath`, MCP json |
@@ -107,7 +108,7 @@ topologies; **content** does.
 `tools/call` aliases. Default recall **lexical** (ADR-0008). Unset
 `NEURAL_SGDB_EMBEDDER` = none (`=demo` explicit only). `remember(text=)`
 without vector → L3. Resources `nsgdb://doctrine` + `nsgdb://session`.
-`health(view=tensions)`. Hot test 84/0.
+`health(view=tensions)`. Hot test **95/0**. MCP contract **1.1.17**.
 
 ### Host connectors
 `connectors/` is host-side (not crate SemVer). Hermes `MemoryProvider` is

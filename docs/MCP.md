@@ -43,6 +43,32 @@ Aliases (ainda aceitos no call): os 23 nomes antigos.
   Handshake injeta `instructions` = [`docs/doctrine.md`](doctrine.md).
   Resource `nsgdb://doctrine`. Seed no open do MCP (`ensure_doctrine`).
 
+## Cold-start, multi-agente e 1 writer
+
+O resource **`nsgdb://session`** inclui `cold_start`:
+
+| Campo | Uso |
+|-------|-----|
+| `scopes_to_probe` | Scopes a recallar no início (inclui `unseen` do default) |
+| `steps` | Ritual gather → act |
+| `single_writer` | 1 processo MCP por ficheiro `NEURAL_SGDB_DB` |
+| `telepathy_when` | Quando usar `p2p` (DBs/nós distintos) |
+| `embedder_host` | Caminho semântico fora do core (ADR-0008) |
+
+**Disciplina:**
+
+1. Dois chats no **mesmo** DB partilhado = memórias comuns via storage — use
+   `scope=agent/<id>` para isolar identidade sem rede.
+2. Dois writers no mesmo ficheiro FileStorage = **risco** (append-log). Prefira
+   um servidor MCP por path de DB.
+3. Telepatia CRDT (já implementada):  
+   `cargo run --release --example p2p_telepathy --features p2p`  
+   Docs: [`telepathy-pt.md`](telepathy-pt.md) / [`telepathy.md`](telepathy.md).
+4. Embedder real: `examples/embedder_http` ou `crates/nsgdb-embed` — nunca no
+   core; unset `NEURAL_SGDB_EMBEDDER` = lexical.
+
+Regra Cursor do repo: [`.cursor/rules/nsgdb-agent.mdc`](../.cursor/rules/nsgdb-agent.mdc).
+
 ## Build (obrigatório antes do IDE)
 
 Preferir install em path fixo (não conflita com MCP rodando no Windows):

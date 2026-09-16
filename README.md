@@ -36,11 +36,12 @@ filesystem, no external runtime.
 
 ## Status
 
-**v1.1.16** — substrate **agêntico** (MCP 4 tools, doutrina, hits tipados,
-TTL/GC, timeline, ANN). Extensão de browser / Store **estacionadas**
-(não são produto nem gate de release). Crate em `Cargo.toml`: **1.1.16**.
+**v1.1.17** — substrate **agêntico** (MCP 4 tools, doutrina, hits tipados,
+TTL/GC, timeline, ANN) + **ADC-lite dual-path** recall e ranking
+**state-first**. Extensão de browser / Store **estacionadas**
+(não são produto nem gate de release). Crate em `Cargo.toml`: **1.1.17**.
 
-- `cargo test` on host: **243+ lib tests + doc-test** (plus p2p / no_std matrix)
+- `cargo test` on host: **275+1** (p2p **321+1**, no_std **227+1**)
 - `cargo check --no-default-features --target x86_64-unknown-none`: **clean**
 - **Typed hits (v1.1.6)**: o recall devolve, por hit, `path` (semantic/
   lexical/entities), `content_type` (Text/Json/Code/Embedding(dim)/Binary),
@@ -193,7 +194,7 @@ lists conflicts / superseded / unseen scopes.
 
 Host adapters for claw-like apps (Hermes provider, OpenClaw skeleton, shared
 MCP client) live in [`connectors/`](connectors/README.md) — **outside** crate
-SemVer; `crates/nsgdb-embed` (LocalEmbedder 384-dim, `cargo run --manifest-path crates/nsgdb-embed/Cargo.toml --example demo`) and `crates/nsgdb-wasm` (`Storage` stub) are host crates — core stays 1.1.16.
+SemVer; `crates/nsgdb-embed` (LocalEmbedder 384-dim, `cargo run --manifest-path crates/nsgdb-embed/Cargo.toml --example demo`) and `crates/nsgdb-wasm` (`Storage` stub) are host crates — core stays 1.1.17.
 Protocolo do agente: `examples/agent_protocol.rs` (23 checks), `two_ai_protocol.rs` (16), `memory_arena_eval.rs`.
 
 ### Cursor (Windows)
@@ -281,6 +282,7 @@ Licensed under **MIT** **or** **Apache-2.0** (dual license), your choice.
 - [x] **v1.1.10 cognitive metadata** — `decay_importance` (Ebbinghaus) + `consolidate_recurrences` + `recall_weighted_full` (`Hit.score_breakdown`) + audit hash-chain `sys/audit/` + write-path hardening
 - [x] **v1.1.11 host governance + micro-ganhos** — `host_scheduler` + `backfill_helper` + `Storage::put_many`/`put_batch` + `lexical` dedup/`search_fast` + `hamming` inline + `recall` select_nth
 - [x] **v1.1.12 security hardening 11→1** — `engine.put_inner` choke central, `WasmStorage` bounds, `LocalEmbedder::new()->Result`, `MCP -32601`, `try_encode` limites
+- [x] **v1.1.17 recall quality** — ADC-lite dual-path (`sign(q) ∪ sign(q−mean)`) + state-first tie-break; recall@5 dual até 40% @16×
 - [x] **Host crates** — `crates/nsgdb-embed` + `crates/nsgdb-wasm` (sem quebrar core `no_std` zero deps)
 - [ ] **Browser extension** — estacionada (`extension/` stub; auto-captura comentada). Produto = agente via MCP, não scraper de abas.
 

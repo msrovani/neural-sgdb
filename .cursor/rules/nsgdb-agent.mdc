@@ -1,0 +1,30 @@
+---
+description: Uso do MCP neural-sgdb (cold-start, scopes, multi-agente, 1 writer)
+alwaysApply: true
+---
+
+# neural-sgdb — disciplina do agente
+
+## Cold-start (obrigatório no início da sessão)
+
+1. Ler resource `nsgdb://session` (campo `cold_start`) e `nsgdb://doctrine`.
+2. Para **cada** scope em `cold_start.scopes_to_probe` (não só o default):
+   `recall(mode=lexical, scope=..., k=5)` ou `recall(entities=[...], scope=...)`.
+3. Preferências IDE: `pref/idioma`, `pref/memoria`, `nsgdb/usage` no scope default.
+4. Constraints do repo: `adr/index`, `roadmap/non-goals`, `docs/telepathy` em `project/neural-sgdb` (ou scope do projeto).
+5. Só então `remember`. Não hoarde.
+
+Null-scoping: recall **sem** `scope` não vê memórias escopadas. `unseen_scopes` em tensions não é DB vazio.
+
+## Multi-agente
+
+- Scope por agente/tarefa: `agent/<id>`, `project/<repo>`, `ide/cursor`.
+- Partilhar o mesmo `NEURAL_SGDB_DB` = memórias comuns (storage), **não** telepatia CRDT.
+- **Um** processo `mcp_server` writer por ficheiro. Dois writers no mesmo FileStorage = risco.
+- Dois agentes em máquinas/DBs distintos → feature `p2p` (`examples/p2p_telepathy`).
+
+## Retrieval
+
+- Default lexical (ADR-0008). Semantic/hybrid: `embedding=` ou embedder host (`embedder_http` / `nsgdb-embed`). `demo` ≠ semântico.
+- Follow-ups usam a storage key completa (`md/L4/...`).
+- `format=json` para consumo máquina.
