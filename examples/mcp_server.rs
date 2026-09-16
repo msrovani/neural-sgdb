@@ -272,7 +272,7 @@ fn error_response(id: &Value, code: i64, message: &str) -> Value {
 
 /// NÃºmero de tools em `tools/list` (aliases antigos ainda funcionam em tools/call).
 const EXPECTED_MCP_TOOL_COUNT: usize = 4;
-const MCP_CONTRACT_VERSION: &str = "1.1.17";
+const MCP_CONTRACT_VERSION: &str = "1.1.18";
 const BUILD_GIT: &str = env!("NEURAL_SGDB_BUILD_GIT");
 
 /// Lista pÃºblica: 4 tools. Os 23 nomes antigos continuam vÃ¡lidos em `tools/call`.
@@ -344,9 +344,12 @@ fn mcp_listed_tools() -> Value {
          }},
          "annotations":{"readOnlyHint":true}},
         {"name":"health",
-         "description":"Observabilidade. view=status (default): onboarding+doutrina+dims. view=validate: integridade. view=era: era_report ADR-0007. view=tensions: conflitos, superseded, scopes invisiveis. Chame cedo. Resource nsgdb://session.",
+         "description":"Observabilidade. view=status (default): onboarding+doutrina+dims. view=validate: integridade. view=era: era_report ADR-0007. view=tensions: conflitos/superseded/unseen. view=staleness: TTL/Decay/contradicts/aging (read-only). Chame cedo. Resource nsgdb://session.",
          "inputSchema":{"type":"object","properties":{
-           "view":{"type":"string","enum":["status","validate","era","tensions"],"default":"status"}
+           "view":{"type":"string","enum":["status","validate","era","tensions","staleness"],"default":"status"},
+           "now":{"type":"integer","description":"Relogio host p/ view=staleness (TTL/aging)"},
+           "limit":{"type":"integer","description":"Max items em view=staleness"},
+           "scope":{"type":"string","description":"Filtro de scope em view=staleness"}
          }},
          "annotations":{"readOnlyHint":true}},
         {"name":"curate",
@@ -465,8 +468,9 @@ fn health_payload(db: &mut Sgdb, db_path: &str, embedder: &str) -> Value {
             "2. multi-agente: scope por agente/tarefa (agent/<id>, project/<repo>); 1 processo mcp_server writer por ficheiro DB — partilhar ficheiro != telepatia CRDT",
             "3. recall(format=json) for typed machine hits",
             "4. remember(type=json|code|embedding|binary) to declare payload type (MDM1 v6)",
-            "5. health(view=era) after dim/era Invalid; health(view=tensions) for conflicts/unseen scopes",
-            "6. 2+ nos/DBs separados: feature p2p (examples/p2p_telepathy) — conflito preservado, arbitragem na leitura"
+            "5. health(view=era) after dim/era Invalid; health(view=tensions) for conflicts/unseen scopes; health(view=staleness) for TTL/Decay/contradicts",
+            "6. 2+ nos/DBs separados: feature p2p (examples/p2p_telepathy) — conflito preservado, arbitragem na leitura",
+            "7. MOM entities on write: mom/constraint|decision|fact|pattern|learning|pref — identical strings on recall_entities"
         ]
     })
 }
@@ -562,9 +566,10 @@ fn session_payload(db: &mut Sgdb, db_path: &str, embedder: &str) -> Value {
         "steps": [
             "1. Ler este resource (nsgdb://session) e nsgdb://doctrine",
             "2. Para cada scope em scopes_to_probe: recall(mode=lexical, scope=..., k=5) OU recall(entities=[...], scope=...)",
-            "3. Preferencias IDE: entities pref/idioma, pref/memoria, nsgdb/usage no default_scope",
-            "4. Constraints de projeto: entities adr/index, roadmap/non-goals, docs/telepathy no scope do repo",
-            "5. So entao remember — nao hoarde; 1 writer por DB file"
+            "3. Preferencias IDE: entities pref/idioma, pref/memoria, nsgdb/usage, mom/pref no default_scope",
+            "4. Constraints de projeto: entities mom/constraint, adr/index, roadmap/non-goals, docs/telepathy no scope do repo (constraints primeiro)",
+            "5. health(view=staleness) — classifica aging/TTL/contradicts; curate manual (nao auto-forget)",
+            "6. So entao remember — MOM roles mom/*; fato identico → reinforce; nao hoarde; 1 writer por DB file"
         ],
         "default_scope": default_scope,
         "scopes_to_probe": scopes_to_probe,
@@ -1259,6 +1264,41 @@ fn main() {
                             let text = serde_json::to_string_pretty(&payload).unwrap_or_default();
                             send(&json!({"jsonrpc":"2.0","id":id,"result":
                                 mcp_tool_result(&text, payload, false)}));
+                        } else if view == "staleness" {
+                            let now = args["now"].as_u64().unwrap_or_else(|| {
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_millis() as u64)
+                                    .unwrap_or(0)
+                            });
+                            let limit = args["limit"].as_u64().unwrap_or(50) as usize;
+                            let scope = args["scope"].as_str();
+                            let cfg = neural_sgdb::StalenessConfig::default();
+                            match db.staleness_report(now, limit, scope, &cfg) {
+                                Ok(items) => {
+                                    let payload = json!({
+                                        "view": "staleness",
+                                        "now": now,
+                                        "limit": limit,
+                                        "scope": scope,
+                                        "count": items.len(),
+                                        "items": items.iter().map(|h| json!({
+                                            "key": h.key,
+                                            "level": h.level.as_str(),
+                                            "reasons": h.reasons.iter().map(|r| r.as_str()).collect::<Vec<_>>(),
+                                            "age": h.age,
+                                            "expires_at": h.expires_at,
+                                            "recommendation": h.recommendation,
+                                        })).collect::<Vec<_>>(),
+                                        "note": "read-only — curate manual (expire_ttl/decay/forget/supersede); nao auto-forget"
+                                    });
+                                    let text = serde_json::to_string_pretty(&payload).unwrap_or_default();
+                                    send(&json!({"jsonrpc":"2.0","id":id,"result":
+                                        mcp_tool_result(&text, payload, false)}));
+                                }
+                                Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                    "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
+                            }
                         } else {
                             let payload = health_payload(&mut db, &db_path, &embedder_name);
                             let text = serde_json::to_string_pretty(&payload).unwrap_or_default();

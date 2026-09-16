@@ -32,9 +32,9 @@
 //!   o BQ só indexa L4/L5, a via lexical o recupera (verbatim > abstração,
 //!   achado MemoryArena).
 //! - **P2 — write-path filter**: antes de escrever, checa se `subject predicate`
-//!   já existe (prova pelo 1-hop de entidades). Objeto igual → DEDUP (sem
-//!   version bump, sem churn de manutenção); objeto mudou → escreve (version
-//!   bump, identidade estável) — a "memória management" do unified framework.
+//!   já existe (prova pelo 1-hop de entidades). Objeto igual → DEDUP +
+//!   `reinforce` (surprise→reinforce, sem version bump); objeto mudou → escreve
+//!   (version bump, identidade estável).
 //! - **P3 — reflection grounding**: toda lição cita ≥1 evidência episódica
 //!   (`DerivedFrom` do hit + `Supports` da evidência — trilha auditável).
 //!   Re-check ADVERSARIAL: procurar ativamente evidência CONTRA a crença e
@@ -249,8 +249,8 @@ fn rerank_gate(db: &mut Sgdb, query: &str, k: usize) -> Result<Vec<Hit>, SgdbErr
 
 // P2: write-path filter — não escrever sem checar. Prova pelo 1-hop (mesmas
 // strings canônicas): já existe `subject predicate` com o MESMO objeto →
-// dedup (sem version bump); objeto mudou → escreve (version bump, identidade
-// estável). Devolve (storage key, escreveu?).
+// reinforce + dedup (sem version bump); objeto mudou → escreve (version bump,
+// identidade estável). Devolve (storage key, escreveu?).
 fn remember_fact_checked(db: &mut Sgdb, f: &Fact) -> Result<(String, bool), SgdbError> {
     let probe = format!("{} {}", f.subject, f.predicate);
     let ents: Vec<&str> = f.entities.iter().map(|e| e.as_str()).collect();
@@ -264,7 +264,9 @@ fn remember_fact_checked(db: &mut Sgdb, f: &Fact) -> Result<(String, bool), Sgdb
             let t = h.text.trim_start();
             if t.starts_with(&probe) {
                 if t[probe.len()..].trim() == f.object {
-                    return Ok((h.key, false)); // dedup: já existe idêntico
+                    // surprise → reinforce: mesmo fato, reforça em vez de clonar
+                    let _ = db.reinforce(&h.key, 0.1);
+                    return Ok((h.key, false));
                 }
                 break; // objeto mudou → seguir e escrever (novo version)
             }
@@ -272,6 +274,36 @@ fn remember_fact_checked(db: &mut Sgdb, f: &Fact) -> Result<(String, bool), Sgdb
     }
     remember_fact(db, f)?;
     Ok((format!("md/L4/{}", f.key), true))
+}
+
+/// Paging host (colheita 3): active = top N com boost de mom/constraint e pref/*;
+/// background = resto (keys only — sem LLM).
+fn page_context(hits: &[Hit], n_active: usize) -> (Vec<Hit>, Vec<Hit>) {
+    let n = n_active.max(1);
+    let is_priority = |h: &Hit| -> bool {
+        h.provenance
+            .as_ref()
+            .map(|p| {
+                p.entities.iter().any(|e| {
+                    e == "mom/constraint" || e.starts_with("pref/") || e == "mom/pref"
+                })
+            })
+            .unwrap_or(false)
+    };
+    let mut ordered: Vec<Hit> = Vec::new();
+    for h in hits {
+        if is_priority(h) {
+            ordered.push(h.clone());
+        }
+    }
+    for h in hits {
+        if !is_priority(h) {
+            ordered.push(h.clone());
+        }
+    }
+    let active: Vec<Hit> = ordered.iter().take(n).cloned().collect();
+    let background: Vec<Hit> = ordered.into_iter().skip(n).collect();
+    (active, background)
 }
 
 // P3: reflection grounding — toda lição referencia evidências episódicas
@@ -489,16 +521,24 @@ fn main() {
         format!("{:?}", leak.iter().map(|h| &h.key).collect::<Vec<_>>()),
     );
 
-    // ── P2: write-path filter (dedup antes de escrever) ────────────────────
+    // ── P2: write-path filter (dedup + reinforce) ──────────────────────────
     let f_ok = Fact::new("build", "status", "ok").with(&[project("neural-sgdb"), topic("build")], "");
     let (k1, w1) = remember_fact_checked(&mut db, &f_ok).unwrap();
     let v1 = db.version_of(&k1).unwrap();
+    let lr1 = db.meta(&k1).unwrap().map(|m| m.last_reinforced).unwrap_or(0);
     let (k2, w2) = remember_fact_checked(&mut db, &f_ok).unwrap();
     let v2 = db.version_of(&k2).unwrap();
+    let lr2 = db.meta(&k2).unwrap().map(|m| m.last_reinforced).unwrap_or(0);
+    let m2 = db.meta(&k2).unwrap().map(|m| m.importance).unwrap_or(0.0);
     rep.check(
         "P2: fato idêntico re-apresentado é dedup (sem version bump)",
         k1 == k2 && !w2 && v1 == v2,
         format!("w1={w1} w2={w2} v1={v1:?} v2={v2:?}"),
+    );
+    rep.check(
+        "P2: dedup reforça importance (surprise→reinforce)",
+        lr2 > lr1 && m2 >= 0.0,
+        format!("lr1={lr1} lr2={lr2} imp={m2}"),
     );
     let f_broken = Fact::new("build", "status", "broken")
         .with(&[project("neural-sgdb"), topic("build")], "");
@@ -513,6 +553,61 @@ fn main() {
         "P2: objeto mudou → version bump e o doc corrente reflete o novo objeto",
         k3 == k1 && w3 && v3 != v1 && cur_text.contains("status broken"),
         format!("w3={w3} v3={v3:?} cur={cur_text:?}"),
+    );
+
+    // ── Paging host: constraint sobe para active ───────────────────────────
+    db.remember_text_with(
+        "page/noise1",
+        "ruido lexical alpha",
+        neural_sgdb::RememberOptions {
+            scope: Some("user/ana"),
+            entities: &[],
+            content_type: None,
+            scope_dims: None,
+            model_id: None,
+        },
+    )
+    .unwrap();
+    db.remember_text_with(
+        "page/noise2",
+        "ruido lexical beta",
+        neural_sgdb::RememberOptions {
+            scope: Some("user/ana"),
+            entities: &[],
+            content_type: None,
+            scope_dims: None,
+            model_id: None,
+        },
+    )
+    .unwrap();
+    db.set_entities(sk_con, &["mom/constraint", "topic/lactose"])
+        .unwrap();
+    let mut pool = db
+        .recall_entities_scoped(&["mom/constraint"], 8, "user/ana")
+        .unwrap();
+    let noise = db
+        .recall_lexical_scoped("ruido lexical", 8, "user/ana")
+        .unwrap();
+    for h in noise {
+        if !pool.iter().any(|p| p.key == h.key) {
+            pool.push(h);
+        }
+    }
+    // força constraint no fim do pool — paging tem de promover
+    if let Some(i) = pool.iter().position(|h| h.key == sk_con) {
+        let h = pool.remove(i);
+        pool.push(h);
+    }
+    let (active, background) = page_context(&pool, 1);
+    rep.check(
+        "paging: mom/constraint entra no active mesmo com N=1",
+        active.iter().any(|h| h.key == sk_con)
+            && !background.iter().any(|h| h.key == sk_con),
+        format!(
+            "active={:?} bg={:?}",
+            active.iter().map(|h| &h.key).collect::<Vec<_>>(),
+            background.iter().map(|h| &h.key).collect::<Vec<_>>()
+        ),
     );
 
     // ── P3: reflection grounding + re-check adversarial ────────────────────

@@ -17,14 +17,16 @@ description: >
    `docs/doctrine.md` / resource `nsgdb://doctrine`.
 3. **Every session** with the neural-sgdb MCP: execute the cold-start ritual
    in the playbook §2 (`nsgdb://session` → probe all `scopes_to_probe` → then act).
-4. Load the memory packet in playbook §3 (entities `pref/*`, `adr/index`,
-   `roadmap/non-goals`, `docs/telepathy`, `adr/0009`, doctrine).
+4. Load the memory packet in playbook §3 (entities `pref/*`, `mom/*`,
+   `adr/index`, `roadmap/non-goals`, `docs/telepathy`, `adr/0009`, doctrine).
 5. Default `recall` mode = **lexical**. Semantic/hybrid only with a real
    `embedding` (or host embedder). Use `format=json` for machine hits.
-6. Never hoard. Gather evidence then `remember` short facts + entities.
+6. Never hoard. Gather evidence then `remember` short facts + MOM entities.
+   Identical fact → reinforce (playbook §3b). Page context (playbook §3c).
    Follow-ups need full keys `md/L4/...`.
 7. Shared MCP DB file ≠ CRDT telepathy; one writer per file; two nodes →
    `telepathy_two_db` / `p2p`.
+8. `health(view=staleness)` for aging/TTL/contradicts — then curate manually.
 
 ## Quick cold-start
 
@@ -32,8 +34,10 @@ description: >
 resources/read nsgdb://session
 resources/read nsgdb://doctrine
 health(view=tensions)
+health(view=staleness)
 for scope in cold_start.scopes_to_probe:
   recall(mode=lexical, scope=scope, k=5, format=json)
+recall(entities=["mom/constraint"], scope=<project>, format=json)
 ```
 
 ## References

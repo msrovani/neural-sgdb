@@ -13,9 +13,10 @@ Skill: [`.cursor/skills/nsgdb-full-usage/SKILL.md`](../skills/nsgdb-full-usage/S
 1. Ler resource `nsgdb://session` (campo `cold_start`) e `nsgdb://doctrine`.
 2. Para **cada** scope em `cold_start.scopes_to_probe` (não só o default):
    `recall(mode=lexical, scope=..., k=5, format=json)` ou `recall(entities=[...], scope=...)`.
-3. Preferências IDE: `pref/idioma`, `pref/memoria`, `nsgdb/usage` no scope default.
-4. Constraints do repo: `adr/index`, `roadmap/non-goals`, `docs/telepathy`, `adr/0009` em `project/neural-sgdb`.
-5. Só então `remember`. Não hoarde.
+3. Preferências IDE: `pref/idioma`, `pref/memoria`, `nsgdb/usage`, `mom/pref` no scope default.
+4. Constraints do repo: `mom/constraint`, `adr/index`, `roadmap/non-goals`, `docs/telepathy`, `adr/0009` em `project/neural-sgdb`.
+5. `health(view=staleness)` se útil; write-path: fato idêntico → reinforce (não duplicar); paging: constraints no active.
+6. Só então `remember`. Não hoarde. MOM roles: `mom/constraint|decision|fact|pattern|learning|pref`.
 
 Null-scoping: recall **sem** `scope` não vê memórias escopadas. `unseen_scopes` em tensions não é DB vazio.
 

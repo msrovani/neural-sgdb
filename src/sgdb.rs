@@ -2760,6 +2760,120 @@ impl Sgdb {
         Ok(collected)
     }
 
+    /// Relatório de staleness (read-only): classifica L3/L4/L5 sem mutar.
+    /// Severidade: Expired (TTL) > Stale (Decayed/Invalidated/contradicts) >
+    /// Aging (`cfg.aging_after`) > Fresh. `scope=Some(s)` filtra por
+    /// `effective_scope`; `None` = todos. Ordena por severidade desc, key asc;
+    /// corta em `limit` (0 = sem corte).
+    pub fn staleness_report(
+        &mut self,
+        now: u64,
+        limit: usize,
+        scope: Option<&str>,
+        cfg: &crate::staleness::StalenessConfig,
+    ) -> Result<Vec<crate::staleness::StalenessHit>, SgdbError> {
+        use crate::staleness::{
+            StalenessHit, StalenessLevel, StalenessReason,
+        };
+        let rows = self.engine.scan_prefix_storage(b"md/")?;
+        let mut out: Vec<StalenessHit> = Vec::new();
+        for (sk_bytes, _) in rows {
+            let sk = String::from_utf8_lossy(&sk_bytes).into_owned();
+            if !(sk.starts_with("md/L3/") || sk.starts_with("md/L4/") || sk.starts_with("md/L5/")) {
+                continue;
+            }
+            if self.engine.get_by_storage_key(&sk)?.is_none() {
+                continue;
+            }
+            if let Some(want) = scope {
+                let eff = self.engine.effective_scope(&sk);
+                if eff != want {
+                    continue;
+                }
+            }
+            let state = self.engine.get_state(&sk);
+            let ttl = self.engine.ttl_of(&sk);
+            let meta = self.engine.meta(&sk)?;
+            let last = meta
+                .as_ref()
+                .map(|m| {
+                    if m.last_reinforced != 0 {
+                        m.last_reinforced
+                    } else {
+                        m.created_tick
+                    }
+                })
+                .unwrap_or(0);
+            let age = now.saturating_sub(last);
+            let mut reasons: Vec<StalenessReason> = Vec::new();
+            let mut level = StalenessLevel::Fresh;
+
+            if let Some(exp) = ttl {
+                if exp != 0 && exp <= now {
+                    reasons.push(StalenessReason::TtlExpired);
+                    level = StalenessLevel::Expired;
+                }
+            }
+            match state {
+                MemoryState::Decayed => {
+                    reasons.push(StalenessReason::Decayed);
+                    if level < StalenessLevel::Stale {
+                        level = StalenessLevel::Stale;
+                    }
+                }
+                MemoryState::Invalidated => {
+                    reasons.push(StalenessReason::Invalidated);
+                    if level < StalenessLevel::Stale {
+                        level = StalenessLevel::Stale;
+                    }
+                }
+                _ => {}
+            }
+            if !self.contradicts(&sk).is_empty() {
+                reasons.push(StalenessReason::Contradiction);
+                if level < StalenessLevel::Stale {
+                    level = StalenessLevel::Stale;
+                }
+            }
+            if level == StalenessLevel::Fresh
+                && cfg.aging_after > 0
+                && age > cfg.aging_after
+            {
+                // Skip Aging when `now` is wall-clock ms and `last` is a
+                // vector-clock tick (own_counter) — incommensurate units.
+                let wall_vs_tick = now > 1_000_000_000_000 && last < 1_000_000_000;
+                if !wall_vs_tick {
+                    reasons.push(StalenessReason::Aging);
+                    level = StalenessLevel::Aging;
+                }
+            }
+
+            if level == StalenessLevel::Fresh {
+                continue; // report only non-fresh by default? Plan said classify all...
+            }
+            // Include Fresh too for completeness when debugging? Plan: "Fresh: resto"
+            // and "ordenar por severidade" - include all would be huge. Prefer
+            // non-fresh only (actionable). Tests will create Aged/Stale/Expired.
+            out.push(StalenessHit {
+                key: sk,
+                level,
+                reasons,
+                age,
+                expires_at: ttl.filter(|&e| e != 0),
+                recommendation: StalenessHit::recommendation_for(level),
+            });
+        }
+        out.sort_by(|a, b| {
+            b.level
+                .cmp(&a.level)
+                .then_with(|| a.key.cmp(&b.key))
+        });
+        if limit > 0 && out.len() > limit {
+            out.truncate(limit);
+        }
+        Ok(out)
+    }
+
     /// Evento temporal (v1.1.15 §4 P2): liga a memória ao fato evolutivo
     /// `state_key` (`event_end=0` = aberto). Ex.: `cargo/sp0669` com
     /// `from/until` por instância. `state_key` vazio limpa.
@@ -7804,5 +7918,92 @@ mod tests {
             .unwrap();
         assert_eq!(hits.len(), 2);
         assert!(hits[0].key.ends_with("/w1"), "closest first");
+    }
+
+    #[test]
+    fn staleness_report_ttl_expired_and_fresh_omitted() {
+        use crate::staleness::{StalenessConfig, StalenessLevel, StalenessReason};
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_text_with("s/fresh", "ainda fresca", RememberOptions::default())
+            .unwrap();
+        db.remember_text_with("s/ttl", "com ttl", RememberOptions::default())
+            .unwrap();
+        db.set_ttl("md/L3/s/ttl", 50).unwrap();
+        let cfg = StalenessConfig { aging_after: 10_000 };
+        let rep = db.staleness_report(100, 20, None, &cfg).unwrap();
+        assert!(
+            rep.iter().any(|h| {
+                h.key == "md/L3/s/ttl"
+                    && h.level == StalenessLevel::Expired
+                    && h.reasons.contains(&StalenessReason::TtlExpired)
+            }),
+            "{rep:?}"
+        );
+        assert!(
+            !rep.iter().any(|h| h.key == "md/L3/s/fresh"),
+            "fresh omitted from actionable report"
+        );
+    }
+
+    #[test]
+    fn staleness_report_contradicts_and_decayed_are_stale() {
+        use crate::staleness::{StalenessConfig, StalenessLevel, StalenessReason};
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_text_with("s/a", "fato a", RememberOptions::default())
+            .unwrap();
+        db.remember_text_with("s/b", "fato b", RememberOptions::default())
+            .unwrap();
+        db.associate("md/L3/s/a", RelationKind::Contradicts, "md/L3/s/b")
+            .unwrap();
+        db.set_state("md/L3/s/b", MemoryState::Decayed).unwrap();
+        let cfg = StalenessConfig { aging_after: u64::MAX };
+        let rep = db.staleness_report(0, 20, None, &cfg).unwrap();
+        let a = rep.iter().find(|h| h.key == "md/L3/s/a").expect("a");
+        assert_eq!(a.level, StalenessLevel::Stale);
+        assert!(a.reasons.contains(&StalenessReason::Contradiction));
+        let b = rep.iter().find(|h| h.key == "md/L3/s/b").expect("b");
+        assert_eq!(b.level, StalenessLevel::Stale);
+        assert!(b.reasons.contains(&StalenessReason::Decayed));
+    }
+
+    #[test]
+    fn staleness_report_aging_and_scope_filter() {
+        use crate::staleness::{StalenessConfig, StalenessLevel, StalenessReason};
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_text_with(
+            "s/old",
+            "velha",
+            RememberOptions {
+                scope: Some("user/ana"),
+                ..RememberOptions::default()
+            },
+        )
+        .unwrap();
+        db.remember_text_with(
+            "s/other",
+            "outra",
+            RememberOptions {
+                scope: Some("user/bob"),
+                ..RememberOptions::default()
+            },
+        )
+        .unwrap();
+        let cfg = StalenessConfig { aging_after: 5 };
+        // created_tick is small; now=100 → age large → Aging
+        let rep = db
+            .staleness_report(100, 20, Some("user/ana"), &cfg)
+            .unwrap();
+        assert!(
+            rep.iter().any(|h| {
+                h.key == "md/L3/s/old"
+                    && h.level == StalenessLevel::Aging
+                    && h.reasons.contains(&StalenessReason::Aging)
+            }),
+            "{rep:?}"
+        );
+        assert!(
+            !rep.iter().any(|h| h.key.contains("other")),
+            "scope filter must hide bob"
+        );
     }
 }

@@ -82,6 +82,7 @@ pub mod lexical;
 pub mod limits;
 pub mod memory_doc;
 pub mod metrics;
+pub mod staleness;
 pub mod storage;
 pub mod tickv;
 pub mod trust;
@@ -127,6 +128,7 @@ pub use sgdb::{
     Reranker, ScoreBreakdown, ScopeDistribution, Sgdb, ValidateIssue,
 };
 pub use storage::{InMemory, SnapshotStorage, Storage, SgdbError};
+pub use staleness::{StalenessConfig, StalenessHit, StalenessLevel, StalenessReason};
 pub use limits::{
     DEFAULT_SCAN_PAGE_SIZE, MAX_EMBEDDING_DIM, MAX_KLEN, MAX_RAG_CONTEXT_BYTES, MAX_VLEN,
 };

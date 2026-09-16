@@ -21,6 +21,7 @@ Layered architecture with injectable seams (replacing the origin kernel):
 | `sgdb.rs` | `Sgdb` — public facade; `remember_text_with` (v1.1.9 lexical write); `remember_semantic_with`/`RememberOutcome`/`recall_empty_hint` (v1.1.7); `Hit` tipado v1.1.6; **v1.1.10**: `decay_importance`/`consolidate_recurrences`/`recall_weighted_full` (`Hit.score_breakdown`)/`audit_checkpoint`/`audit_verify`/`rollback_to` + `validate_written`; **v1.1.11**: `Storage::put_many` batch, `recall_weighted_full` select_nth, `search_fast` | Facade |
 | `audit.rs` | **v1.1.10**: ledger hash-chain `sys/audit/<seq:016x>` (wire `AUD1`), `AuditEntry`/`AuditSnapshotItem`, `audit_key`/`audit_seq_from_key` — base do rollback cognitivo | Append-only ledger |
 | `doctrine.rs` | **v1.1.8**: agent doctrine (`DOCTRINE`, key/scope/entities) — source `docs/doctrine.md` | Compile-time include |
+| `staleness.rs` | **v1.1.18**: `StalenessLevel`/`Reason`/`Config`/`Hit` — classify only (TTL/Decay/contradicts/aging) | Read-only report |
 | `era.rs` | **v1.1.5**: `Sgdb::era_report()`/`era_report_lines()` — era do corpus, veredito, custo estimado de migração | Read-only diagnostic |
 | `lexical.rs` | Inverted BM25 index over L2/L3 texts; `search` → `(key, score, matched_terms)` (v1.1.6) + `search_fast` (v1.1.11, sem matched_terms) | Inverted index |
 | `lifecycle.rs` | `MemoryLifecycle` — deterministic tick (commit/promote/semanticize/decay/archive) | Deterministic engine |

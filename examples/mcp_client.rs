@@ -190,8 +190,8 @@ fn main() {
     rep.check("initialize responde", !r.get("error").is_some(), r.to_string());
     rep.check("protocolVersion 2025-11-25",
         r["result"]["protocolVersion"] == "2025-11-25", r.to_string());
-    rep.check("serverInfo version 1.1.17",
-        r["result"]["serverInfo"]["version"] == "1.1.17", r.to_string());
+    rep.check("serverInfo version 1.1.18",
+        r["result"]["serverInfo"]["version"] == "1.1.18", r.to_string());
     rep.check("serverInfo mcp_tool_count 4",
         r["result"]["serverInfo"]["mcp_tool_count"] == 4, r.to_string());
     let instr = r["result"]["instructions"].as_str().unwrap_or("");
@@ -571,6 +571,10 @@ fn main() {
     let (txt, is_err) = srv.tool("health", json!({"view": "tensions"}));
     rep.check("health view=tensions expoe unseen_scopes",
         !is_err && txt.contains("unseen_scopes") && txt.contains("superseded"), txt.clone());
+    let (txt, is_err) = srv.tool("health", json!({"view": "staleness", "now": 1, "limit": 10}));
+    rep.check("health view=staleness expoe items/recommendation",
+        !is_err && txt.contains("staleness") && txt.contains("items") && txt.contains("note"),
+        txt.clone());
     let r = srv.rpc("resources/read", json!({"uri": "nsgdb://session"}));
     let session_txt = r["result"]["contents"][0]["text"].as_str().unwrap_or("");
     rep.check("resource nsgdb://session e cold-start JSON",

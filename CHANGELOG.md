@@ -4,15 +4,15 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
-## [1.1.18] — 2026-09-16 (telepathy 2-DB harness + verified p2p)
+## [1.1.18] — 2026-09-16 (telepathy 2-DB + host harvest + MCP 1.1.18)
 
-Sem mudança de formato / MCP contract (permanece **1.1.17** nas tools).
+Sem mudança de formato (NMD1/TKLV). **MCP_CONTRACT_VERSION → 1.1.18**.
 
 - **`examples/telepathy_two_db`**: dois `FileStorage` distintos + CRDT +
   recall cruzado + supersede/validade + **reopen** do disco. Features
   `p2p` + `file-storage`.
-- **Verificado:** `cargo test --lib --features p2p` **321/0**;
-  `p2p_telepathy` OK; `telepathy_two_db` OK; `mesh_simulation` OK.
+- **Verificado (host harvest):** lib **278/0**, p2p **324/0**, no_std **230/0**;
+  bare-metal OK; `agent_protocol` **25/0**; hot test **96/0**.
 - Docs: `telepathy-pt.md` / `telepathy.md` §5; `scripts/telepathy-demo.ps1`
   corre InMemory + 2-DB.
 - **Agent self-program (qualquer LLM/IDE):**
@@ -20,6 +20,9 @@ Sem mudança de formato / MCP contract (permanece **1.1.17** nas tools).
   auto-config, cold-start, pacote de memória, mapa de capacidade, snippets
   user-rule/system-prompt; skill `.cursor/skills/nsgdb-full-usage/`; ponteiros
   em `doctrine.md`, `MCP.md`, `README`, `.cursor/rules/nsgdb-agent.mdc`.
+- **Host harvest 1–4:** ontologia MOM (`mom/*`); surprise→reinforce em
+  `agent_protocol`; paging host `page_context`; `Sgdb::staleness_report` +
+  `health(view=staleness)` (read-only). MCP contract pin **1.1.18**.
 
 ## [1.1.17] — 2026-09-16 (recall quality: ADC-lite dual-path + state-first)
 

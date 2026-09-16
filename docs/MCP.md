@@ -3,18 +3,18 @@
 Guia de instalação, contrato e troubleshooting do servidor MCP
 (`examples/mcp_server.rs`).
 
-## Contrato atual (v1.1.17)
+## Contrato atual (v1.1.18)
 
 | Campo | Valor |
 |-------|-------|
 | Protocolo | JSON-RPC 2.0 over **stdio** (uma linha JSON por mensagem) |
 | Handshake | `initialize` → `protocolVersion: 2025-11-25` |
-| `serverInfo.version` | `1.1.17` (`MCP_CONTRACT_VERSION` em `examples/mcp_server.rs`) |
+| `serverInfo.version` | `1.1.18` (`MCP_CONTRACT_VERSION` em `examples/mcp_server.rs`) |
 | Tools | **4** (`remember`, `recall`, `health`, `curate`) — 23 nomes antigos ainda funcionam em `tools/call` |
 | Recall default | **lexical** (ADR-0008). Cosine: `embedding=` ou `NEURAL_SGDB_EMBEDDER=demo` |
 | Embedder host | unset = none; `NEURAL_SGDB_EMBEDDER=demo` = trigrama explícito (**não** semântico) |
 | Write sem vetor | `remember(text=)` → **L3** (`remember_text_with`); L4 só com `embedding=` ou `NEURAL_SGDB_EMBEDDER=demo` |
-| Observabilidade | `health(view=era)` = era_report; `health(view=tensions)` = conflitos / superseded / scopes invisíveis |
+| Observabilidade | `health(view=era)` = era_report; `health(view=tensions)` = conflitos / superseded / scopes invisíveis; `health(view=staleness)` = TTL/Decay/contradicts/aging (read-only) |
 | Resources | `nsgdb://doctrine`, **`nsgdb://session`** (cold-start JSON) |
 | DB default | `NEURAL_SGDB_DB=.nsgdb/memory.db` (relativo ao cwd do processo) |
 

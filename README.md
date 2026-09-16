@@ -36,12 +36,14 @@ filesystem, no external runtime.
 
 ## Status
 
-**v1.1.18** — substrate **agêntico** (MCP 4 tools contract **1.1.17**, doutrina,
-hits tipados, TTL/GC, timeline, ANN) + **ADC-lite** + telepatia **2-DB**
-(`telepathy_two_db`). Extensão de browser / Store **estacionadas**.
+**v1.1.18** — substrate **agêntico** (MCP 4 tools contract **1.1.18**, doutrina,
+hits tipados, TTL/GC, timeline, ANN) + **ADC-lite** + telepatia **2-DB** +
+**host harvest** (MOM, surprise→reinforce, paging, `health(view=staleness)`).
+Extensão de browser / Store **estacionadas**.
 Crate em `Cargo.toml`: **1.1.18**.
 
-- `cargo test` on host: **275+1** (p2p **321+1**, no_std **227+1**)
+- `cargo test` on host: **278+1** (p2p **324+1**, no_std **230+1**)
+- hot test MCP: **96/0**; `agent_protocol`: **25/0**
 - `cargo check --no-default-features --target x86_64-unknown-none`: **clean**
 - **Typed hits (v1.1.6)**: o recall devolve, por hit, `path` (semantic/
   lexical/entities), `content_type` (Text/Json/Code/Embedding(dim)/Binary),

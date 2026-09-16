@@ -47,13 +47,27 @@ playbook são a rede de segurança.
    - `recall(entities=[…], scope=<s>, format=json)`
 4. Carregar a **memória operacional** (secção 3) se ainda não estiver no contexto.
 5. `health(view=tensions)` — `unseen_scopes` ≠ DB vazio (null-scoping).
-6. Só então agir / `remember`. **Gather → act. Não hoarde.**
+6. `health(view=staleness)` — o que envelheceu (TTL / Decayed / contradicts); **não** auto-forget.
+7. Só então agir / `remember`. **Gather → act. Não hoarde.**
 
 ---
 
 ## 3. Memória que o agente precisa (pacote mínimo)
 
 Grave / recall estes fatos (se faltarem, `remember` com as entities abaixo).
+
+### Ontologia MOM (papéis cognitivos — strings idênticas write/recall)
+
+| Entity | Uso |
+|--------|-----|
+| `mom/constraint` | Restrição latente — prioridade no **active** do paging |
+| `mom/decision` | Decisão fechada de sessão |
+| `mom/fact` | Fato estável do mundo / projeto |
+| `mom/pattern` | Padrão recorrente |
+| `mom/learning` | Lição / reflexão (citar evidência) |
+| `mom/pref` | Preferência (além de `pref/*`) |
+
+Usar **uma** role MOM + entities de domínio (`adr/*`, `pref/*`, …). Core **não** extrai.
 
 ### Preferências IDE (scope tipicamente `ide/cursor` ou default do launcher)
 
@@ -74,14 +88,35 @@ Grave / recall estes fatos (se faltarem, `remember` com as entities abaixo).
 | `docs/telepathy` / `constraint/p2p` | 2-DB = `telepathy_two_db`; conflito preservado |
 | `constraint/open-snapshot` / `adr/0009` | Snapshot no open = design ADR-0009, ainda ROADMAP |
 | `constraint/era` / `adr/0007` | Era + `model_id` (MDM1 v7); dim nova → Invalid |
+| `mom/constraint` | Taxonomia MOM + disciplina write/paging |
 
 ### Recall de arranque sugerido
 
 ```text
-recall(entities=["pref/idioma","pref/memoria","nsgdb/usage"], scope=<default>)
-recall(entities=["adr/index","roadmap/non-goals","docs/telepathy","adr/0009"], scope="project/neural-sgdb")
+recall(entities=["pref/idioma","pref/memoria","nsgdb/usage","mom/pref"], scope=<default>)
+recall(entities=["mom/constraint","adr/index","roadmap/non-goals","docs/telepathy","adr/0009"], scope="project/neural-sgdb")
 recall(scope="nsgdb/doctrine", mode=lexical, query="doctrine protocol")
 ```
+
+---
+
+## 3b. Write-path filter (surprise → reinforce)
+
+Antes de `remember`:
+
+1. Gather: `recall(entities=[…], scope=…)` e/ou lexical com as **mesmas** palavras/entities.
+2. Fato **idêntico** já existe → `curate(op=reinforce|feedback)` na storage key completa (`md/L4/…`). **Não** duplicar.
+3. Objeto / conteúdo **mudou** → `remember` + `supersede` (ou version bump na mesma identidade).
+4. Referência: `examples/agent_protocol.rs` (`remember_fact_checked`).
+
+---
+
+## 3c. Context paging (host — sem LLM no core)
+
+1. Pool: `recall` / hybrid com k ampliado, ou `rag=true` + `rerank` se houver embedding.
+2. **active** = top N (default 5); se o pool tiver `mom/constraint` ou `pref/*`, sobem para active.
+3. **background** = resto como `{key, matched_terms, path}` — **sem** resumir com LLM.
+4. Só então montar o prompt. Core reporta Hits; você escolhe.
 
 ---
 
@@ -116,6 +151,7 @@ recall(scope="nsgdb/doctrine", mode=lexical, query="doctrine protocol")
 | (default) | onboarding, dims, doctrine pointers |
 | `era` | ADR-0007 — empty/ok/mixed_dims/mixed_models |
 | `tensions` | conflicts, superseded, unseen_scopes |
+| `staleness` | TTL / Decayed / contradicts / aging — só classifica; curate manual depois |
 | `validate` | integridade |
 
 ### Curadoria (`curate`)

@@ -12,6 +12,6 @@ Rules:
 7. Machine consumption: recall/rag_context format=json. Embedding/Binary are not prose — never treat payload as UTF-8 text.
 8. This doctrine is stored in the DB: scope=nsgdb/doctrine key=md/L4/nsgdb/doctrine entities=doc/protocol,nsgdb/usage. Retrieve with recall(scope=nsgdb/doctrine, mode=lexical) or recall(entities=["doc/protocol"], scope=nsgdb/doctrine). Resource nsgdb://doctrine.
 
-MCP lists 4 tools: remember, recall, health, curate. health(view=era) is era_report; health(view=tensions) is conflicts/unseen scopes. Default recall is lexical. Resource nsgdb://session is the cold-start packet. Legacy tool names still work if a client calls them.
+MCP lists 4 tools: remember, recall, health, curate. health(view=era) is era_report; health(view=tensions) is conflicts/unseen scopes; health(view=staleness) is TTL/Decay/contradicts/aging (read-only — curate manually). Default recall is lexical. Resource nsgdb://session is the cold-start packet. Legacy tool names still work if a client calls them.
 
-Full self-program (any LLM/IDE): docs/agent-self-program.md — cold-start ritual, memory packet, capacity map, user-rule/system-prompt snippets.
+Full self-program (any LLM/IDE): docs/agent-self-program.md — cold-start ritual, memory packet, capacity map, user-rule/system-prompt snippets. MOM entity roles on write/recall: mom/constraint, mom/decision, mom/fact, mom/pattern, mom/learning, mom/pref (identical strings).
