@@ -46,6 +46,6 @@ recall(entities=["mom/constraint"], scope=<project>, format=json)
 ## References
 
 - Install: `docs/MCP.md`
-- ADRs: `docs/adr/` (0001–0009)
+- ADRs: `docs/adr/` (0001–0010); v1.1.20 null-scoping inclui `ScopeDims`
 - Telepathy: `docs/telepathy-pt.md`
 - Project rule: `.cursor/rules/nsgdb-agent.mdc`

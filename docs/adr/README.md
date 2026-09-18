@@ -28,7 +28,7 @@ decisions MUST add an ADR in the same commit as the code.
 | 0007 | Embedding model = era invariant | Model swaps are era transitions; migrate via re-embed + BQ rebuild; write-side dim guard; **`model_id` in MDM1 v7** (`mixed_models`) |
 | 0008 | Default retrieval is lexical; embeddings are host-side | MCP default = lexical; `DemoEmbedder` is not the product path; optional local HTTP embedder; never in the core |
 | 0009 | Index snapshot on open; metrics-gated auto-adapt | Storage = truth; TKCK-like index snapshot; measure `open_ms`/`doc_count`/reopens; auto persist+fast-mount when budget breaks — **not** mid-query; impl ROADMAP Next |
-| 0010 | Harness commit_run / anti-patterns / obsolescence | No `Deprecated` state; `arch/rev/*` + supersede; `mom/anti-pattern`; facade `commit_run` (**v1.1.19**) |
+| 0010 | Harness commit_run / anti-patterns / obsolescence | No `Deprecated` state; `arch/rev/*` + supersede; `mom/anti-pattern`; facade `commit_run` (**v1.1.19**); null-scoping `ScopeDims` (**v1.1.20**) |
 
 ## Retrospective history
 

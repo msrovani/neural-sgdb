@@ -458,9 +458,6 @@ mod tests {
             content_type: None,
             embedding: None,
         }];
-        // new key written inside commit_run — supersede after we know key:
-        // write first via plan, then supersede in same plan needs new key known.
-        // Two-step: write via plan without supersede, then second commit with supersede.
         let plan1 = CommitRunPlan {
             facts: &facts,
             write_dims: Some(dims),
@@ -484,5 +481,256 @@ mod tests {
             db.get_state(&old.storage_key).unwrap(),
             MemoryState::Superseded
         );
+    }
+
+    #[test]
+    fn archive_run_a_does_not_touch_run_b() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let da = ScopeDims {
+            run: "iso-a".into(),
+            ..ScopeDims::new()
+        };
+        let dims_b = ScopeDims {
+            run: "iso-b".into(),
+            ..ScopeDims::new()
+        };
+        let (au, _) = db
+            .remember_episodic_scoped("qa", "ra", 10, &da)
+            .unwrap();
+        let (bu, _) = db
+            .remember_episodic_scoped("qb", "rb", 20, &dims_b)
+            .unwrap();
+        let r = db
+            .deprecate_run(&run_filter("iso-a"), true, None)
+            .unwrap();
+        assert_eq!(r.archived, 2);
+        assert_eq!(db.get_state(&au).unwrap(), MemoryState::Archived);
+        assert_eq!(
+            db.get_state(&bu).unwrap(),
+            MemoryState::Active,
+            "run B deve permanecer Active"
+        );
+    }
+
+    #[test]
+    fn deprecate_run_rejects_empty_filter_and_is_idempotent() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        assert!(matches!(
+            db.deprecate_run(&ScopeFilter::global(), true, None),
+            Err(SgdbError::Invalid(_))
+        ));
+        let dims = ScopeDims {
+            run: "idem".into(),
+            ..ScopeDims::new()
+        };
+        let _ = db
+            .remember_episodic_scoped("q", "a", 1, &dims)
+            .unwrap();
+        let r1 = db.deprecate_run(&run_filter("idem"), true, None).unwrap();
+        assert_eq!(r1.archived, 2);
+        let r2 = db.deprecate_run(&run_filter("idem"), true, None).unwrap();
+        assert_eq!(r2.archived, 0, "segunda passada não re-arquiva");
+    }
+
+    #[test]
+    fn commit_run_rejects_empty_fact_and_sets_ttl() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let dims = ScopeDims {
+            run: "ttl-1".into(),
+            ..ScopeDims::new()
+        };
+        let (ku, _) = db
+            .remember_episodic_scoped("ep", "ody", 5, &dims)
+            .unwrap();
+        let bad = [CommitFact {
+            key: "",
+            text: "x",
+            entities: &[],
+            content_type: None,
+            embedding: None,
+        }];
+        let err = db
+            .commit_run(
+                &run_filter("ttl-1"),
+                &CommitRunPlan {
+                    facts: &bad,
+                    write_dims: Some(dims.clone()),
+                    ..CommitRunPlan::default()
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(err, SgdbError::Invalid(_)));
+
+        let r = db
+            .commit_run(
+                &run_filter("ttl-1"),
+                &CommitRunPlan {
+                    archive_remaining_episodic: false,
+                    ttl_episodic_ms: Some(100),
+                    now: 1000,
+                    write_dims: Some(dims),
+                    ..CommitRunPlan::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(r.ttl_set, 2);
+        assert_eq!(db.ttl_of(&ku).unwrap(), Some(1100));
+        assert_eq!(db.get_state(&ku).unwrap(), MemoryState::Active);
+    }
+
+    #[test]
+    fn commit_run_does_not_archive_l4_companion() {
+        // Companions md/L2/<key> (sem /ts/) não são episódicos de tarefa.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let dims = ScopeDims {
+            run: "comp".into(),
+            ..ScopeDims::new()
+        };
+        let out = db
+            .remember_semantic_with(
+                "sem/k",
+                "texto semântico",
+                &[1.0, -1.0, 1.0, -1.0],
+                RememberOptions {
+                    scope_dims: Some(dims.clone()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let _ = db
+            .remember_episodic_scoped("noise", "n", 7, &dims)
+            .unwrap();
+        let r = db
+            .commit_run(
+                &run_filter("comp"),
+                &CommitRunPlan {
+                    archive_remaining_episodic: true,
+                    write_dims: Some(dims),
+                    ..CommitRunPlan::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(r.archived, 2, "só o par /ts/u+/ts/a");
+        assert_eq!(
+            db.get_state(&out.storage_key).unwrap(),
+            MemoryState::Active
+        );
+        assert_eq!(
+            db.get_state(&out.companion_key).unwrap(),
+            MemoryState::Active,
+            "companion L2 de L4 não deve ser Archived"
+        );
+    }
+
+    #[test]
+    fn anti_pattern_entity_not_duplicated_when_already_present() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let dims = ScopeDims {
+            run: "dedup".into(),
+            ..ScopeDims::new()
+        };
+        let antis = [CommitFact {
+            key: "ap1",
+            text: "evitar unwrap em no_std",
+            entities: &[MOM_ANTI_PATTERN, "avoid/unwrap"],
+            content_type: None,
+            embedding: None,
+        }];
+        let r = db
+            .commit_run(
+                &run_filter("dedup"),
+                &CommitRunPlan {
+                    anti_patterns: &antis,
+                    write_dims: Some(dims),
+                    ..CommitRunPlan::default()
+                },
+            )
+            .unwrap();
+        let ents = db.entities_of(&r.written[0]).unwrap();
+        let count = ents.iter().filter(|e| e.as_str() == MOM_ANTI_PATTERN).count();
+        assert_eq!(count, 1, "entities={ents:?}");
+    }
+
+    #[test]
+    fn scoped_consolidate_inherits_run_no_global_leak() {
+        // Inconsistência corrigida: L3 consolidado herdava nada → vazava global.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let dims = ScopeDims {
+            run: "cons-scope".into(),
+            ..ScopeDims::new()
+        };
+        let q = "qual o horario do daily standup?";
+        for i in 0u64..3 {
+            let _ = db
+                .remember_episodic_scoped(q, &alloc::format!("r{i}"), 100 + i, &dims)
+                .unwrap();
+        }
+        let cfg = ConsolidateConfig {
+            min_repeats: 3,
+            min_len: 4,
+            max_new: 4,
+        };
+        assert_eq!(
+            db.consolidate_recurrences_scoped(&cfg, &run_filter("cons-scope"))
+                .unwrap(),
+            1
+        );
+        let global = db.recall_lexical(q, 5).unwrap();
+        assert!(
+            !global.iter().any(|h| h.key.contains("consolidated/")),
+            "fato consolidado NÃO deve aparecer no recall global: {global:?}"
+        );
+        let scoped = db
+            .recall_lexical_dims(q, 5, &run_filter("cons-scope"))
+            .unwrap();
+        assert!(
+            scoped.iter().any(|h| h.key.contains("consolidated/")),
+            "deve aparecer no scope do run: {scoped:?}"
+        );
+    }
+
+    #[test]
+    fn commit_run_null_scoping_hides_facts_from_global_recall() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let dims = ScopeDims {
+            run: "null-s".into(),
+            ..ScopeDims::new()
+        };
+        let facts = [CommitFact {
+            key: "secret/fact",
+            text: "xyzzy-harness-unique-token",
+            entities: &["mom/fact"],
+            content_type: None,
+            embedding: None,
+        }];
+        let _ = db
+            .commit_run(
+                &run_filter("null-s"),
+                &CommitRunPlan {
+                    facts: &facts,
+                    write_dims: Some(dims),
+                    ..CommitRunPlan::default()
+                },
+            )
+            .unwrap();
+        let g = db.recall_lexical("xyzzy-harness-unique-token", 5).unwrap();
+        assert!(g.is_empty(), "null-scoping: global vazia, got {g:?}");
+        let s = db
+            .recall_lexical_dims("xyzzy-harness-unique-token", 5, &run_filter("null-s"))
+            .unwrap();
+        assert_eq!(s.len(), 1);
+    }
+
+    #[test]
+    fn dims_pass_filter_null_scoping_contract() {
+        let global = ScopeDims::new();
+        let scoped = ScopeDims {
+            run: "r".into(),
+            ..ScopeDims::new()
+        };
+        assert!(dims_pass_filter(&global, &ScopeFilter::global()));
+        assert!(!dims_pass_filter(&scoped, &ScopeFilter::global()));
+        assert!(dims_pass_filter(&scoped, &run_filter("r")));
+        assert!(!dims_pass_filter(&scoped, &run_filter("other")));
     }
 }

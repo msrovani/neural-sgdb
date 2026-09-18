@@ -21,6 +21,16 @@ $pick = if (Test-Path $Src) { $Src } elseif (Test-Path $Alt) { $Alt } else { $nu
 if (-not $pick) {
   Write-Error "Nenhum mcp_server.exe encontrado. Feche o MCP no Cursor e rode novamente."
 }
-Copy-Item -Force $pick $Dst
+# MCP vivo trava o .exe: rename do destino libera o path; processo antigo
+# continua no inode antigo até Reload no Cursor.
+try {
+  Copy-Item -Force $pick $Dst
+} catch {
+  $bak = Join-Path $OutDir ("mcp_server.exe.old-" + (Get-Date -Format "yyyyMMddHHmmss"))
+  Move-Item -Force -LiteralPath $Dst -Destination $bak
+  Copy-Item -Force $pick $Dst
+  Write-Host "aviso: destino estava locked; antigo em $bak"
+}
 Write-Host "OK: $Dst"
+Write-Host "Recarregue o MCP no Cursor (Settings → MCP → Reload) para o processo usar este binario."
 Pop-Location

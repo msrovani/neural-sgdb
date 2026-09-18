@@ -495,6 +495,21 @@ impl Sgdb {
             .unwrap_or_default()
     }
 
+    /// Filtro de scope legado + ScopeDims (ADR-0010 / v1.1.14):
+    /// - `None` (global): só memórias sem `scope` legado **e** com
+    ///   `ScopeDims` global — senão `scope_run`/`scope_user` vazam no
+    ///   recall lexical/semântico default.
+    /// - `Some(s)`: casa `effective_scope` **ou** `scope_dims.user` (alias
+    ///   mem0 da dimensão user).
+    fn allows_scope_filter(&mut self, sk: &str, scope: Option<&str>) -> bool {
+        let doc_scope = self.engine.effective_scope(sk);
+        let dims = self.engine.effective_scope_dims(sk);
+        match scope {
+            Some(s) => doc_scope == s || dims.user == s,
+            None => doc_scope.is_empty() && dims.is_global(),
+        }
+    }
+
     /// Contagem de memórias primárias por escopo (L3/L4/L5 + `sys/meta/`).
     pub fn scope_distribution(&mut self) -> Result<ScopeDistribution, SgdbError> {
         use alloc::collections::BTreeMap;
@@ -1113,7 +1128,7 @@ impl Sgdb {
     /// derivado — nunca extrai entidade do texto. Texto via companion L2
     /// (batch, como no recall semântico). Default: active-only, escopo global.
     pub fn recall_entities(&mut self, entities: &[&str], k: usize) -> Result<Vec<Hit>, SgdbError> {
-        self.recall_entities_impl(entities, k, None, true)
+        self.recall_entities_impl(entities, k, None, true, true)
     }
 
     /// Recall por entidades histórico (inclui memórias inativas/superseded).
@@ -1122,7 +1137,7 @@ impl Sgdb {
         entities: &[&str],
         k: usize,
     ) -> Result<Vec<Hit>, SgdbError> {
-        self.recall_entities_impl(entities, k, None, false)
+        self.recall_entities_impl(entities, k, None, false, true)
     }
 
     /// Recall por entidades escopado (item 10 + item 7): `scope` restringe o
@@ -1133,7 +1148,7 @@ impl Sgdb {
         k: usize,
         scope: &str,
     ) -> Result<Vec<Hit>, SgdbError> {
-        self.recall_entities_impl(entities, k, Some(scope), true)
+        self.recall_entities_impl(entities, k, Some(scope), true, true)
     }
 
     /// Recall por entidades escopado E histórico (item 10): inclui memórias
@@ -1144,7 +1159,7 @@ impl Sgdb {
         k: usize,
         scope: &str,
     ) -> Result<Vec<Hit>, SgdbError> {
-        self.recall_entities_impl(entities, k, Some(scope), false)
+        self.recall_entities_impl(entities, k, Some(scope), false, true)
     }
 
     fn recall_entities_impl(
@@ -1153,6 +1168,7 @@ impl Sgdb {
         k: usize,
         scope: Option<&str>,
         active_only: bool,
+        enforce_legacy_scope: bool,
     ) -> Result<Vec<Hit>, SgdbError> {
         if entities.is_empty() {
             return Ok(Vec::new());
@@ -1167,12 +1183,10 @@ impl Sgdb {
             };
             let keys: Vec<String> = keys.clone();
             for sk in &keys {
-                // item 7 — scope DENTRO do pool (mesmo contrato do recall semântico)
-                let doc_scope = self.engine.effective_scope(sk);
-                match scope {
-                    Some(s) if doc_scope != s => continue,
-                    None if !doc_scope.is_empty() => continue,
-                    _ => {}
+                // item 7 — scope DENTRO do pool. `enforce_legacy_scope=false`
+                // para o pool de `recall_entities_dims` (filtro multi-dim depois).
+                if enforce_legacy_scope && !self.allows_scope_filter(sk, scope) {
+                    continue;
                 }
                 // active-only — estado POR DOC (companions não são indexados)
                 if active_only && self.engine.get_state(sk) != MemoryState::Active {
@@ -2132,12 +2146,9 @@ impl Sgdb {
                     // candidatos (memória de outro user/agent/projeto não
                     // compete por vagas do top-k do scope corrente). None =
                     // GLOBAL (filtro implícito mem0: busca sem scope não
-                    // vaza de scopes escopados).
-                    let doc_scope = self.engine.effective_scope(&sk);
-                    match scope {
-                        Some(s) if doc_scope != s => continue,
-                        None if !doc_scope.is_empty() => continue,
-                        _ => {}
+                    // vaza de scopes escopados). v1.1.20: também ScopeDims.
+                    if !self.allows_scope_filter(&sk, scope) {
+                        continue;
                     }
                     // v0.6 — provenance exposta (Phase 9 parcial): quem/quando/
                     // quão confiável/estado — memórias superseded não se fingem
@@ -2472,6 +2483,14 @@ impl Sgdb {
                 );
                 let _ = self.engine.put(doc)?;
                 made += 1;
+            }
+            // ADR-0010: consolidação escopada herda dims do âncora — senão o
+            // fato L3 vaza no recall global (null-scoping).
+            if filter.is_some() {
+                let dims = self.engine.effective_scope_dims(&items[0]);
+                if !dims.is_global() {
+                    self.set_scope_dims(&sk, &dims)?;
+                }
             }
             // linhagem: version_ids dos episódios (ordenados, deduplicados)
             let mut parents: Vec<String> = Vec::new();
@@ -3023,7 +3042,7 @@ impl Sgdb {
     /// memórias ATIVAS (paridade com `recall`); `recall_lexical_historical`
     /// inclui as inativas com `provenance.state` exposto.
     pub fn recall_lexical(&mut self, query_text: &str, k: usize) -> Result<Vec<Hit>, SgdbError> {
-        self.recall_lexical_impl(query_text, k, true, None)
+        self.recall_lexical_impl(query_text, k, true, None, true)
     }
 
     /// Recall lexical incluindo memórias inativas (histórico explícito).
@@ -3032,7 +3051,7 @@ impl Sgdb {
         query_text: &str,
         k: usize,
     ) -> Result<Vec<Hit>, SgdbError> {
-        self.recall_lexical_impl(query_text, k, false, None)
+        self.recall_lexical_impl(query_text, k, false, None, true)
     }
 
     /// Recall lexical **escopado** (v1.1.4 item 8): mesmo path de
@@ -3044,7 +3063,7 @@ impl Sgdb {
         k: usize,
         scope: &str,
     ) -> Result<Vec<Hit>, SgdbError> {
-        self.recall_lexical_impl(query_text, k, true, Some(scope))
+        self.recall_lexical_impl(query_text, k, true, Some(scope), true)
     }
 
     /// Recall lexical escopado com histórico explícito.
@@ -3054,7 +3073,7 @@ impl Sgdb {
         k: usize,
         scope: &str,
     ) -> Result<Vec<Hit>, SgdbError> {
-        self.recall_lexical_impl(query_text, k, false, Some(scope))
+        self.recall_lexical_impl(query_text, k, false, Some(scope), true)
     }
 
     fn recall_lexical_impl(
@@ -3063,6 +3082,7 @@ impl Sgdb {
         k: usize,
         active_only: bool,
         scope: Option<&str>,
+        enforce_legacy_scope: bool,
     ) -> Result<Vec<Hit>, SgdbError> {
         let scored = self.engine.lexical.search(query_text, k.max(1));
         let max = scored.first().map(|(_, s, _)| *s).unwrap_or(0.0).max(1e-6);
@@ -3077,11 +3097,10 @@ impl Sgdb {
                 // lexical global não vaza de scopes escopados. O doc pode
                 // ser um companion `/L2/` (sem scope na meta própria) — o
                 // scope efetivo vem do primário `/L4/`/`/L5/`/`/L3/`.
-                let doc_scope = self.engine.effective_scope(&sk);
-                match scope {
-                    Some(s) if doc_scope != s => continue,
-                    None if !doc_scope.is_empty() => continue,
-                    _ => {}
+                // v1.1.20: ScopeDims (scope_run/…) também bloqueiam o global.
+                // `enforce_legacy_scope=false` p/ pool de `recall_lexical_dims`.
+                if enforce_legacy_scope && !self.allows_scope_filter(&sk, scope) {
+                    continue;
                 }
                 let provenance = doc.meta.as_ref().map(|m| HitProvenance {
                     memory_id: m.memory_id.clone(),
@@ -3290,7 +3309,9 @@ impl Sgdb {
         k: usize,
         filter: &ScopeFilter,
     ) -> Result<Vec<Hit>, SgdbError> {
-        let pool = self.recall_lexical(query_text, k.max(1) * 4)?;
+        // Pool SEM null-scoping legado — o filtro multi-dim aplica-se abaixo.
+        // Oversample alto: candidatos scoped são subconjunto do índice.
+        let pool = self.recall_lexical_impl(query_text, k.max(1) * 16, true, None, false)?;
         let mut out = Vec::new();
         for h in pool {
             let dims = self.engine.effective_scope_dims(&h.key);
@@ -3316,7 +3337,7 @@ impl Sgdb {
         k: usize,
         filter: &ScopeFilter,
     ) -> Result<Vec<Hit>, SgdbError> {
-        let pool = self.recall_entities(entities, k.max(1) * 4)?;
+        let pool = self.recall_entities_impl(entities, k.max(1) * 16, None, true, false)?;
         let mut out = Vec::new();
         for h in pool {
             let dims = self.engine.effective_scope_dims(&h.key);

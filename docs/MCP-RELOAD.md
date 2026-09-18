@@ -4,15 +4,18 @@ Use após `git pull`, mudanças em `examples/mcp_server.rs`, ou recall/health de
 
 ## Windows (Cursor)
 
-1. **Build/install** (não conflita com MCP rodando):
+1. **Build/install** (rename-then-copy se o `.exe` estiver locked pelo MCP vivo):
    ```powershell
    powershell -File scripts/mcp-install.ps1
    ```
-2. **Cursor → Settings → MCP → Reload** (ou reinicie o IDE).
+2. **Cursor → Settings → MCP → Reload** (ou reinicie o IDE) — obrigatório
+   para o processo usar o binário novo.
 3. **Verifique** (agente ou manual):
    - tool `health` → `mcp_tool_count: 4`, `onboarding` presente, `embedder` = `none` (a menos que `NEURAL_SGDB_EMBEDDER=demo`)
    - `health(view=tensions)` e resource `nsgdb://session`
    - `build_git` corresponde ao commit local (`git rev-parse --short HEAD`)
+   - **Não** setar `NEURAL_SGDB_EMBEDDER=demo` no `~\.cursor\mcp.json` global
+     (ADR-0008; workspace `.cursor/mcp.json` já omite)
 4. Se `tools/list` ainda não mostra 4 tools: desligue o MCP, apague
    `target/release/examples/mcp_server.exe` se locked, reinstale.
 5. Se o MCP falha na subida (`failed during live tool discovery`): o Cursor

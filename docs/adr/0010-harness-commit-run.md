@@ -160,6 +160,10 @@ behaviour** on today’s MCP surface (`remember` + entities + `supersede` +
 `consolidate_recurrences_scoped` / `remember_episodic_scoped` in
 `src/harness.rs`; MCP `curate` ops `commit_run` and `deprecate_run`.
 
+**Hardening (v1.1.20):** null-scoping honra `ScopeDims` (não só
+`MemoryMeta.scope`); `consolidate` herda dims do run; `recall_*_dims`
+não depende do pool global filtrado.
+
 ## Consequences
 
 - Positive: harness agents get a clear obsolescence model without schema churn;

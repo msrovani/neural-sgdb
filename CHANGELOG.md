@@ -4,6 +4,24 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [1.1.20] — 2026-09-18 (null-scoping ScopeDims + harness tests)
+
+Sem mudança de formato (NMD1/TKLV). **MCP_CONTRACT_VERSION → 1.1.20**.
+
+- **Null-scoping + `ScopeDims`:** `allows_scope_filter` — recall global
+  (`scope=None`) exige `effective_scope` vazio **e** `dims.is_global()`.
+  Memórias só com `scope_run`/`scope_user`/… deixam de vazar no lexical/
+  semântico/entities default (ADR-0010 / doutrina).
+- **`recall_*_dims`:** pool sem filtro legado (`enforce_legacy_scope=false`);
+  filtro multi-dim aplica-se depois (evita pool vazio pós-fix).
+- **`consolidate_recurrences`:** L3 consolidado herda `ScopeDims` do grupo
+  (não vaza global).
+- Harness: +8 testes (isolamento A≠B, idempotência, TTL, companion L4,
+  anti-pattern dedup, null-scoping, consolidate scoped).
+- `scripts/mcp-install.ps1`: rename-then-copy se o `.exe` estiver locked.
+- Verificado: lib **292/0**, p2p **338/0**, no_std **244/0**; hot test
+  **100/0**; bare-metal ok. Embedder host default permanece unset/`none`.
+
 ## [1.1.19] — 2026-09-18 (ADR-0010 harness: commit_run)
 
 Sem mudança de formato (NMD1/TKLV). **MCP_CONTRACT_VERSION → 1.1.19**.
