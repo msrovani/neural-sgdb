@@ -4,6 +4,19 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [1.1.19] — 2026-09-18 (ADR-0010 harness: commit_run)
+
+Sem mudança de formato (NMD1/TKLV). **MCP_CONTRACT_VERSION → 1.1.19**.
+
+- **`src/harness.rs`**: `commit_run`, `deprecate_run`,
+  `consolidate_recurrences_scoped`, `remember_episodic_scoped`;
+  entity canónica `mom/anti-pattern`.
+- MCP `curate` ops `commit_run` / `deprecate_run`; episodic honour
+  `scope_*`; `recall_entities` aceita `scope_run` via `ScopeFilter`.
+- Docs: ADR-0010 marked implemented; agent-self-program MOM table;
+  architecture lifecycle/cognitive API.
+- Tests: 6 harness unit + hot-test fase harness.
+
 ## [1.1.18] — 2026-09-16 (telepathy 2-DB + host harvest + MCP 1.1.18)
 
 Sem mudança de formato (NMD1/TKLV). **MCP_CONTRACT_VERSION → 1.1.18**.

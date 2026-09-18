@@ -64,6 +64,7 @@ Grave / recall estes fatos (se faltarem, `remember` com as entities abaixo).
 | `mom/decision` | Decisão fechada de sessão |
 | `mom/fact` | Fato estável do mundo / projeto |
 | `mom/pattern` | Padrão recorrente |
+| `mom/anti-pattern` | Lição negativa / o que **não** repetir (ADR-0010; + `avoid/<slug>`) |
 | `mom/learning` | Lição / reflexão (citar evidência) |
 | `mom/pref` | Preferência (além de `pref/*`) |
 
@@ -82,12 +83,13 @@ Usar **uma** role MOM + entities de domínio (`adr/*`, `pref/*`, …). Core **n�
 | Entity | Conteúdo esperado |
 |--------|-------------------|
 | `doc/protocol` | Doutrina (também em `nsgdb/doctrine`) |
-| `adr/index` | ADRs 0001–0009 destilados |
+| `adr/index` | ADRs 0001–0010 destilados |
 | `roadmap/non-goals` | Sem FAISS/LLM/crypto no core; browser parked |
 | `docs/versioning` | MAJOR = API/formato/no_std/deps |
 | `docs/telepathy` / `constraint/p2p` | 2-DB = `telepathy_two_db`; conflito preservado |
 | `constraint/open-snapshot` / `adr/0009` | Snapshot no open = design ADR-0009, ainda ROADMAP |
 | `constraint/era` / `adr/0007` | Era + `model_id` (MDM1 v7); dim nova → Invalid |
+| `adr/0010` / `mom/anti-pattern` | Harness: `commit_run` / `deprecate_run`; anti-patterns 1ª classe |
 | `mom/constraint` | Taxonomia MOM + disciplina write/paging |
 
 ### Recall de arranque sugerido
@@ -157,7 +159,7 @@ Antes de `remember`:
 ### Curadoria (`curate`)
 
 Ops úteis: `explain`, `reinforce`, `feedback`, `forget`, `supersede`,
-`expire_old`, `decay`, `consolidate`, `diary`, `profile`, `associate`,
+`expire_old`, `decay`, `consolidate`, `commit_run`, `deprecate_run`, `diary`, `profile`, `associate`,
 `related_to`, `audit_checkpoint`, `audit_verify`, `rollback_to`, TTL/timeline/gc
 (conforme contrato MCP atual). **Sempre** key completa `md/L4/...`.
 

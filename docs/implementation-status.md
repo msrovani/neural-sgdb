@@ -1,6 +1,6 @@
 ﻿# neural-sgdb — Implementation Status
 
-> **Current snapshot (2026-09-16, v1.1.18).** Capability matrix vs the shipped
+> **Current snapshot (2026-09-18, v1.1.19).** Capability matrix vs the shipped
 > codebase. For the public contract see [`docs/api.md`](api.md); for architecture
 > narrative see [`docs/architecture/README.md`](architecture/README.md).
 
@@ -34,6 +34,7 @@
 | MemoryDoc NMD1 | IMPLEMENTED | `src/memory_doc.rs`, golden tests |
 | MDM1 v6 side-table meta | IMPLEMENTED | scope, entities, content_type, version_id, … |
 | MDM1 v7 scope_dims+model_id (v1.1.14/15) | IMPLEMENTED | `ScopeDims{user,agent,app,run}`, `model_id`, `mixed_models` verdict |
+| Harness commit_run (ADR-0010, v1.1.19) | IMPLEMENTED | `src/harness.rs`: `commit_run`/`deprecate_run`/`consolidate_recurrences_scoped`/`remember_episodic_scoped`; MCP `curate` ops; `mom/anti-pattern` |
 | Hybrid RRF + rerank seam (v1.1.14) | IMPLEMENTED | `recall_hybrid_rrf`, `Reranker`, `recall_reranked` |
 | Local embedder crate (v1.1.14) | IMPLEMENTED | `nsgdb-embed` 384d, `LOCAL_MODEL_ID` |
 | TTL per-key + GC (v1.1.15) | IMPLEMENTED | `sys/ttl/`, `expire_ttl`, `GcConfig/collect_garbage` |

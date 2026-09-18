@@ -27,6 +27,9 @@ description: >
 7. Shared MCP DB file ≠ CRDT telepathy; one writer per file; two nodes →
    `telepathy_two_db` / `p2p`.
 8. `health(view=staleness)` for aging/TTL/contradicts — then curate manually.
+9. End of atomic task (ADR-0010): `curate(op=commit_run, scope_run=…, facts=…,
+   anti_patterns=…, archive_remaining_episodic=true)`. Anti-patterns use
+   entities `mom/anti-pattern` + `avoid/<slug>`.
 
 ## Quick cold-start
 

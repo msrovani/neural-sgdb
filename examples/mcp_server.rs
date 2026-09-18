@@ -13,10 +13,13 @@
 //! (initialize â†’ initialized â†’ tools/list â†’ tools/call), ver spec em
 //! https://modelcontextprotocol.io/specification/2025-11-25/
 
+#![recursion_limit = "256"]
+
 use std::io::{self, BufRead, Write};
 
 use neural_sgdb::{
-    ContentType, DemoEmbedder, Embedder, MemoryState, RecallPath, Sgdb, DOCTRINE, DOCTRINE_SCOPE,
+    CommitFact, CommitRunPlan, CommitSupersede, ContentType, DemoEmbedder, Embedder, MemoryState,
+    RecallPath, ScopeDims, ScopeFilter, Sgdb, DOCTRINE, DOCTRINE_SCOPE,
 };
 #[cfg(feature = "file-storage")]
 use neural_sgdb::FileStorage;
@@ -272,7 +275,7 @@ fn error_response(id: &Value, code: i64, message: &str) -> Value {
 
 /// NÃºmero de tools em `tools/list` (aliases antigos ainda funcionam em tools/call).
 const EXPECTED_MCP_TOOL_COUNT: usize = 4;
-const MCP_CONTRACT_VERSION: &str = "1.1.18";
+const MCP_CONTRACT_VERSION: &str = "1.1.19";
 const BUILD_GIT: &str = env!("NEURAL_SGDB_BUILD_GIT");
 
 /// Lista pÃºblica: 4 tools. Os 23 nomes antigos continuam vÃ¡lidos em `tools/call`.
@@ -353,9 +356,9 @@ fn mcp_listed_tools() -> Value {
          }},
          "annotations":{"readOnlyHint":true}},
         {"name":"curate",
-         "description":"Mutacao pontual / grafo L6 + metadado cognitivo. op= explain|reinforce|feedback|forget|expire_old|decay|consolidate|diary|profile|associate|related_to|contradicts|supersede|conflicts|resolve_conflict|merge_memories|audit_checkpoint|audit_verify|rollback_to|set_ttl|expire_ttl|set_event|close_event|timeline|gc|recall_ann. Use a storage key completa md/L4/.... Nao hoarde: so depois de evidencia.",
+         "description":"Mutacao pontual / grafo L6 + metadado cognitivo. op= explain|reinforce|feedback|forget|expire_old|decay|consolidate|diary|profile|associate|related_to|contradicts|supersede|conflicts|resolve_conflict|merge_memories|audit_checkpoint|audit_verify|rollback_to|set_ttl|expire_ttl|set_event|close_event|timeline|gc|recall_ann|commit_run|deprecate_run. ADR-0010: commit_run/deprecate_run usam scope_run (+ facts/anti_patterns). Use a storage key completa md/L4/.... Nao hoarde: so depois de evidencia.",
          "inputSchema":{"type":"object","properties":{
-           "op":{"type":"string","enum":["explain","reinforce","feedback","forget","expire_old","decay","consolidate","diary","profile","associate","related_to","contradicts","supersede","conflicts","resolve_conflict","merge_memories","audit_checkpoint","audit_verify","rollback_to","set_ttl","expire_ttl","set_event","close_event","timeline","gc","recall_ann"]},
+           "op":{"type":"string","enum":["explain","reinforce","feedback","forget","expire_old","decay","consolidate","diary","profile","associate","related_to","contradicts","supersede","conflicts","resolve_conflict","merge_memories","audit_checkpoint","audit_verify","rollback_to","set_ttl","expire_ttl","set_event","close_event","timeline","gc","recall_ann","commit_run","deprecate_run"]},
            "key":{"type":"string"},
            "delta":{"type":"number"},
            "positive":{"type":"boolean"},
@@ -378,7 +381,19 @@ fn mcp_listed_tools() -> Value {
            "min_repeats":{"type":"integer"},
            "min_len":{"type":"integer"},
            "max_new":{"type":"integer"},
-           "seq":{"type":"integer"}
+           "seq":{"type":"integer"},
+           "scope_user":{"type":"string"},
+           "scope_agent":{"type":"string"},
+           "scope_app":{"type":"string"},
+           "scope_run":{"type":"string"},
+           "facts":{"type":"array","items":{"type":"object"}},
+           "anti_patterns":{"type":"array","items":{"type":"object"}},
+           "supersede_pairs":{"type":"array","items":{"type":"object"}},
+           "archive_remaining_episodic":{"type":"boolean"},
+           "ttl_episodic_ms":{"type":"integer"},
+           "close_event_key":{"type":"string"},
+           "audit":{"type":"boolean"},
+           "archive_episodic":{"type":"boolean"}
          },"required":["op"]}}
     ])
 }
@@ -432,6 +447,183 @@ fn mcp_actionable_error(e: impl std::fmt::Display) -> String {
     msg
 }
 
+fn mcp_scope_filter(args: &Value) -> ScopeFilter {
+    // Only multi-dim keys (v1.1.14). Legacy `scope=` stays on the
+    // recall_entities_scoped / resolve_scope_param path — do not promote it
+    // into ScopeFilter.user or doctrine/hot-test scoped recalls break.
+    ScopeFilter {
+        user: args["scope_user"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(String::from),
+        agent: args["scope_agent"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(String::from),
+        app: args["scope_app"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(String::from),
+        run: args["scope_run"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(String::from),
+    }
+}
+
+struct McpOwnedFact {
+    key: String,
+    text: String,
+    entities: Vec<String>,
+    content_type: Option<String>,
+    embedding: Option<Vec<f32>>,
+}
+
+fn parse_mcp_facts(arr: Option<&Vec<Value>>) -> Vec<McpOwnedFact> {
+    let Some(items) = arr else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (i, v) in items.iter().enumerate() {
+        let key = v["key"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .unwrap_or_else(|| format!("commit/{i}"));
+        let text = v["text"].as_str().unwrap_or("").to_string();
+        if text.is_empty() {
+            continue;
+        }
+        let entities = v["entities"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|e| e.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let content_type = v["type"].as_str().map(String::from);
+        let embedding = v["embedding"].as_array().map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_f64().map(|f| f as f32))
+                .collect()
+        });
+        out.push(McpOwnedFact {
+            key,
+            text,
+            entities,
+            content_type,
+            embedding,
+        });
+    }
+    out
+}
+
+fn mcp_commit_run(db: &mut Sgdb, args: &Value) -> Result<(String, Value), String> {
+    let filter = mcp_scope_filter(args);
+    let owned_facts = parse_mcp_facts(args["facts"].as_array());
+    let owned_antis = parse_mcp_facts(args["anti_patterns"].as_array());
+    let pairs_raw = args["supersede_pairs"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let pair_owned: Vec<(String, String)> = pairs_raw
+        .iter()
+        .filter_map(|p| {
+            Some((
+                p["old"].as_str()?.to_string(),
+                p["new"].as_str()?.to_string(),
+            ))
+        })
+        .collect();
+
+    // Lifetime dance: build CommitFact slices from owned buffers.
+    let fact_ents: Vec<Vec<&str>> = owned_facts
+        .iter()
+        .map(|f| f.entities.iter().map(|s| s.as_str()).collect())
+        .collect();
+    let anti_ents: Vec<Vec<&str>> = owned_antis
+        .iter()
+        .map(|f| f.entities.iter().map(|s| s.as_str()).collect())
+        .collect();
+    let facts: Vec<CommitFact<'_>> = owned_facts
+        .iter()
+        .enumerate()
+        .map(|(i, f)| CommitFact {
+            key: f.key.as_str(),
+            text: f.text.as_str(),
+            entities: fact_ents[i].as_slice(),
+            content_type: f.content_type.as_deref(),
+            embedding: f.embedding.as_deref(),
+        })
+        .collect();
+    let antis: Vec<CommitFact<'_>> = owned_antis
+        .iter()
+        .enumerate()
+        .map(|(i, f)| CommitFact {
+            key: f.key.as_str(),
+            text: f.text.as_str(),
+            entities: anti_ents[i].as_slice(),
+            content_type: f.content_type.as_deref(),
+            embedding: f.embedding.as_deref(),
+        })
+        .collect();
+    let supers: Vec<CommitSupersede<'_>> = pair_owned
+        .iter()
+        .map(|(o, n)| CommitSupersede {
+            old: o.as_str(),
+            new: n.as_str(),
+        })
+        .collect();
+
+    let write_dims = ScopeDims::from_args(
+        args["scope_user"].as_str().or(args["scope"].as_str()),
+        args["scope_agent"].as_str(),
+        args["scope_app"].as_str(),
+        args["scope_run"].as_str(),
+    );
+    let now = args["now"].as_u64().unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+    });
+    let plan = CommitRunPlan {
+        facts: &facts,
+        anti_patterns: &antis,
+        supersede: &supers,
+        archive_remaining_episodic: args["archive_remaining_episodic"]
+            .as_bool()
+            .unwrap_or(false),
+        ttl_episodic_ms: args["ttl_episodic_ms"].as_u64(),
+        close_event_key: args["close_event_key"].as_str(),
+        now,
+        audit: args["audit"].as_bool().unwrap_or(false),
+        write_dims,
+    };
+    let r = db
+        .commit_run(&filter, &plan)
+        .map_err(|e| mcp_actionable_error(e))?;
+    let text = format!(
+        "commit_run: written={} superseded={} archived={} ttl_set={} closed_event={} audit_seq={:?}",
+        r.written.len(),
+        r.superseded,
+        r.archived,
+        r.ttl_set,
+        r.closed_event,
+        r.audit_seq
+    );
+    let structured = json!({
+        "written": r.written,
+        "superseded": r.superseded,
+        "archived": r.archived,
+        "ttl_set": r.ttl_set,
+        "closed_event": r.closed_event,
+        "audit_seq": r.audit_seq
+    });
+    Ok((text, structured))
+}
+
 fn health_payload(db: &mut Sgdb, db_path: &str, embedder: &str) -> Value {
     let h = db.health();
     let (binary_path, binary_mtime) = binary_runtime_info();
@@ -470,7 +662,7 @@ fn health_payload(db: &mut Sgdb, db_path: &str, embedder: &str) -> Value {
             "4. remember(type=json|code|embedding|binary) to declare payload type (MDM1 v6)",
             "5. health(view=era) after dim/era Invalid; health(view=tensions) for conflicts/unseen scopes; health(view=staleness) for TTL/Decay/contradicts",
             "6. 2+ nos/DBs separados: feature p2p (examples/p2p_telepathy) — conflito preservado, arbitragem na leitura",
-            "7. MOM entities on write: mom/constraint|decision|fact|pattern|learning|pref — identical strings on recall_entities"
+            "7. MOM entities on write: mom/constraint|decision|fact|pattern|anti-pattern|learning|pref — identical strings on recall_entities; fim de tarefa: curate(op=commit_run) (ADR-0010)"
         ]
     })
 }
@@ -851,7 +1043,17 @@ fn main() {
                                 .map(|d| d.as_millis() as u64)
                                 .unwrap_or(0)
                         });
-                        match db.remember_episodic(user, response, now) {
+                        let dims = neural_sgdb::ScopeDims::from_args(
+                            args["scope_user"].as_str().or(args["scope"].as_str()),
+                            args["scope_agent"].as_str(),
+                            args["scope_app"].as_str(),
+                            args["scope_run"].as_str(),
+                        );
+                        let written = match &dims {
+                            Some(d) => db.remember_episodic_scoped(user, response, now, d),
+                            None => db.remember_episodic(user, response, now),
+                        };
+                        match written {
                             Ok((ku, ka)) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":format!("episodio verbatim armazenado:\nuser: {ku}\nasst: {ka}")}],
                                 "isError":false}})),
@@ -1066,7 +1268,11 @@ fn main() {
                         let k = args["k"].as_u64().unwrap_or(5) as usize;
                         let scope = args["scope"].as_str().unwrap_or("");
                         let historical = args["historical"].as_bool().unwrap_or(false);
-                        let hits = if scope.is_empty() {
+                        let dims_filter = mcp_scope_filter(args);
+                        let hits = if !dims_filter.is_global_only() {
+                            // ADR-0010 / v1.1.14: scope_user|agent|app|run
+                            db.recall_entities_dims(&entities, k, &dims_filter)
+                        } else if scope.is_empty() {
                             if historical {
                                 db.recall_entities_historical(&entities, k)
                             } else {
@@ -1378,7 +1584,13 @@ fn main() {
                             min_len: args["min_len"].as_u64().unwrap_or(24) as usize,
                             max_new: args["max_new"].as_u64().unwrap_or(64) as usize,
                         };
-                        match db.consolidate_recurrences(&cfg) {
+                        let filter = mcp_scope_filter(args);
+                        let result = if filter.is_global_only() {
+                            db.consolidate_recurrences(&cfg)
+                        } else {
+                            db.consolidate_recurrences_scoped(&cfg, &filter)
+                        };
+                        match result {
                             Ok(n) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":format!("{n} episodios L2 consolidados em fatos L3 (min_repeats={})", cfg.min_repeats)}],"isError":false}})),
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
@@ -1527,6 +1739,35 @@ fn main() {
                                 let text = hits.iter().map(|h| format!("- {} | {} (d={:.3})", h.key, h.text, h.dist)).collect::<Vec<_>>().join("\n");
                                 send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                     "content":[{"type":"text","text":if text.is_empty() { "(vazio)".into() } else { text }}],"isError":false}}))
+                            }
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
+                        }
+                    }
+                    "commit_run" => {
+                        match mcp_commit_run(&mut db, args) {
+                            Ok((text, structured)) => send(&json!({"jsonrpc":"2.0","id":id,"result":
+                                mcp_tool_result(&text, structured, false)})),
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":e}],"isError":true}})),
+                        }
+                    }
+                    "deprecate_run" => {
+                        let filter = mcp_scope_filter(args);
+                        let archive = args["archive_episodic"].as_bool().unwrap_or(true);
+                        let now = args["now"].as_u64().unwrap_or(0);
+                        let ttl = args["ttl_episodic_ms"].as_u64().map(|ms| now.saturating_add(ms));
+                        match db.deprecate_run(&filter, archive, ttl) {
+                            Ok(r) => {
+                                let text = format!(
+                                    "deprecate_run: archived={} ttl_set={}",
+                                    r.archived, r.ttl_set
+                                );
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":
+                                    mcp_tool_result(&text, json!({
+                                        "archived": r.archived,
+                                        "ttl_set": r.ttl_set
+                                    }), false)}));
                             }
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),

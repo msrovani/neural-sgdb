@@ -77,6 +77,7 @@ pub mod ctype;
 pub mod doctrine;
 pub mod embedder;
 pub mod era;
+pub mod harness;
 pub mod hamming_dispatch;
 pub mod lexical;
 pub mod limits;
@@ -121,6 +122,10 @@ pub use lexical::{tokenize_for_rerank, LexicalIndex};
 pub use memory_doc::{
     generate_memory_id, LineageEntry, MemoryDoc, MemoryDocView, MemoryLayer, MemoryMeta,
     MemoryRecord, MemoryState, RelationKind, ScopeDims, ScopeFilter, VectorClock,
+};
+pub use harness::{
+    CommitFact, CommitRunPlan, CommitRunReport, CommitSupersede, DeprecateRunReport,
+    MOM_ANTI_PATTERN,
 };
 pub use sgdb::{
     AuditReport, ConsolidateConfig, DecayConfig, GcConfig, GcReport, HealthReport, Hit,

@@ -190,8 +190,8 @@ fn main() {
     rep.check("initialize responde", !r.get("error").is_some(), r.to_string());
     rep.check("protocolVersion 2025-11-25",
         r["result"]["protocolVersion"] == "2025-11-25", r.to_string());
-    rep.check("serverInfo version 1.1.18",
-        r["result"]["serverInfo"]["version"] == "1.1.18", r.to_string());
+    rep.check("serverInfo version 1.1.19",
+        r["result"]["serverInfo"]["version"] == "1.1.19", r.to_string());
     rep.check("serverInfo mcp_tool_count 4",
         r["result"]["serverInfo"]["mcp_tool_count"] == 4, r.to_string());
     let instr = r["result"]["instructions"].as_str().unwrap_or("");
@@ -521,6 +521,39 @@ fn main() {
     let (txt, is_err) = srv.tool("curate", json!({"op": "decay", "now": 0}));
     rep.check("decay em now=0 Ã© no-op", !is_err && txt.contains("0 memorias"), txt.clone());
     rep.phase("metadado cognitivo", &t);
+
+    // ---------- fase 6c: ADR-0010 commit_run / deprecate_run ----------
+    let t = Instant::now();
+    let (txt, is_err) = srv.tool("remember", json!({
+        "user": "ruido harness task",
+        "response": "episodio a arquivar",
+        "now": 1800000000001u64,
+        "scope_run": "hot-harness-1"
+    }));
+    rep.check("remember episodico com scope_run", !is_err && txt.contains("md/L2/"), txt.clone());
+    let (txt, is_err) = srv.tool("curate", json!({
+        "op": "commit_run",
+        "scope_run": "hot-harness-1",
+        "facts": [{"key": "harness/fact", "text": "fato limpo do flush", "entities": ["mom/fact"]}],
+        "anti_patterns": [{"key": "harness/avoid", "text": "nao repetir ruido episodico", "entities": ["avoid/noise"]}],
+        "archive_remaining_episodic": true,
+        "now": 1800000000100u64
+    }));
+    rep.check("commit_run escreve e arquiva", !is_err && txt.contains("written=2") && txt.contains("archived="), txt.clone());
+    let (txt, is_err) = srv.tool("recall", json!({
+        "entities": ["mom/anti-pattern"],
+        "scope_run": "hot-harness-1",
+        "k": 5,
+        "format": "json"
+    }));
+    rep.check("recall anti-pattern pos-commit_run", !is_err && txt.contains("nao repetir ruido"), txt.clone());
+    let (txt, is_err) = srv.tool("curate", json!({
+        "op": "deprecate_run",
+        "scope_run": "hot-harness-empty",
+        "archive_episodic": true
+    }));
+    rep.check("deprecate_run run vazio e no-op seguro", !is_err && txt.contains("archived=0"), txt.clone());
+    rep.phase("harness commit_run", &t);
 
     // ---------- fase 7: observabilidade (health/validate) ----------
     let t = Instant::now();

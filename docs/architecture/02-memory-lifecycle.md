@@ -102,6 +102,8 @@ Every promotion wires `parent_ids` + `derived_from` relation.
 | `expire_old` | sweep closed validity windows |
 | `transfer_to` | layer move with lineage |
 | `merge_memories` | fusion with parent_ids=[A,B] |
+| `commit_run` | ADR-0010 end-of-task flush (facts + anti-patterns + archive/TTL) |
+| `deprecate_run` | ADR-0010 soft-close run episodics |
 
 ## 7. Remaining gaps
 

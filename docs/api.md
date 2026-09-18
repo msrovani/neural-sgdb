@@ -438,6 +438,19 @@ pub fn consolidate_recurrences(&mut self, cfg: &ConsolidateConfig) -> Result<usi
 // parent_ids (version_ids) + derived_from relation. Dedup: identical payload
 // → no-op (no version bump); returns # of NEW facts.
 
+// ---- Harness flush (ADR-0010, src/harness.rs) ----
+// Upper layer supplies facts; core does not LLM-summarise. Archive/TTL
+// require non-empty ScopeFilter (typically run=…). Anti-patterns auto-tag
+// mom/anti-pattern. MCP: curate(op=commit_run|deprecate_run).
+pub fn commit_run(&mut self, filter: &ScopeFilter, plan: &CommitRunPlan<'_>)
+    -> Result<CommitRunReport, SgdbError>;
+pub fn deprecate_run(&mut self, filter: &ScopeFilter, archive_episodic: bool,
+    ttl_expires_at: Option<u64>) -> Result<DeprecateRunReport, SgdbError>;
+pub fn consolidate_recurrences_scoped(&mut self, cfg: &ConsolidateConfig,
+    filter: &ScopeFilter) -> Result<usize, SgdbError>;
+pub fn remember_episodic_scoped(&mut self, user: &str, response: &str, now: u64,
+    dims: &ScopeDims) -> Result<(String, String), SgdbError>;
+
 // ---- Recall ponderado com breakdown (item 3) ----
 pub struct RecallWeights { pub w_sem: f32, pub w_rec: f32, pub w_imp: f32,
                            pub w_conf: f32, pub w_src: f32 }

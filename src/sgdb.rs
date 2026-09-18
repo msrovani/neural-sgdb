@@ -438,7 +438,7 @@ pub struct MemoryExplanation {
 
 /// Cognitive memory database. `Sgdb::open(backend)` + remember/recall.
 pub struct Sgdb {
-    engine: AiosDatabaseEngine,
+    pub(crate) engine: AiosDatabaseEngine,
     /// Observabilidade estruturada (v1.0, Phase 32): contadores nomeados,
     /// incrementados nos pontos de entrada. Snapshot via [`Sgdb::metrics`].
     pub(crate) metrics: crate::metrics::Metrics,
@@ -2406,6 +2406,16 @@ impl Sgdb {
     /// re-put da MESMA chave sem payload novo é no-op (sem bump de versão).
     /// Churn bounded por `max_new`.
     pub fn consolidate_recurrences(&mut self, cfg: &ConsolidateConfig) -> Result<usize, SgdbError> {
+        self.consolidate_recurrences_filtered(cfg, None)
+    }
+
+    /// Consolidação por recorrência com filtro opcional de escopo (ADR-0010).
+    /// `filter=None` = comportamento legado (todo o corpus L2/ts).
+    pub(crate) fn consolidate_recurrences_filtered(
+        &mut self,
+        cfg: &ConsolidateConfig,
+        filter: Option<&crate::memory_doc::ScopeFilter>,
+    ) -> Result<usize, SgdbError> {
         use alloc::collections::BTreeMap;
         let rows = self.engine.scan_prefix_storage(b"md/L2/")?;
         let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -2413,6 +2423,12 @@ impl Sgdb {
             let sk = String::from_utf8_lossy(&k).into_owned();
             if !sk.contains("/ts/") {
                 continue; // só episódicos timestamped (companions de L4/L5 não)
+            }
+            if let Some(f) = filter {
+                let dims = self.engine.effective_scope_dims(&sk);
+                if !crate::harness::dims_pass_filter(&dims, f) {
+                    continue;
+                }
             }
             let Ok(doc) = MemoryDoc::decode(&blob) else {
                 continue;

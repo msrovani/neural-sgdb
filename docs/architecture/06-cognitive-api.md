@@ -58,6 +58,8 @@ material for the agent/LLM above.
 | `conflicts` / `resolve_conflict` / `dismiss_conflict` | conflict model |
 | `expire_old` | validity sweep |
 | `MemoryLifecycle::tick` | deterministic promotion/decay |
+| `commit_run` / `deprecate_run` | ADR-0010 harness flush / soft-close run |
+| `consolidate_recurrences_scoped` | recurrence consolidate filtered by ScopeFilter |
 
 ## 5. Observability (implemented)
 

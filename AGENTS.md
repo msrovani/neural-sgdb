@@ -6,19 +6,20 @@ repo. **Read `codemap.md` (atlas), `docs/api.md` (contract) and
 Distributed, Storage, Cognitive API; typed hits from v1.1.6) and
 `docs/implementation-status.md` before editing code.**
 
-**Shipped crate is 1.1.18 (agentic MCP contract 1.1.18):** MCP lists **4 tools**
+**Shipped crate is 1.1.19 (agentic MCP contract 1.1.19):** MCP lists **4 tools**
 (`remember`/`recall`/`health`/`curate`; 23 old names are `tools/call` aliases).
 `curate` ganhou ops de metadado cognitivo (decay/consolidate/audit_checkpoint/
-audit_verify/rollback_to).
+audit_verify/rollback_to) e harness ADR-0010 (`commit_run`/`deprecate_run`).
 Default retrieval is **lexical**. Unset `NEURAL_SGDB_EMBEDDER` = none;
 `=demo` only if requested. `remember(text=)` without a vector → L3
 (`remember_text_with`). Resources: `nsgdb://doctrine` + `nsgdb://session`.
-Hot test **96/0**. Lib tests **278+1 / 324+1 / 230+1** (default / p2p / no_std).
+Hot test **100/0**. Lib tests **284+1 / 324+1 / 236+1** (default / p2p / no_std).
 Bump `MCP_CONTRACT_VERSION` ⇒ pin `mcp_client` `serverInfo.version` no mesmo
-commit (senão hot test 94/1). **v1.1.17:** ADC-lite dual-path + state-first
+commit (senão hot test falha). **v1.1.17:** ADC-lite dual-path + state-first
 ranking (`corpus_mean`, `bq_top_k_f32_dual`); bitvecs/era intactos.
 **v1.1.18:** telepathy 2-DB + host harvest (MOM, surprise→reinforce, paging,
 `health(view=staleness)`).
+**v1.1.19:** ADR-0010 harness `commit_run` / `deprecate_run` / `mom/anti-pattern`.
 
 **Self-program (qualquer LLM/IDE):**
 [`docs/agent-self-program.md`](docs/agent-self-program.md) +
