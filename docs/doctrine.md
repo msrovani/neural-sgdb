@@ -14,4 +14,4 @@ Rules:
 
 MCP lists 4 tools: remember, recall, health, curate. health(view=era) is era_report; health(view=tensions) is conflicts/unseen scopes; health(view=staleness) is TTL/Decay/contradicts/aging (read-only — curate manually). Default recall is lexical. Resource nsgdb://session is the cold-start packet. Legacy tool names still work if a client calls them.
 
-Full self-program (any LLM/IDE): docs/agent-self-program.md — cold-start ritual, memory packet, capacity map, user-rule/system-prompt snippets. MOM entity roles on write/recall: mom/constraint, mom/decision, mom/fact, mom/pattern, mom/learning, mom/pref (identical strings).
+Full self-program (any LLM/IDE): docs/agent-self-program.md — cold-start ritual, memory packet, capacity map, user-rule/system-prompt snippets. MOM entity roles on write/recall: mom/constraint, mom/decision, mom/fact, mom/pattern, mom/anti-pattern, mom/learning, mom/pref (identical strings). End of atomic task: curate(op=commit_run) (ADR-0010). Harness prompts: docs/harness-prompts.md. Obsolescence = supersede/forget — never MemoryState::Deprecated.

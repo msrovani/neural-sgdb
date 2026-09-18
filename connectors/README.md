@@ -1,11 +1,11 @@
 # Connectors neural-sgdb ↔ apps claw
 
 Camada de host para integrar agentes ao `mcp_server` sem alterar o core Rust,
-NMD1, TKLV ou a versão do produto (**crate permanece 1.1.9**; ver
-`VERSIONING.md` §Host connectors).
+NMD1 ou TKLV. **Não bumpa** o SemVer do crate (`VERSIONING.md` §Host
+connectors). Alinhar docs/adapters ao `MCP_CONTRACT_VERSION` atual do
+`examples/mcp_server.rs` (hoje **1.1.20** — 4 tools; lexical-first).
 
-**Status (2026-08-20):** Hermes provider executável + contract tests 4/4;
-OpenClaw esqueleto TS.
+**Status:** Hermes provider executável + contract tests; OpenClaw esqueleto TS.
 ```text
 host → adapter → MCP JSON-RPC/stdio → examples/mcp_server.rs → Sgdb
 ```

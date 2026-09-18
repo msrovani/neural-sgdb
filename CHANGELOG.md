@@ -19,6 +19,10 @@ Sem mudança de formato (NMD1/TKLV). **MCP_CONTRACT_VERSION → 1.1.20**.
 - Harness: +8 testes (isolamento A≠B, idempotência, TTL, companion L4,
   anti-pattern dedup, null-scoping, consolidate scoped).
 - `scripts/mcp-install.ps1`: rename-then-copy se o `.exe` estiver locked.
+- Docs: [`docs/harness-prompts.md`](docs/harness-prompts.md) — prompts
+  globais/auditoria corrigidos (sem `Deprecated`; anti-pattern via entities;
+  `commit_run` shipped); self-program + doctrine + skill alinhados;
+  [`docs/interop-os.md`](docs/interop-os.md) — paridade NMD1 com neural-os-core.
 - Verificado: lib **292/0**, p2p **338/0**, no_std **244/0**; hot test
   **100/0**; bare-metal ok. Embedder host default permanece unset/`none`.
 

@@ -68,7 +68,18 @@ Grave / recall estes fatos (se faltarem, `remember` com as entities abaixo).
 | `mom/learning` | Lição / reflexão (citar evidência) |
 | `mom/pref` | Preferência (além de `pref/*`) |
 
-Usar **uma** role MOM + entities de domínio (`adr/*`, `pref/*`, …). Core **não** extrai.
+Usar **uma** role MOM + entities de domínio (`adr/*`, `pref/*`, `avoid/*`, …). Core **não** extrai.
+
+### Fim de tarefa atómica (ADR-0010 — harness flush)
+
+1. Gather anti-patterns / constraints do run: `recall(entities=["mom/anti-pattern","mom/constraint"], scope_run=…)`.
+2. `curate(op=commit_run, scope_run=<id>, facts=[…], anti_patterns=[…], archive_remaining_episodic=true)`  
+   — grava fatos L3/L4, anti-patterns, opcional supersede/TTL, arquiva episódicos `/ts/` do run.
+3. Soft-close sem promover fatos: `curate(op=deprecate_run, scope_run=<id>)`.
+4. **Não** inventar `MemoryState::Deprecated` — obsolescência = `supersede` / `forget` (Archived).
+5. Null-scoping (v1.1.20): memórias só com `scope_run` **não** vazam no recall global.
+
+Prompts longos (6 pilares + auditoria): [`harness-prompts.md`](harness-prompts.md).
 
 ### Preferências IDE (scope tipicamente `ide/cursor` ou default do launcher)
 
@@ -180,12 +191,23 @@ Ops úteis: `explain`, `reinforce`, `feedback`, `forget`, `supersede`,
 ## 5. Anti-padrões (não faça)
 
 - Tratar `DemoEmbedder` / `NEURAL_SGDB_EMBEDDER=demo` como semântica real.
-- Recall sem `scope` e concluir que “não há memória” (null-scoping).
+- Setar `NEURAL_SGDB_EMBEDDER=demo` no `mcp.json` **global** sem pedido explícito.
+- Recall sem `scope` e concluir que “não há memória” (null-scoping; inclui `ScopeDims`).
+- Pedir / implementar `MemoryState::Deprecated` (ADR-0010: usar supersede/Archived).
 - Hoarding / dump de markdown ou transcripts no DB.
-- Follow-up com key curta em vez de `md/L4/...`.
+- Follow-up com key curta em vez de `md/L3|L4/...`.
 - Dois `mcp_server` a escrever no mesmo FileStorage.
 - Propor FAISS/HNSW/crypto/LLM **no core** (non-goals / ADRs).
 - Assumir que snapshot de índices no `open` já existe (ADR-0009 = design Next).
+- Terminar tarefa atómica **sem** `commit_run` / archive do `scope_run` (contexto apodrece).
+- Global `mcp.json` com `NEURAL_SGDB_DEFAULT_SCOPE` de **outro** repo no mesmo DB
+  (ex.: `project/gradrail` enquanto se trabalha em `neural-sgdb`) — null-scoping
+  esconde o projeto aberto; use scope do **workspace** ou passe `scope=` sempre.
+  Ver [`interop-os.md`](interop-os.md).
+- Global `mcp.json` com `NEURAL_SGDB_DEFAULT_SCOPE` de **outro** repo no mesmo DB
+  (ex.: `project/gradrail` enquanto se trabalha em `neural-sgdb`) — null-scoping
+  esconde o projeto aberto; use scope do **workspace** ou passe `scope=` sempre.
+  Ver [`interop-os.md`](interop-os.md).
 
 ---
 
@@ -206,13 +228,14 @@ neural-sgdb / MCP: substrato de MEMÓRIA, não vector DB. O core não decide —
 
 Obrigatório no início de cada sessão com MCP neural-sgdb:
 1) Ler nsgdb://session (cold_start) e nsgdb://doctrine.
-2) recall lexical/entities em CADA scope de cold_start.scopes_to_probe (null-scoping: sem scope = só globais).
+2) recall lexical/entities em CADA scope de cold_start.scopes_to_probe (null-scoping: sem scope = só globais; ScopeDims também contam).
 3) Carregar preferências (pref/idioma, pref/memoria) e constraints do projeto (adr/index, roadmap/non-goals) se existirem.
-4) Só então remember. Não hoarde. Follow-ups usam storage key completa md/L4/....
+4) Só então remember. Não hoarde. Follow-ups usam storage key completa md/L3|L4/....
 5) Default recall = lexical (ADR-0008). Semantic/hybrid só com embedding real. format=json para consumo máquina.
 6) Um writer por ficheiro DB. Dois DBs/nós = p2p (telepathy_two_db), não o mesmo FileStorage em paralelo.
-7) Comunicar em pt-BR se pref/idioma assim o disser.
-Playbook completo: docs/agent-self-program.md no repo neural-sgdb (skill nsgdb-full-usage).
+7) Fim de tarefa: curate(op=commit_run, scope_run=…) com facts + anti_patterns (mom/anti-pattern); obsolescência = supersede/forget — nunca estado Deprecated.
+8) Comunicar em pt-BR se pref/idioma assim o disser.
+Playbook: docs/agent-self-program.md; prompts harness: docs/harness-prompts.md; skill nsgdb-full-usage.
 ```
 
 ---
@@ -221,8 +244,9 @@ Playbook completo: docs/agent-self-program.md no repo neural-sgdb (skill nsgdb-f
 
 ```text
 You use neural-sgdb via MCP (remember/recall/health/curate). Follow docs/doctrine.md
-and docs/agent-self-program.md: cold-start every session, null-scoping, lexical
-default, full storage keys, gather-then-remember, no hoarding. Prefer format=json.
+and docs/agent-self-program.md: cold-start every session, null-scoping (incl. ScopeDims),
+lexical default, full storage keys, gather-then-remember, no hoarding. End of task:
+curate(op=commit_run). Prefer format=json. See docs/harness-prompts.md for the six pillars.
 ```
 
 ---
@@ -232,9 +256,11 @@ default, full storage keys, gather-then-remember, no hoarding. Prefer format=jso
 | Tema | Doc |
 |------|-----|
 | Doutrina curta | `docs/doctrine.md` |
+| Harness prompts (6 pilares + auditoria) | `docs/harness-prompts.md` |
+| Interop OS (NMD1/TKLV / AIOS) | `docs/interop-os.md` |
 | API | `docs/api.md` |
 | MCP install | `docs/MCP.md` |
-| ADRs | `docs/adr/` (0001–0009) |
+| ADRs | `docs/adr/` (0001–0010) |
 | Telepatia | `docs/telepathy-pt.md` |
 | Status | `docs/implementation-status.md` |
 

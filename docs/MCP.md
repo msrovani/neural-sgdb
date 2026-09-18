@@ -3,20 +3,22 @@
 Guia de instalação, contrato e troubleshooting do servidor MCP
 (`examples/mcp_server.rs`).
 
-## Contrato atual (v1.1.18)
+## Contrato atual (v1.1.20)
 
 | Campo | Valor |
 |-------|-------|
 | Protocolo | JSON-RPC 2.0 over **stdio** (uma linha JSON por mensagem) |
 | Handshake | `initialize` → `protocolVersion: 2025-11-25` |
-| `serverInfo.version` | `1.1.18` (`MCP_CONTRACT_VERSION` em `examples/mcp_server.rs`) |
+| `serverInfo.version` | `1.1.20` (`MCP_CONTRACT_VERSION` em `examples/mcp_server.rs`) |
 | Tools | **4** (`remember`, `recall`, `health`, `curate`) — 23 nomes antigos ainda funcionam em `tools/call` |
 | Recall default | **lexical** (ADR-0008). Cosine: `embedding=` ou `NEURAL_SGDB_EMBEDDER=demo` |
 | Embedder host | unset = none; `NEURAL_SGDB_EMBEDDER=demo` = trigrama explícito (**não** semântico) |
 | Write sem vetor | `remember(text=)` → **L3** (`remember_text_with`); L4 só com `embedding=` ou `NEURAL_SGDB_EMBEDDER=demo` |
 | Observabilidade | `health(view=era)` = era_report; `health(view=tensions)` = conflitos / superseded / scopes invisíveis; `health(view=staleness)` = TTL/Decay/contradicts/aging (read-only) |
 | Resources | `nsgdb://doctrine`, **`nsgdb://session`** (cold-start JSON) |
+| Harness (ADR-0010) | `curate(op=commit_run|deprecate_run)` + entities `mom/anti-pattern` |
 | DB default | `NEURAL_SGDB_DB=.nsgdb/memory.db` (relativo ao cwd do processo) |
+| Default scope | Preferir **por workspace** (`.cursor/mcp.json`). Global `~\.cursor\mcp.json` **não** deve forçar `DEFAULT_SCOPE` de outro repo no mesmo DB. |
 
 ### Tools (4 + aliases)
 
@@ -24,10 +26,9 @@ Lista: `remember`, `recall`, `health`, `curate`.
 
 Dispatch: `remember(user+response)` → episódico L2; `remember(text=)` sem vetor →
 L3; `recall(entities|at|rag=true)` → 1-hop / temporal / rag; `health(view=era|validate|tensions)`;
-`curate(op=explain|reinforce|decay|consolidate|audit_checkpoint|audit_verify|rollback_to|…)`
-(v1.1.10: ops de metadado cognitivo — decay Ebbinghaus, consolidação por
-recorrência, auditoria hash-chain + rollback cognitivo; `audit_verify` expõe
-`structuredContent` com o `AuditReport`).
+`curate(op=explain|reinforce|decay|consolidate|audit_checkpoint|audit_verify|rollback_to|commit_run|deprecate_run|…)`
+(v1.1.10: metadado cognitivo; **v1.1.19+**: harness ADR-0010 `commit_run`/`deprecate_run`;
+`audit_verify` expõe `structuredContent` com o `AuditReport`).
 
 Aliases (ainda aceitos no call): os 23 nomes antigos.
 
@@ -78,6 +79,7 @@ total (cold-start, pacote de memória, mapa write/read/curate/p2p, snippets de
 user rule / system prompt):
 
 - Playbook: [`agent-self-program.md`](agent-self-program.md)
+- Harness prompts (6 pilares + auditoria): [`harness-prompts.md`](harness-prompts.md)
 - Doutrina curta (MCP `instructions`): [`doctrine.md`](doctrine.md)
 - Skill Cursor: [`.cursor/skills/nsgdb-full-usage/SKILL.md`](../.cursor/skills/nsgdb-full-usage/SKILL.md)
 

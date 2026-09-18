@@ -1,8 +1,8 @@
 # Roadmap — neural-sgdb
 
-Status: **v1.1.x maintenance line (crate v1.1.18)** —
+Status: **v1.1.x maintenance line (crate v1.1.20)** —
 stable API, zero deps, `no_std` + `std`, CI gates green. Crate version
-**1.1.18**; histórico v1.1.2–v1.1.18 no `CHANGELOG.md`. This roadmap is honest
+**1.1.20**; histórico v1.1.2–v1.1.20 no `CHANGELOG.md`. This roadmap is honest
 about what is DONE, what is NEXT, and what is deliberately NOT planned.
 
 Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
@@ -20,18 +20,29 @@ Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
    (v1.1.15); FAISS/HNSW externo continua 💤 (ADR-0002). Próximo salto =
    host-side / oversample / ANN, não deps no core.
 
+🔜 **Re-sync vendored crate no neural-os-core** — OS tree
+   (`neural-os-core-latest/crates/neural-sgdb`) ainda em **1.1.16**; NMD1
+   golden já bate. Ver [`docs/interop-os.md`](docs/interop-os.md).
+
 ## v1.x maintenance (2026-08-13 — ongoing)
 
+✅ **v1.1.20 — null-scoping ScopeDims (2026-09-18)** — `allows_scope_filter`
+   (global exige `dims.is_global()`); `recall_*_dims` pool unfiltered;
+   consolidate herda dims; + harness isolation tests; MCP contract **1.1.20**;
+   hot **100/0**; lib **292 / 338 / 244**.
+
+✅ **v1.1.19 — ADR-0010 harness (2026-09-18)** — `commit_run` /
+   `deprecate_run` / `mom/anti-pattern`; sem `MemoryState::Deprecated`; sem
+   MDM1 v8. Docs: `docs/harness-prompts.md`.
+
 ✅ **v1.1.18 — telepathy 2-DB (2026-09-16)** — `examples/telepathy_two_db`
-   (dois FileStorage + CRDT + reopen); verificado p2p lib **321/0**,
-   `p2p_telepathy`, `mesh_simulation`. MCP contract permanece 1.1.17.
-   Multi-agente: DB partilhado MCP ≠ telepatia; 2 ficheiros = p2p.
+   (dois FileStorage + CRDT + reopen); verificado p2p; `p2p_telepathy`,
+   `mesh_simulation`. Multi-agente: DB partilhado MCP ≠ telepatia; 2 ficheiros = p2p.
 
 ✅ **v1.1.17 — recall quality (2026-09-16)** — ADC-lite dual-path
    (`sign(q) ∪ sign(q−mean)`, `corpus_mean` / `bq_top_k_f32_dual`) +
    ranking state-first (`SCORE_TIE_MARGIN`); bitvecs/era/S1 intactos.
-   recall@5 dual 24–40% (1×…16×). Matrix **275+1 / 321+1 / 227+1**,
-   MCP contract **1.1.17**, hot **95/0**.
+   recall@5 dual 24–40% (1×…16×).
 
 ✅ **v1.1.13 — docs Store/extensão (2026-08-21)** — track **estacionado**:
    não é gate de release; produto = agente via MCP. Ver non-goals abaixo.

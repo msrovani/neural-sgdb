@@ -32,12 +32,12 @@ protocols that codify HOW to use the DB.
 
 ## mcp_client.rs — HOT TEST
 - `cargo run --release --example mcp_client` — drives `mcp_server` like an IDE;
-  **95/0 checks exit 0** (v1.1.10, ainda 95 em 1.1.11). Covers 4-tool surface + aliases, lexical
+  **100/0 checks exit 0** (v1.1.20). Covers 4-tool surface + aliases, lexical
   default (ADR-0008), `format=json`, `remember(type=)`, temporal, entities,
-  lazy pagination, scope, persistence across restart, e **fase 6b (metadado
-  cognitivo)**: `curate` ops `consolidate`/`audit_checkpoint`/`audit_verify`/
-  `rollback_to`/`decay` — episódicos L2 precisam de `now` DISTINTO por chamada
-  (senão as chaves `md/L2/ts/<hex>` colidem no mesmo ms).
+  lazy pagination, scope, persistence across restart, metadado cognitivo
+  (`consolidate`/`audit_*`/`decay`), e **fase harness** (`commit_run` /
+  `deprecate_run`, ADR-0010). Episódicos L2 precisam de `now` DISTINTO por
+  chamada (senão as chaves `md/L2/ts/<hex>` colidem no mesmo ms).
 
 ## mcp_server.rs
 - `cargo run --release --example mcp_server` — connectable to Claude Code/Cursor/OpenCode

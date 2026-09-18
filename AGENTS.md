@@ -2,8 +2,8 @@
 
 Guide for AI agents (OpenCode, Cursor, Windsurf, Claude Code) working in this
 repo. **Read `codemap.md` (atlas), `docs/api.md` (contract) and
-`docs/architecture/` (v1.1.17 crate — Memory Model, Lifecycle, Retrieval,
-Distributed, Storage, Cognitive API; typed hits from v1.1.6) and
+`docs/architecture/` (Memory Model, Lifecycle, Retrieval, Distributed,
+Storage, Cognitive API; typed hits from v1.1.6; current crate = `Cargo.toml`) and
 `docs/implementation-status.md` before editing code.**
 
 **Shipped crate is 1.1.20 (agentic MCP contract 1.1.20):** MCP lists **4 tools**
@@ -22,6 +22,9 @@ surprise→reinforce, paging, `health(view=staleness)`). **v1.1.19:** ADR-0010
 harness `commit_run` / `deprecate_run` / `mom/anti-pattern`. **v1.1.20:**
 null-scoping honra `ScopeDims`; `recall_*_dims` pool unfiltered;
 consolidate herda dims.
+
+**Interop OS:** NMD1/TKLV byte-identical with `neural-os-core` (`k_ai` golden
+`golden_nmd1_bytes_match_neural_sgdb`). See [`docs/interop-os.md`](docs/interop-os.md).
 
 **Self-program (qualquer LLM/IDE):**
 [`docs/agent-self-program.md`](docs/agent-self-program.md) +
@@ -505,7 +508,7 @@ let facts = db.scan_prefix("md/L3/")?;                 // ART prefix scan
 ```bash
 cargo run --release --example bench        # benchmarks (ART/BQ/recall vs FP32)
 cargo run --release --example mcp_server   # MCP server for AI agents
-cargo run --release --example mcp_client   # HOT TEST: drives mcp_server like an IDE (95/0)
+cargo run --release --example mcp_client   # HOT TEST: drives mcp_server like an IDE (100/0)
 cargo run --release --example agent_protocol  # DECISION PROTOCOL (itens 2–6 + P1–P6): como o agente USA o DB
 cargo run --release --example two_ai_protocol # PROTOCOLO MÁQUINA→MÁQUINA (v1.1.6 itens 1–5): IA-A grava datum declarado, IA-B lê tipado
 cargo run --release --example memory_arena_eval # MEMORY-ARENA EVAL (P7): utilidade da memória em tarefas interdependentes
@@ -529,9 +532,9 @@ hash, not a semantic model). Restart opencode after changing the config.
 ## Running tests
 
 ```bash
-cargo test                                 # 275+1 tests (InMemory/FileStorage/TickvFile)
-cargo test --features p2p                  # 321+1 (includes CRDT sync + mesh harness)
-cargo test --no-default-features           # 227+1 (no_std core, host test harness)
+cargo test                                 # 292+1 tests (InMemory/FileStorage/TickvFile)
+cargo test --features p2p                  # 338+1 (includes CRDT sync + mesh harness)
+cargo test --no-default-features           # 244+1 (no_std core, host test harness)
 cargo check --no-default-features --target x86_64-unknown-none   # no_std gate
 cargo clippy --all-targets --all-features -- -D warnings          # lint gate (P0-5)
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-6/P0-10)

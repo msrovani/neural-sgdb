@@ -29,7 +29,8 @@ description: >
 8. `health(view=staleness)` for aging/TTL/contradicts — then curate manually.
 9. End of atomic task (ADR-0010): `curate(op=commit_run, scope_run=…, facts=…,
    anti_patterns=…, archive_remaining_episodic=true)`. Anti-patterns use
-   entities `mom/anti-pattern` + `avoid/<slug>`.
+   entities `mom/anti-pattern` + `avoid/<slug>`. Obsolescence = supersede/forget
+   — never `MemoryState::Deprecated`. Prompts: `docs/harness-prompts.md`.
 
 ## Quick cold-start
 
@@ -47,5 +48,8 @@ recall(entities=["mom/constraint"], scope=<project>, format=json)
 
 - Install: `docs/MCP.md`
 - ADRs: `docs/adr/` (0001–0010); v1.1.20 null-scoping inclui `ScopeDims`
+- Harness prompts (corrigidos): `docs/harness-prompts.md`
+- Interop OS / AIOS: `docs/interop-os.md`
+
 - Telepathy: `docs/telepathy-pt.md`
 - Project rule: `.cursor/rules/nsgdb-agent.mdc`

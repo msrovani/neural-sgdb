@@ -288,7 +288,10 @@ pub fn renders_prose(ct: ContentType) -> bool;
 
 pub struct MemoryMeta { /* memory_id, source, confidence, importance,
     created_tick, parent_ids, clock_overflow, scope, entities,
-    content_type: Option<String> — persisted in `sys/meta/` (MDM1 v6) */ }
+    content_type: Option<String>,  // MDM1 v6
+    scope_dims: ScopeDims,         // MDM1 v7 — user/agent/app/run
+    model_id: String               // MDM1 v7 — era/model (ADR-0007)
+    — persisted in `sys/meta/` (MDM1 current = v7; older versions migrate) */ }
 
 /// Deterministic memory id: FNV-1a 128 over (node_id, created_tick, layer,
 /// key) → 32 hex chars. Assigned once at creation, never re-derived.
@@ -523,10 +526,16 @@ via `set_importance`/`set_confidence`).
 - **`entities`** (MDM1 v5): the upper layer declares the entity strings; the
   core NEVER extracts entities from text — 1-hop recall matches exact strings.
 - **`content_type`** (MDM1 v6): the writer declares the stable label
-  (`text`/`json`/`code`/`embedding`/`binary`); the reader stops depending on
-  the heuristic detector. `declared wins`.
+  (`text`/`json`/`code`/`embedding`/`binary`); declared wins over the
+  heuristic detector on read.
+- **`scope_dims` / `model_id`** (MDM1 v7): multi-dim scope + embedding era
+  label; NMD1 unchanged. Null-scoping (v1.1.20) also honors non-global dims.
 
 ## On-disk format (OS interop)
+
+Byte-identical with neural-os-core / AIOS for **NMD1** and **TKLV** — see
+[`interop-os.md`](interop-os.md). Golden: `golden_nmd1_bytes` ↔ OS
+`golden_nmd1_bytes_match_neural_sgdb`.
 
 - **Records:** `TKLV` (klen/vlen/crc32, tombstone V=0) and `TKCK` (checkpoint).
 - **MemoryDoc:** `NMD1` (layer, key, 8-node VectorClock, payload, bitvec).

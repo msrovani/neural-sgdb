@@ -36,15 +36,18 @@ filesystem, no external runtime.
 
 ## Status
 
-**v1.1.18** — substrate **agêntico** (MCP 4 tools contract **1.1.18**, doutrina,
+**v1.1.20** — substrate **agêntico** (MCP 4 tools contract **1.1.20**, doutrina,
 hits tipados, TTL/GC, timeline, ANN) + **ADC-lite** + telepatia **2-DB** +
-**host harvest** (MOM, surprise→reinforce, paging, `health(view=staleness)`).
-Extensão de browser / Store **estacionadas**.
-Crate em `Cargo.toml`: **1.1.18**.
+**host harvest** + **ADR-0010 harness** (`commit_run` / `deprecate_run` /
+`mom/anti-pattern`) + **null-scoping `ScopeDims`**. Extensão de browser / Store
+**estacionadas**. Crate em `Cargo.toml`: **1.1.20**.
 
-- `cargo test` on host: **278+1** (p2p **324+1**, no_std **230+1**)
-- hot test MCP: **96/0**; `agent_protocol`: **25/0**
+- `cargo test --lib` on host: **292** (p2p **338**, no_std **244**)
+- hot test MCP: **100/0**; `agent_protocol`: **25/0**
 - `cargo check --no-default-features --target x86_64-unknown-none`: **clean**
+- Playbooks: [`docs/agent-self-program.md`](docs/agent-self-program.md),
+  [`docs/harness-prompts.md`](docs/harness-prompts.md),
+  [`docs/interop-os.md`](docs/interop-os.md) (NMD1/TKLV ↔ neural-os-core)
 - **Typed hits (v1.1.6)**: o recall devolve, por hit, `path` (semantic/
   lexical/entities), `content_type` (Text/Json/Code/Embedding(dim)/Binary),
   `payload_type` (o datum REAL do primário — `Embedding(dim)` para L4/L5),
@@ -196,8 +199,8 @@ lists conflicts / superseded / unseen scopes.
 
 Host adapters for claw-like apps (Hermes provider, OpenClaw skeleton, shared
 MCP client) live in [`connectors/`](connectors/README.md) — **outside** crate
-SemVer; `crates/nsgdb-embed` (LocalEmbedder 384-dim, `cargo run --manifest-path crates/nsgdb-embed/Cargo.toml --example demo`) and `crates/nsgdb-wasm` (`Storage` stub) are host crates — core stays 1.1.17.
-Protocolo do agente: `examples/agent_protocol.rs` (23 checks), `two_ai_protocol.rs` (16), `memory_arena_eval.rs`.
+SemVer; `crates/nsgdb-embed` (LocalEmbedder 384-dim, `cargo run --manifest-path crates/nsgdb-embed/Cargo.toml --example demo`) and `crates/nsgdb-wasm` (`Storage` stub) are host crates — core SemVer = `Cargo.toml` (**1.1.20**).
+Protocolo do agente: `examples/agent_protocol.rs` (25 checks), `two_ai_protocol.rs` (16), `memory_arena_eval.rs`. Fim de tarefa: `curate(op=commit_run)` (ADR-0010).
 
 ### Cursor (Windows)
 
@@ -256,7 +259,9 @@ avoid stale/unreproducible claims).
   tracks capability vs code
 - **AI agent guides** — `AGENTS.md`, `CLAUDE.md`, `codemap.md` (atlas),
   [`docs/MCP.md`](docs/MCP.md) (instalação MCP), [`docs/doctrine.md`](docs/doctrine.md) (o core não decide),
-  [`docs/agent-self-program.md`](docs/agent-self-program.md) (qualquer LLM/IDE: auto-programar uso pleno + pacote de memória)
+  [`docs/agent-self-program.md`](docs/agent-self-program.md) (qualquer LLM/IDE: auto-programar uso pleno + pacote de memória),
+  [`docs/harness-prompts.md`](docs/harness-prompts.md) (6 pilares harness + auditoria ADR-0010, prompts corrigidos),
+  [`docs/interop-os.md`](docs/interop-os.md) (NMD1/TKLV ↔ neural-os-core / AIOS)
 - **Contributing** — [`CONTRIBUTING.md`](CONTRIBUTING.md)
 - **Governance** — [`SECURITY.md`](SECURITY.md) (policy + trust model),
   [`VERSIONING.md`](VERSIONING.md) (SemVer + release process),
@@ -286,16 +291,20 @@ Licensed under **MIT** **or** **Apache-2.0** (dual license), your choice.
 - [x] **v1.1.11 host governance + micro-ganhos** — `host_scheduler` + `backfill_helper` + `Storage::put_many`/`put_batch` + `lexical` dedup/`search_fast` + `hamming` inline + `recall` select_nth
 - [x] **v1.1.12 security hardening 11→1** — `engine.put_inner` choke central, `WasmStorage` bounds, `LocalEmbedder::new()->Result`, `MCP -32601`, `try_encode` limites
 - [x] **v1.1.17 recall quality** — ADC-lite dual-path (`sign(q) ∪ sign(q−mean)`) + state-first tie-break; recall@5 dual até 40% @16×
+- [x] **v1.1.18 telepathy 2-DB + host harvest** — MOM, surprise→reinforce, paging, `health(view=staleness)`
+- [x] **v1.1.19 ADR-0010 harness** — `commit_run` / `deprecate_run` / `mom/anti-pattern` (sem `Deprecated` state)
+- [x] **v1.1.20 null-scoping ScopeDims** — `allows_scope_filter`; consolidate herda dims; hot test **100/0**
 - [x] **Host crates** — `crates/nsgdb-embed` + `crates/nsgdb-wasm` (sem quebrar core `no_std` zero deps)
 - [ ] **Browser extension** — estacionada (`extension/` stub; auto-captura comentada). Produto = agente via MCP, não scraper de abas.
 
 ## Interop with neural-os-core
 
 - **NMD1 (document):** `MemoryDoc` encode/decode byte-identical to the OS
+  (golden `golden_nmd1_bytes` ↔ OS `golden_nmd1_bytes_match_neural_sgdb`)
 - **TKLV/TKCK (storage):** `tickv::encode_record`/`scan_volume` replicate the
   TickvLite format (`crates/k_nano/src/storage/tickv.rs`) — a volume written on
   either side is read by the other. `TickvFile` writes 512-aligned records with
-IEEE CRC32 over key‖val; tombstone `TKL\0`/`vlen=0`; EOF all-0x00/0xFF.
-   `TickvFile` writes TKCK checkpoints (fast-mount via `try_mount_from_ckpt` with
-   full `scan_volume` fallback) and supports GC/compaction (rewrites live set +
-   ckpt + atomic rename).
+  IEEE CRC32 over key‖val; tombstone `TKL\0`/`vlen=0`; EOF all-0x00/0xFF.
+  `TickvFile` writes TKCK checkpoints (fast-mount via `try_mount_from_ckpt` with
+  full `scan_volume` fallback) and supports GC/compaction (rewrites live set +
+  ckpt + atomic rename). Detalhe: [`docs/interop-os.md`](docs/interop-os.md).

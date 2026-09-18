@@ -110,13 +110,16 @@ topologies; **content** does.
 `tools/call` aliases. Default recall **lexical** (ADR-0008). Unset
 `NEURAL_SGDB_EMBEDDER` = none (`=demo` explicit only). `remember(text=)`
 without vector → L3. Resources `nsgdb://doctrine` + `nsgdb://session`.
-`health(view=tensions)`. Hot test **95/0**. MCP contract **1.1.17**.
+`health(view=tensions|staleness|era)`. Harness ADR-0010:
+`curate(op=commit_run|deprecate_run)`. Hot test **100/0**. MCP contract
+**1.1.20**.
 
 ### Host connectors
 `connectors/` is host-side (not crate SemVer). Hermes `MemoryProvider` is
-executable against `mcp_server` 1.1.9 (lexical, scoped, lockfile). OpenClaw
-adapter is a documented skeleton pending Node MCP transport in the host tree.
-Contract: `python -m unittest discover -s connectors/tests -v`.
+executable against current `mcp_server` (4 tools, lexical, scoped, lockfile).
+OpenClaw adapter is a documented skeleton pending Node MCP transport.
+Contract: `python -m unittest discover -s connectors/tests -v`. Keep adapter
+notes in sync with `MCP_CONTRACT_VERSION` (not frozen at 1.1.9).
 
 ## Compatibility constraints
 

@@ -152,9 +152,9 @@ When implemented, update in the same commit(s):
 - `examples/agent_protocol.rs` — harness flush auto-check
 - `implementation-status.md` matrix row
 
-Until code lands, **conventions in §2–§3 are already the correct agent
-behaviour** on today’s MCP surface (`remember` + entities + `supersede` +
-`scope_run`).
+Until conventions land in agent hosts, **§2–§3 remain the correct agent
+behaviour** on the MCP surface (`remember` + entities + `supersede` +
+`scope_run` + `commit_run`).
 
 **Shipped (v1.1.19):** `Sgdb::commit_run` / `deprecate_run` /
 `consolidate_recurrences_scoped` / `remember_episodic_scoped` in
@@ -164,6 +164,9 @@ behaviour** on today’s MCP surface (`remember` + entities + `supersede` +
 `MemoryMeta.scope`); `consolidate` herda dims do run; `recall_*_dims`
 não depende do pool global filtrado.
 
+Prompts corrigidos (origem externa → contrato real):
+[`docs/harness-prompts.md`](../harness-prompts.md).
+
 ## Consequences
 
 - Positive: harness agents get a clear obsolescence model without schema churn;
@@ -171,9 +174,9 @@ não depende do pool global filtrado.
   one verb instead of ad-hoc curate chains; doctrine (core does not decide)
   preserved.
 - Negative / cost: agents must learn entity strings (`mom/anti-pattern`,
-  `arch/rev/*`, `avoid/*`); until `commit_run` ships, flush remains manual
-  composition; deferred `Avoids`/`polarity` may tempt premature MDM1 bumps.
-- Contract impact (when coded): **MINOR** — additive APIs + MCP `curate` op;
+  `arch/rev/*`, `avoid/*`); deferred `Avoids`/`polarity` may tempt premature
+  MDM1 bumps (resist — entities first).
+- Contract impact: **MINOR** — additive APIs + MCP `curate` op;
   no NMD1/TKLV change; no new `MemoryState`; MDM1 unchanged under this ADR.
   Hot test pin (`MCP_CONTRACT_VERSION`) bumps only if listed tools/args change
   in a versioned way (same discipline as prior MCP bumps).
