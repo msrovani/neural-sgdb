@@ -521,3 +521,63 @@ RECORDS, não de docs vivos. O ADR-0009 §3 (snapshot) segue **não implementado
 decisão**: agora existe o instrumento (§4) e o validador (§3, via
 `index_fingerprint`), então o threshold decide com dado em vez de opinião.
 
+## v1.1.22 — math consolidado + recall adaptativo (2026-09-21)
+
+Release 2/3 do plano (itens 5 e 8). **Hot test 102/0** (nenhuma asserção nova: a
+superfície MCP não mudou — o bump do `MCP_CONTRACT_VERSION` para 1.1.22 marca a
+build do server, não o schema).
+
+| Gate | v1.1.21 | v1.1.22 |
+|------|---------|---------|
+| `cargo test` | 315+1 | **330+1** ✓ |
+| `cargo test --features p2p` | 361+1 | **376+1** ✓ |
+| `cargo test --no-default-features` | 265+1 | **274+1** ✓ |
+| clippy `-D warnings` (all-targets/all-features) | verde | **verde** ✓ |
+| rustdoc `-D warnings` | verde | **verde** ✓ |
+| no_std `x86_64-unknown-none` | verde | **verde** ✓ |
+| hot test `mcp_client` | 102/0 | **102/0** ✓ |
+
+### O bug que o teste do próprio item pegou
+
+**A fronteira do top-k comparada por BUCKET, não pelo score cru.** A primeira
+implementação do `recall_adaptive` decidia "decisivo" com o mesmo agrupamento que
+o state-first usa para ordenar (`score / (SCORE_TIE_MARGIN+1)`). Buckets têm
+**bordas arbitrárias**: dois documentos a 0.0026 de cosseno podem cair em buckets
+diferentes e o código os declarava "decididos por conteúdo", parando de escalar
+antes de recuperar o melhor documento. O teste
+`adaptive_escalates_and_recovers_best_the_small_pool_missed` (que exige achar um
+doc que o pool barato não alcança) falhou exatamente assim, e a correção foi
+comparar o **gap cru** (`abs_diff` no score u32) contra `SCORE_TIE_MARGIN`.
+
+### O segundo achado, no bench e não no teste
+
+A política foi medida nos dois regimes no `examples/bench.rs` e o resultado é
+**contra a intuição inicial**: com `SCORE_TIE_MARGIN` como threshold, escalar é o
+caso COMUM, não a exceção.
+
+| Corpus | recall@5 | Degraus (1/4/8/16) | Candidatos/query |
+|---|---|---|---|
+| 8 clusters densos, 1024-dim | 44% (vs 40% do dual 16× fixo) | 40/40/40/40 | 338.6 (vs ~160) |
+| Espalhado (ruído uniforme) | 58% | 40/28/25/25 | 212.1 (vs ~12) |
+
+Ou seja: no corpus denso a escada custa ~2× uma passada única no teto para +4 pp.
+A entrega honesta é o **instrumento** (`oversample_used` / `escalations` /
+`boundary_decisive` / `probe`) para o host decidir o próprio teto — a mesma
+postura do ADR-0009 §4 (medir antes de pagar) e do ADR-0011 (provar antes de
+acreditar).
+
+### Terceiro achado: a doc do `ln_f32` mentia
+
+O comentário prometia `~1e-5` de precisão; o erro relativo **medido** é
+**5.9e-2** (x=1.85) — três ordens de grandeza pior. Não é bug (o BM25 só precisa
+de ORDEM consistente e o ranking está congelado em teste:
+`bm25_ranking_is_frozen_across_math_move`), mas o bound de regressão agora é o
+número medido, não o aspiracional.
+
+### Lição de gate
+
+Mover `math.rs` quebrou o gate `--no-default-features` de dois jeitos que valem
+regra geral no AGENTS.md: os testes que usam o `std` como ORÁCULO (comparar
+`ln_f32` contra `f32::ln`) precisam ser **host-only**
+(`#[cfg(all(test, feature = "std"))]`), e `println!`/`vec!` exigem
+`use alloc::vec;` — no_std não os tem implicitamente.

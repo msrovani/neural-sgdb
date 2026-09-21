@@ -13,6 +13,7 @@ use crate::ctype::{
 };
 use crate::engine::AiosDatabaseEngine;
 use crate::era::{estimate_era_migration, era_report_lines, EraReport};
+use crate::math::{exp_f32, sqrt_f32};
 use crate::memory_doc::{
     LineageEntry, MemoryDoc, MemoryLayer, MemoryMeta, MemoryRecord, MemoryState, RelationKind,
     ScopeDims, ScopeFilter,
@@ -96,6 +97,74 @@ fn rank_hits_by_score_state(ranked: &mut [(u32, Hit)]) {
             .then_with(|| a.1.key.cmp(&b.1.key))
     });
 }
+
+/// Score bruto u32 de um hit (`dist*10000`) — a escala em que o pipeline
+/// semântico pontua (paridade com o OS), reconstruída do `dist` público.
+///
+/// Usar o score BRUTO (e não o bucket `score/(MARGIN+1)` do state-first) é
+/// deliberado: o bucket tem bordas arbitrárias, então dois docs separados por
+/// 0.0026 de cosseno podem cair em buckets diferentes e parecer "decididos".
+/// A comparação correta de ambiguidade é a diferença crua contra a margem.
+/// Não usar em paths lexical/entities — lá `dist` tem outra escala.
+fn score_u32_of(h: &Hit) -> u32 {
+    (h.dist * 10_000.0) as u32
+}
+
+/// Observabilidade do pool de um recall (v1.1.22, item 8): o que o filtro
+/// grosso entregou e o que sobreviveu aos filtros de estado/scope.
+///
+/// Existe porque `survivors <= k` é ambíguo para quem decide escalar: pode ser
+/// "o store acabou" (fronteira definitiva) ou "o pool acabou antes dos docs
+/// válidos" (ainda há candidato bom além dele). `saturated()` desfaz a ambiguidade.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RecallProbe {
+    /// Candidatos entregues pelo BQ (depois do truncamento ao `budget`).
+    pub considered: usize,
+    /// Documentos vivos que passaram pelos filtros, ANTES do top-k.
+    pub survivors: usize,
+    /// Orçamento pedido ao filtro grosso (`k · oversample`).
+    pub budget: usize,
+}
+
+impl RecallProbe {
+    /// O filtro grosso encheu o orçamento ⇒ pode haver documento VÁLIDO além
+    /// do pool que o recall não chegou a examinar.
+    pub fn saturated(&self) -> bool {
+        self.considered >= self.budget
+    }
+}
+
+/// Resultado de um recall **adaptativo** (v1.1.22, item 8).
+///
+/// O `recall` clássico usa um oversample fixo (auto por dimensionalidade ou
+/// explícito). O adaptativo começa no degrau mais barato (`1×`) e só gasta CPU
+/// quando a **fronteira do top-k é ambígua** — isto é, quando o candidato na
+/// posição `k` ainda pertence à mesma faixa de conteúdo do `k`-ésimo hit.
+/// Nesse caso um documento que o filtro grosso do BQ deixou de fora poderia
+/// legitimamente ocupar uma vaga, então o pool é ampliado.
+///
+/// Opt-in por desenho: escalar o pool muda a ORDEM dos resultados (mais
+/// candidatos = disputa mais justa), então não pode ser o default do `recall`
+/// sem quebrar determinismo de quem já consome por posição.
+#[derive(Clone, Debug)]
+pub struct AdaptiveRecall {
+    /// Top-k, ordenado exatamente como o `recall` (state-first).
+    pub hits: Vec<Hit>,
+    /// Oversample efetivamente usado no degrau vencedor.
+    pub oversample_used: usize,
+    /// Quantos escalonamentos aconteceram (0 = o primeiro degrau bastou).
+    pub escalations: u8,
+    /// `true` = a fronteira do top-k é DECIDIDA por conteúdo (nenhum candidato
+    /// fora do pool cairia na mesma faixa); `false` = o teto `max_oversample`
+    /// foi atingido com a fronteira ainda ambígua — o caller sabe que está no
+    /// limite da resolução do filtro, não que o resultado está errado.
+    pub boundary_decisive: bool,
+    /// Pool do degrau vencedor — o "porquê" de `boundary_decisive`.
+    pub probe: RecallProbe,
+}
+
+/// Degraus do recall adaptativo: barato primeiro, caro só se preciso.
+const ADAPTIVE_LADDER: [usize; 4] = [1, 4, 8, 16];
 
 /// Proveniência de um hit (v0.6 — Phase 9 parcial): epistemologia exposta ao
 /// caller — memórias com estados diferentes NÃO se parecem iguais no recall.
@@ -2074,6 +2143,43 @@ impl Sgdb {
         self.recall_impl(query, k, oversample, true, None)
     }
 
+    /// Recall **adaptativo** (v1.1.22, item 8): escalona o oversample só quando
+    /// a fronteira do top-k é ambígua (v1.1.22, `AdaptiveRecall`).
+    ///
+    /// Degraus `1 → 4 → 8 → 16` (limitados por `max_oversample`, mínimo 1). Em
+    /// cada degrau o core pede `k+1` hits — o sentinela de fronteira — e para
+    /// quando o `(k+1)`-ésimo está a MAIS de `SCORE_TIE_MARGIN` do `k`-ésimo
+    /// (dentro da margem = empate de conteúdo ⇒ ambíguo), ou no teto.
+    ///
+    /// Não confundir "poucos sobreviventes" com "nada foi cortado": se o pool
+    /// encheu o orçamento e mesmo assim não deu `k` docs válidos (scope/estado
+    /// rejeitaram o pool inteiro), ainda pode haver doc bom além dele — logo
+    /// também escala (ver `RecallProbe::saturated`).
+    ///
+    /// Determinístico: mesma DB + query + k + teto ⇒ mesmo resultado. Não
+    /// altera o `recall` default (o pool maior pode mudar a ordem, então é
+    /// opt-in). `max_oversample = 1` degrada para o comportamento `recall(…, 1)`.
+    pub fn recall_adaptive(
+        &mut self,
+        query: &[f32],
+        k: usize,
+        max_oversample: usize,
+    ) -> Result<AdaptiveRecall, SgdbError> {
+        self.recall_adaptive_impl(query, k, max_oversample, true, None)
+    }
+
+    /// `recall_adaptive` escopado (mesmo filtro DENTRO do pool de candidatos
+    /// do `recall_scoped` — memória de outro scope nunca disputa vaga).
+    pub fn recall_adaptive_scoped(
+        &mut self,
+        query: &[f32],
+        k: usize,
+        max_oversample: usize,
+        scope: &str,
+    ) -> Result<AdaptiveRecall, SgdbError> {
+        self.recall_adaptive_impl(query, k, max_oversample, true, Some(scope))
+    }
+
     /// Recall **escopado** (v1.1.4 item 7, mem0 multi-tenancy): mesmo pipeline
     /// de `recall`, mas o filtro de `scope` corre DENTRO do pool de candidatos
     /// — memórias de outro user/agent/projeto não competem por vagas do
@@ -2123,6 +2229,77 @@ impl Sgdb {
         self.recall_impl(query, k, ov, active_only, Some(scope))
     }
 
+    /// Núcleo do recall adaptativo: caminha a escada de oversample e para no
+    /// primeiro degrau cuja fronteira é decisiva (ou no teto).
+    ///
+    /// A noção de "decisivo" é a que o resultado de fato usa: o `(k+1)`-ésimo
+    /// hit saiu da faixa de empate do `k`-ésimo. Faixas iguais = o último slot
+    /// do top-k foi decidido por *tick* (state-first), não por conteúdo — logo
+    /// um candidato não-amostrado poderia ocupá-lo.
+    fn recall_adaptive_impl(
+        &mut self,
+        query: &[f32],
+        k: usize,
+        max_oversample: usize,
+        active_only: bool,
+        scope: Option<&str>,
+    ) -> Result<AdaptiveRecall, SgdbError> {
+        let cap = if max_oversample == 0 { 1 } else { max_oversample };
+        let mut out = AdaptiveRecall {
+            hits: Vec::new(),
+            oversample_used: 1,
+            escalations: 0,
+            boundary_decisive: true,
+            probe: RecallProbe::default(),
+        };
+        if k == 0 || query.is_empty() {
+            return Ok(out);
+        }
+        // 1 recall LÓGICO (a métrica conta pedidos do host, não passadas).
+        self.metrics.recalls += 1;
+        // Degraus efetivos: 1, 4, 8, 16 cortados no teto + o próprio teto.
+        let mut steps: Vec<usize> = Vec::new();
+        for s in ADAPTIVE_LADDER.iter() {
+            let v = (*s).min(cap);
+            if steps.last() != Some(&v) {
+                steps.push(v);
+            }
+        }
+        if steps.last() != Some(&cap) {
+            steps.push(cap);
+        }
+        for (i, ov) in steps.iter().enumerate() {
+            // `k+1` = sentinela: precisamos VER a fronteira, não só o top-k.
+            let (mut hits, probe) =
+                self.recall_impl_probe(query, k + 1, *ov, active_only, scope)?;
+            let decisive = if probe.survivors <= k {
+                // Menos que `k` sobreviventes: ou o store realmente não tem mais
+                // candidato (nada foi cortado), ou o orçamento acabou antes de
+                // alcançar os docs válidos (scope/estado rejeitaram o pool
+                // inteiro). Só o orçamento distingue — e é ele que decide.
+                !probe.saturated()
+            } else {
+                // Gap CRU entre a última vaga do top-k e quem ficou de fora: o
+                // `abs_diff` cobre os dois sentidos (o state-first pode adiantar
+                // uma versão corrente de score levemente pior).
+                score_u32_of(&hits[k - 1]).abs_diff(score_u32_of(&hits[k]))
+                    > SCORE_TIE_MARGIN
+            };
+            hits.truncate(k);
+            out = AdaptiveRecall {
+                hits,
+                oversample_used: *ov,
+                escalations: i.min(u8::MAX as usize) as u8,
+                boundary_decisive: decisive,
+                probe,
+            };
+            if decisive || *ov >= cap {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
     /// Núcleo do recall com modo de estado explícito. `active_only = true`:
     /// memórias inativas são descartadas ANTES do ranking (não consomem
     /// vagas do top-k); `false` = histórico (todas, com provenance exposta).
@@ -2138,8 +2315,30 @@ impl Sgdb {
         active_only: bool,
         scope: Option<&str>,
     ) -> Result<Vec<Hit>, SgdbError> {
+        self.metrics.recalls += 1;
+        Ok(self
+            .recall_impl_probe(query, k, oversample, active_only, scope)?
+            .0)
+    }
+
+    /// `recall_impl` com **observabilidade do pool** (v1.1.22, item 8): devolve
+    /// também quantos candidatos o filtro grosso entregou e quantos sobreviveram
+    /// aos filtros de estado/scope.
+    ///
+    /// O recall adaptativo precisa dessa distinção: `survivors <= k` pode
+    /// significar "o store não tem mais candidato" (nada foi cortado ⇒ fronteira
+    /// definitiva) OU "o pool acabou antes de atingir os docs válidos" (pode
+    /// haver doc bom além dele ⇒ precisa escalar). Só o orçamento diz qual.
+    fn recall_impl_probe(
+        &mut self,
+        query: &[f32],
+        k: usize,
+        oversample: usize,
+        active_only: bool,
+        scope: Option<&str>,
+    ) -> Result<(Vec<Hit>, RecallProbe), SgdbError> {
         if query.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), RecallProbe::default()));
         }
         // P1-1: query não-finita ou oversized corrompe o ranking (NaN → score 0)
         for &x in query {
@@ -2164,7 +2363,6 @@ impl Sgdb {
                  run era_report() for the migration plan + cost estimate)",
             ));
         }
-        self.metrics.recalls += 1;
         let k = k.max(1);
         let cand = k.saturating_mul(oversample.max(1));
         // v1.1.16 ADC-lite: candidatos = path legado ∪ path com query
@@ -2176,6 +2374,10 @@ impl Sgdb {
             .into_iter()
             .take(cand.max(1))
             .collect();
+        // v1.1.22 item 8: tamanho do pool ANTES de consumir — é o que diz se o
+        // orçamento do filtro grosso foi esgotado (o loop abaixo move `hits`).
+        let considered = hits.len();
+        let budget = cand.max(1);
         // Distância Hamming máxima de um vetor indexado (normaliza o fallback
         // p/ escala 0..1 do contrato de `Hit.dist` — bughunt #11).
         let ham_max = (self.engine.bq.words_per_vec.max(1) * 64) as f32;
@@ -2308,9 +2510,17 @@ impl Sgdb {
         // 0..64 no mesmo espaço) + state-first v1.1.16 (scores dentro da
         // margem contam como empate → versão corrente primeiro) + key.
         // Mesma DB + mesma query + mesmo k ⇒ mesmos resultados ordenados.
+        let probe = RecallProbe {
+            considered,
+            survivors: best.len(),
+            budget,
+        };
         let mut ranked: Vec<(u32, Hit)> = best.into_values().collect();
         rank_hits_by_score_state(&mut ranked);
-        Ok(ranked.into_iter().take(k).map(|(_, h)| h).collect())
+        Ok((
+            ranked.into_iter().take(k).map(|(_, h)| h).collect(),
+            probe,
+        ))
     }
 
     /// Recall com **scoring ponderado** (#3, padrão Mem0/MemGPT):
@@ -4435,36 +4645,6 @@ fn clamp(s: &str, max: usize) -> String {
 
 /// sqrt para no_std (core não expõe `f32::sqrt` no target bare-metal).
 /// Newton–Raphson, 10 iterações, convergência rápida para argumentos > 0.
-pub(crate) fn sqrt_f32(x: f32) -> f32 {
-    if x <= 0.0 {
-        return 0.0;
-    }
-    let mut y = x;
-    for _ in 0..10 {
-        y = (y + x / y) * 0.5;
-    }
-    y
-}
-
-/// `exp` para no_std (f32::exp não existe no core p/ bare-metal — mesmo
-/// ponteiro do `ln_f32`/`sqrt_f32`): expoente IEEE + série no resto.
-/// Precisão ~1e-6 para |r| ≤ ln2/2, suficiente p/ decay de importância
-/// (Ebbinghaus, v1.1.10 item 1).
-fn exp_f32(x: f32) -> f32 {
-    if x <= -40.0 {
-        return 0.0;
-    }
-    if x >= 40.0 {
-        return f32::MAX;
-    }
-    let k = ((x * core::f32::consts::LOG2_E) + if x < 0.0 { -0.5 } else { 0.5 }) as i32;
-    let r = x - k as f32 * core::f32::consts::LN_2;
-    let e = 1.0
-        + r * (1.0 + r * (0.5 + r * (1.0 / 6.0 + r * (1.0 / 24.0 + r * (1.0 / 120.0)))));
-    let bits = ((k + 127) as u32) << 23;
-    e * f32::from_bits(bits)
-}
-
 /// FNV-1a sobre um estado inicial (`h` já seedado) — re-fold usado pelo
 /// `state_digest` da auditoria (v1.1.10 item 5). Mesma polinômica do
 /// `crate::tickv::fnv1a64`.
@@ -8510,5 +8690,201 @@ mod tests {
             db.metrics().value("open_rebuild_ms_last"),
             h.open_rebuild_ms_last
         );
+    }
+
+    // ── Rec8: recall adaptativo (esforço por ambiguidade de fronteira) ────
+
+    fn keys_of(hs: &[Hit]) -> Vec<String> {
+        hs.iter().map(|h| h.key.clone()).collect()
+    }
+
+    /// Cluster DEGENERADO para o filtro grosso: os vetores têm todos os mesmos
+    /// bits (`sign` idêntico) ⇒ hamming empata ⇒ o BQ desempata por id. O
+    /// cosseno CRESCE com o id, então os primeiros ids (que o pool pequeno
+    /// pega) são os PIORES — o melhor doc só aparece com pool grande.
+    fn dense_ascending_cluster(db: &mut Sgdb, n: usize) {
+        for i in 0..n {
+            let second = 0.5 - 0.01 * i as f32;
+            let key = if i + 1 == n {
+                alloc::string::String::from("best")
+            } else {
+                alloc::format!("d{i:02}")
+            };
+            db.remember_semantic(&key, "cluster", &[1.0, second, 0.0, 0.0])
+                .unwrap();
+        }
+    }
+
+    /// O caso que motiva o item: o pool mais barato (`1×`) não alcança o doc
+    /// realmente melhor, a fronteira é ambígua, e o escalonamento o recupera.
+    #[test]
+    fn adaptive_escalates_and_recovers_best_the_small_pool_missed() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        dense_ascending_cluster(&mut db, 40);
+        let q = [1.0f32, 0.0, 0.0, 0.0];
+        // baseline: orçamento pequeno — o "melhor" fica FORA do resultado
+        let base = db.recall_oversampled(&q, 5, 1).unwrap();
+        assert!(
+            !base.iter().any(|h| h.key.ends_with("/best")),
+            "pool 1× não deveria alcançar o melhor: {:?}",
+            keys_of(&base)
+        );
+        let a = db.recall_adaptive(&q, 5, 16).unwrap();
+        assert!(a.escalations >= 1, "fronteira ambígua ⇒ escala: {a:?}");
+        assert!(a.oversample_used > 1, "usou degrau maior: {a:?}");
+        assert_eq!(a.hits.len(), 5);
+        assert!(
+            a.hits.iter().any(|h| h.key.ends_with("/best")),
+            "escalar traz o melhor real para o top-k: {:?}",
+            keys_of(&a.hits)
+        );
+    }
+
+    /// Fronteira decidida por conteúdo ⇒ gasta o mínimo e devolve EXATAMENTE o
+    /// mesmo que o orçamento pequeno (nenhum comportamento novo).
+    #[test]
+    fn adaptive_decisive_boundary_does_not_escalate() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        for i in 0..8 {
+            db.remember_semantic(&alloc::format!("s{i}"), "espalhado", &[1.0, i as f32, 0.0, 0.0])
+                .unwrap();
+        }
+        let q = [1.0f32, 0.0, 0.0, 0.0];
+        let a = db.recall_adaptive(&q, 3, 16).unwrap();
+        assert!(a.boundary_decisive, "scores bem separados: {a:?}");
+        assert_eq!(a.escalations, 0);
+        assert_eq!(a.oversample_used, 1);
+        // o degrau 1 pede `k+1` = 4 candidatos; o baseline equivalente é `k=4`.
+        let base = db.recall_oversampled(&q, 4, 1).unwrap();
+        assert_eq!(keys_of(&a.hits), keys_of(&base)[..3].to_vec());
+    }
+
+    /// Teto = 1 degrada para o comportamento clássico, e a fronteira ambígua é
+    /// REPORTADA (não escondida) quando o teto impede provar a decisão.
+    #[test]
+    fn adaptive_cap_one_degrades_and_reports_ambiguity() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        dense_ascending_cluster(&mut db, 40);
+        let q = [1.0f32, 0.0, 0.0, 0.0];
+        let a = db.recall_adaptive(&q, 5, 1).unwrap();
+        assert_eq!(a.escalations, 0, "teto 1 ⇒ nenhum escalonamento");
+        assert_eq!(a.oversample_used, 1);
+        assert!(
+            !a.boundary_decisive,
+            "ambíguo no teto: o caller precisa saber: {a:?}"
+        );
+        let base = db.recall_oversampled(&q, 6, 1).unwrap();
+        assert_eq!(keys_of(&a.hits), keys_of(&base)[..5].to_vec());
+    }
+
+    /// Escalar até o teto que cobre o corpus converge para o resultado do
+    /// orçamento grande (mesmo ranking do recall exaustivo determinístico).
+    #[test]
+    fn adaptive_converges_to_exhaustive_pool() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        dense_ascending_cluster(&mut db, 40);
+        let q = [1.0f32, 0.0, 0.0, 0.0];
+        let a = db.recall_adaptive(&q, 5, 16).unwrap();
+        let exhaustive = db.recall_oversampled(&q, 5, 16).unwrap();
+        assert_eq!(keys_of(&a.hits), keys_of(&exhaustive));
+        // O probe diz a verdade sobre o corpus: 40 docs vivos, orçamento 96 ⇒
+        // o filtro NÃO saturou (foi o corpus que acabou, não o orçamento).
+        assert_eq!(a.probe.survivors, 40, "todos vivos: {a:?}");
+        assert_eq!(a.probe.budget, 96);
+        assert!(!a.probe.saturated(), "corpus menor que o orçamento: {a:?}");
+        // …e a fronteira segue ambígua: o corpus é um cluster degenerado de
+        // empates, então o resultado é o melhor possível DENTRO da resolução.
+        assert!(!a.boundary_decisive);
+        assert_eq!(a.escalations, 3, "1 → 4 → 8 → 16: {a:?}");
+    }
+
+    /// Determinismo: mesma DB + query + k + teto ⇒ mesmos hits.
+    #[test]
+    fn adaptive_is_deterministic() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        dense_ascending_cluster(&mut db, 24);
+        let q = [1.0f32, 0.0, 0.0, 0.0];
+        let a = db.recall_adaptive(&q, 4, 8).unwrap();
+        let b = db.recall_adaptive(&q, 4, 8).unwrap();
+        assert_eq!(keys_of(&a.hits), keys_of(&b.hits));
+        assert_eq!(a.oversample_used, b.oversample_used);
+        assert_eq!(a.escalations, b.escalations);
+        assert_eq!(a.boundary_decisive, b.boundary_decisive);
+    }
+
+    /// k = 0 e teto 0 não panicam; teto 0 é tratado como 1.
+    #[test]
+    fn adaptive_degenerate_inputs_are_safe() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("k1", "a", &[1.0, 0.0, 0.0, 0.0]).unwrap();
+        let q = [1.0f32, 0.0, 0.0, 0.0];
+        let a = db.recall_adaptive(&q, 0, 8).unwrap();
+        assert!(a.hits.is_empty());
+        assert_eq!(a.escalations, 0);
+        let b = db.recall_adaptive(&q, 2, 0).unwrap();
+        assert_eq!(b.oversample_used, 1, "teto 0 ⇒ 1");
+        assert_eq!(b.hits.len(), 1, "único doc vivo do corpus");
+        assert!(b.boundary_decisive, "store acabou: nada foi cortado");
+        // query vazia: mesmo contrato do recall (vazio, sem erro)
+        let c = db.recall_adaptive(&[], 3, 8).unwrap();
+        assert!(c.hits.is_empty());
+    }
+
+    /// O filtro de scope corre DENTRO do pool: escalonar não vaza de outro
+    /// escopo, e um pool pequeno faminto pelo filtro escala em vez de devolver
+    /// top-k incompleto (`RecallProbe::saturated`).
+    #[test]
+    fn adaptive_scoped_honors_scope_and_escalates_when_starved() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        for i in 0..6 {
+            db.remember_semantic_with(
+                &alloc::format!("a{i}"),
+                "mesmo cluster",
+                &[1.0, 0.4, 0.0, 0.0],
+                RememberOptions {
+                    scope: Some("user/ana"),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            db.remember_semantic_with(
+                &alloc::format!("b{i}"),
+                "mesmo cluster",
+                &[1.0, 0.4, 0.0, 0.0],
+                RememberOptions {
+                    scope: Some("user/bob"),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let q = [1.0f32, 0.0, 0.0, 0.0];
+        let a = db.recall_adaptive_scoped(&q, 3, 8, "user/ana").unwrap();
+        assert_eq!(a.hits.len(), 3, "top-k completo apesar do filtro: {a:?}");
+        assert!(a.hits.iter().all(|h| h
+            .provenance
+            .as_ref()
+            .map(|p| p.scope.as_str())
+            == Some("user/ana")));
+        assert!(!a.hits.iter().any(|h| h.key.contains("/b")));
+        assert!(
+            a.escalations >= 1,
+            "pool inicial faminto pelo filtro ⇒ escala: {a:?}"
+        );
+    }
+
+    /// O recall default NÃO mudou: o adaptativo é uma API paralela, e o
+    /// `recall` continua com o oversample automático por dimensionalidade.
+    #[test]
+    fn adaptive_does_not_change_default_recall() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        dense_ascending_cluster(&mut db, 40);
+        let q = [1.0f32, 0.0, 0.0, 0.0];
+        let d1 = db.recall(&q, 5).unwrap();
+        let d2 = db.recall(&q, 5).unwrap();
+        assert_eq!(keys_of(&d1), keys_of(&d2), "default segue determinístico");
+        // e o default equivale ao auto-oversample documentado (1 word → 16)
+        let auto = db.recall_oversampled(&q, 5, 16).unwrap();
+        assert_eq!(keys_of(&d1), keys_of(&auto));
     }
 }

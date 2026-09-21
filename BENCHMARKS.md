@@ -166,6 +166,33 @@ agora medido pelo core em vez de estimado.
 Gap conhecido, sem acao agendada: `stress` mostra ~60 ms por `open` mesmo com
 101 docs vivos, porque o volume append-only domina o custo quando ha muito churn.
 
+## Recall adaptativo — o custo de decidir pelo boundary (v1.1.22)
+
+ADR-0012. A política do core (`recall_adaptive`, degraus `1→4→8→16`) simulada no
+mesmo harness dos números acima (mesmos dados correlacionados, mesmos queries):
+cada degrau pede `k+1` = 6 candidatos numa passada DUAL e para quando o 6º está a
+mais de `SCORE_TIE_MARGIN` (50 u32 ≈ 0.005 de cosseno) do 5º.
+
+| Corpus | recall@5 adaptativo | Degraus usados (1/4/8/16) | Candidatos/query | Referência |
+|---|---|---|---|---|
+| 8 clusters densos, 1024-dim (degenerado de propósito) | 44% (87/200) | 40/40/40/40 | 338.6 | passada única 16× ≈ 160 |
+| Espalhado (ruído uniforme) | 58% (116/200) | 40/28/25/25 | 212.1 | passada única 1× ≈ 12 |
+
+**Leitura honesta:** com `SCORE_TIE_MARGIN` como threshold de ambiguidade,
+"ambíguo" é o caso comum. Nos clusters densos toda query escala até o teto, então
+a escada custa ~2× uma passada única no cap para +4 pp de recall (44% vs 40% do
+dual 16× fixo); no corpus espalhado 62% das queries ainda escalam até o topo. O
+recall da linha "espalhado" NÃO é uma medida de qualidade do BQ (ruído uniforme
+destrói o sign-BQ — ver o comentário no `bench.rs`); o que se mede ali é o CUSTO
+da política.
+
+O que o v1.1.22 entrega, então, é o **instrumento** (`oversample_used`,
+`escalations`, `boundary_decisive`, `probe.considered/survivors/budget`), não uma
+alegação de ganho: com esses números um host decide o próprio teto (ou pede um
+threshold mais apertado) em vez de acreditar. A ordem de grandeza do custo de
+uma passada é linear no oversample — é o mesmo motivo pelo qual os degraus são
+geometricamente espaçados.
+
 ## What is deliberately NOT benchmarked
 
 - **Network/CRDT sync latency** — transport is a demo (`UdpTransport`,

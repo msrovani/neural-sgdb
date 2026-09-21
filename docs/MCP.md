@@ -3,13 +3,13 @@
 Guia de instalação, contrato e troubleshooting do servidor MCP
 (`examples/mcp_server.rs`).
 
-## Contrato atual (v1.1.20)
+## Contrato atual (v1.1.22)
 
 | Campo | Valor |
 |-------|-------|
 | Protocolo | JSON-RPC 2.0 over **stdio** (uma linha JSON por mensagem) |
 | Handshake | `initialize` → `protocolVersion: 2025-11-25` |
-| `serverInfo.version` | `1.1.20` (`MCP_CONTRACT_VERSION` em `examples/mcp_server.rs`) |
+| `serverInfo.version` | `1.1.22` (`MCP_CONTRACT_VERSION` em `examples/mcp_server.rs`) |
 | Tools | **4** (`remember`, `recall`, `health`, `curate`) — 23 nomes antigos ainda funcionam em `tools/call` |
 | Recall default | **lexical** (ADR-0008). Cosine: `embedding=` ou `NEURAL_SGDB_EMBEDDER=demo` |
 | Embedder host | unset = none; `NEURAL_SGDB_EMBEDDER=demo` = trigrama explícito (**não** semântico) |
@@ -54,6 +54,13 @@ errou o nome conserta o schema em uma chamada em vez de queimar um turno.
 medicao de custo de open (`open_rebuild_ms_last`, `open_rebuild_ms_max`,
 `opens`). E opt-in de proposito: o fingerprint e O(n log n), entao o `health`
 default nao paga esse custo.
+
+**v1.1.22 — nenhuma mudança de superfície.** O contrato sobe junto com a versão do
+crate (o `serverInfo.version` identifica a BUILD do server), mas as 4 tools, os
+34 aliases, os parâmetros e os resources ficam idênticos. O que entrou foi lib:
+`recall_adaptive` (ADR-0012) — deliberadamente **não** exposto como tool/param
+enquanto um host não medir que vale: o bench mostra que o threshold default faz
+escalar quase sempre (ver `BENCHMARKS.md` §Recall adaptativo).
 
 ### Parâmetros importantes
 

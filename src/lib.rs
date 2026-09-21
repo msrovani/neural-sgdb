@@ -95,6 +95,7 @@ pub mod lifecycle;
 
 mod engine;
 mod fingerprint;
+mod math;
 mod sgdb;
 
 #[cfg(test)]
@@ -129,9 +130,9 @@ pub use harness::{
     MOM_ANTI_PATTERN,
 };
 pub use sgdb::{
-    AuditReport, ConsolidateConfig, DecayConfig, GcConfig, GcReport, HealthReport, Hit,
-    HitProvenance, LexicalAnchorReranker, RecallWeights, RememberOptions, RememberOutcome,
-    Reranker, ScoreBreakdown, ScopeDistribution, Sgdb, ValidateIssue,
+    AdaptiveRecall, AuditReport, ConsolidateConfig, DecayConfig, GcConfig, GcReport, HealthReport,
+    Hit, HitProvenance, LexicalAnchorReranker, RecallProbe, RecallWeights, RememberOptions,
+    RememberOutcome, Reranker, ScoreBreakdown, ScopeDistribution, Sgdb, ValidateIssue,
 };
 pub use storage::{InMemory, SnapshotStorage, Storage, SgdbError};
 pub use staleness::{StalenessConfig, StalenessHit, StalenessLevel, StalenessReason};

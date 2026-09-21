@@ -222,6 +222,121 @@ fn main() {
         );
     }
 
+    // ── Recall ADAPTATIVO (v1.1.22, item 8): esforço por ambiguidade ────────
+    // Mesma política do core, simulada no mesmo harness (mesmos queries, mesmos
+    // dados): degraus 1→4→8→16; em cada degrau pede `k+1` = 6 candidatos e para
+    // quando o 6º está a MAIS de `SCORE_TIE_MARGIN` do 5º (50 u32 = 0.005 de
+    // cosseno) — ou quando o corpus acaba (`pool < orçamento`). O que interessa
+    // medir: o recall@5 do orçamento grande a um custo próximo do pequeno.
+    //
+    // Política do core simulada em DOIS regimes, porque o custo médio depende
+    // inteiramente de sair cedo: (a) corpus CORRELACIONADO (clusters densos ⇒ a
+    // fronteira é quase sempre ambígua ⇒ a escada vai até o teto) e (b) corpus
+    // ESPALHADO (fronteira decidida já no 1×). Reporta recall@5, histograma de
+    // degraus e candidatos/query — o número que paga a conta.
+    #[allow(clippy::too_many_arguments)]
+    fn adaptive_probe(
+        vecs: &[Vec<f32>],
+        queries: &[usize],
+        k: usize,
+        steps: &[usize],
+        margin: f64,
+    ) -> (usize, Vec<usize>, f64) {
+        let dim = vecs[0].len();
+        let dist = |a: &[f32], b: &[f32]| -> f64 {
+            let (mut dot, mut na, mut nb) = (0.0f64, 0.0f64, 0.0f64);
+            for d in 0..dim {
+                dot += a[d] as f64 * b[d] as f64;
+                na += a[d] as f64 * a[d] as f64;
+                nb += b[d] as f64 * b[d] as f64;
+            }
+            1.0 - dot / (na * nb).sqrt().max(1e-12)
+        };
+        let mut bq = BqFlatIndex::new();
+        for (i, v) in vecs.iter().enumerate() {
+            bq.insert_f32(i as u64, v);
+        }
+        let mut sum = vec![0f64; dim];
+        for v in vecs.iter() {
+            for (d, x) in v.iter().enumerate() {
+                sum[d] += *x as f64;
+            }
+        }
+        let mean: Vec<f32> = sum.iter().map(|s| (s / vecs.len() as f64) as f32).collect();
+        let sentinel = k + 1;
+        let mut hits = 0usize;
+        let mut used = vec![0usize; steps.len()];
+        let mut cand_total = 0usize;
+        for &q in queries.iter() {
+            let mut exact: Vec<(f64, u64)> = vecs
+                .iter()
+                .enumerate()
+                .map(|(i, v)| (dist(&vecs[q], v), i as u64))
+                .collect();
+            exact.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap().then(a.1.cmp(&b.1)));
+            let golden: BTreeSet<u64> = exact.iter().take(k).map(|(_, id)| *id).collect();
+            let mut chosen: BTreeSet<u64> = BTreeSet::new();
+            for (si, ov) in steps.iter().enumerate() {
+                let mut pool: BTreeSet<u64> = bq
+                    .top_k_f32(&vecs[q], sentinel * ov)
+                    .into_iter()
+                    .map(|(id, _)| id)
+                    .collect();
+                pool.extend(
+                    bq.top_k_f32_minus_mean(&vecs[q], &mean, sentinel * ov)
+                        .into_iter()
+                        .map(|(id, _)| id),
+                );
+                cand_total += pool.len();
+                let mut ranked: Vec<(f64, u64)> = pool
+                    .iter()
+                    .map(|id| (dist(&vecs[q], &vecs[*id as usize]), *id))
+                    .collect();
+                ranked.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap().then(a.1.cmp(&b.1)));
+                let decisive = match (ranked.get(k - 1), ranked.get(k)) {
+                    (Some(a), Some(b)) => (a.0 - b.0).abs() > margin,
+                    // não encheu o sentinela: decisivo só se o corpus acabou
+                    _ => pool.len() < sentinel * ov,
+                };
+                chosen = ranked.iter().take(k).map(|(_, id)| *id).collect();
+                used[si] += 1;
+                if decisive || si + 1 == steps.len() {
+                    break;
+                }
+            }
+            hits += golden.iter().filter(|id| chosen.contains(id)).count();
+        }
+        (hits, used, cand_total as f64 / queries.len() as f64)
+    }
+    {
+        const STEPS: [usize; 4] = [1, 4, 8, 16];
+        const MARGIN: f64 = 0.005; // SCORE_TIE_MARGIN (50 u32) na escala 0..1
+        let total = queries.len() * 5;
+        let (hit, used, cost) = adaptive_probe(&cvectors, &queries, 5, &STEPS, MARGIN);
+        println!(
+            "recall@5    BQ ADAPTATIVO (item 8) clusters densos: {:.0}% ({hit}/{total}); degraus (1/4/8/16) = {used:?}; candidatos/query = {cost:.1} (single 16× ≈ 160)",
+            hit as f64 * 100.0 / total as f64
+        );
+        // Corpus ESPALHADO (ruído uniforme): a fronteira do top-5 já é decidida
+        // pelo CONTEÚDO no degrau mais barato. Aqui a medida que importa é o
+        // CUSTO da política (a qualidade do BQ nesse dado é outra história).
+        let mut svectors: Vec<Vec<f32>> = Vec::with_capacity(VECS);
+        let mut st = 0x1234_5678_9abc_def0u64;
+        for _ in 0..VECS {
+            let mut v = vec![0f32; DIM];
+            for x in v.iter_mut() {
+                st = st.wrapping_mul(1103515245).wrapping_add(12345);
+                *x = ((st >> 32) as i32 % 400) as f32 / 100.0 - 2.0;
+            }
+            svectors.push(v);
+        }
+        let (sh, sused, scost) = adaptive_probe(&svectors, &queries, 5, &STEPS, MARGIN);
+        println!(
+            "recall@5    BQ ADAPTATIVO (item 8) corpus espalhado: {:.0}% ({sh}/{total}); degraus (1/4/8/16) = {sused:?}; candidatos/query = {scost:.1} (single 1× ≈ 12)",
+            sh as f64 * 100.0 / total as f64
+        );
+    }
+
     // ── CRC32: throughput (custo de todo put + recovery de storage) ─────────
     let buf: Vec<u8> = (0..1024 * 1024).map(|i| (i % 251) as u8).collect();
     let t_crc = Instant::now();

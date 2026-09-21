@@ -61,7 +61,7 @@ pub fn demo_embed(text: &str) -> Vec<f32> {
         v[idx] += if (h >> 8) & 1 == 1 { 1.0 } else { -1.0 };
     }
     let norm = v.iter().map(|x| x * x).sum::<f32>();
-    let norm = crate::sgdb::sqrt_f32(norm).max(1e-8);
+    let norm = crate::math::sqrt_f32(norm).max(1e-8);
     v.iter_mut().for_each(|x| *x /= norm);
     v
 }

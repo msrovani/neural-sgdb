@@ -116,6 +116,24 @@ impl Sgdb {
     pub fn recall_oversampled(&mut self, query: &[f32], k: usize, oversample: usize)
         -> Result<Vec<Hit>, SgdbError>;
 
+    /// Adaptive effort (v1.1.22, ADR-0012): escalates `1 → 4 → 8 → 16` (clamped
+    /// to `max_oversample`) only while the top-k BOUNDARY is ambiguous — the
+    /// raw u32 gap between hits[k-1] and hits[k] within `SCORE_TIE_MARGIN`.
+    /// Opt-in: a bigger pool can reorder results, so `recall` is untouched
+    /// (`max_oversample = 1` degenerates into the classic behaviour).
+    pub fn recall_adaptive(&mut self, query: &[f32], k: usize, max_oversample: usize)
+        -> Result<AdaptiveRecall, SgdbError>;
+    pub fn recall_adaptive_scoped(&mut self, query: &[f32], k: usize,
+        max_oversample: usize, scope: &str) -> Result<AdaptiveRecall, SgdbError>;
+
+    /// `AdaptiveRecall { hits, oversample_used, escalations, boundary_decisive,
+    /// probe }` — `boundary_decisive = false` means the cap was reached while
+    /// the boundary was still ambiguous (the result is at the resolution limit
+    /// of the filter, not wrong). `RecallProbe { considered, survivors, budget }`
+    /// separates "the store ran out" from "the pool ran out before the valid
+    /// docs" (`saturated()`), which is what makes `survivors <= k` decidable.
+    pub struct RecallProbe;
+
     /// Weighted scoring: `w_sem·dist + w_rec·recency(/ts/<hex>) + w_imp·importance(layer)`.
     pub fn recall_weighted(&mut self, query: &[f32], k: usize, w_sem: f32, w_rec: f32,
         w_imp: f32, now: u64) -> Result<Vec<Hit>, SgdbError>;

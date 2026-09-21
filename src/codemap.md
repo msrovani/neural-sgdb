@@ -23,10 +23,13 @@ Layered architecture with injectable seams (replacing the origin kernel):
 | `doctrine.rs` | **v1.1.8**: agent doctrine (`DOCTRINE`, key/scope/entities) — source `docs/doctrine.md` | Compile-time include |
 | `staleness.rs` | **v1.1.18**: `StalenessLevel`/`Reason`/`Config`/`Hit` — classify only (TTL/Decay/contradicts/aging) | Read-only report |
 | `era.rs` | **v1.1.5**: `Sgdb::era_report()`/`era_report_lines()` — era do corpus, veredito, custo estimado de migração | Read-only diagnostic |
-| `lexical.rs` | Inverted BM25 index over L2/L3 texts; `search` → `(key, score, matched_terms)` (v1.1.6) + `search_fast` (v1.1.11, sem matched_terms) | Inverted index |
+| `lexical.rs` | Inverted BM25 index over L2/L3 texts; `search` → `(key, score, matched_terms)` (v1.1.6) + `search_fast` (v1.1.11, sem matched_terms); `tokenize` é `pub(crate)` (S3/rerank) | Inverted index |
 | `lifecycle.rs` | `MemoryLifecycle` — deterministic tick (commit/promote/semanticize/decay/archive) | Deterministic engine |
 | `arbitration.rs` | `ArbitrationPolicy` trait + deterministic `Arbitrator` (no LLM in core) | Policy |
 | `conflict.rs` | `ConflictRecord` (CFL1), conflict detection/preservation/resolution | CRDT adjunct |
+| `fingerprint.rs` | **v1.1.21**: `index_fingerprint` — oráculo do estado DERIVADO (ADR-0011); ids/órfãos do BQ/floats FORA do hash | Integrity oracle |
+| `math.rs` | **v1.1.22**: polyfills `sqrt_f32`/`ln_f32`/`exp_f32` (core não tem `f32::sqrt`/`ln`/`exp`); testes host-only (`#[cfg(all(test, feature = "std"))]`) | Core-safe math |
+| `harness.rs` | **v1.1.19**: ADR-0010 harness (`CommitRunPlan`/`DeprecateRunReport`, `MOM_ANTI_PATTERN`) | Host harness |
 | `limits.rs` | **P1-3**: centralized storage/embedding ceilings | Constants |
 | `metrics.rs` | Runtime metrics counters | Observability |
 | `storage.rs` | `Storage` trait (4+1 methods: `put_many` v1.1.11) + `InMemory` + `FileStorage` (`put_batch` CRC32 append-log) + `SgdbError` | Pluggable trait / Strategy |
@@ -58,7 +61,7 @@ Layered architecture with injectable seams (replacing the origin kernel):
 
 ## Gotchas (port lessons)
 - `f32::sqrt` does NOT exist in core for `x86_64-unknown-none` → `sqrt_f32`
-  Newton in `sgdb.rs`
+  Newton in `math.rs` (v1.1.22; antes vivia em `sgdb.rs`)
 - ART does not support prefix keys (one key being a prefix of another) — use
   fixed-width keys
 - CRDT rate-limit uses `Option<u64>` (the 0 sentinel fails on first sync at now=0)

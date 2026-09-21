@@ -9,6 +9,17 @@ Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
 
 ## Next (honest gaps — not this release)
 
+✅ **v1.1.22 — math consolidado + recall adaptativo (2026-09-21)** — release 2/3
+   do plano. `src/math.rs` unifica `sqrt_f32`/`ln_f32`/`exp_f32` (movidos SEM
+   tocar na aritmética; o ranking BM25 está congelado em teste, porque `ln_f32`
+   entra no IDF e no TF) e a doc mentirosa do `ln_f32` (~1e-5 → **5.9e-2**
+   medido) ficou verdadeira. `recall_adaptive` (ADR-0012) escala
+   `1→4→8→16` só enquanto a fronteira do top-k for ambígua, com `RecallProbe`
+   separando "store acabou" de "pool faminto" — opt-in, default intacto.
+   **Veredito medido: o threshold default faz escalar quase sempre** (clusters
+   densos: 44% a 338 candidatos/query vs 40% a ~160 do 16× fixo), então o que
+   ficou entregue é o instrumento para o host decidir, não uma promessa.
+
 🔜 **Index snapshot on `Sgdb::open` — §3, agora GATED EM DADOS** — hoje rebuild
    linear de ART/BQ/lexical. TickvFile já tem TKCK fast-mount; falta
    snapshot+delta dos índices derivados. **Design: [ADR-0009](docs/adr/0009-index-snapshot-auto-adapt.md)**.

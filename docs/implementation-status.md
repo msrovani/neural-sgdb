@@ -1,6 +1,6 @@
 ﻿# neural-sgdb — Implementation Status
 
-> **Current snapshot (2026-09-18, v1.1.20).** Capability matrix vs the shipped
+> **Current snapshot (2026-09-21, v1.1.22).** Capability matrix vs the shipped
 > codebase. For the public contract see [`docs/api.md`](api.md); for architecture
 > narrative see [`docs/architecture/README.md`](architecture/README.md).
 
@@ -17,11 +17,11 @@
 
 | Check | Command | Result |
 |---|---|---|
-| Default tests | `cargo test --lib` | **292** |
-| P2P tests | `cargo test --features p2p --lib` | **338** |
-| no_std tests | `cargo test --no-default-features --lib` | **244** |
+| Default tests | `cargo test --lib` | **330** |
+| P2P tests | `cargo test --features p2p --lib` | **376** |
+| no_std tests | `cargo test --no-default-features --lib` | **274** |
 | no_std target | `cargo check --no-default-features --target x86_64-unknown-none` | **ok** |
-| Hot test (MCP) | `cargo run --release --example mcp_client` | **100/0 exit 0** |
+| Hot test (MCP) | `cargo run --release --example mcp_client` | **102/0 exit 0** |
 | AI-user sim | `cargo run --release --example agent_sim` | loop real, scope isolado |
 | Machine protocol | `cargo run --release --example two_ai_protocol` | **16/16 exit 0** |
 | Agent protocol | `cargo run --release --example agent_protocol` | **23/23 exit 0** |
@@ -115,8 +115,8 @@ topologies; **content** does.
 `NEURAL_SGDB_EMBEDDER` = none (`=demo` explicit only). `remember(text=)`
 without vector → L3. Resources `nsgdb://doctrine` + `nsgdb://session`.
 `health(view=tensions|staleness|era)`. Harness ADR-0010:
-`curate(op=commit_run|deprecate_run)`. Hot test **100/0**. MCP contract
-**1.1.20**.
+`curate(op=commit_run|deprecate_run)`. Hot test **102/0**. MCP contract
+**1.1.22**.
 
 ### Host connectors
 `connectors/` is host-side (not crate SemVer). Hermes `MemoryProvider` is

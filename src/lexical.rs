@@ -4,6 +4,8 @@
 //! ruído, sinônimos ausentes). Apenas `alloc` (no_std-safe), zero deps.
 
 use crate::fingerprint::{fp_mix_str, fp_mix_u64};
+// `ln` do BM25: polyfill no_std consolidado em `crate::math` (v1.1.22).
+use crate::math::ln_f32;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -29,22 +31,6 @@ pub(crate) fn tokenize(text: &str) -> Vec<String> {
 /// Wrapper `no_std` do tokenizer para o seam `Reranker` (v1.1.14).
 pub fn tokenize_for_rerank(text: &str) -> Vec<String> {
     tokenize(text)
-}
-
-/// `ln` para no_std (f32::ln não existe no core p/ bare-metal — ponytail,
-/// como o `sqrt_f32`): expoente IEEE + série no mantissa. Precisão ~1e-5,
-/// suficiente p/ ranking BM25 (ordenação, não valor exato).
-fn ln_f32(x: f32) -> f32 {
-    if x <= 0.0 {
-        return -3.0; // clamp: log de 0/neg não usado no BM25
-    }
-    let bits = x.to_bits();
-    let exp = ((bits >> 23) & 0xFF) as i32 - 127;
-    let mant = (bits & 0x7F_FFFF) | 0x3F80_0000; // [1,2)
-    let m = f32::from_bits(mant);
-    let y = m - 1.0;
-    let ln_m = y * (1.0 - 0.5 * y + y * y / 3.0 - y * y * y / 4.0 + y * y * y * y / 5.0);
-    exp as f32 * core::f32::consts::LN_2 + ln_m
 }
 
 /// Índice invertido: termo → (storage_key → freq), mais comprimentos.
@@ -208,5 +194,41 @@ impl LexicalIndex {
         });
         out.truncate(k);
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Guard de REGRESSÃO da consolidação de math (v1.1.22): o `ln_f32` foi
+    /// MOVIDO para `crate::math` sem tocar no algoritmo — e `ln_f32` alimenta o
+    /// IDF/TF do BM25, logo mexer nele move scores, que movem o ranking, que
+    /// move o texto do hot test. O que prova "sem tocar" não é o diff: é este
+    /// ranking congelado. Se ele mudar, a precisão do polyfill mudou.
+    #[test]
+    fn bm25_ranking_is_frozen_across_math_move() {
+        use alloc::vec;
+        let mut idx = LexicalIndex::new();
+        idx.add("md/L2/a", "rust memory database agent recall");
+        idx.add("md/L2/b", "python web framework routing");
+        idx.add("md/L2/c", "rust agent memory recall recall");
+        idx.add("md/L2/d", "unrelated filler text here");
+        let got = idx.search("rust memory recall", 4);
+        let keys: Vec<&str> = got.iter().map(|(k, _, _)| k.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec!["md/L2/c", "md/L2/a"],
+            "ranking BM25 mudou — a precisao do polyfill mudou: {got:?}"
+        );
+        // c vence a: mais termos raros + repeticao (TF) — e `ln_f32` entra
+        // tanto no IDF quanto no TF, entao a ordem E os scores pinam o polyfill.
+        let want = [5.614_191_f32, 4.560_493_5_f32];
+        for ((_, score, _), w) in got.iter().zip(want.iter()) {
+            let rel = ((score - w) / w).abs();
+            assert!(rel < 1e-6, "score BM25 mudou: got={score} want={w}");
+        }
+        // b e d nao casam termo nenhum: BM25 exige match, nao cortesia.
+        assert_eq!(got.len(), 2, "{got:?}");
     }
 }

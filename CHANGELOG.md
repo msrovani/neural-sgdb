@@ -4,6 +4,60 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [1.1.22] — 2026-09-21 (math consolidado + recall adaptativo)
+
+Sem mudança de formato (NMD1/TKLV). **`MCP_CONTRACT_VERSION` → 1.1.22**
+(superfície MCP inalterada — o pin marca a build do server). Release 2 de 3 do
+plano de melhorias (itens 5 e 8).
+
+### Added
+- **`Sgdb::recall_adaptive` / `recall_adaptive_scoped` + `AdaptiveRecall` +
+  `RecallProbe` (ADR-0012, item 8)** — o esforço de recall passa a ser
+  consequência da AMBIGUIDADE da fronteira do top-k, não de uma constante.
+  Degraus `1 → 4 → 8 → 16` (cortados no teto `max_oversample`); em cada degrau
+  o core pede `k+1` hits (o sentinela de fronteira) e para quando
+  `|score(k) − score(k+1)| > SCORE_TIE_MARGIN`, medido no **score cru u32** e
+  não no bucket `score/(MARGIN+1)` do state-first — buckets têm bordas
+  arbitrárias e dois docs a 0.0026 de cosseno caíam em buckets diferentes,
+  parecendo "decididos" (pego pelo teste que o próprio item exigia).
+  **`RecallProbe`** distingue **"o store acabou"** de **"o pool acabou antes
+  dos docs válidos"** (`survivors <= k` só é decisivo se `!saturated()`): sem
+  isso, um `scope` cujos docs ficam fundo na ordem do BQ devolveria top-k
+  truncado em silêncio. Opt-in por desenho — escalar adiciona candidatos e
+  PODE mudar a ordem, então o `recall` default fica intacto
+  (`max_oversample = 1` degrada para o comportamento clássico).
+  `recall_impl` virou wrapper fino sobre `recall_impl_probe` (mesma passada,
+  dois contadores de observabilidade a mais). **Veredito MEDIDO** (2 regimes,
+  `examples/bench.rs`): em clusters densos 44% de recall@5 (vs 40% do dual
+  16× fixo) a 338.6 candidatos/query contra ~160 de uma passada única;
+  62% das queries de um corpus espalhado ainda escalam até o teto. Ou seja:
+  **o threshold default (`SCORE_TIE_MARGIN`) faz "ambíguo" ser o caso comum**
+  — o valor entregue é o INSTRUMENTO (`oversample_used` / `escalations` /
+  `boundary_decisive` / `probe`), não uma promessa de ganho. Os 8 testes pinam
+  o mecanismo: recuperação do melhor fora do pool barato, no-op quando
+  decisivo, convergência ao cap, determinismo, escopo, entradas degeneradas e
+  ausência de regressão no `recall` default.
+
+### Changed
+- **Math consolidado em `src/math.rs` (item 5)** — `sqrt_f32`/`ln_f32`/
+  `exp_f32` saíram de `sgdb.rs`/`lexical.rs` para um módulo único (o `sgdb.rs`
+  re-exporta `pub(crate)`), **movidos sem tocar na aritmética**: o teste
+  `bm25_ranking_is_frozen_across_math_move` congela ordem E scores do BM25,
+  que é onde `ln_f32` entra (IDF e TF). `Embedder`/decay/rescore seguem nos
+  mesmos call sites.
+
+### Fixed
+- **Doc mentirosa do `ln_f32`** — o comentário prometia "precisão ~1e-5"; o
+  erro relativo MEDIDO é **5.9e-2** (x=1.85), três ordens de grandeza pior.
+  Não é bug (o BM25 só precisa de ORDEM consistente, e o ranking está
+  congelado em teste), mas a documentação agora carrega o número real e os
+  testes comparam contra `std` sob bound de regressão (`worst < 1e-1`).
+- **Gate `--no-default-features` quebrado pela mudança de math**: os testes de
+  `math.rs` usam `println!` + `f32::ln`/`exp` (que NÃO existem no core
+  bare-metal) e o módulo de testes do `lexical.rs` usava `vec!` sem import —
+  ambos passaram a ser explicitamente host-only (`#[cfg(all(test, feature =
+  "std"))]` / `use alloc::vec`). Matrix no_std de volta a verde.
+
 ## [1.1.21] — 2026-09-21 (integridade do índice derivado + medição de open)
 
 Sem mudança de formato (NMD1/TKLV). **`MCP_CONTRACT_VERSION` → 1.1.21**.
