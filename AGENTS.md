@@ -7,7 +7,8 @@ Storage, Cognitive API; typed hits from v1.1.6; current crate = `Cargo.toml`) an
 `docs/implementation-status.md` before editing code.**
 
 **Shipped crate is 1.1.20 (agentic MCP contract 1.1.20):** MCP lists **4 tools**
-(`remember`/`recall`/`health`/`curate`; 23 old names are `tools/call` aliases).
+(`remember`/`recall`/`health`/`curate`; **34** alias names live in
+`ALIAS_SURFACE` em `examples/mcp_server.rs` — tabela pinada por teste, não prosa).
 `curate` ganhou ops de metadado cognitivo (decay/consolidate/audit_checkpoint/
 audit_verify/rollback_to) e harness ADR-0010 (`commit_run`/`deprecate_run`).
 Default retrieval is **lexical**. Unset `NEURAL_SGDB_EMBEDDER` = none;
@@ -428,6 +429,43 @@ turno, exact vs paraphrase, isolamento de scope). Paraphrase MISSA no lexical
 - **State-first**: empates dentro de `SCORE_TIE_MARGIN` ordenam por
   `created_tick` desc (versão corrente antes do legado).
 - Matrix: **275+1 / 321+1 / 227+1**; `MCP_CONTRACT_VERSION` = **1.1.17**.
+
+## Post-audit v1.1.21 (integridade do índice derivado + medição de open)
+
+Release 1/3 do plano de melhorias (itens 1, 2, 3, 6) — **tudo aditivo, nada muda
+comportamento de recall**. Sem mudança de formato. Contrato MCP → **1.1.21**.
+
+- **`index_fingerprint` (ADR-0011)** — oráculo canônico do estado derivado;
+  invariante `fp(open) == fp(rebuild_indices())`. **Três exclusões que são o
+  design, não otimização:** (a) **ids** — `NEXT_ID` é contador GLOBAL DE PROCESSO,
+  logo o mesmo corpus dá ids diferentes a cada open; hashear id seria instável
+  entre processos (o fingerprint resolve `id → storage_key` e hasheia a CHAVE);
+  (b) **órfãos do BQ** — hashear `bq.len()` contava os inertes e quebrava a
+  simetria de deleção **e** a estabilidade da recompacção (bug pego pelo teste
+  `index_fingerprint_ignores_bq_orphans`); (c) **floats**. Custo O(n log n):
+  NUNCA no `health` default — use `Sgdb::index_fingerprint()` ou
+  `health(view=index)`.
+- **`corpus_mean` com invariante (`validate` §5)** — counts por **igualdade
+  exata** (divergência = algum caminho de delete/overwrite não subtraiu), somas
+  com **tolerância relativa `1e-9`**: a adição `f64` **não é associativa**, o
+  rebuild acumula noutra ordem, então igualdade exata daria **falso positivo em
+  produção**. `corpus_add` e `payload_floats_truncated` são compartilhados entre
+  o caminho incremental e o recompute — comparar critérios diferentes seria
+  inútil por construção. `corrupt_corpus_sums_for_test` é `#[cfg(test)]`
+  (não se cria API pública que "mente" só para ser testável).
+- **Métricas de `open` (ADR-0009 §4)** — `open_rebuild_ms_last`/`_max`/`opens` no
+  `Metrics`, no `HealthReport` e em `health(view=index)`. **`no_std` reporta 0**:
+  não existe `Instant` no core do alvo e **não se inventa seam global de
+  relógio por métrica** — ausência declarada, não número falso. `opens` é
+  contador de PROCESSO (o histórico entre restarts é do host, como o ADR diz).
+- **`ALIAS_SURFACE` + `did_you_mean`** — a superfície de alias virou TABELA (34
+  nomes, pinada por teste); a contagem documentada era 23 (rework v1.1.8) e
+  estava velha. Tool desconhecida segue erro `-32602`, agora com
+  `data.did_you_mean` + `listed_tools` + `alias_count`.
+- Corpo de teste: **chave com largura fixa** quando há loop (`dr/003`, não
+  `dr/3`) — a ART não suporta prefix-key (regra 4) e `dr/3` é prefixo de `dr/15`.
+- Verificado: lib **315+1**, p2p **361+1**, no_std **265+1**; clippy/rustdoc
+  `-D warnings` verdes; bare-metal ok; hot test **102/0**.
 
 ## Repository Map
 

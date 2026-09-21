@@ -29,6 +29,19 @@ pub struct Metrics {
     pub clock_changes: u64,
     pub storage_recoveries: u64,
     pub index_rebuilds: u64,
+    // custo de `open` (v1.1.21 — contrato de medição do ADR-0009 §4)
+    /// Wall time do ULTIMO rebuild de índices, em ms. No `open` este é o custo
+    /// de cold start do agente (o gargalo medido: ~94% do `open` é build de
+    /// índice, não leitura). `0` sob `no_std`: não existe `Instant` no core do
+    /// alvo bare-metal — a medição é explicitamente ausente, não falsa.
+    pub open_rebuild_ms_last: u64,
+    /// Pior caso observado na instância (dimensiona o orçamento de cold start).
+    pub open_rebuild_ms_max: u64,
+    /// Quantos `open` este PROCESSO já fez. Dor #2 do ADR-0009 ("muitos
+    /// reopens"): `opens × open_rebuild_ms` é o custo de churn de sessão.
+    /// Contador de processo, não durável — o histórico entre restarts é do
+    /// HOST (`opens_per_hour` no ADR-0009 §4).
+    pub opens: u64,
 }
 
 impl Metrics {
@@ -48,6 +61,9 @@ impl Metrics {
             ("clock_changes", self.clock_changes),
             ("storage_recoveries", self.storage_recoveries),
             ("index_rebuilds", self.index_rebuilds),
+            ("open_rebuild_ms_last", self.open_rebuild_ms_last),
+            ("open_rebuild_ms_max", self.open_rebuild_ms_max),
+            ("opens", self.opens),
         ]
     }
 
@@ -79,5 +95,20 @@ mod tests {
         assert!(snap.len() >= 13);
         assert!(snap.contains(&("memory_writes", 3)));
         assert!(snap.contains(&("recalls", 5)));
+    }
+
+    /// O contrato de medição do ADR-0009 §4 tem de estar exposto no snapshot
+    /// (é o que o host lê para decidir o snapshot de índice).
+    #[test]
+    fn metrics_snapshot_exposes_open_cost() {
+        let m = Metrics {
+            open_rebuild_ms_last: 42,
+            open_rebuild_ms_max: 99,
+            opens: 7,
+            ..Metrics::default()
+        };
+        assert_eq!(m.value("open_rebuild_ms_last"), 42);
+        assert_eq!(m.value("open_rebuild_ms_max"), 99);
+        assert_eq!(m.value("opens"), 7);
     }
 }

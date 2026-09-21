@@ -142,6 +142,30 @@ append + meta + index) and the **index rebuild** (~50 ms flat); scanning and
 text reads are negligible. Wall-clock scaling ≈ `O(N · rewrite) + O(rebuild)`.
 The append-only FileStorage keeps the old-era blobs until `compact()`.
 
+## Open cost — cold start do agente (v1.1.21)
+
+`cargo run --release --example bench` (secao "Custo de open"). Corpus do caso do
+agente: cada write e `remember_semantic` (L4 no BQ + companion L2 no lexical),
+entao `docs = 2 x N`. `FileStorage`, inclui a recuperacao do volume. A coluna
+`rebuild` vem de `metrics.open_rebuild_ms_last` — medido pelo PROPRIO core
+(contrato do ADR-0009 §4), nao por um cronometro externo replicando a fase.
+
+| N writes | docs | `open` total | rebuild de indices | rebuild / total | us/doc |
+|---|---|---|---|---|---|
+| 100 | 200 | 8.0 ms | 1 ms | 13% | 80.0 |
+| 400 | 800 | 13.9 ms | 6 ms | 43% | 34.8 |
+| 1 600 | 3 200 | 36.2 ms | 23 ms | 63% | 22.6 |
+| 6 400 | 12 800 | 156.0 ms | 119 ms | **76%** | 24.4 |
+
+Leitura: em RAM pura o build de indice e ~94% do custo (o resto e scan+decode);
+em `FileStorage` o rebuild cai para ~76% porque a **recuperacao do volume**
+(append-log) entra na conta e cresce com o numero de records, nao com o de docs
+vivos. Ambos os efeitos sao o alvo do ADR-0009 §3 — e o numero que decide e este,
+agora medido pelo core em vez de estimado.
+
+Gap conhecido, sem acao agendada: `stress` mostra ~60 ms por `open` mesmo com
+101 docs vivos, porque o volume append-only domina o custo quando ha muito churn.
+
 ## What is deliberately NOT benchmarked
 
 - **Network/CRDT sync latency** — transport is a demo (`UdpTransport`,

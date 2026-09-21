@@ -94,6 +94,7 @@ pub mod crdt;
 pub mod lifecycle;
 
 mod engine;
+mod fingerprint;
 mod sgdb;
 
 #[cfg(test)]

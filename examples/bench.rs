@@ -17,7 +17,7 @@ use neural_sgdb::art::ArtIndex;
 use neural_sgdb::bq::BqFlatIndex;
 use neural_sgdb::hamming_dispatch::{select_best_hamming_kernel, path_name};
 use neural_sgdb::storage::crc32;
-use neural_sgdb::{InMemory, Sgdb, TickvFile};
+use neural_sgdb::{FileStorage, InMemory, Sgdb, TickvFile};
 use neural_sgdb::Storage as _;
 
 /// P50/P99 de um conjunto de amostras (já preenchido, ordenado na cópia).
@@ -279,6 +279,53 @@ fn main() {
     }
     let e2e = t0.elapsed();
     println!("Sgdb 1k exchanges: {e2e:?} total");
+
+    // ── Custo de `open` em disco (v1.1.21, contrato ADR-0009 §4) ────────────
+    //
+    // O gargalo do cold start do agente. `open_rebuild_ms_last` vem do PRÓPRIO
+    // core (métrica nova), não de um cronômetro externo replicando a fase: é
+    // exatamente o número que o host lê para decidir se vale persistir um
+    // snapshot de índice (ADR-0009 §3, hoje gated nestes dados).
+    println!("\n  Custo de open (cold start, FileStorage) — total vs rebuild de indices");
+    for n in [100usize, 400, 1600, 6400] {
+        let dir = std::env::temp_dir().join("neural_sgdb_bench_open");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("mem.db");
+        {
+            let mut db = Sgdb::open(FileStorage::open(&path).unwrap()).unwrap();
+            // `remember_semantic` e o caso do agente: grava L4 (entra no BQ)
+            // + companion L2 (entra no lexical) — 2 docs por write. Chave de
+            // largura FIXA (a ART nao suporta prefix-key) e embedding
+            // deterministico (mesma dim: a era e definida no primeiro write).
+            for i in 0..n {
+                let emb = [
+                    ((i % 7) as f32) / 7.0 - 0.5,
+                    ((i % 11) as f32) / 11.0 - 0.5,
+                    ((i % 13) as f32) / 13.0 - 0.5,
+                    ((i % 17) as f32) / 17.0 - 0.5,
+                ];
+                db.remember_semantic(&format!("oc/{i:05}"), "corpo do doc de custo", &emb)
+                    .unwrap();
+            }
+            db.checkpoint().unwrap();
+        }
+        let t0 = Instant::now();
+        let mut db = Sgdb::open(FileStorage::open(&path).unwrap()).unwrap();
+        let total = t0.elapsed();
+        let rebuild_ms = db.metrics().value("open_rebuild_ms_last");
+        let docs = db.health().doc_count;
+        let total_ms = total.as_secs_f64() * 1000.0;
+        println!(
+            "open N={n:<5} docs={docs:<5} total={total_ms:>8.2}ms rebuild={rebuild_ms:>5}ms ({}% do total; {:.1} us/doc)",
+            if total_ms > 0.0 {
+                (100.0 * rebuild_ms as f64 / total_ms).round() as u64
+            } else {
+                0
+            },
+            total.as_micros() as f64 / n.max(1) as f64
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     println!("\nBench completo. Kernel SIMD: {}", path_name());
     println!("Metodologia, ambiente e números reproduzidos: BENCHMARKS.md (os valores aqui dependem do hardware local).");

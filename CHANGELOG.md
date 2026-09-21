@@ -4,6 +4,52 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [1.1.21] — 2026-09-21 (integridade do índice derivado + medição de open)
+
+Sem mudança de formato (NMD1/TKLV). **`MCP_CONTRACT_VERSION` → 1.1.21**.
+Release 1 de 3 do plano de melhorias (itens 1, 2, 3, 6): tudo aditivo, nada
+muda o comportamento do recall.
+
+### Added
+- **`Sgdb::index_fingerprint()` + ADR-0011** — oráculo canônico do estado
+  derivado. Invariante central: **`fp(open) == fp(rebuild_indices())`**, mais
+  ordem de inserção irrelevante, deleção simétrica, equivalência
+  `export → import` e estabilidade entre reopens. **Três exclusões
+  deliberadas**: ids do ART/BQ (`NEXT_ID` é global de PROCESSO — o mesmo
+  corpus dá ids diferentes a cada open, então hashear id não seria estável
+  entre processos: o fingerprint resolve `id → storage_key` e hasheia a
+  chave), órfãos do BQ (inertes por design; hashear `bq.len()` quebrou a
+  simetria de deleção — pego pelo teste) e floats. MCP: `health(view=index)`.
+- **`Sgdb::validate()` §5 — invariante de `corpus_mean` (ADR-0011 §float)**: a
+  soma mantida incrementalmente é comparada com a recomputada do storage;
+  **counts por igualdade exata** (divergência é bug duro), **somas com
+  tolerância relativa `1e-9`** — a adição `f64` não é associativa e o rebuild
+  acumula noutra ordem, logo igualdade exata daria falso positivo em
+  produção. `Engine::corpus_sums_drift` / `recompute_corpus_sums` reusam a
+  MESMA acumulação (`corpus_add`) e a MESMA leitura de payload
+  (`payload_floats_truncated`, extraído do ramo "sem bitvec" do `index_doc`)
+  — comparar dois critérios diferentes seria inútil por construção.
+- **Métricas de `open` (ADR-0009 §4 — contrato de medição)**:
+  `open_rebuild_ms_last` / `open_rebuild_ms_max` / `opens`, expostos em
+  `Metrics::snapshot`, `HealthReport` e `health(view=index)`. Mede o rebuild
+  de índices que domina o cold start (`no_std` reporta `0`: não existe
+  `Instant` no core do alvo — ausência declarada, não número falso; nenhum
+  seam global de relógio foi inventado). `opens` é contador de PROCESSO
+  (host conta o histórico entre restarts, como o ADR atribui).
+- **Superfície de alias como TABELA** (`ALIAS_SURFACE`, 34 nomes) + **erro
+  enriquecido**: tool desconhecida continua sendo erro `-32602`, mas com
+  `data.did_you_mean` (prefixo/substring, senão distância de edição ≤3, máx. 3
+  sugestões, determinístico) + `listed_tools` + `alias_count`. A contagem
+  documentada era **23** (rework v1.1.8) e estava velha — cresceu com as ops
+  cognitivas (v1.1.10) e o harness (v1.1.19); agora é pinada por teste.
+
+### Notas
+- Sem mudança de comportamento de recall; nenhuma tool nova LISTADA (segue 4).
+- `BENCHMARKS.md`: seção "Open cost" com o custo medido `open` vs rebuild
+  (12800 docs → 156 ms total, 119 ms de rebuild = **76%**).
+- Verificado: lib **315+1**, p2p **361+1**, no_std **265+1**; clippy e rustdoc
+  `-D warnings` verdes; bare-metal ok; hot test **102/0** (2 asserções novas).
+
 ## [1.1.20] — 2026-09-18 (null-scoping ScopeDims + harness tests)
 
 Sem mudança de formato (NMD1/TKLV). **MCP_CONTRACT_VERSION → 1.1.20**.

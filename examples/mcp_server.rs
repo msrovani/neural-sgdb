@@ -275,10 +275,141 @@ fn error_response(id: &Value, code: i64, message: &str) -> Value {
 
 /// NÃºmero de tools em `tools/list` (aliases antigos ainda funcionam em tools/call).
 const EXPECTED_MCP_TOOL_COUNT: usize = 4;
-const MCP_CONTRACT_VERSION: &str = "1.1.20";
+const MCP_CONTRACT_VERSION: &str = "1.1.21";
 const BUILD_GIT: &str = env!("NEURAL_SGDB_BUILD_GIT");
 
 /// Lista pÃºblica: 4 tools. Os 23 nomes antigos continuam vÃ¡lidos em `tools/call`.
+/// As 4 tools LISTADAS no contrato `tools/list` (v1.1.21).
+const LISTED_TOOLS: &[&str] = &["remember", "recall", "health", "curate"];
+
+/// Superfície de ALIAS (v1.1.21): nomes aceitos em `tools/call` que NAO
+/// aparecem em `tools/list`.
+///
+/// Fonte unica do alias surface — antes isto era prosa ("os 23 nomes antigos",
+/// a contagem do rework v1.1.8). A superficie cresceu com as ops cognitivas
+/// (v1.1.10) e o harness (v1.1.19), e prosa nao trava contra drift: o teste
+/// `alias_surface_is_consistent` pina a lista, e `did_you_mean` procura aqui
+/// para sugerir o nome certo a quem errou.
+const ALIAS_SURFACE: &[&str] = &[
+    "associate",
+    "audit_checkpoint",
+    "audit_verify",
+    "close_event",
+    "commit_run",
+    "conflicts",
+    "consolidate",
+    "contradicts",
+    "decay",
+    "deprecate_run",
+    "diary",
+    "era_report",
+    "expire_old",
+    "expire_ttl",
+    "explain",
+    "feedback",
+    "forget",
+    "gc",
+    "merge_memories",
+    "profile",
+    "rag_context",
+    "recall_ann",
+    "recall_entities",
+    "recall_temporal",
+    "reinforce",
+    "related_to",
+    "remember_episodic",
+    "resolve_conflict",
+    "rollback_to",
+    "set_event",
+    "set_ttl",
+    "supersede",
+    "timeline",
+    "validate",
+];
+
+/// Distancia de edicao (Levenshtein, duas linhas). Determinística e sem deps;
+/// so roda no caminho de ERRO (nome desconhecido), nunca num recall.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    if a.is_empty() {
+        return b.len();
+    }
+    if b.is_empty() {
+        return a.len();
+    }
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0usize; b.len() + 1];
+    for i in 1..=a.len() {
+        cur[0] = i;
+        for j in 1..=b.len() {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
+        }
+        core::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
+}
+
+/// Sugestao determinística para um nome desconhecido (v1.1.21).
+///
+/// Ordem: prefixo/substring (typo de digitacao) e, se nada casar, os 3 nomes
+/// mais proximos por distancia de edicao (desde que perto o bastante). O mesmo
+/// nome devolve sempre a mesma sugestao — um retry do agente e previsivel.
+fn did_you_mean(asked: &str) -> Vec<String> {
+    let lower = asked.to_ascii_lowercase();
+    let mut out: Vec<String> = Vec::new();
+    fn push(t: &str, out: &mut Vec<String>) {
+        if !out.iter().any(|x| x == t) {
+            out.push(t.to_string());
+        }
+    }
+    if !lower.is_empty() {
+        for t in LISTED_TOOLS.iter().chain(ALIAS_SURFACE.iter()) {
+            if t.starts_with(&lower) || t.contains(&lower) {
+                push(t, &mut out);
+            }
+        }
+    }
+    if out.is_empty() {
+        let mut best: Vec<(usize, &str)> = LISTED_TOOLS
+            .iter()
+            .chain(ALIAS_SURFACE.iter())
+            .map(|t| (edit_distance(&lower, t), *t))
+            .collect();
+        best.sort();
+        for (d, t) in best.iter().take(3) {
+            if *d <= 3 {
+                push(t, &mut out);
+            }
+        }
+    }
+    out.truncate(3);
+    out
+}
+
+/// Erro de tool desconhecida, ENRIQUECIDO (v1.1.21).
+///
+/// Continua sendo um erro com o mesmo `-32602` de antes — so ganha `data` com
+/// a sugestao e a superficie, para o consumidor maquina consertar o schema numa
+/// chamada em vez de queimar um turno adivinhando.
+fn unknown_tool_error(id: &Value, asked: &str) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": -32602,
+            "message": "Unknown tool",
+            "data": {
+                "tool": asked,
+                "did_you_mean": did_you_mean(asked),
+                "listed_tools": LISTED_TOOLS,
+                "alias_count": ALIAS_SURFACE.len(),
+            }
+        }
+    })
+}
+
 fn expand_tool(name: &str, args: &Value) -> String {
     match name {
         "remember"
@@ -1468,6 +1599,26 @@ fn main() {
                             let text = serde_json::to_string_pretty(&payload).unwrap_or_default();
                             send(&json!({"jsonrpc":"2.0","id":id,"result":
                                 mcp_tool_result(&text, payload, false)}));
+                        } else if view == "index" {
+                            // v1.1.21 (ADR-0011): oraculo de equivalencia de
+                            // reconstrucao (`fp(open) == fp(rebuild_indices())`)
+                            // + o contrato de medicao de custo de open
+                            // (ADR-0009 §4). Opt-in de proposito: o fingerprint
+                            // e O(n log n), entao o `health` default nao paga.
+                            let h = db.health();
+                            let payload = json!({
+                                "view": "index",
+                                "index_fingerprint": format!("{:016x}", db.index_fingerprint()),
+                                "doc_count": h.doc_count,
+                                "bq_len": h.bq_len,
+                                "indexed_embedding_dims": h.indexed_embedding_dims,
+                                "open_rebuild_ms_last": h.open_rebuild_ms_last,
+                                "open_rebuild_ms_max": h.open_rebuild_ms_max,
+                                "opens": h.opens,
+                            });
+                            let text = serde_json::to_string_pretty(&payload).unwrap_or_default();
+                            send(&json!({"jsonrpc":"2.0","id":id,"result":
+                                mcp_tool_result(&text, payload, false)}));
                         } else if view == "staleness" {
                             let now = args["now"].as_u64().unwrap_or_else(|| {
                                 std::time::SystemTime::now()
@@ -1790,7 +1941,7 @@ fn main() {
                                 "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
                         }
                     }
-                    _ => send(&error_response(&id, -32602, "Unknown tool")),
+                    _ => send(&unknown_tool_error(&id, &name)),
                 }
             }
             "" => {
@@ -1924,6 +2075,107 @@ mod tests {
             ),
             "recall_entities"
         );
+    }
+
+    /// A superficie de alias e uma TABELA, nao prosa. Antes isto era "os 23
+    /// nomes antigos" num comentario — e a contagem ja estava velha (o
+    /// rework v1.1.8 nao conhecia as ops cognitivas nem o harness).
+    #[test]
+    fn alias_surface_is_consistent() {
+        // sem duplicatas
+        let mut seen: Vec<&str> = ALIAS_SURFACE.to_vec();
+        seen.sort_unstable();
+        let before = seen.len();
+        seen.dedup();
+        assert_eq!(seen.len(), before, "alias duplicado em ALIAS_SURFACE");
+        // as 4 tools LISTADAS nao podem aparecer como alias
+        for t in LISTED_TOOLS {
+            assert!(
+                !ALIAS_SURFACE.contains(t),
+                "'{t}' e listada — nao pode estar na superficie de alias"
+            );
+        }
+        // nomes de tool sao snake_case minusculo
+        for t in ALIAS_SURFACE {
+            assert!(
+                t.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
+                "'{t}' fora do padrao snake_case"
+            );
+        }
+        // tripwire: a superficie derivada do dispatch tem 34 nomes. Se um arm
+        // novo for adicionado sem entrar aqui, o `did_you_mean` fica cego.
+        assert_eq!(ALIAS_SURFACE.len(), 34, "superficie de alias mudou");
+        assert_eq!(LISTED_TOOLS.len(), EXPECTED_MCP_TOOL_COUNT);
+    }
+
+    #[test]
+    fn did_you_mean_suggests_prefix_and_typos() {
+        assert!(
+            did_you_mean("recal").first().is_some_and(|s| s == "recall"),
+            "prefixo deve sugerir a tool canonica"
+        );
+        assert!(
+            did_you_mean("remembr").iter().any(|s| s == "remember"),
+            "typo de 1 char deve ser corrigido"
+        );
+        assert!(
+            did_you_mean("remember_episodic").iter().any(|s| s == "remember_episodic"),
+            "nome legado real e sugerido"
+        );
+        assert!(
+            did_you_mean("qqzzqqzz").is_empty(),
+            "nome sem nada perto nao inventa sugestao"
+        );
+        // determinismo: o mesmo nome devolve sempre o mesmo (retry previsivel)
+        assert_eq!(did_you_mean("recal"), did_you_mean("recal"));
+        assert!(did_you_mean("recal").len() <= 3, "no maximo 3 sugestoes");
+    }
+
+    #[test]
+    fn edit_distance_basics() {
+        assert_eq!(edit_distance("", ""), 0);
+        assert_eq!(edit_distance("abc", "abc"), 0);
+        assert_eq!(edit_distance("abc", "abd"), 1);
+        assert_eq!(edit_distance("abc", ""), 3);
+        assert_eq!(edit_distance("recall", "recal"), 1);
+    }
+
+    /// O erro enriquecido CONTINUA sendo um erro (`-32602`), so ganha `data`:
+    /// mudar para sucesso seria quebrar o contrato de quem detecta falha.
+    #[test]
+    fn unknown_tool_error_stays_an_error_and_carries_hints() {
+        let v = unknown_tool_error(&serde_json::json!(1), "recal");
+        assert_eq!(v["error"]["code"], -32602, "o codigo de erro nao muda");
+        assert_eq!(v["error"]["message"], "Unknown tool");
+        assert_eq!(v["error"]["data"]["tool"], "recal");
+        assert_eq!(v["error"]["data"]["alias_count"], 34);
+        assert_eq!(
+            v["error"]["data"]["listed_tools"].as_array().map(|a| a.len()),
+            Some(4)
+        );
+        let hints = v["error"]["data"]["did_you_mean"].as_array().unwrap();
+        assert!(hints.iter().any(|h| h == "recall"), "{v}");
+    }
+
+    /// `health(view=index)` expoe o oraculo (ADR-0011) sem pagar o custo no
+    /// `health` default — e o `expand_tool` nao o desvia para outra tool.
+    #[test]
+    fn health_view_index_is_reachable_and_not_remapped() {
+        assert_eq!(
+            expand_tool("health", &serde_json::json!({"view":"index"})),
+            "health"
+        );
+        let mut db = neural_sgdb::Sgdb::open(neural_sgdb::InMemory::new()).unwrap();
+        db.remember_text_with(
+            "idx/a",
+            "corpo do doc de indice",
+            neural_sgdb::RememberOptions::default(),
+        )
+        .unwrap();
+        let h = db.health();
+        assert_eq!(h.open_rebuild_ms_max >= h.open_rebuild_ms_last, true);
+        assert!(h.opens >= 1);
+        assert_ne!(db.index_fingerprint(), 0, "fingerprint de corpus nao-trivial");
     }
 
     #[test]

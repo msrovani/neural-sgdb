@@ -708,23 +708,9 @@ impl AiosDatabaseEngine {
                             self.note_vec(&v);
                         }
                     }
-                } else if !doc.payload.is_empty() {
-                    let n = doc.payload.len() / 4;
-                    if n > 0 {
-                        let mut f = Vec::with_capacity(n);
-                        for i in 0..n {
-                            let o = i * 4;
-                            let w = f32::from_le_bytes([
-                                doc.payload[o],
-                                doc.payload[o + 1],
-                                doc.payload[o + 2],
-                                doc.payload[o + 3],
-                            ]);
-                            f.push(w);
-                        }
-                        self.bq.insert_f32(id, &f);
-                        self.note_vec(&f);
-                    }
+                } else if let Some(f) = Self::payload_floats_truncated(&doc.payload) {
+                    self.bq.insert_f32(id, &f);
+                    self.note_vec(&f);
                 }
                 self.art.insert(sk, id);
             }
@@ -914,21 +900,7 @@ impl AiosDatabaseEngine {
     /// reinterpretado como f32 gera NaN/Inf — não contamina a média);
     /// dims além de `MAX_EMBEDDING_DIM` nunca chegam aqui (guard P1-1).
     fn note_vec(&mut self, v: &[f32]) {
-        if v.is_empty() || v.iter().any(|x| !x.is_finite()) {
-            return;
-        }
-        let dim = v.len();
-        let (sum, count) = self
-            .corpus_sums
-            .entry(dim)
-            .or_insert_with(|| (alloc::vec![0.0f64; dim], 0));
-        for (i, s) in sum.iter_mut().enumerate() {
-            let x = v[i];
-            if x.is_finite() {
-                *s += x as f64;
-            }
-        }
-        *count = count.saturating_add(1);
+        corpus_add(&mut self.corpus_sums, v);
     }
 
     /// Subtrai um vetor da média do corpus (delete/overwrite L4/L5).
@@ -955,6 +927,122 @@ impl AiosDatabaseEngine {
         if remove {
             self.corpus_sums.remove(&dim);
         }
+    }
+
+    /// Recomputa as somas do corpus DO ZERO a partir dos docs vivos no storage
+    /// (v1.1.21, ADR-0011 §float) — a referência contra a qual o estado mantido
+    /// incrementalmente é comparado no `validate`.
+    ///
+    /// Espelha os DOIS ramos de `index_doc` que chamam `note_vec` (bitvec +
+    /// payload, e payload reinterpretado sem bitvec) e reusa as mesmas funções
+    /// de leitura: se o critério de acumulação fosse reescrito aqui, a
+    /// comparação divergiria por construção e o check seria inútil.
+    pub fn recompute_corpus_sums(
+        &mut self,
+    ) -> Result<BTreeMap<usize, (Vec<f64>, u64)>, SgdbError> {
+        let mut acc: BTreeMap<usize, (Vec<f64>, u64)> = BTreeMap::new();
+        let rows = self.storage.scan_prefix(b"md/")?;
+        for (_k, bytes) in rows {
+            let doc = match MemoryDoc::decode(&bytes) {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+            if !matches!(doc.layer, MemoryLayer::L4Semantic | MemoryLayer::L5Procedural) {
+                continue;
+            }
+            if doc.bitvec.is_some() {
+                if doc.payload.len() >= 4 {
+                    if let Some(v) = Self::payload_floats(&doc.payload) {
+                        corpus_add(&mut acc, &v);
+                    }
+                }
+            } else if let Some(f) = Self::payload_floats_truncated(&doc.payload) {
+                corpus_add(&mut acc, &f);
+            }
+        }
+        Ok(acc)
+    }
+
+    /// Divergências entre o `corpus_sums` MANTIDO (incremental) e o recomputado
+    /// do storage (referência) — v1.1.21, ADR-0011 §float.
+    ///
+    /// `counts` comparam-se por **igualdade exata**: divergência de contagem é
+    /// bug duro (um caminho de delete/overwrite deixou de subtrair). As `somas`
+    /// são `f64` e a adição **não é associativa** — o rebuild acumula numa ordem
+    /// e a escrita incremental noutra, então os últimos bits divergem
+    /// LEGITIMAMENTE. A tolerância relativa aceita isso e rejeita deriva real;
+    /// sem ela o check daria falso positivo em produção.
+    ///
+    /// Devolve `(dim, kind)` com `kind` em {`"count"`, `"sum"`}.
+    pub fn corpus_sums_drift(&mut self) -> Result<Vec<(usize, &'static str)>, SgdbError> {
+        let reference = self.recompute_corpus_sums()?;
+        let mut out: Vec<(usize, &'static str)> = Vec::new();
+        for (dim, (sum, count)) in &reference {
+            match self.corpus_sums.get(dim) {
+                None => out.push((*dim, "count")),
+                Some((msum, mcount)) => {
+                    if mcount != count {
+                        out.push((*dim, "count"));
+                    } else if !sums_within_tolerance(sum, msum) {
+                        out.push((*dim, "sum"));
+                    }
+                }
+            }
+        }
+        // dim presente no mantido e AUSENTE na referência: sobrou entrada órfã
+        // (o storage é a fonte da verdade, então isto é a única direção que
+        // pode acusar dado fantasmal).
+        for dim in self.corpus_sums.keys() {
+            if !reference.contains_key(dim) {
+                out.push((*dim, "count"));
+            }
+        }
+        out.sort();
+        out.dedup();
+        Ok(out)
+    }
+
+    /// Test-only: adultera o `corpus_sums` MANTIDO para exercitar o caminho
+    /// POSITIVO do detector de drift do `validate` (v1.1.21, ADR-0011).
+    ///
+    /// Existe só em build de teste: não se cria API pública que "mente" apenas
+    /// para ser testável.
+    #[cfg(test)]
+    pub(crate) fn corrupt_corpus_sums_for_test(
+        &mut self,
+        dim: usize,
+        sum_delta: f64,
+        count_delta: i64,
+    ) {
+        if let Some((sum, count)) = self.corpus_sums.get_mut(&dim) {
+            if let Some(first) = sum.first_mut() {
+                *first += sum_delta;
+            }
+            *count = ((*count as i64) + count_delta).max(0) as u64;
+        }
+    }
+
+    /// Payload reinterpretado como f32 com **truncamento** em múltiplo de 4
+    /// (`len / 4` floats). Distinto de `payload_floats`, que exige
+    /// `len % 4 == 0`. Compartilhado por `index_doc` (insert no BQ) e por
+    /// `recompute_corpus_sums` — a mesma leitura, senão a comparação do
+    /// `validate` divergiria por construção.
+    fn payload_floats_truncated(payload: &[u8]) -> Option<Vec<f32>> {
+        let n = payload.len() / 4;
+        if n == 0 {
+            return None;
+        }
+        let mut f = Vec::with_capacity(n);
+        for i in 0..n {
+            let o = i * 4;
+            f.push(f32::from_le_bytes([
+                payload[o],
+                payload[o + 1],
+                payload[o + 2],
+                payload[o + 3],
+            ]));
+        }
+        Some(f)
     }
 
     /// Decodifica o payload como vetor f32 (`None` se não for embedding:
@@ -990,6 +1078,91 @@ impl AiosDatabaseEngine {
             return None;
         }
         Some(sum.iter().map(|s| (*s / *count as f64) as f32).collect())
+    }
+
+    /// Fingerprint canônico do estado DERIVADO (v1.1.21, ADR-0011) — o oráculo
+    /// de equivalência de reconstrução (`fp(open) == fp(rebuild_indices())`).
+    ///
+    /// Regras em [`crate::fingerprint`]: ordem canônica; ids do ART, órfãos do
+    /// BQ e floats FICAM FORA. Custo O(n log n) (as chaves do ART não iteram em
+    /// ordem lexicográfica, então são ordenadas) — NÃO é chamado pelo
+    /// `health()` default; use `health(view=index)` ou `Sgdb::index_fingerprint`.
+    pub fn index_fingerprint(&self) -> u64 {
+        use crate::fingerprint::{fp_mix_str, fp_mix_u64, FP_SEED};
+        let mut h = FP_SEED;
+
+        // 1. Chaves do ART ordenadas. O ID fica FORA: `NEXT_ID` é um contador
+        //    global de processo, logo o mesmo corpus em dois opens produz ids
+        //    diferentes — hash de id não é estável entre processos.
+        let mut keys: Vec<String> = self
+            .art
+            .scan_prefix("")
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect();
+        keys.sort();
+        h = fp_mix_u64(h, keys.len() as u64);
+        for k in &keys {
+            h = fp_mix_str(h, k);
+        }
+
+        // 2. BQ: geometria + vetores EFETIVOS (resolvidos id → storage key).
+        //    Órfãos do BQ ficam FORA: são inertes por design e a recompacção
+        //    (`reclaim_bq_orphans`) não pode mover o fingerprint.
+        //    `bq.len()` NÃO entra: ele conta os órfãos, que ficam fora por
+        //    design (ver abaixo). O que entra é a contagem de vetores VIVOS.
+        h = fp_mix_u64(h, self.bq.words_per_vec as u64);
+        let w = self.bq.words_per_vec;
+        let mut live: Vec<(&str, &[u64])> = Vec::new();
+        for (i, id) in self.bq.ids.iter().enumerate() {
+            if let Some(sk) = self.id_to_sk.get(id) {
+                let off = (i * w).min(self.bq.flat.len());
+                let end = (off + w).min(self.bq.flat.len());
+                live.push((sk.as_str(), &self.bq.flat[off..end]));
+            }
+        }
+        live.sort_by(|a, b| a.0.cmp(b.0));
+        h = fp_mix_u64(h, live.len() as u64);
+        for (sk, words) in live {
+            h = fp_mix_str(h, sk);
+            for wa in words {
+                h = fp_mix_u64(h, *wa);
+            }
+        }
+
+        // 3. Dimensões indexadas (`BTreeSet`: ordem natural).
+        h = fp_mix_u64(h, self.indexed_dims.len() as u64);
+        for d in &self.indexed_dims {
+            h = fp_mix_u64(h, *d as u64);
+        }
+
+        // 4. Lexical (postings em ordem canônica por construção).
+        h = self.lexical.fp_mix_into(h);
+
+        // 5. Entidades — as listas de keys são ordenadas (ordem de inserção
+        //    do `set_entities` não pode mover o hash).
+        h = fp_mix_u64(h, self.entity_index.len() as u64);
+        for (ent, skeys) in &self.entity_index {
+            h = fp_mix_str(h, ent);
+            let mut sorted: Vec<&String> = skeys.iter().collect();
+            sorted.sort();
+            h = fp_mix_u64(h, sorted.len() as u64);
+            for sk in sorted {
+                h = fp_mix_str(h, sk);
+            }
+        }
+
+        // 6. `corpus_sums`: SÓ os counts. As somas f64 NÃO são associativas —
+        //    o rebuild acumula numa ordem e a escrita incremental noutra, então
+        //    os últimos bits podem divergir LEGITIMAMENTE. A média é verificada
+        //    à parte, com tolerância relativa (`Sgdb::validate`).
+        h = fp_mix_u64(h, self.corpus_sums.len() as u64);
+        for (dim, (_sum, count)) in &self.corpus_sums {
+            h = fp_mix_u64(h, *dim as u64);
+            h = fp_mix_u64(h, *count);
+        }
+
+        h
     }
 
     /// Dual-path grosseiro (v1.1.16 ADC-lite): `top_k` legado ∪ `top_k`
@@ -1508,6 +1681,53 @@ impl AiosDatabaseEngine {
     }
 }
 
+/// Tolerância RELATIVA entre duas somas do corpus (v1.1.21, ADR-0011 §float).
+///
+/// f64 tem ~1e-16 de precisão relativa; a adição de N parcelas `f32` (exatas em
+/// f64) em ordens diferentes acumula erro relativo da ordem de `N·eps` (~1e-11
+/// para N=1e5). `1e-9` fica acima disso e ordens de magnitude abaixo de qualquer
+/// deriva real (uma parcela faltante desloca a soma muito mais que isso).
+const CORPUS_SUM_REL_TOL: f64 = 1e-9;
+
+/// Acumula `v` no mapa de somas por dim, ignorando vetores com qualquer
+/// componente não-finito POR INTEIRO (texto reinterpretado como f32 gera
+/// NaN/Inf — não pode contaminar a média).
+///
+/// Compartilhado por `note_vec` (incremental) e `recompute_corpus_sums`
+/// (referência do `validate`): a MESMA acumulação nos dois lados é o que torna
+/// a comparação significativa.
+fn corpus_add(map: &mut BTreeMap<usize, (Vec<f64>, u64)>, v: &[f32]) {
+    if v.is_empty() || v.iter().any(|x| !x.is_finite()) {
+        return;
+    }
+    let dim = v.len();
+    let (sum, count) = map
+        .entry(dim)
+        .or_insert_with(|| (alloc::vec![0.0f64; dim], 0));
+    for (i, s) in sum.iter_mut().enumerate() {
+        let x = v[i];
+        if x.is_finite() {
+            *s += x as f64;
+        }
+    }
+    *count = count.saturating_add(1);
+}
+
+/// Mesma magnitude relativa dentro de `CORPUS_SUM_REL_TOL` (com piso absoluto
+/// de `1.0` para o caso de cancelamento total — soma ~0).
+fn sums_within_tolerance(a: &[f64], b: &[f64]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    for (x, y) in a.iter().zip(b.iter()) {
+        let scale = x.abs().max(y.abs()).max(1.0);
+        if (x - y).abs() > CORPUS_SUM_REL_TOL * scale {
+            return false;
+        }
+    }
+    true
+}
+
 /// Meta determinística para um doc REPLICADO sem meta (pré-v0.6): autor =
 /// nó com o maior contador no relógio (tie-break: menor node_id) — nunca
 /// reivindica autoria local de uma memória vinda de outro nó.
@@ -1559,4 +1779,61 @@ pub fn remember_text(
 ) -> Result<u64, SgdbError> {
     let doc = MemoryDoc::new(layer, key, text.as_bytes().to_vec());
     engine.put(doc)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// O caso que MOTIVA a tolerância: somas f64 corretas mas acumuladas em
+    /// ordens diferentes não são bit-idênticas (adição não é associativa).
+    #[test]
+    fn tolerance_accepts_accumulation_order_difference() {
+        let a = [0.1 + 0.2 + 0.3];
+        let b = [0.3 + 0.2 + 0.1];
+        assert!(sums_within_tolerance(&a, &b), "mesma soma, ordem diferente");
+        assert!(sums_within_tolerance(&[0.0], &[0.0]));
+    }
+
+    /// Deriva REAL (uma parcela faltante) tem de ser rejeitada — senão o check
+    /// seria decorativo.
+    #[test]
+    fn tolerance_rejects_real_drift() {
+        assert!(!sums_within_tolerance(&[10.0, 0.0], &[13.0, 0.0]));
+        assert!(!sums_within_tolerance(&[0.0], &[0.5]));
+        assert!(!sums_within_tolerance(&[1.0], &[-1.0]));
+    }
+
+    /// Dimensões diferentes nunca são "quase iguais".
+    #[test]
+    fn tolerance_rejects_length_mismatch() {
+        assert!(!sums_within_tolerance(&[1.0, 2.0], &[1.0]));
+    }
+
+    /// `payload_floats_truncated` é a leitura do ramo "sem bitvec" do
+    /// `index_doc`: trunca em múltiplo de 4 (ao contrário de `payload_floats`,
+    /// que exige `len % 4 == 0`).
+    #[test]
+    fn payload_floats_truncated_matches_index_doc_semantics() {
+        assert!(AiosDatabaseEngine::payload_floats_truncated(&[]).is_none());
+        assert!(
+            AiosDatabaseEngine::payload_floats_truncated(&[1, 2, 3]).is_none(),
+            "n = 0"
+        );
+        // 10 bytes: 2 floats + cauda de 2 → o truncamento ignora a cauda.
+        let mut ten = Vec::new();
+        ten.extend_from_slice(&1.0f32.to_le_bytes());
+        ten.extend_from_slice(&2.0f32.to_le_bytes());
+        ten.extend_from_slice(&[9, 9]);
+        let v = AiosDatabaseEngine::payload_floats_truncated(&ten).unwrap();
+        assert_eq!(
+            v,
+            alloc::vec![1.0f32, 2.0],
+            "10 bytes → 2 floats, cauda ignorada"
+        );
+        assert!(
+            AiosDatabaseEngine::payload_floats(&ten).is_none(),
+            "payload_floats exige múltiplo de 4 — as duas leituras diferem"
+        );
+    }
 }

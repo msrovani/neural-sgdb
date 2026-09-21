@@ -29,6 +29,7 @@ decisions MUST add an ADR in the same commit as the code.
 | 0008 | Default retrieval is lexical; embeddings are host-side | MCP default = lexical; `DemoEmbedder` is not the product path; optional local HTTP embedder; never in the core |
 | 0009 | Index snapshot on open; metrics-gated auto-adapt | Storage = truth; TKCK-like index snapshot; measure `open_ms`/`doc_count`/reopens; auto persist+fast-mount when budget breaks — **not** mid-query; impl ROADMAP Next |
 | 0010 | Harness commit_run / anti-patterns / obsolescence | No `Deprecated` state; `arch/rev/*` + supersede; `mom/anti-pattern`; facade `commit_run` (**v1.1.19**); null-scoping `ScopeDims` (**v1.1.20**) |
+| 0011 | Derived-index integrity oracle | `index_fingerprint` = `fp(open) == fp(rebuild)`; ids/órfãos do BQ/floats FORA; `validate` checa `corpus_mean` com tolerância relativa; ADR-0009 §3 ganha o validador (**v1.1.21**) |
 
 ## Retrospective history
 

@@ -52,6 +52,30 @@ fn resolve_content_type(
 /// resposta certa, longe o bastante para nunca mascarar conteúdo distinto.
 const SCORE_TIE_MARGIN: u32 = 50;
 
+/// Quantos `open` este PROCESSO já fez (v1.1.21, ADR-0009 §4, dor #2 — hosts
+/// que reabrem a DB por chat/reload). Contador de processo, NÃO durável: o
+/// histórico entre restarts é do HOST (o ADR atribui `opens_per_hour` a ele).
+static OPEN_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Mede `f` em milissegundos (v1.1.21, ADR-0009 §4).
+///
+/// `no_std` NÃO tem `Instant` no core do alvo bare-metal (mesma família do
+/// `f32::sqrt`), e a doutrina de seams diz para não inventar um global de
+/// relógio por causa de uma métrica. Então a medição simplesmente não existe
+/// sem `std` e devolve `0` — explicitamente ausente, nunca um número falso.
+fn timed_ms<T>(f: impl FnOnce() -> T) -> (T, u64) {
+    #[cfg(feature = "std")]
+    {
+        let t0 = std::time::Instant::now();
+        let out = f();
+        (out, t0.elapsed().as_millis() as u64)
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        (f(), 0)
+    }
+}
+
 /// `created_tick` de um hit (0 = sem proveniência). Maior = versão corrente.
 fn hit_tick(h: &Hit) -> u64 {
     h.provenance.as_ref().map(|p| p.created_tick).unwrap_or(0)
@@ -129,6 +153,14 @@ pub struct HealthReport {
     pub indexed_embedding_dims: Vec<usize>,
     /// Modelos declarados (`model_id` MDM1 v7) no corpus vivo.
     pub indexed_model_ids: Vec<String>,
+    // ---- custo de `open` (v1.1.21, contrato de medição do ADR-0009 §4) ----
+    /// Wall time do último rebuild de índices, em ms (`0` sob `no_std`:
+    /// não existe `Instant` no core do alvo — ausência explícita, não falsa).
+    pub open_rebuild_ms_last: u64,
+    /// Pior caso observado nesta instância.
+    pub open_rebuild_ms_max: u64,
+    /// Quantos `open` este processo já fez (dor #2: hosts que reabrem muito).
+    pub opens: u64,
 }
 
 /// Distribuição de memórias por escopo (multi-agente / mem0 null-scoping).
@@ -462,11 +494,19 @@ impl Sgdb {
         backend: impl Storage + 'static,
     ) -> Result<Self, SgdbError> {
         let mut engine = AiosDatabaseEngine::new(node_id, Box::new(backend));
-        let recovered = engine.rebuild_indices_from_storage()?;
-        crate::sgdb_log!("Sgdb open: {recovered} docs reindexados (ART/BQ)");
+        // v1.1.21 (ADR-0009 §4): mede o rebuild de índices, que é o gargalo do
+        // cold start do agente (~94% do `open` — ver BENCHMARKS §open cost).
+        let (rebuild, rebuild_ms) = timed_ms(|| engine.rebuild_indices_from_storage());
+        let recovered = rebuild?;
+        crate::sgdb_log!(
+            "Sgdb open: {recovered} docs reindexados (ART/BQ) em {rebuild_ms} ms"
+        );
         let metrics = crate::metrics::Metrics {
             storage_recoveries: 1,
             index_rebuilds: 1,
+            open_rebuild_ms_last: rebuild_ms,
+            open_rebuild_ms_max: rebuild_ms,
+            opens: OPEN_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed) + 1,
             ..crate::metrics::Metrics::default()
         };
         Ok(Sgdb {
@@ -1521,9 +1561,27 @@ impl Sgdb {
     /// Propaga erro de scan — nunca deixa índices "meio reconstruídos" sem
     /// reportar.
     pub fn rebuild_indices(&mut self) -> Result<usize, SgdbError> {
-        let n = self.engine.rebuild_indices_from_storage()?;
-        crate::sgdb_log!("Sgdb rebuild: {n} docs reindexados (ART/BQ)");
+        let (rebuild, ms) = timed_ms(|| self.engine.rebuild_indices_from_storage());
+        let n = rebuild?;
+        self.metrics.index_rebuilds = self.metrics.index_rebuilds.saturating_add(1);
+        self.metrics.open_rebuild_ms_last = ms;
+        self.metrics.open_rebuild_ms_max = self.metrics.open_rebuild_ms_max.max(ms);
+        crate::sgdb_log!("Sgdb rebuild: {n} docs reindexados (ART/BQ) em {ms} ms");
         Ok(n)
+    }
+
+    /// Fingerprint canônico do estado DERIVADO (v1.1.21, ADR-0011) — o oráculo
+    /// de equivalência de reconstrução.
+    ///
+    /// A invariante central: `fp(open) == fp(rebuild_indices())`. Se dois DBs
+    /// byte-idênticos em storage produzem fingerprints diferentes, o índice
+    /// derivado carrega estado que não vem do storage — que é exatamente o que
+    /// um snapshot (ADR-0009 §3) precisa detectar antes de ser montado.
+    ///
+    /// Custo O(n log n) — NÃO entra no `health()` default; use
+    /// `health(view=index)` quando o fingerprint for o que interessa.
+    pub fn index_fingerprint(&self) -> u64 {
+        self.engine.index_fingerprint()
     }
 
     /// Pós-turno: L1 working (user) + L2 episódico curto (assistant).
@@ -4184,6 +4242,9 @@ impl Sgdb {
             scope_labels,
             indexed_embedding_dims,
             indexed_model_ids,
+            open_rebuild_ms_last: self.metrics.open_rebuild_ms_last,
+            open_rebuild_ms_max: self.metrics.open_rebuild_ms_max,
+            opens: self.metrics.opens,
         }
     }
 
@@ -4279,6 +4340,30 @@ impl Sgdb {
                     }
                 }
             }
+        }
+
+        // 5. ADC-lite (v1.1.21, ADR-0011 §float): a soma do corpus é mantida
+        //    INCREMENTALMENTE (insert soma, delete/overwrite subtrai) e é
+        //    comparada aqui com o recomputado do storage. Counts por igualdade
+        //    exata (divergência é bug duro); somas com tolerância relativa — a
+        //    adição f64 NÃO é associativa e o rebuild acumula noutra ordem.
+        match self.engine.corpus_sums_drift() {
+            Ok(drift) => {
+                for (dim, kind) in drift {
+                    issues.push(ValidateIssue {
+                        key: format!("corpus_sums/{dim}"),
+                        message: if kind == "sum" {
+                            "corpus_mean drift (sum outside relative tolerance)"
+                        } else {
+                            "corpus_mean count mismatch"
+                        },
+                    });
+                }
+            }
+            Err(_) => issues.push(ValidateIssue {
+                key: String::from("corpus_sums/"),
+                message: "storage read failed during validate",
+            }),
         }
 
         issues
@@ -8041,6 +8126,389 @@ mod tests {
         assert!(
             !rep.iter().any(|h| h.key.contains("other")),
             "scope filter must hide bob"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // v1.1.21 / ADR-0011 — fingerprint canônico do estado DERIVADO
+    // ------------------------------------------------------------------
+
+    /// Corpus de teste determinístico: `n` docs L4 com companions L2.
+    fn fp_corpus(db: &mut Sgdb, n: usize) {
+        for i in 0..n {
+            let mut emb = [0.0f32; 4];
+            emb[i % 4] = 1.0 + i as f32 * 0.25;
+            emb[(i + 1) % 4] = -1.0 + i as f32 * 0.1;
+            db.remember_semantic(&format!("fp/{i}"), "corpo do doc de fingerprint", &emb)
+                .unwrap();
+        }
+    }
+
+    /// A invariante central do oráculo: um rebuild a partir do storage
+    /// reproduz EXATAMENTE o índice derivado que está em RAM. É o que permite
+    /// um snapshot (ADR-0009 §3) validar-se antes de ser montado.
+    #[test]
+    fn index_fingerprint_rebuild_invariant() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        fp_corpus(&mut db, 6);
+        db.remember_text_with(
+            "fp/l3",
+            "fato lexical de rebuild",
+            RememberOptions::default(),
+        )
+        .unwrap();
+        db.set_entities("md/L4/fp/0", &["ent/a", "ent/b"]).unwrap();
+
+        let before = db.index_fingerprint();
+        let n = db.rebuild_indices().unwrap();
+        assert!(n >= 13, "6 L4 + 6 L2 + 1 L3 reindexados: {n}");
+        assert_eq!(
+            before,
+            db.index_fingerprint(),
+            "rebuild do storage deve reproduzir o índice derivado"
+        );
+    }
+
+    /// A ordem de inserção não pode mover o hash: é o que torna o fingerprint
+    /// comparável entre dois nós que receberam o mesmo conteúdo em ordens
+    /// diferentes (o caso normal da replicação).
+    #[test]
+    fn index_fingerprint_is_insertion_order_independent() {
+        let docs: [(&str, [f32; 4]); 4] = [
+            ("o/1", [1.0, 0.0, 0.0, 0.0]),
+            ("o/2", [0.0, 1.0, 0.0, 0.0]),
+            ("o/3", [0.0, 0.0, 1.0, 0.0]),
+            ("o/4", [0.0, 0.0, 0.0, 1.0]),
+        ];
+        let build = |order: [usize; 4]| {
+            let mut db = Sgdb::open(InMemory::new()).unwrap();
+            for i in order {
+                let (k, e) = docs[i];
+                db.remember_semantic(k, "ordem canonica de teste", &e)
+                    .unwrap();
+                db.set_entities(&format!("md/L4/{k}"), &["ent/o"]).unwrap();
+            }
+            db.index_fingerprint()
+        };
+        assert_eq!(
+            build([0, 1, 2, 3]),
+            build([3, 2, 1, 0]),
+            "ordem de inserção não pode mover o fingerprint"
+        );
+    }
+
+    /// O BQ é append-only: `delete` deixa o id órfão no flat até a recompacção
+    /// (`reclaim_bq_orphans`, limiar 64). Órfão é INERTE — o recall pula quem
+    /// não resolve `id → storage key`. O fingerprint mede o índice EFETIVO,
+    /// então dois DBs com a mesma memória viva e contagens de órfãos
+    /// DIFERENTES têm de dar o mesmo hash (senão a recompacção — que não muda
+    /// nada visível — moveria o oráculo).
+    #[test]
+    fn index_fingerprint_ignores_bq_orphans() {
+        let emb_x = [1.0f32, 0.0, 0.0, 0.0];
+        let emb_y = [0.0f32, 1.0, 0.0, 0.0];
+
+        // A: escreve X e Y, apaga X → 1 órfão no BQ (abaixo do limiar).
+        let mut a = Sgdb::open(InMemory::new()).unwrap();
+        a.remember_semantic("orph/x", "doc que sera apagado", &emb_x)
+            .unwrap();
+        a.remember_semantic("orph/y", "doc que sobrevive", &emb_y)
+            .unwrap();
+        assert!(a.delete("md/L4/orph/x").unwrap(), "X existia");
+        a.delete("md/L2/orph/x").unwrap();
+
+        // B: só Y → zero órfãos.
+        let mut b = Sgdb::open(InMemory::new()).unwrap();
+        b.remember_semantic("orph/y", "doc que sobrevive", &emb_y)
+            .unwrap();
+
+        assert_eq!(
+            a.index_fingerprint(),
+            b.index_fingerprint(),
+            "órfão do BQ não é estado efetivo"
+        );
+    }
+
+    /// Fronteira explícita do oráculo: cobre o estado DERIVADO (ART, BQ,
+    /// lexical, entity_index, dims, counts) e NÃO o storage/side-tables.
+    /// O fingerprint responde "o índice derivado equivale ao rebuild?", não
+    /// "o storage equivale?" — por isso `scope` (side-table, filtrado no
+    /// recall) não entra, e `entities` (que popula um índice derivado) entra.
+    #[test]
+    fn index_fingerprint_covers_derived_indexes_only() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_text_with("a", "alfa bravo charlie", RememberOptions::default())
+            .unwrap();
+        let fp0 = db.index_fingerprint();
+
+        // lexical (derivado) → coberto
+        db.remember_text_with("b", "delta echo foxtrot", RememberOptions::default())
+            .unwrap();
+        let fp_lex = db.index_fingerprint();
+        assert_ne!(fp_lex, fp0, "doc L3 novo entra no lexical");
+
+        // entity_index (derivado) → coberto
+        db.set_entities("md/L3/a", &["ent/x"]).unwrap();
+        let fp_ent = db.index_fingerprint();
+        assert_ne!(fp_ent, fp_lex, "entidade muda o entity_index derivado");
+
+        // scope (side-table) → NÃO coberto
+        db.set_scope("md/L3/a", "user/ana").unwrap();
+        assert_eq!(
+            db.index_fingerprint(),
+            fp_ent,
+            "scope vive na meta e é filtrado no recall: fora do oráculo de índice"
+        );
+    }
+
+    /// O caminho de replicação tem de reproduzir o estado DERIVADO, não só o
+    /// doc: se BQ/lexical/entidades divergirem, os dois nós convergem no
+    /// storage e DIVERGEM no recall. O fingerprint é o que pega isso.
+    #[test]
+    fn index_fingerprint_import_equivalence() {
+        let mut a = Sgdb::open(InMemory::new()).unwrap();
+        fp_corpus(&mut a, 5);
+        for i in 0..5 {
+            a.set_entities(&format!("md/L4/fp/{i}"), &["ent/replicada"])
+                .unwrap();
+        }
+
+        let mut b = Sgdb::open(InMemory::new()).unwrap();
+        let keys: Vec<String> = a
+            .scan_prefix("md/")
+            .unwrap()
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect();
+        assert!(keys.len() >= 10, "5 L4 + 5 companions: {keys:?}");
+        for k in &keys {
+            let rec = a.export_record(k).unwrap().expect("record existe");
+            b.import_record(rec).unwrap();
+        }
+
+        assert_eq!(
+            a.index_fingerprint(),
+            b.index_fingerprint(),
+            "export → import reproduz o índice derivado"
+        );
+    }
+
+    /// Estabilidade ENTRE PROCESSOS: `NEXT_ID` é global de processo, então os
+    /// ids do ART/BQ mudam a cada `open`. Excluí-los do hash é o que faz o
+    /// fingerprint de um corpus remontado bater com o da sessão anterior —
+    /// pré-requisito para qualquer snapshot persistido (ADR-0009 §3).
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn index_fingerprint_is_stable_across_reopen() {
+        let dir = std::env::temp_dir().join("neural_sgdb_test").join("fp_reopen");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("mem.db");
+
+        let first = {
+            let mut db = Sgdb::open(crate::FileStorage::open(&path).unwrap()).unwrap();
+            fp_corpus(&mut db, 8);
+            db.set_entities("md/L4/fp/0", &["ent/era"]).unwrap();
+            db.index_fingerprint()
+        };
+
+        // Novo open: ids do ART/BQ são OUTROS (contador de processo avança).
+        let db2 = Sgdb::open(crate::FileStorage::open(&path).unwrap()).unwrap();
+        assert_eq!(
+            db2.index_fingerprint(),
+            first,
+            "o fingerprint não pode depender dos ids do processo"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// DB vazio tem um fingerprint canônico fixo (o hash do estado vazio).
+    #[test]
+    fn index_fingerprint_empty_is_canonical() {
+        let a = Sgdb::open(InMemory::new()).unwrap();
+        let b = Sgdb::open(InMemory::new()).unwrap();
+        assert_eq!(a.index_fingerprint(), b.index_fingerprint());
+        let mut c = Sgdb::open(InMemory::new()).unwrap();
+        c.remember_text_with("x", "move o hash", RememberOptions::default())
+            .unwrap();
+        assert_ne!(c.index_fingerprint(), a.index_fingerprint());
+    }
+
+    // ------------------------------------------------------------------
+    // v1.1.21 / ADR-0011 — invariante da média do corpus (`corpus_mean`)
+    // ------------------------------------------------------------------
+
+    /// Nenhum issue de `corpus_sums/*` no `validate` — o assert do invariante.
+    fn assert_no_mean_drift(db: &mut Sgdb, stage: &str) {
+        let issues = db.validate();
+        assert!(
+            !issues.iter().any(|i| i.key.starts_with("corpus_sums/")),
+            "drift da média em '{stage}': {issues:?}"
+        );
+    }
+
+    /// Embedding determinístico com frações binárias NÃO exatas (soma com
+    /// resíduo de arredondamento — é o que dá sentido ao teste de tolerância).
+    fn awkward_emb(i: usize) -> [f32; 4] {
+        let mut emb = [0.0f32; 4];
+        for (d, e) in emb.iter_mut().enumerate() {
+            *e = ((i * 7 + d * 13) % 29) as f32 / 7.0 - 2.0;
+        }
+        emb
+    }
+
+    /// O invariante principal do item: a média do corpus é mantida
+    /// INCREMENTALMENTE (insert soma, overwrite/delete subtrai) e tem de bater
+    /// com a recomputada do storage em TODOS os estágios do ciclo de vida.
+    #[test]
+    fn validate_corpus_mean_has_no_drift_through_lifecycle() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        // Chaves de LARGURA FIXA: a ART não suporta prefix-key (regra 4) —
+        // `dr/1` seria prefixo de `dr/15`.
+        for i in 0..16 {
+            db.remember_semantic(&format!("dr/{i:03}"), "corpo do doc de drift", &awkward_emb(i))
+                .unwrap();
+        }
+        assert_no_mean_drift(&mut db, "apos writes");
+
+        // overwrite: subtrai o ANTIGO e soma o NOVO
+        db.remember_semantic("dr/000", "corpo do doc de drift", &awkward_emb(99))
+            .unwrap();
+        assert_no_mean_drift(&mut db, "apos overwrite");
+
+        // delete físico: subtrai
+        assert!(db.delete("md/L4/dr/003").unwrap());
+        assert!(db.delete("md/L4/dr/007").unwrap());
+        assert_no_mean_drift(&mut db, "apos delete");
+
+        // replicação: import passa por put_inner (nota o novo)
+        let rec = db.export_record("md/L4/dr/001").unwrap().expect("record");
+        assert!(db.delete("md/L4/dr/001").unwrap());
+        db.import_record(rec).unwrap();
+        assert_no_mean_drift(&mut db, "apos import");
+
+        // rebuild: recomputa do zero — e o estado final continua íntegro
+        db.rebuild_indices().unwrap();
+        assert_no_mean_drift(&mut db, "apos rebuild");
+    }
+
+    /// Deriva REAL de soma é reportada (caminho positivo do detector).
+    #[test]
+    fn validate_detects_corpus_mean_sum_drift() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        for i in 0..4 {
+            db.remember_semantic(&format!("ds/{i:03}"), "corpo do doc de soma", &awkward_emb(i))
+                .unwrap();
+        }
+        assert_no_mean_drift(&mut db, "antes da adulteracao");
+
+        // Adultera a SOMA mantendo a contagem: deriva de soma, não de contagem.
+        db.engine.corrupt_corpus_sums_for_test(4, 3.0, 0);
+        let issues = db.validate();
+        assert!(
+            issues.iter().any(|i| i.key == "corpus_sums/4"
+                && i.message == "corpus_mean drift (sum outside relative tolerance)"),
+            "deriva de soma tem de ser reportada: {issues:?}"
+        );
+    }
+
+    /// Divergência de CONTAGEM é bug duro (um caminho de delete/overwrite
+    /// deixou de subtrair) e é reportada por igualdade exata.
+    #[test]
+    fn validate_detects_corpus_mean_count_mismatch() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        for i in 0..4 {
+            db.remember_semantic(&format!("dc/{i:03}"), "corpo do doc de contagem", &awkward_emb(i))
+                .unwrap();
+        }
+        // count 4 → 3 sem mexer na soma
+        db.engine.corrupt_corpus_sums_for_test(4, 0.0, -1);
+        let issues = db.validate();
+        assert!(
+            issues.iter().any(|i| i.key == "corpus_sums/4"
+                && i.message == "corpus_mean count mismatch"),
+            "divergencia de contagem tem de ser reportada: {issues:?}"
+        );
+    }
+
+    /// Anti-flaky: com um corpus grande e somas com resíduo, a acumulação
+    /// INCREMENTAL e a recomputada pelo rebuild não são bit-idênticas. Sem a
+    /// tolerância relativa este teste falharia — e o check daria FALSO
+    /// POSITIVO em produção.
+    #[test]
+    fn validate_mean_tolerance_absorbs_accumulation_order() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        for i in 0..256 {
+            db.remember_semantic(&format!("at/{i:03}"), "corpus grande", &awkward_emb(i))
+                .unwrap();
+        }
+        // ANTES do rebuild: somas incrementais vs referência do storage.
+        assert_no_mean_drift(&mut db, "256 docs incrementais");
+        // Depois: a referência É o valor mantido (rebuild recomputa do zero).
+        db.rebuild_indices().unwrap();
+        assert_no_mean_drift(&mut db, "256 docs pos-rebuild");
+    }
+
+    // ------------------------------------------------------------------
+    // v1.1.21 / ADR-0009 §4 — contrato de medição do custo de `open`
+    // ------------------------------------------------------------------
+
+    /// `opens` é um contador de PROCESSO: o host lê `opens × open_rebuild_ms`
+    /// como orçamento de churn de sessão (dor #2 do ADR-0009). Só se pode
+    /// afirmar a MONOTONICIDADE (outros testes abrem DBs no mesmo processo).
+    #[test]
+    fn open_metrics_opens_counter_advances() {
+        let mut a = Sgdb::open(InMemory::new()).unwrap();
+        let n1 = a.health().opens;
+        let mut b = Sgdb::open(InMemory::new()).unwrap();
+        let n2 = b.health().opens;
+        assert!(n1 >= 1, "primeiro open conta: {n1}");
+        assert!(n2 > n1, "o contador avança entre aberturas: {n1} → {n2}");
+        let hb = b.health();
+        assert!(hb.open_rebuild_ms_max >= hb.open_rebuild_ms_last);
+    }
+
+    /// O custo medido tem de ser REAL (não um zero decorativo): um rebuild de
+    /// 800 docs é visível em milissegundos. Sob `no_std` não existe `Instant`
+    /// e a métrica é 0 por AUSÊNCIA declarada — por isso o assert é gated.
+    #[cfg(feature = "std")]
+    #[test]
+    fn open_metrics_measure_a_real_rebuild() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        for i in 0..800 {
+            db.remember_text_with(
+                &format!("oc/{i:04}"),
+                "corpo do doc de custo de open",
+                RememberOptions::default(),
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            db.health().open_rebuild_ms_last,
+            0,
+            "nada foi reindexado ainda"
+        );
+        db.rebuild_indices().unwrap();
+        let h = db.health();
+        assert!(
+            h.open_rebuild_ms_last > 0,
+            "rebuild de 800 docs tem de medir > 0 ms (last={})",
+            h.open_rebuild_ms_last
+        );
+        assert!(h.open_rebuild_ms_max >= h.open_rebuild_ms_last);
+    }
+
+    /// O `health` carrega o contrato de medição — é por onde o host decide.
+    #[test]
+    fn health_exposes_open_cost_contract() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let h = db.health();
+        assert!(h.opens >= 1);
+        assert!(h.open_rebuild_ms_max >= h.open_rebuild_ms_last);
+        // e os mesmos nomes aparecem no snapshot estruturado de métricas
+        assert_eq!(db.metrics().value("opens"), h.opens);
+        assert_eq!(
+            db.metrics().value("open_rebuild_ms_last"),
+            h.open_rebuild_ms_last
         );
     }
 }

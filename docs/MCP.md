@@ -30,7 +30,30 @@ L3; `recall(entities|at|rag=true)` → 1-hop / temporal / rag; `health(view=era|
 (v1.1.10: metadado cognitivo; **v1.1.19+**: harness ADR-0010 `commit_run`/`deprecate_run`;
 `audit_verify` expõe `structuredContent` com o `AuditReport`).
 
-Aliases (ainda aceitos no call): os 23 nomes antigos.
+Aliases (ainda aceitos no call): **34** nomes — a lista vive em `ALIAS_SURFACE`
+(`examples/mcp_server.rs`) e e pinada por teste, em vez de prosa (a contagem
+"23" era do rework v1.1.8 e envelheceu com as ops cognitivas de v1.1.10 e o
+harness de v1.1.19):
+
+```text
+associate  audit_checkpoint  audit_verify  close_event  commit_run  conflicts
+consolidate  contradicts  decay  deprecate_run  diary  era_report
+expire_old  expire_ttl  explain  feedback  forget  gc  merge_memories
+profile  rag_context  recall_ann  recall_entities  recall_temporal  reinforce
+related_to  remember_episodic  resolve_conflict  rollback_to  set_event
+set_ttl  supersede  timeline  validate
+```
+
+**v1.1.21 — erro de tool desconhecida e util:** a falha continua sendo erro
+`-32602`, mas passa a carregar `data.did_you_mean` (ate 3 sugestoes
+deterministicas), `data.listed_tools` (as 4) e `data.alias_count`. Um agente que
+errou o nome conserta o schema em uma chamada em vez de queimar um turno.
+
+**v1.1.21 — `health(view=index)`** devolve `index_fingerprint`
+(`{:016x}`), `doc_count`, `bq_len`, `indexed_embedding_dims` e o contrato de
+medicao de custo de open (`open_rebuild_ms_last`, `open_rebuild_ms_max`,
+`opens`). E opt-in de proposito: o fingerprint e O(n log n), entao o `health`
+default nao paga esse custo.
 
 ### Parâmetros importantes
 

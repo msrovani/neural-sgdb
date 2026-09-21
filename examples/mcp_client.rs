@@ -190,8 +190,8 @@ fn main() {
     rep.check("initialize responde", !r.get("error").is_some(), r.to_string());
     rep.check("protocolVersion 2025-11-25",
         r["result"]["protocolVersion"] == "2025-11-25", r.to_string());
-    rep.check("serverInfo version 1.1.20",
-        r["result"]["serverInfo"]["version"] == "1.1.20", r.to_string());
+    rep.check("serverInfo version 1.1.21",
+        r["result"]["serverInfo"]["version"] == "1.1.21", r.to_string());
     rep.check("serverInfo mcp_tool_count 4",
         r["result"]["serverInfo"]["mcp_tool_count"] == 4, r.to_string());
     let instr = r["result"]["instructions"].as_str().unwrap_or("");
@@ -608,6 +608,16 @@ fn main() {
     rep.check("health view=staleness expoe items/recommendation",
         !is_err && txt.contains("staleness") && txt.contains("items") && txt.contains("note"),
         txt.clone());
+    // v1.1.21 (ADR-0011): oraculo de equivalencia de reconstrucao + contrato
+    // de medicao de custo de open (ADR-0009 §4).
+    let (txt, is_err) = srv.tool("health", json!({"view": "index"}));
+    rep.check("health view=index expoe fingerprint + custo de open",
+        !is_err
+            && txt.contains("index_fingerprint")
+            && txt.contains("open_rebuild_ms_last")
+            && txt.contains("open_rebuild_ms_max")
+            && txt.contains("opens"),
+        txt.clone());
     let r = srv.rpc("resources/read", json!({"uri": "nsgdb://session"}));
     let session_txt = r["result"]["contents"][0]["text"].as_str().unwrap_or("");
     rep.check("resource nsgdb://session e cold-start JSON",
@@ -640,6 +650,15 @@ fn main() {
     rep.check("method desconhecido â†’ -32601", r["error"]["code"] == -32601, r.to_string());
     let (txt, is_err) = srv.tool("tool_inexistente", json!({}));
     rep.check("tool desconhecida â†’ erro", is_err && txt.contains("-32602"), txt.clone());
+    // v1.1.21: a falha continua sendo falha, mas agora carrega a superficie e
+    // as tools listadas — o consumidor conserta o schema numa chamada.
+    // (`srv.tool()` so devolve content[0].text, entao o `data` exige rpc cru.)
+    let r = srv.rpc("tools/call", json!({"name": "tool_inexistente"}));
+    rep.check("tool desconhecida -> data com listed_tools/alias_count",
+        r["error"]["code"] == -32602
+            && r["error"]["data"]["listed_tools"].as_array().map(|a| a.len()) == Some(4)
+            && r["error"]["data"]["alias_count"] == 34,
+        r.to_string());
     let r = srv.rpc("tools/call", json!({"name": "remember"}));
     rep.check("parametro faltando â†’ -32602", r["error"]["code"] == -32602, r.to_string());
     rep.phase("erros", &t);

@@ -459,3 +459,65 @@ byte-idênticas), `signed_peer`.
 Confirma que o custo do `open` mora no **build de índices**, não no scan/decode —
 o alvo do rec1, hoje parqueado.
 
+## v1.1.21 — integridade do índice derivado + medição de open (2026-09-21)
+
+Release 1/3 do plano de melhorias (itens 1, 2, 3, 6). **Hot test 102/0**
+(2 asserções novas: `health view=index` e o `data` do erro de tool desconhecida).
+
+| Gate | v1.1.20 | v1.1.21 |
+|------|---------|---------|
+| `cargo test` | 292+1 | **315+1** ✓ |
+| `cargo test --features p2p` | 338+1 | **361+1** ✓ |
+| `cargo test --no-default-features` | 244+1 | **265+1** ✓ |
+| clippy / rustdoc `-D warnings` | verde | **verde** ✓ |
+| no_std `x86_64-unknown-none` | verde | **verde** ✓ |
+| hot test `mcp_client` | 100/0 | **102/0** ✓ |
+
+### Os dois bugs que os próprios testes pegaram
+
+1. **Hashear `bq.len()` contava os órfãos.** A primeira implementação do
+   `index_fingerprint` misturava `bq.len()` (total, incluindo os ids inertes que
+   o `delete` deixa no flat append-only) — contradizendo a própria exclusão de
+   órfãos. Consequência: deletar todos os docs de um corpus não devolvia o
+   fingerprint ao valor anterior e a recompacção (`reclaim_bq_orphans`) moveria o
+   oráculo sem nada visível mudar. Pegou o teste
+   `index_fingerprint_ignores_bq_orphans`; a correção foi hashear só os vetores
+   que **resolvem para uma storage key viva**.
+2. **Chave de teste colidindo com a regra 4 da ART.** O corpus de teste usava
+   `dr/{i}` — `dr/3` é PREFIXO de `dr/15`, e a ART rejeita prefix-key
+   (`SgdbError::Invalid`). Corpo de teste com loop precisa de **largura fixa**
+   (`dr/003`). Registrado no AGENTS.md.
+
+### Decisões de design que valem como lição
+
+- **Ids ficam fora do hash** porque `NEXT_ID` é um `static AtomicU64` **de
+  processo**: o mesmo corpus em dois `open` dá ids diferentes. Um fingerprint que
+  incluísse ids não seria estável entre processos — inútil para validar um
+  snapshot persistido (que é o propósito, ADR-0009 §3).
+- **Floats ficam fora do hash e são checados com tolerância relativa.** A soma
+  `f64` incremental e a recomputada pelo rebuild **não são bit-idênticas** (adição
+  não é associativa). Igualdade exata no `validate` daria falso positivo em
+  produção; o teste `validate_mean_tolerance_absorbs_accumulation_order` é o
+  guard anti-flaky.
+- **`no_std` reporta 0 para as métricas de tempo** — não existe `Instant` no core
+  do alvo bare-metal, e a doutrina de seams veta inventar um global de relógio
+  por uma métrica. Ausência declarada.
+- **A superfície de alias era prosa e envelheceu:** o texto dizia "23 nomes"
+  (contagem do rework v1.1.8) mas o dispatch já tinha **34**. Virou tabela
+  (`ALIAS_SURFACE`) pinada por teste.
+
+### Custo de `open` medido pelo próprio core (BENCHMARKS §Open cost)
+
+| N writes | docs | `open` total | rebuild | rebuild/total |
+|---|---|---|---|---|
+| 100 | 200 | 8.0 ms | 1 ms | 13% |
+| 400 | 800 | 13.9 ms | 6 ms | 43% |
+| 1 600 | 3 200 | 36.2 ms | 23 ms | 63% |
+| 6 400 | 12 800 | 156.0 ms | **119 ms** | **76%** |
+
+Em RAM pura o build é ~94% do `open`; em `FileStorage` cai para ~76% porque a
+recuperação do volume append-only entra na conta e cresce com o número de
+RECORDS, não de docs vivos. O ADR-0009 §3 (snapshot) segue **não implementado por
+decisão**: agora existe o instrumento (§4) e o validador (§3, via
+`index_fingerprint`), então o threshold decide com dado em vez de opinião.
+

@@ -63,6 +63,10 @@
 | Cognitive API | IMPLEMENTED | reinforce, supersede, explain, merge, … |
 | Ebbinghaus decay (v1.1.10) | IMPLEMENTED | `decay_importance`, state `Decayed`, idempotent per `now` |
 | Recurrence consolidation (v1.1.10) | IMPLEMENTED | `consolidate_recurrences`, deterministic L3, lineage |
+| Derived-index oracle (v1.1.21) | IMPLEMENTED | ADR-0011: `index_fingerprint` (`fp(open)==fp(rebuild)`), `health(view=index)`; ids/órfãos/floats fora |
+| `corpus_mean` invariant (v1.1.21) | IMPLEMENTED | `validate` §5: counts exatos + somas com tolerância relativa `1e-9` |
+| Open cost metrics (v1.1.21) | IMPLEMENTED | ADR-0009 §4: `open_rebuild_ms_last`/`_max`/`opens` no core, health e bench |
+| MCP alias surface (v1.1.21) | IMPLEMENTED | `ALIAS_SURFACE` (34) + `did_you_mean` no erro de tool desconhecida |
 | Score breakdown (v1.1.10) | IMPLEMENTED | `recall_weighted_full`, `Hit.score_breakdown`, trust weights |
 | Audit hash-chain (v1.1.10) | IMPLEMENTED | `sys/audit/` (AUD1), `audit_verify`, `rollback_to` |
 | Write-path hardening (v1.1.10) | IMPLEMENTED | `validate_written` on all write seams |

@@ -9,11 +9,18 @@ Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
 
 ## Next (honest gaps — not this release)
 
-🔜 **Index snapshot on `Sgdb::open`** — hoje rebuild linear de ART/BQ/lexical
-   (~16 ms/500 docs). TickvFile já tem TKCK fast-mount; falta snapshot+delta
-   dos índices derivados. **Design aceite: [ADR-0009](docs/adr/0009-index-snapshot-auto-adapt.md)**
-   (métricas `open_ms`/`doc_count`/reopens; auto-adapt no próximo open;
-   storage = verdade; sem troca mid-query).
+🔜 **Index snapshot on `Sgdb::open` — §3, agora GATED EM DADOS** — hoje rebuild
+   linear de ART/BQ/lexical. TickvFile já tem TKCK fast-mount; falta
+   snapshot+delta dos índices derivados. **Design: [ADR-0009](docs/adr/0009-index-snapshot-auto-adapt.md)**.
+   ✅ **v1.1.21 entregou o §4 (contrato de medição)**: `open_rebuild_ms_last` /
+   `_max` / `opens` no `core` + `health`, e o custo medido em
+   `BENCHMARKS.md` §Open cost (12 800 docs → 119 ms de rebuild = 76% do open).
+   ✅ **v1.1.21 entregou o validador do §3**: o `index_fingerprint` do
+   [ADR-0011](docs/adr/0011-derived-index-integrity-oracle.md) é exatamente o
+   "validate" que o fast-mount precisava (`fp(mounted) == fp(rebuilt)`).
+   O snapshot em si continua **não implementado por decisão**: construa o
+   instrumento, e o threshold decide — não se paga codec novo + invalidação
+   sobre um formato 100% funcional por um custo que só aparece no boot.
 
 🔜 **Recall@k residual pós ADC-lite** — dual-path v1.1.17 sobe legado 22–35%
    → 24–40% @1–16×; ainda é filtro+rescore. ANN IVF/`HnswLite` já existem
@@ -25,6 +32,15 @@ Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
    golden já bate. Ver [`docs/interop-os.md`](docs/interop-os.md).
 
 ## v1.x maintenance (2026-08-13 — ongoing)
+
+✅ **v1.1.21 — integridade do índice derivado + medição de open (2026-09-21)**
+   — release 1/3 do plano de melhorias (itens 1, 2, 3, 6 — aditivo).
+   `index_fingerprint` (ADR-0011) com ids/órfãos/floats fora;
+   `validate` §5 checa `corpus_mean` (counts exatos, somas com tolerância
+   relativa); métricas `open_rebuild_ms_*`/`opens` (ADR-0009 §4);
+   `ALIAS_SURFACE` (34 nomes) + `did_you_mean` no erro de tool desconhecida.
+   **2 bugs de design pegos pelos próprios testes** (hashear `bq.len()` contava
+   órfãos; corpo de teste com chave prefixo quebrava a regra 4 da ART).
 
 ✅ **v1.1.20 — null-scoping ScopeDims (2026-09-18)** — `allows_scope_filter`
    (global exige `dims.is_global()`); `recall_*_dims` pool unfiltered;

@@ -3,6 +3,7 @@
 //! casamentos exatos de string / termos raros que o sign-BQ perde (dims baixas,
 //! ruído, sinônimos ausentes). Apenas `alloc` (no_std-safe), zero deps.
 
+use crate::fingerprint::{fp_mix_str, fp_mix_u64};
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -105,6 +106,26 @@ impl LexicalIndex {
 
     pub fn len(&self) -> usize {
         self.n_docs as usize
+    }
+
+    /// Mistura o estado canônico do índice num hash FNV-1a (v1.1.21, ADR-0011).
+    ///
+    /// Ordem canônica por construção: `postings` é `BTreeMap<term, BTreeMap<doc,
+    /// tf>>` — termo asc, doc asc. A ordem de INSERÇÃO não afeta o resultado
+    /// (o `BTreeMap` já ordena), que é exatamente o invariante que o fingerprint
+    /// precisa provar. Custo O(total de postings), sem alloc.
+    pub(crate) fn fp_mix_into(&self, mut h: u64) -> u64 {
+        h = fp_mix_u64(h, self.n_docs as u64);
+        h = fp_mix_u64(h, self.postings.len() as u64);
+        for (term, docs) in &self.postings {
+            h = fp_mix_str(h, term);
+            h = fp_mix_u64(h, docs.len() as u64);
+            for (doc, tf) in docs {
+                h = fp_mix_str(h, doc);
+                h = fp_mix_u64(h, *tf as u64);
+            }
+        }
+        h
     }
 
     pub fn is_empty(&self) -> bool {
