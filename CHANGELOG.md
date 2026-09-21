@@ -25,6 +25,15 @@ Sem mudança de formato (NMD1/TKLV). **MCP_CONTRACT_VERSION → 1.1.20**.
   [`docs/interop-os.md`](docs/interop-os.md) — paridade NMD1 com neural-os-core.
 - Verificado: lib **292/0**, p2p **338/0**, no_std **244/0**; hot test
   **100/0**; bare-metal ok. Embedder host default permanece unset/`none`.
+- **Gate de clippy restaurado (2026-09-21):** o código do ADR-0010 entrou com
+  4 erros de lint — `derivable_impls` / `match` usado como teste de igualdade /
+  `manual_contains` em `src/harness.rs` e `redundant_closure` em
+  `examples/mcp_server.rs` — e `clippy --all-targets --all-features -D warnings`
+  **não fechava no `main`**. Correções semanticamente neutras: derive `Default`
+  em `CommitRunPlan<'a>` (mais geral que o impl manual `'static`), `if`
+  colapsado, `contains`, `map_err(mcp_actionable_error)`. Sem mudança de
+  formato (NMD1/TKLV) nem de contrato MCP — `MCP_CONTRACT_VERSION` permanece
+  **1.1.20**. Ver [`docs/hot_test.md`](docs/hot_test.md) §2026-09-21.
 
 ## [1.1.19] — 2026-09-18 (ADR-0010 harness: commit_run)
 

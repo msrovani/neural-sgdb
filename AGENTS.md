@@ -561,6 +561,12 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-
   conflicts/superseded/unseen scopes. Resources `nsgdb://doctrine` +
   `nsgdb://session`. **Pin:** `examples/mcp_client.rs` `serverInfo.version`
   deve igualar `MCP_CONTRACT_VERSION` (`mcp_server.rs`) no mesmo bump.
+  **Rebuild antes do hot test:** `cargo run --example mcp_client` reconstrói o
+  CLIENT mas resolve o SERVER por caminho — rode
+  `cargo build --release --example mcp_server` antes (binário stale de versão
+  antiga → 6 falhas fantasma). Ao investigar hot test quebrado, leia o banner
+  `mcp=… git=…` do server antes de suspeitar do código; a 1ª asserção
+  (`serverInfo version`) falha alto quando o binário está velho.
   Windows launchers: PowerShell 5.1 — no `>&2`; use
   `[Console]::Error.WriteLine`. **instalação**: [`docs/MCP.md`](docs/MCP.md);
   reload: [`docs/MCP-RELOAD.md`](docs/MCP-RELOAD.md).

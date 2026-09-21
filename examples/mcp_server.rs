@@ -601,9 +601,7 @@ fn mcp_commit_run(db: &mut Sgdb, args: &Value) -> Result<(String, Value), String
         audit: args["audit"].as_bool().unwrap_or(false),
         write_dims,
     };
-    let r = db
-        .commit_run(&filter, &plan)
-        .map_err(|e| mcp_actionable_error(e))?;
+    let r = db.commit_run(&filter, &plan).map_err(mcp_actionable_error)?;
     let text = format!(
         "commit_run: written={} superseded={} archived={} ttl_set={} closed_event={} audit_seq={:?}",
         r.written.len(),

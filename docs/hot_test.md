@@ -393,3 +393,69 @@ rebuildado antes de rodar o `mcp_client` (binário stale → "Unknown tool").
 | clippy `-D warnings` | verde | **verde** ✓ |
 | rustdoc `-D warnings` | verde | **verde** ✓ |
 
+## Validação v1.1.20 — auditoria independente (2026-09-21)
+
+Sessão de validação extensa com o MCP reincializado. **Dois bugs reais**, ambos
+já presentes no `main` antes desta auditoria.
+
+### Bug 1 — gate de clippy quebrado (o `main` não fechava o próprio CI)
+
+`clippy --all-targets --all-features -- -D warnings` → **4 erros**, todos no
+código novo do ADR-0010 (v1.1.19): `derivable_impls` (`CommitRunPlan`),
+`match` usado como teste de igualdade e `manual_contains` em `src/harness.rs`,
+mais `redundant_closure` em `examples/mcp_server.rs`. O commit `b1159cf`
+entrou **sem o gate** (a matriz de testes estava verde; o lint não foi rodado).
+
+Correções semanticamente neutras: derive `Default` em `CommitRunPlan<'a>`
+(mais geral que o impl manual `'static`), `if archive_episodic && … == Active`,
+`ents.contains(&MOM_ANTI_PATTERN)`, `map_err(mcp_actionable_error)`.
+
+### Bug 2 — hot test com 6 falhas fantasma (binário stale)
+
+`cargo run --release --example mcp_client` → **100 asserções, 6 falhas**:
+
+```
+FAIL serverInfo version 1.1.20           FAIL deprecate_run run vazio e no-op seguro
+FAIL commit_run escreve e arquiva        FAIL health view=staleness expoe items/recommendation
+FAIL recall anti-pattern pos-commit_run  FAIL resource nsgdb://session e cold-start JSON
+```
+
+O banner do server denunciou: `mcp=1.1.17 tools=4 git=af1edc2` — o client
+(1.1.20) estava a falar com um `target/release/examples/mcp_server.exe`
+**antigo**. `cargo run --example mcp_client` **reconstrói o client, não o
+server** (o client resolve o binário por caminho). Após
+`cargo build --release --example mcp_server` → **100/0**.
+
+**Lição (este trap já apareceu no v1.1.10 acima):** "binário stale →
+Unknown tool". A diferença agora é que o `mcp_client` falha logo na 1ª
+asserção (`serverInfo version`) em vez de espalhar erros irreconhecíveis — o
+sintoma ficou diagnosticável. Ao investigar falhas de hot test, **leia o
+banner `mcp=… git=…` antes de suspeitar do código**.
+
+### Matriz desta auditoria (HEAD `0674018`, v1.1.20)
+
+| Gate | Resultado |
+|------|-----------|
+| `cargo test` | **292+1** ✓ |
+| `cargo test --features p2p` | **338+1** ✓ |
+| `cargo test --no-default-features` | **244+1** ✓ |
+| no_std `x86_64-unknown-none` | **verde** ✓ |
+| clippy `-D warnings` | **0 erros** ✓ (era 4) |
+| rustdoc `-D warnings` | **verde** ✓ |
+| hot test `mcp_client` | **100/0** ✓ (era 6 falhas) |
+| `bench` recall@5 dual | 24/25/28/34/40% vs legado 22/22/24/30/35% ✓ |
+| `agent_sim` (500 turnos) | P50=1.43 ms / P99=2.47 ms, 0 vazamento de scope ✓ |
+| `stress` reduzido (20k/2k) | 2000/2000 reopens íntegros ✓ |
+
+Exemplos verdes: `agent_protocol` 25/0, `two_ai_protocol` 16/0,
+`memory_arena_eval` PASS (B 3/3 vs A 0/3), `audit` 25/0, `host_scheduler` 5/5,
+`embedder_http` 4/0, `wasm_backend`, `era_migration_bench`, `backfill_helper`,
+`telepathy_two_db`, `p2p_telepathy`, `mesh_simulation` (8 agentes / 18 memórias
+byte-idênticas), `signed_peer`.
+
+### Gap re-medido (roadmap, sem ação)
+
+`stress` → `Sgdb open/close + rebuild` = **60 ms/op com 101 docs** (FileStorage).
+Confirma que o custo do `open` mora no **build de índices**, não no scan/decode —
+o alvo do rec1, hoje parqueado.
+

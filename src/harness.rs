@@ -34,7 +34,7 @@ pub struct CommitSupersede<'a> {
 }
 
 /// End-of-task flush plan (upper layer supplies all content).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct CommitRunPlan<'a> {
     pub facts: &'a [CommitFact<'a>],
     pub anti_patterns: &'a [CommitFact<'a>],
@@ -50,21 +50,6 @@ pub struct CommitRunPlan<'a> {
     pub write_dims: Option<ScopeDims>,
 }
 
-impl Default for CommitRunPlan<'static> {
-    fn default() -> Self {
-        Self {
-            facts: &[],
-            anti_patterns: &[],
-            supersede: &[],
-            archive_remaining_episodic: false,
-            ttl_episodic_ms: None,
-            close_event_key: None,
-            now: 0,
-            audit: false,
-            write_dims: None,
-        }
-    }
-}
 
 /// Auditável resultado de [`Sgdb::commit_run`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -127,14 +112,9 @@ impl Sgdb {
         let mut report = DeprecateRunReport::default();
         let keys = self.list_timestamped_episodic(filter)?;
         for sk in keys {
-            if archive_episodic {
-                match self.engine.get_state(&sk) {
-                    MemoryState::Active => {
-                        self.forget(&sk)?;
-                        report.archived += 1;
-                    }
-                    _ => {}
-                }
+            if archive_episodic && self.engine.get_state(&sk) == MemoryState::Active {
+                self.forget(&sk)?;
+                report.archived += 1;
             }
             if let Some(exp) = ttl_expires_at {
                 if self.engine.get_by_storage_key(&sk)?.is_some() {
@@ -236,7 +216,7 @@ impl Sgdb {
             ));
         }
         let mut ents: Vec<&str> = fact.entities.to_vec();
-        if anti && !ents.iter().any(|e| *e == MOM_ANTI_PATTERN) {
+        if anti && !ents.contains(&MOM_ANTI_PATTERN) {
             ents.insert(0, MOM_ANTI_PATTERN);
         }
         let opts = RememberOptions {
