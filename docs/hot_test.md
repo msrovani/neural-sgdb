@@ -581,3 +581,71 @@ regra geral no AGENTS.md: os testes que usam o `std` como ORÁCULO (comparar
 `ln_f32` contra `f32::ln`) precisam ser **host-only**
 (`#[cfg(all(test, feature = "std"))]`), e `println!`/`vec!` exigem
 `use alloc::vec;` — no_std não os tem implicitamente.
+## v1.1.23 — revisão de documentação + fix do schema anunciado (2026-09-21)
+
+Auditoria de `docs/` + raiz. **Hot test 103/0** (+1 asserção: o enum anunciado).
+
+| Gate | v1.1.22 | v1.1.23 |
+|------|---------|---------|
+| `cargo test` | 330+1 | **330+1** ✓ |
+| `cargo test --features p2p` | 376+1 | **376+1** ✓ |
+| `cargo test --no-default-features` | 274+1 | **274+1** ✓ |
+| clippy / rustdoc `-D warnings` | verde | **verde** ✓ |
+| no_std `x86_64-unknown-none` | verde | **verde** ✓ |
+| hot test `mcp_client` | 102/0 | **103/0** ✓ |
+
+### O achado que justifica o release: superfície anunciada ≠ superfície servida
+
+`health(view=index)` (ADR-0011, v1.1.21) **funcionava**: o handler servia o view e
+o hot test o exercitava com sucesso. Mas o `enum` do schema em `tools/list`
+listava só `["status","validate","era","tensions","staleness"]` — e **o modelo lê
+o schema**, não o código. Resultado: uma feature entregue, testada e
+**indescobrível**.
+
+É a mesma família de falha que o repo já tratou duas vezes: a contagem de aliases
+documentada como 23 quando a tabela tinha 34 (v1.1.21), e o `sqrt_f32`
+documentado em `~1e-5` quando o erro real era 5.9e-2 (v1.1.22). **Documentação e
+superfície anunciada são código para quem consome via máquina** — o modelo não
+tem como divergir do que foi inventariado.
+
+Guard: `tools/list` anuncia todos os views do `health` (falha se algum view
+servido não estiver no `enum`). É o análogo, para o schema, do que o
+`ALIAS_SURFACE` faz para os nomes de tool.
+
+### O que mais a auditoria encontrou (tudo mecânico, nada funcional)
+
+| Onde | Problema | 
+|---|---|
+| `README.md`, `VERSIONING.md`, `ROADMAP.md`, `CLAUDE.md` | versões e matriz de teste dois releases atrás (292/338/244, hot 100/0, crate 1.1.20) |
+| `docs/api.md` | status `v1.1.17`; superfície aditiva rotulada `v1.1.2–v1.1.17` sem `index_fingerprint`, custo de `open` nem `recall_adaptive`; um placeholder `pub struct RecallProbe;` que eu mesmo deixei |
+| `docs/architecture/*` | os 6 docs com status `v1.1.11` (cinco releases atrás); 03 sem a seção de esforço de recall; 06 dizendo `serverInfo.version = 1.1.10` e listando `health(view=validate)` (que é tool/alias, não view) |
+| `docs/memory-landscape.md` | "estado corrente (v1.1.10) … hot test 84/0" |
+| `docs/harness-prompts.md` | "alinhado a v1.1.20" |
+
+Lição de processo que vale para o próximo release: **atualizar docs é parte de
+fechar o release, e o jeito de não esquecer é o doc apontar para o número
+errado em lugar nenhum** — o grep de `1.1.2x` foi o que achou tudo. Um bump de
+versão que não passa um `grep` pelo estado anterior deixa a divergência entrar
+em silêncio.
+
+### Dois registries que diziam o número errado
+
+Achados na varredura de *fonte de verdade*, e mais graves que os de prosa:
+
+1. **`MIGRATIONS.md` dizia `MDM1 v6`** com o código em `META_VERSION = 7`
+   (v1.1.15: `scope_dims` + `model_id`) — contradizendo o próprio
+   `docs/interop-os.md`, que já estava certo. Um registro de formato que erra a
+   versão do formato é a pior classe de doc desatualizado: quem migra com base
+   nele erra por construção. Faltavam também a migração `v6 → v7` e três
+   side-tables (`sys/audit/`, `sys/ttl/`, `sys/event/`) e o wire `AUD1`.
+2. **`src/wire_fuzz.rs` dizia "8 wire types" e enumerava 8** — o `AUD1`
+   entrou no harness no v1.1.10 e a lista não acompanhou (os testes decodificam
+   **9**). Nada quebrava: o fuzz rodava sobre 9 e o comentário dizia 8. Corrigido
+   no doc do módulo e nos 4 lugares que repetiam o número.
+
+O padrão das três famílias de achado desta auditoria é o mesmo: **um número que
+aparece em prosa e não tem nada que o pine**. Onde existe tabela pinada por teste
+(`ALIAS_SURFACE`) ou asserção sobre o schema anunciado (novo guard), a
+divergência não sobrevive; onde é só prosa, ela entra em silêncio e fica por
+cinco releases — que foi exatamente o caso dos status `v1.1.11` em
+`docs/architecture/`.

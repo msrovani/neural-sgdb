@@ -16,13 +16,19 @@ in an old version, decode to a defined default — never guess.
 | Format | Version | Encode/decode | Golden test | Lives in |
 |--------|---------|---------------|-------------|----------|
 | NMD1 | v1 (stable) | `MemoryDoc` | `golden_nmd1_bytes` | `src/memory_doc.rs` |
-| MDM1 | v6 | side-table meta codec | golden/decode tests (via MemoryRecord) | `src/memory_doc.rs` |
+| MDM1 | v7 | side-table meta codec | golden/decode tests (via MemoryRecord) | `src/memory_doc.rs` |
 | TKLV / TKCK | v1 (stable) | `TickvFile` | `golden_record_bytes` | `src/tickv.rs` |
 | FNV-1a 64 | — | checksum | `fnv1a64_known_vector` | `src/fnv1a64.rs` (or engine) |
 | CRDT state | "CRDT" | `CrdtState` | bounds-checked decode | `src/crdt.rs` |
 | MDR1 | v1 | `MemoryRecord` | bounds-checked decode | `src/memory_doc.rs` |
 | CFL1 | v1 | `ConflictRecord` | bounds-checked decode | `src/conflict.rs` |
 | MDLT / MSNP | v1 | `MemoryDelta` / `MemorySnapshot` | bounds-checked decode | `src/crdt.rs` |
+| AUD1 | v1 | `AuditEntry` (hash-chain ledger) | `src/audit.rs` + `wire_fuzz` | `src/audit.rs` |
+| "2222" | v1 | `SignedEnvelope` (transporte assinado; **sem** magic — corrupto por field length) | `src/wire_fuzz.rs` | `src/trust.rs` |
+
+O harness único de fuzz (`src/wire_fuzz.rs`) cobre **todos** os tipos wire —
+adicionar um tipo novo lá (mais o `prop_tests` do próprio módulo) é parte de
+integrar o tipo, não um extra.
 
 ## NMD1 (document) — stays v1, byte-identical to neural-os-core
 
@@ -33,11 +39,14 @@ The OS interop contract. NMD1 NEVER changes without a joint bump in
 |------------|---------|-------|
 | `sys/state/` | `MemoryState` (Active/Superseded/Archived/Invalidated/Decayed) | v0.2 |
 | `sys/validity/` | temporal `from|until u64le` window (invalidate-not-delete) | v0.2 |
-| `sys/meta/` | `MemoryMeta` (memory_id, source, confidence, importance, created_tick, parent_ids, clock_overflow; + scope [v4], entities [v5], content_type [v6]) | v0.6 |
+| `sys/meta/` | `MemoryMeta` (memory_id, source, confidence, importance, created_tick, parent_ids, clock_overflow; + scope [v4], entities [v5], content_type [v6], scope_dims + model_id [v7]) | v0.6 |
 | `sys/version/` | per-version identity reverse index | v0.7 |
 | `sys/rel/` | L6 relations (`<kind>/<a>#<b>`) + derived ART fwd/rev | v0.8 |
 | `sys/conflict/` | `ConflictRecord` (MDR1 evidence per candidate) | v0.9 |
 | `sys/crdt/` | durable `CrdtState` (opt-in) | v0.7 |
+| `sys/audit/` | hash-chain ledger (`AUD1`, `sys/audit/<seq:016x>`) + snapshot for `rollback_to` | v1.1.10 |
+| `sys/ttl/` | TTL per-key → 8B `expires_at u64le` (host-driven sweep `expire_ttl`) | v1.1.15 |
+| `sys/event/` | evento temporal (start/close) → timeline `recall_timeline` | v1.1.15 |
 
 ## Known migrations
 
@@ -72,6 +81,13 @@ Adds `content_type` (stable type label: `text`/`json`/`code`/`embedding`/
 `binary`, `None` = not declared). v1–v5 records decode with `None`. NMD1 and
 TKLV/TKCK are untouched — the label lives only in `sys/meta/`, travels on the
 MDR1 (via `meta_for_import`), and never reinterpretes old bytes.
+
+### MDM1 v6 → v7 (v1.1.15 — era do modelo)
+
+Adiciona `scope_dims` (`ScopeDims{user,agent,app,run}`) e `model_id` (ADR-0007).
+Migração **explícita**: registros v1–v6 decodificam com `scope_dims` vazio e
+`model_id = ""` — nenhum byte antigo é reinterpretado. Ver ADR-0007 para a
+política de era (`mixed_models`, `era_report`, custo de re-embed).
 
 ### Pre-v0.6 records → identity (lazy)
 

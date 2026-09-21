@@ -4,6 +4,53 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [1.1.23] — 2026-09-21 (revisão de documentação + fix do schema anunciado)
+
+Sem mudança de formato (NMD1/TKLV) e **sem mudança de comportamento**. Bump de
+contrato porque a superfície MCP **visível** mudou (o `enum` anunciado).
+
+### Fixed
+- **`health(view=index)` era indescobrível (bug de contrato real).** O handler do
+  v1.1.21 servia o view e o hot test o exercitava, mas `tools/list` anunciava o
+  `enum` **sem** `index` — e o modelo só lê o schema. A feature existia e estava
+  invisível. Corrigido no `enum` + na descrição da tool, com guard no hot test:
+  **o enum anunciado deve listar TODO view que o handler serve** (asserção nova,
+  falha se divergirem). É o caso mais claro do problema que este repo já tratou
+  antes: prosa/superfície divergindo do código sem nada quebrar.
+
+### Changed (auditoria de documentação)
+- **Versões paradas em `1.1.20`/`1.1.17`** corrigidas em `README.md`,
+  `VERSIONING.md`, `ROADMAP.md`, `CLAUDE.md`, `docs/api.md`,
+  `docs/architecture/*` (status dos 6 docs) e `docs/harness-prompts.md` — a
+  linha **v1.1.21 não tinha atualizado README/VERSIONING/api/architecture**, e
+  os números de matriz de teste tinham ficado dois releases atrás.
+- **`docs/api.md`**: a superfície aditiva estava rotulada `v1.1.2–v1.1.17`;
+  agora cobre até `v1.1.22` e documenta de fato o `index_fingerprint`,
+  o contrato de custo de `open`, `recall_adaptive`/`AdaptiveRecall`/`RecallProbe`.
+  O placeholder `pub struct RecallProbe;` que eu tinha deixado no bloco de
+  `recall` foi substituído pela definição real.
+- **`docs/architecture/03-retrieval-architecture.md`**: seção nova sobre quanto
+  esforço um recall merece (ADR-0012), incluindo a medição que mostra que o
+  threshold default escala quase sempre.
+- **`docs/architecture/06-cognitive-api.md`**: observabilidade atualizada
+  (custo de `open`, §5 do `validate`, `index_fingerprint`, `recall_adaptive`) e
+  o contrato MCP corrigido (dizia `1.1.10`, e listava `health(view=validate)` —
+  `validate` é tool/alias, não view).
+- **Números de teste** alinhados ao estado corrente nos 4 lugares onde apareciam
+  (`AGENTS.md`, `CLAUDE.md`, `README.md`, `ROADMAP.md`): **330+1 / 376+1 /
+  274+1**, hot test **103/0**.
+- **`MIGRATIONS.md` — o registro de formato estava MENTINDO**: dizia `MDM1 v6`
+  quando o código tem `META_VERSION = 7` (v1.1.15, `scope_dims` + `model_id`) —
+  contradizendo o próprio `docs/interop-os.md`. Faltavam também a entrada da
+  migração `v6 → v7`, três side-tables no registro (`sys/audit/` v1.1.10,
+  `sys/ttl/` e `sys/event/` v1.1.15) e o wire type `AUD1` na tabela de
+  formatos. Num arquivo cuja única função é ser autoritativo sobre versão de
+  formato, isso é o defeito mais alto da auditoria depois do schema do MCP.
+- **`src/wire_fuzz.rs` dizia "8 wire types" e listava 8** — o `AUD1` (v1.1.10)
+  entrou no harness e a enumeração do module-doc não acompanhou (o teste
+  decodifica 9). Corrigido no doc do módulo e nos 4 lugares que repetiam o
+  número (`AGENTS.md`, `docs/api.md`, `src/codemap.md`, `ROADMAP.md`).
+
 ## [1.1.22] — 2026-09-21 (math consolidado + recall adaptativo)
 
 Sem mudança de formato (NMD1/TKLV). **`MCP_CONTRACT_VERSION` → 1.1.22**

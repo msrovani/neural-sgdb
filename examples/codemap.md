@@ -32,7 +32,7 @@ protocols that codify HOW to use the DB.
 
 ## mcp_client.rs — HOT TEST
 - `cargo run --release --example mcp_client` — drives `mcp_server` like an IDE;
-  **102/0 checks exit 0** (v1.1.22). Covers 4-tool surface + aliases, lexical
+  **103/0 checks exit 0** (v1.1.23). Covers 4-tool surface + aliases, lexical
   default (ADR-0008), `format=json`, `remember(type=)`, temporal, entities,
   lazy pagination, scope, persistence across restart, metadado cognitivo
   (`consolidate`/`audit_*`/`decay`), e **fase harness** (`commit_run` /

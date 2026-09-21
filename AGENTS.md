@@ -6,7 +6,7 @@ repo. **Read `codemap.md` (atlas), `docs/api.md` (contract) and
 Storage, Cognitive API; typed hits from v1.1.6; current crate = `Cargo.toml`) and
 `docs/implementation-status.md` before editing code.**
 
-**Shipped crate is 1.1.22 (agentic MCP contract 1.1.22):** MCP lists **4 tools**
+**Shipped crate is 1.1.23 (agentic MCP contract 1.1.23):** MCP lists **4 tools**
 (`remember`/`recall`/`health`/`curate`; **34** alias names live in
 `ALIAS_SURFACE` em `examples/mcp_server.rs` — tabela pinada por teste, não prosa).
 `curate` ganhou ops de metadado cognitivo (decay/consolidate/audit_checkpoint/
@@ -14,7 +14,7 @@ audit_verify/rollback_to) e harness ADR-0010 (`commit_run`/`deprecate_run`).
 Default retrieval is **lexical**. Unset `NEURAL_SGDB_EMBEDDER` = none;
 `=demo` only if requested (não setar no `mcp.json` global). `remember(text=)`
 without a vector → L3 (`remember_text_with`). Resources: `nsgdb://doctrine` +
-`nsgdb://session`. Hot test **102/0**. Lib tests **330+1 / 376+1 / 274+1**
+`nsgdb://session`. Hot test **103/0**. Lib tests **330+1 / 376+1 / 274+1**
 (default / p2p / no_std). Bump `MCP_CONTRACT_VERSION` ⇒ pin `mcp_client`
 `serverInfo.version` no mesmo commit (senão hot test falha). **v1.1.17:**
 ADC-lite dual-path + state-first ranking (`corpus_mean`, `bq_top_k_f32_dual`);
@@ -48,7 +48,7 @@ pagination + RAG size caps, ART prefix-key rejection (`has_prefix_conflict`).
 P2 (committed `feat(v1.0): …P2-*…`): CRDT convergence in random topologies
 (P2-1), governance docs + ADRs 0001–0006 (P2-2), `health()`/`validate()` +
 signed-transport reference flow (P2-3), central wire-codec fuzz harness
-`src/wire_fuzz.rs` over all 8 wire types (P2-4), layered multi-AI telepathy
+`src/wire_fuzz.rs` over all **9** wire types (P2-4 + AUD1), layered multi-AI telepathy
 mesh (P2-5). MCP server now exposes `health`/`validate` tools; new p2p
 examples: `mesh_simulation`, `signed_peer`. Matriz: **193+1 / 239+1 / 148+1**,
 no_std gate ok. `.freebuff/` is tool state — gitignored, never commit.
@@ -76,7 +76,8 @@ with a regression test, hot test 49/49 exit 0):
   (lexical L3); `=demo` is explicit, not the launcher default. Contract:
   whoever supplies embeddings uses the SAME model on write and query (4-dim
   agent vector ≠ 256-dim demo — they don't cross-match, by design).
-- `sqrt_f32` is now `pub(crate)` (sgdb.rs) — Newton, reused by embedder
+- `sqrt_f32` is now `pub(crate)` — Newton, reused by embedder (desde v1.1.22,
+  em `src/math.rs`)
   (regra 3 no_std: no `f32::sqrt` in core).
 
 ## Post-audit v1.1.3 (co-author ergonomics, 2026-08-14)
@@ -434,7 +435,7 @@ turno, exact vs paraphrase, isolamento de scope). Paraphrase MISSA no lexical
 
 Release 1/3 do plano de melhorias (itens 1, 2, 3, 6) — **tudo aditivo, nada muda
 comportamento de recall**. Sem mudança de formato. Contrato MCP → **1.1.21**.
-Matrix corrente (pós-v1.1.22): **330+1 / 376+1 / 274+1**.
+Matrix corrente (pós-v1.1.23): **330+1 / 376+1 / 274+1**.
 
 - **`index_fingerprint` (ADR-0011)** — oráculo canônico do estado derivado;
   invariante `fp(open) == fp(rebuild_indices())`. **Três exclusões que são o
@@ -504,6 +505,33 @@ build do server). Matrix **330+1 / 376+1 / 274+1**, gates verdes.
   entregue é o INSTRUMENTO (o host vê `oversample_used`/`escalations`/
   `boundary_decisive`/`probe` e decide o próprio teto), não um ganho.
 
+## Post-audit v1.1.23 (revisão de documentação + superfície anunciada)
+
+Auditoria de `docs/` + raiz. Sem mudança de formato; `MCP_CONTRACT_VERSION` →
+**1.1.23** porque a superfície VISÍVEL mudou (o `enum` anunciado).
+
+- **BUG DE CONTRATO (o achado que importa): `health(view=index)` era
+  indescobrível.** O handler do v1.1.21 servia o view, o hot test o exercitava
+  com sucesso — e o `enum` do schema em `tools/list` NÃO o listava. Quem lê o
+  schema é o MODELO, não o código: feature entregue, testada e invisível.
+  Guard novo no hot test: **o `enum` anunciado deve listar todo view que o
+  handler serve** (análogo, para o schema, do que o `ALIAS_SURFACE` faz para os
+  nomes de tool).
+- **Lição de processo, e agora regra: docs fazem parte de fechar o release.**
+  Os cinco releases anteriores deixaram para trás `README.md`,
+  `VERSIONING.md`, `docs/api.md`, `docs/architecture/*` (status em `v1.1.11` e
+  `v1.1.17`) e `docs/memory-landscape.md` (hot test 84/0). O que achou tudo foi
+  um `grep` pelo número de versão ANTERIOR: **um bump que não passa o grep do
+  estado antigo deixa a divergência entrar em silêncio.** Antes de fechar
+  release: `grep -rn "<versão anterior>" --include=*.md .` e conferir cada hit
+  (os históricos — CHANGELOG, seções de auditoria — ficam).
+- **Três lugares onde o mesmo tipo de erro apareceu**, todos por prosa divergir
+  do código: contagem de aliases (23 vs 34, v1.1.21), precisão do `ln_f32`
+  (~1e-5 vs 5.9e-2, v1.1.22) e o `enum` do `health` (v1.1.23). A defesa que
+  funcionou nas três foi **tabela pinada por teste** (`ALIAS_SURFACE`) ou
+  **schema anunciado checado por asserção** — não documentação em prosa.
+- Matrix: **330+1 / 376+1 / 274+1**; hot test **103/0**.
+
 ## Repository Map
 
 A full codemap is available at `codemap.md` in the project root.
@@ -532,7 +560,8 @@ Apache-2.0**. OS interop via byte-identical NMD1 and TKLV formats.
    x86_64-unknown-none` must ALWAYS pass. `deny(warnings)` in no_std elevates
    dead-code to error: use explicit `#[allow(dead_code)]` on port-parity.
 3. **`f32::sqrt` does NOT exist in core** for that target — use `sqrt_f32`
-   (Newton, in `sgdb.rs`) or `libm` (not in this crate).
+   (Newton, em `src/math.rs` desde o v1.1.22; antes vivia em `sgdb.rs`) ou `libm`
+   (não está neste crate).
 4. **ART does not support prefix keys** — keys where one is a prefix of another
    break silently; use fixed-width suffixes. **Hardened (P1-7)**: `ArtIndex::
    has_prefix_conflict` + guards in `engine::put`/`engine::associate` reject a
@@ -583,7 +612,7 @@ let facts = db.scan_prefix("md/L3/")?;                 // ART prefix scan
 ```bash
 cargo run --release --example bench        # benchmarks (ART/BQ/recall vs FP32)
 cargo run --release --example mcp_server   # MCP server for AI agents
-cargo run --release --example mcp_client   # HOT TEST: drives mcp_server like an IDE (102/0)
+cargo run --release --example mcp_client   # HOT TEST: drives mcp_server like an IDE (103/0)
 cargo run --release --example agent_protocol  # DECISION PROTOCOL (itens 2–6 + P1–P6): como o agente USA o DB
 cargo run --release --example two_ai_protocol # PROTOCOLO MÁQUINA→MÁQUINA (v1.1.6 itens 1–5): IA-A grava datum declarado, IA-B lê tipado
 cargo run --release --example memory_arena_eval # MEMORY-ARENA EVAL (P7): utilidade da memória em tarefas interdependentes
@@ -607,9 +636,9 @@ hash, not a semantic model). Restart opencode after changing the config.
 ## Running tests
 
 ```bash
-cargo test                                 # 292+1 tests (InMemory/FileStorage/TickvFile)
-cargo test --features p2p                  # 338+1 (includes CRDT sync + mesh harness)
-cargo test --no-default-features           # 244+1 (no_std core, host test harness)
+cargo test                                 # 330+1 tests (InMemory/FileStorage/TickvFile)
+cargo test --features p2p                  # 376+1 (includes CRDT sync + mesh harness)
+cargo test --no-default-features           # 274+1 (no_std core, host test harness)
 cargo check --no-default-features --target x86_64-unknown-none   # no_std gate
 cargo clippy --all-targets --all-features -- -D warnings          # lint gate (P0-5)
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-6/P0-10)
@@ -651,9 +680,12 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-
   `[Console]::Error.WriteLine`. **instalação**: [`docs/MCP.md`](docs/MCP.md);
   reload: [`docs/MCP-RELOAD.md`](docs/MCP-RELOAD.md).
 - **Wire-codec fuzz harness** (`src/wire_fuzz.rs`, P2-4): the single LCG
-  never-panic/roundtrip/truncation gate over ALL 8 wire types — add a new
-  wire type there (plus its per-module `prop_tests`), and keep the matrix
-  (229+1 / 181+1 / 275+1) green. `SignedEnvelope::decode` returns
+  never-panic/roundtrip/truncation gate over ALL **9** wire types (NMD1, MDR1,
+  MDM1, CFL1, AUD1, MDLT, MSNP, SignedEnvelope, CrdtState). A enumeração do
+  module-doc tem de bater com os decoders de fato chamados no teste: o `AUD1`
+  (v1.1.10) entrou no harness e a lista continuou dizendo 8 — adicionar um tipo
+  wire é adicioná-lo AQUI (mais o `prop_tests` do próprio módulo) e manter a
+  matrix (**330+1 / 376+1 / 274+1**) verde. `SignedEnvelope::decode` returns
   `Option<(Self, usize)>` (no magic byte — corrupt via field lengths, not
   byte 0).
 - **TickvFile** (`src/tickv.rs`): 512-aligned records, tombstone `vlen=0` or

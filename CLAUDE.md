@@ -29,18 +29,19 @@ TKLV formats.
 1. **Zero deps in `[dependencies]`** — only `alloc`/`std`; dev-deps only for examples
 2. **`cargo check --no-default-features --target x86_64-unknown-none`** must pass
 3. **`f32::sqrt` does not exist in core** for x86_64-unknown-none — use `sqrt_f32`
+   (in `src/math.rs` since v1.1.22)
 4. **NMD1/TKLV formats are byte-identical contracts with the OS** — do not change layout
 5. **Verification**: `cargo test` (+ `--features p2p`) and both `cargo check`
 
 ## Commands
 
 ```bash
-cargo test                                   # 292+1 tests
-cargo test --features p2p                    # 338+1
-cargo test --no-default-features             # 244+1 (no_std core, host harness)
+cargo test                                   # 330+1 tests
+cargo test --features p2p                    # 376+1
+cargo test --no-default-features             # 274+1 (no_std core, host harness)
 cargo run --release --example bench          # benchmarks
 cargo run --release --example mcp_server     # MCP server (4 tools, lexical default)
-cargo run --release --example mcp_client     # HOT TEST (100/0 checks)
+cargo run --release --example mcp_client     # HOT TEST (103/0 checks; rebuild mcp_server first)
 cargo run --release --example two_ai_protocol # machine→machine contract (16/16)
 cargo check --no-default-features --target x86_64-unknown-none
 ```

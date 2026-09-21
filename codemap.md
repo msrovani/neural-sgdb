@@ -19,10 +19,10 @@ O(k) ART index, pluggable storage, CRDT sync (`p2p` feature), MCP server.
 ## Directory Map (Aggregated)
 | Directory | Responsibility Summary | Detailed Map |
 |-----------|------------------------|--------------|
-| `src/` | Memory DB core: MemoryDoc NMD1 + MemoryMeta MDM1 v7, ART, BQ + Hamming SIMD (+ ADC-lite dual-path v1.1.17), ctype (payload typing), engine, Sgdb facade, Embedder/era seams, Storage trait, TKLV codec, CRDT p2p | [View Map](src/codemap.md) |
+| `src/` | Memory DB core: MemoryDoc NMD1 + MemoryMeta MDM1 v7, ART, BQ + Hamming SIMD (+ ADC-lite dual-path v1.1.17, adaptive effort ADR-0012), ctype (payload typing), engine, Sgdb facade, Embedder/era seams, `math.rs` (polyfills), `fingerprint.rs` (oráculo ADR-0011), Storage trait, TKLV codec, CRDT p2p | [View Map](src/codemap.md) |
 | `examples/` | Showcase: bench, MCP server (4 tools + aliases), stress, hot test, protocols | [View Map](examples/codemap.md) |
 | `connectors/` | Host adapters (Hermes provider, OpenClaw skeleton, shared Python MCP client) — **outside** crate SemVer; no `src/` changes | [`connectors/README.md`](connectors/README.md) |
-| `docs/` | API (`api.md`), doutrina, self-program, harness-prompts, interop-os (NMD1↔AIOS), architecture, ADRs 0001–0010; `browser-extension.md` **estacionado** | — |
+| `docs/` | API (`api.md`), doutrina, self-program, harness-prompts, interop-os (NMD1↔AIOS), architecture (6 docs), ADRs **0001–0012**; `hot_test.md` = log de auditoria por release; `browser-extension.md` **estacionado** | — |
 
 ## Format Contracts (interop with neural-os-core)
 - **NMD1** (`src/memory_doc.rs`): memory document — magic `NMD1`, layer u8,

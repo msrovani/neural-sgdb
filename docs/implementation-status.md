@@ -1,6 +1,6 @@
 ﻿# neural-sgdb — Implementation Status
 
-> **Current snapshot (2026-09-21, v1.1.22).** Capability matrix vs the shipped
+> **Current snapshot (2026-09-21, v1.1.23).** Capability matrix vs the shipped
 > codebase. For the public contract see [`docs/api.md`](api.md); for architecture
 > narrative see [`docs/architecture/README.md`](architecture/README.md).
 
@@ -21,7 +21,7 @@
 | P2P tests | `cargo test --features p2p --lib` | **376** |
 | no_std tests | `cargo test --no-default-features --lib` | **274** |
 | no_std target | `cargo check --no-default-features --target x86_64-unknown-none` | **ok** |
-| Hot test (MCP) | `cargo run --release --example mcp_client` | **102/0 exit 0** |
+| Hot test (MCP) | `cargo run --release --example mcp_client` | **103/0 exit 0** |
 | AI-user sim | `cargo run --release --example agent_sim` | loop real, scope isolado |
 | Machine protocol | `cargo run --release --example two_ai_protocol` | **16/16 exit 0** |
 | Agent protocol | `cargo run --release --example agent_protocol` | **23/23 exit 0** |
@@ -67,6 +67,8 @@
 | `corpus_mean` invariant (v1.1.21) | IMPLEMENTED | `validate` §5: counts exatos + somas com tolerância relativa `1e-9` |
 | Open cost metrics (v1.1.21) | IMPLEMENTED | ADR-0009 §4: `open_rebuild_ms_last`/`_max`/`opens` no core, health e bench |
 | MCP alias surface (v1.1.21) | IMPLEMENTED | `ALIAS_SURFACE` (34) + `did_you_mean` no erro de tool desconhecida |
+| Consolidated math (v1.1.22) | IMPLEMENTED | `src/math.rs`: `sqrt_f32`/`ln_f32`/`exp_f32` movidos sem tocar a aritmética; ranking BM25 congelado por teste; doc do `ln_f32` corrigida (~1e-5 → **5.9e-2** medido) |
+| Adaptive recall (v1.1.22) | EXPERIMENTAL | ADR-0012: `recall_adaptive` + `AdaptiveRecall` + `RecallProbe`; opt-in, default intacto. **O bench mostra que o threshold default escala quase sempre** — o valor é o instrumento, não um ganho medido |
 | Score breakdown (v1.1.10) | IMPLEMENTED | `recall_weighted_full`, `Hit.score_breakdown`, trust weights |
 | Audit hash-chain (v1.1.10) | IMPLEMENTED | `sys/audit/` (AUD1), `audit_verify`, `rollback_to` |
 | Write-path hardening (v1.1.10) | IMPLEMENTED | `validate_written` on all write seams |
@@ -115,8 +117,8 @@ topologies; **content** does.
 `NEURAL_SGDB_EMBEDDER` = none (`=demo` explicit only). `remember(text=)`
 without vector → L3. Resources `nsgdb://doctrine` + `nsgdb://session`.
 `health(view=tensions|staleness|era)`. Harness ADR-0010:
-`curate(op=commit_run|deprecate_run)`. Hot test **102/0**. MCP contract
-**1.1.22**.
+`curate(op=commit_run|deprecate_run)`. Hot test **103/0**. MCP contract
+**1.1.23**.
 
 ### Host connectors
 `connectors/` is host-side (not crate SemVer). Hermes `MemoryProvider` is

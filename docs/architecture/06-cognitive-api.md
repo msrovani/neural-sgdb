@@ -1,6 +1,6 @@
 ﻿# 06 — Cognitive API
 
-> Status: **current (v1.1.11)** — the cognitive surface ships in `Sgdb` +
+> Status: **current (v1.1.23)** — the cognitive surface ships in `Sgdb` +
 > MCP server (**4 tools**, aliases for the 23 legacy names). **implemented** =
 > code + tests; **remaining** = honest gap. All English per repo policy.
 
@@ -65,19 +65,24 @@ material for the agent/LLM above.
 
 | API | Role |
 |-----|------|
-| `health()` | counts, backend, open conflicts |
-| `validate()` | integrity walk |
+| `health()` | counts, backend, open conflicts, and the open-cost contract (`opens`, `open_rebuild_ms_last`/`_max`, ADR-0009 §4) |
+| `validate()` | integrity walk — incl. §5: `corpus_mean` counts (exact) + sums (relative tolerance `1e-9`, because `f64` addition is not associative) |
 | `era_report()` | embedding era diagnostic (ADR-0007) |
+| `index_fingerprint()` | oracle of the DERIVED state, `fp(open) == fp(rebuild_indices())` (ADR-0011) — O(n log n), so never in the default `health`; MCP `health(view=index)` |
+| `recall_adaptive()` | report *why* a recall stopped escalating (`oversample_used`/`escalations`/`boundary_decisive`/`probe`, ADR-0012) |
 
 ## 6. MCP surface (implemented — 4 tools + aliases)
 
 `cargo run --release --example mcp_server` — JSON-RPC 2.0 stdio, handshake
-`2025-11-25`. `serverInfo.version` = crate **1.1.10**.
+`2025-11-25`. `serverInfo.version` = `MCP_CONTRACT_VERSION` = **1.1.23**, e o
+`examples/mcp_client.rs` é pinado no MESMO commit — o hot test falha alto se
+divergirem.
 
 **Listed tools:** `remember`, `recall`, `health`, `curate`. Dispatch by args
 (`user+response` → episodic L2; `entities` / `at` / `rag=true`;
-`health(view=era|validate|tensions)`; `curate.op=…`). The previous 23 names
-remain valid aliases on `tools/call`.
+`health(view=status|validate|era|tensions|staleness|index)`; `curate.op=…`).
+The previous names remain valid aliases on `tools/call` (the alias table lives in
+`ALIAS_SURFACE` and is pinned by test — prose drifts, the table does not).
 
 **Default retrieval (ADR-0008):** `mode=lexical` when the caller does not pass
 `embedding=`. Semantic/hybrid require a caller vector or explicit

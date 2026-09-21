@@ -1,7 +1,7 @@
 ﻿# neural-sgdb — API Contract
 
 > Contract document for the extraction of the SGDB core from neural-os-core.
-> Status: **current public contract (crate v1.1.17)** —
+> Status: **current public contract (crate v1.1.23)** —
 > this document is the current public contract; roadmap items are explicitly
 > marked as such. The internal API lives in `crates/k_ai/src/sgdb/` of the
 > parent OS; this doc defines the public surface the community crate exposes
@@ -94,7 +94,7 @@ impl Sgdb {
     /// (fixed-width keys — no prefix relationship), and the LWW semilattice
     /// laws of `VectorClock::merge` (associative, commutative, idempotent,
     /// monotonic). **P2-4**: `src/wire_fuzz.rs` is a single LCG harness over
-    /// all 8 wire types (never-panic on random bytes, roundtrip, truncation-
+    /// all 9 wire types (never-panic on random bytes, roundtrip, truncation-
     /// safe prefixes, corrupt magic/version rejected) — the centralized
     /// "fuzz-tested" gate.
     pub fn remember_semantic(&mut self, key: &str, text: &str, emb: &[f32]) -> Result<(), SgdbError>;
@@ -129,9 +129,8 @@ impl Sgdb {
     /// `AdaptiveRecall { hits, oversample_used, escalations, boundary_decisive,
     /// probe }` — `boundary_decisive = false` means the cap was reached while
     /// the boundary was still ambiguous (the result is at the resolution limit
-    /// of the filter, not wrong). `RecallProbe { considered, survivors, budget }`
-    /// separates "the store ran out" from "the pool ran out before the valid
-    /// docs" (`saturated()`), which is what makes `survivors <= k` decidable.
+    /// of the filter, not wrong). Full definitions in §Additive public surface.
+    pub struct AdaptiveRecall;
     pub struct RecallProbe;
 
     /// Weighted scoring: `w_sem·dist + w_rec·recency(/ts/<hex>) + w_imp·importance(layer)`.
@@ -344,10 +343,10 @@ código, binários). Duas regras tornam o consumo determinístico:
    `Sgdb::primary_of(key)` resolve `md/L2/<id>` → primário existente para
    follow-ups.
 
-## Additive public surface (v1.1.2–v1.1.17)
+## Additive public surface (v1.1.2–v1.1.23)
 
 Everything below is **additive** (MINOR per VERSIONING.md) — no signature of a
-v1.0 method changed; crate version **1.1.17** in `Cargo.toml`. Key additions since the contract above:
+v1.0 method changed; crate version **1.1.23** in `Cargo.toml`. Key additions since the contract above:
 
 ```rust
 // ---- S1: recall is LOUD on dimension mismatch (v1.1.3) ----
@@ -513,6 +512,38 @@ pub fn quantize_f32_minus_mean(query: &[f32], mean: &[f32]) -> Vec<u64>;
 pub fn corpus_mean(&self, dim: usize) -> Option<Vec<f32>>;
 // Engine::bq_top_k_f32_dual used by recall_impl / recall_impl_dims.
 // Final sort: score-group (SCORE_TIE_MARGIN) → created_tick desc → score → key.
+
+// ---- Derivação verificável + custo de open (v1.1.21, ADR-0011) ----
+// Oráculo do estado DERIVADO: invariante fp(open) == fp(rebuild_indices()).
+// ids do ART/BQ FICAM FORA (NEXT_ID é contador de PROCESSO), assim como órfãos
+// do BQ e floats; o fingerprint resolve id → storage_key e hasheia a CHAVE.
+// MCP: health(view=index) — opt-in, porque o custo é O(n log n).
+pub fn index_fingerprint(&self) -> u64;
+pub struct HealthReport { /* + opens, open_rebuild_ms_last, open_rebuild_ms_max */ }
+// `Sgdb::validate` §5: counts de `corpus_sums` por igualdade EXATA, somas com
+// tolerância relativa 1e-9 (adição f64 não é associativa — igualdade exata
+// daria falso positivo em produção).
+
+// ---- Recall adaptativo (v1.1.22, ADR-0012) ----
+// O esforço é consequência da AMBIGUIDADE da fronteira do top-k, não de uma
+// constante: degraus 1→4→8→16, `k+1` hits pedidos por degrau (sentinela) e
+// parada quando |score(k) − score(k+1)| > SCORE_TIE_MARGIN no score CRU u32.
+// Opt-in: escalar adiciona candidatos e pode mudar a ORDEM, logo o `recall`
+// default fica intacto (`max_oversample = 1` degrada para o clássico).
+pub fn recall_adaptive(&mut self, query: &[f32], k: usize, max_oversample: usize)
+    -> Result<AdaptiveRecall, SgdbError>;
+pub fn recall_adaptive_scoped(&mut self, query: &[f32], k: usize,
+    max_oversample: usize, scope: &str) -> Result<AdaptiveRecall, SgdbError>;
+pub struct AdaptiveRecall {
+    pub hits: Vec<Hit>,
+    pub oversample_used: usize,
+    pub escalations: u8,
+    pub boundary_decisive: bool,   // false = teto atingido com fronteira ambígua
+    pub probe: RecallProbe,        // o "porquê" de boundary_decisive
+}
+pub struct RecallProbe { pub considered: usize, pub survivors: usize, pub budget: usize }
+// RecallProbe::saturated(): orçamento esgotado ⇒ pode haver VÁLIDO além do pool.
+// Sem isso, `survivors <= k` confundiria "store acabou" com "pool faminto".
 ```
 
 ## Format decision (v0.6)

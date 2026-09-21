@@ -36,7 +36,7 @@ Layered architecture with injectable seams (replacing the origin kernel):
 | `tickv.rs` | Byte-exact TKLV/TKCK codec of the OS TickvLite + `TickvFile` backend | Format interop |
 | `trust.rs` | `SignedEnvelope`/`Signer`/`TrustStore` reference signed-transport flow (P2-3, p2p) | Auth seam (no crypto in core) |
 | `crdt.rs` | `CrdtMemorySync` (LWW) + `Transport` trait + `UdpTransport` (`p2p` feature) | CRDT / Observer |
-| `wire_fuzz.rs` | **P2-4**: single LCG fuzz harness over all 8 wire types | Fuzz gate |
+| `wire_fuzz.rs` | **P2-4**: single LCG fuzz harness over all 9 wire types (incl. `AUD1` v1.1.10) | Fuzz gate |
 
 ## Flow
 1. `Sgdb::open(backend: impl Storage)` → creates `AiosDatabaseEngine` +

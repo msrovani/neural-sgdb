@@ -1,13 +1,22 @@
 # Roadmap — neural-sgdb
 
-Status: **v1.1.x maintenance line (crate v1.1.20)** —
+Status: **v1.1.x maintenance line (crate v1.1.23)** —
 stable API, zero deps, `no_std` + `std`, CI gates green. Crate version
-**1.1.20**; histórico v1.1.2–v1.1.20 no `CHANGELOG.md`. This roadmap is honest
+**1.1.23**; histórico v1.1.2–v1.1.23 no `CHANGELOG.md`. This roadmap is honest
 about what is DONE, what is NEXT, and what is deliberately NOT planned.
 
 Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
 
 ## Next (honest gaps — not this release)
+
+✅ **v1.1.23 — revisão de documentação + fix do schema anunciado (2026-09-21)** —
+   auditoria dos docs de raiz e `docs/`: versões paradas em `1.1.20`/`1.1.17`
+   (README, VERSIONING, api, architecture, CLAUDE), números de matriz dois
+   releases atrás, e **um bug de contrato real**: `health(view=index)` era
+   servido pelo handler mas **não** aparecia no `enum` anunciado em
+   `tools/list` — a feature existia e era indescobrível pelo modelo, que só lê o
+   schema. Guard novo no hot test: o enum anunciado deve listar todo view
+   servido. Sem mudança de formato e sem mudança de comportamento.
 
 ✅ **v1.1.22 — math consolidado + recall adaptativo (2026-09-21)** — release 2/3
    do plano. `src/math.rs` unifica `sqrt_f32`/`ln_f32`/`exp_f32` (movidos SEM
@@ -19,6 +28,11 @@ Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
    **Veredito medido: o threshold default faz escalar quase sempre** (clusters
    densos: 44% a 338 candidatos/query vs 40% a ~160 do 16× fixo), então o que
    ficou entregue é o instrumento para o host decidir, não uma promessa.
+
+🔜 **Release 3 do plano (itens 4 e 7)** — unificação de scope + ledger de
+   negativos. É o único pedaço do plano de 8 itens não entregue: os dois únicos
+   itens que MUDAM comportamento, por isso por último e abertos com
+   characterization test.
 
 🔜 **Index snapshot on `Sgdb::open` — §3, agora GATED EM DADOS** — hoje rebuild
    linear de ART/BQ/lexical. TickvFile já tem TKCK fast-mount; falta
@@ -110,8 +124,9 @@ Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
    exposes `health`/`validate` tools; `examples/signed_peer.rs` is the
    "where to plug Ed25519" runnable.
 ✅ **P2-4 — Post-P2 audit**: bughunt oracle #1–#11 re-run green; `src/
-   wire_fuzz.rs` fuzzes all 8 wire types (`MDR1`/`CFL1`/`MDLT`/`MSNP`/NMD1/
-   MDM1/`SignedEnvelope`/`CrdtState`) with one deterministic LCG harness.
+   wire_fuzz.rs` fuzzes all wire types com um harness LCG determinístico
+   (na entrega eram 8: `MDR1`/`CFL1`/`MDLT`/`MSNP`/NMD1/MDM1/`SignedEnvelope`/
+   `CrdtState`; hoje são **9**, com o `AUD1` do v1.1.10).
 ✅ **P2-5 — Layered multi-AI telepathy mesh** (delivered 2026-08-13): 8 agents
    in 5 cognitive layers on a directed mesh; an external AI writes at L1, each
    layer answers via its own recall, telepathy propagates L1→L5, and a deep

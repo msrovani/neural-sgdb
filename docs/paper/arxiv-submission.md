@@ -6,6 +6,15 @@ file gives you the copy-paste metadata, the file list, and the click-path.
 
 ---
 
+> **Nota de estado do artefacto (2026-09-21).** O `.tex`/`.pdf` são um artefacto
+> **datado** (2026-08-12, linha v1.1.x inicial) e **não** são re-editados: um
+> preprint cita a versão que descreve. Concretamente, o §Evaluation diz
+> `92+1` testes (default) e `102+1` com `p2p` — os números de então. O estado
+> corrente do crate é **330+1 / 376+1 / 274+1** (default / p2p / no_std) e hot
+> test **103/0**; os números vivos estão em [`BENCHMARKS.md`](../../BENCHMARKS.md),
+> [`README.md`](../../README.md) e `CHANGELOG.md`. As medições de `recall@5`
+> (22–40% por oversample, clusters correlacionados) permanecem válidas.
+
 ## 1. Files to upload
 
 Upload **only** the LaTeX source:

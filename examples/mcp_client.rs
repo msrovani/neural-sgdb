@@ -190,8 +190,8 @@ fn main() {
     rep.check("initialize responde", !r.get("error").is_some(), r.to_string());
     rep.check("protocolVersion 2025-11-25",
         r["result"]["protocolVersion"] == "2025-11-25", r.to_string());
-    rep.check("serverInfo version 1.1.22",
-        r["result"]["serverInfo"]["version"] == "1.1.22", r.to_string());
+    rep.check("serverInfo version 1.1.23",
+        r["result"]["serverInfo"]["version"] == "1.1.23", r.to_string());
     rep.check("serverInfo mcp_tool_count 4",
         r["result"]["serverInfo"]["mcp_tool_count"] == 4, r.to_string());
     let instr = r["result"]["instructions"].as_str().unwrap_or("");
@@ -618,6 +618,21 @@ fn main() {
             && txt.contains("open_rebuild_ms_max")
             && txt.contains("opens"),
         txt.clone());
+    // v1.1.22 (fix de doc): o schema ANUNCIADO deve listar todo view que o
+    // handler SERVE. O `view=index` do v1.1.21 funcionava mas nao aparecia no
+    // `enum` do `tools/list` — a feature existia e era indescobrivel pelo
+    // modelo, que so le o schema. Guard: enum anunciado ⊇ views servidos.
+    let srv_tools = srv.rpc("tools/list", json!({}));
+    let health_schema = srv_tools["result"]["tools"]
+        .as_array()
+        .and_then(|ts| ts.iter().find(|t| t["name"] == "health"))
+        .map(|t| t.to_string())
+        .unwrap_or_default();
+    rep.check("tools/list anuncia todos os views do health (inclui index)",
+        ["status", "validate", "era", "tensions", "staleness", "index"]
+            .iter()
+            .all(|v| health_schema.contains(&format!("\"{v}\""))),
+        health_schema.clone());
     let r = srv.rpc("resources/read", json!({"uri": "nsgdb://session"}));
     let session_txt = r["result"]["contents"][0]["text"].as_str().unwrap_or("");
     rep.check("resource nsgdb://session e cold-start JSON",

@@ -1,6 +1,6 @@
 ﻿# 03 — Retrieval Architecture
 
-> Status: **current (v1.1.11)** — ART + BQ + lexical + entities + typed hits
+> Status: **current (v1.1.23)** — ART + BQ + lexical + entities + typed hits
 > ship in production code. MCP default retrieval is **lexical** (ADR-0008).
 > **implemented** = code + tests; **remaining** =
 > honest gap. All English per repo policy.
@@ -91,8 +91,34 @@ final ranking → Hit { path=Semantic, content_type, payload_type, … }
 | `recall_weighted` | `w_sem·dist + w_rec·recency + w_imp·(1−importance)` |
 | `recall_scoped` | scope filter inside candidate pool (null-scoping) |
 | `rag_context_reranked` | oversampled pool + lexical anchor rerank (`anchors=N`) |
+| `recall_adaptive` | escalates `1→4→8→16` while the top-k boundary is ambiguous (ADR-0012) |
 
 Default recall: **active memories only**. Historical variants opt in.
+
+### How much effort a recall deserves (v1.1.22 — implemented, ADR-0012)
+
+Every other recall API here takes a FIXED candidate budget: `k · oversample`,
+chosen by the caller or by dimensionality. The cost is linear in that budget and
+the benefit is not, so the default overpays on the easy majority.
+`recall_adaptive` makes the budget a consequence of the **ambiguity of the top-k
+boundary**: each ladder step asks for `k+1` hits and stops when the RAW u32 gap
+between the last kept hit and the first dropped one exceeds `SCORE_TIE_MARGIN`
+(the margin the state-first ranking already uses to call two scores "same
+content, different version"). Two details are load-bearing:
+
+- The comparison is on the **raw score**, never on the `score/(MARGIN+1)` bucket
+  the ranking sorts by — buckets have arbitrary edges, and two documents 0.0026
+  cosine apart can land in different buckets and look "decided".
+- `RecallProbe { considered, survivors, budget }` separates "the store ran out"
+  from "the pool ran out before the valid docs" (`saturated()`). Without it, a
+  scope whose documents sit deep in the BQ order would get a silently truncated
+  top-k, because the scope filter runs INSIDE the candidate loop.
+
+**Measured honestly:** with `SCORE_TIE_MARGIN` as the threshold, escalating is
+more often the case than the exception (see `BENCHMARKS.md` §Recall adaptativo).
+The API is therefore opt-in and ships as an **instrument**
+(`oversample_used` / `escalations` / `boundary_decisive` / `probe`) so a host can
+pick its own ceiling from data — the same posture as ADR-0009 §4.
 
 ## 6. Typed hits (v1.1.6 — implemented)
 

@@ -275,7 +275,7 @@ fn error_response(id: &Value, code: i64, message: &str) -> Value {
 
 /// NÃºmero de tools em `tools/list` (aliases antigos ainda funcionam em tools/call).
 const EXPECTED_MCP_TOOL_COUNT: usize = 4;
-const MCP_CONTRACT_VERSION: &str = "1.1.22";
+const MCP_CONTRACT_VERSION: &str = "1.1.23";
 const BUILD_GIT: &str = env!("NEURAL_SGDB_BUILD_GIT");
 
 /// Lista pÃºblica: 4 tools. Os 23 nomes antigos continuam vÃ¡lidos em `tools/call`.
@@ -478,9 +478,9 @@ fn mcp_listed_tools() -> Value {
          }},
          "annotations":{"readOnlyHint":true}},
         {"name":"health",
-         "description":"Observabilidade. view=status (default): onboarding+doutrina+dims. view=validate: integridade. view=era: era_report ADR-0007. view=tensions: conflitos/superseded/unseen. view=staleness: TTL/Decay/contradicts/aging (read-only). Chame cedo. Resource nsgdb://session.",
+         "description":"Observabilidade. view=status (default): onboarding+doutrina+dims. view=validate: integridade. view=era: era_report ADR-0007. view=tensions: conflitos/superseded/unseen. view=staleness: TTL/Decay/contradicts/aging (read-only). view=index: index_fingerprint (orcaulo do estado derivado, ADR-0011) + custo de open (ADR-0009 §4) — opt-in, O(n log n). Chame cedo. Resource nsgdb://session.",
          "inputSchema":{"type":"object","properties":{
-           "view":{"type":"string","enum":["status","validate","era","tensions","staleness"],"default":"status"},
+           "view":{"type":"string","enum":["status","validate","era","tensions","staleness","index"],"default":"status"},
            "now":{"type":"integer","description":"Relogio host p/ view=staleness (TTL/aging)"},
            "limit":{"type":"integer","description":"Max items em view=staleness"},
            "scope":{"type":"string","description":"Filtro de scope em view=staleness"}

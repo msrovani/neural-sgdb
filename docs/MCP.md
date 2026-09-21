@@ -3,14 +3,14 @@
 Guia de instalação, contrato e troubleshooting do servidor MCP
 (`examples/mcp_server.rs`).
 
-## Contrato atual (v1.1.22)
+## Contrato atual (v1.1.23)
 
 | Campo | Valor |
 |-------|-------|
 | Protocolo | JSON-RPC 2.0 over **stdio** (uma linha JSON por mensagem) |
 | Handshake | `initialize` → `protocolVersion: 2025-11-25` |
-| `serverInfo.version` | `1.1.22` (`MCP_CONTRACT_VERSION` em `examples/mcp_server.rs`) |
-| Tools | **4** (`remember`, `recall`, `health`, `curate`) — 23 nomes antigos ainda funcionam em `tools/call` |
+| `serverInfo.version` | `1.1.23` (`MCP_CONTRACT_VERSION` em `examples/mcp_server.rs`) |
+| Tools | **4** (`remember`, `recall`, `health`, `curate`) — 34 nomes antigos/alias ainda funcionam em `tools/call` (`ALIAS_SURFACE`) |
 | Recall default | **lexical** (ADR-0008). Cosine: `embedding=` ou `NEURAL_SGDB_EMBEDDER=demo` |
 | Embedder host | unset = none; `NEURAL_SGDB_EMBEDDER=demo` = trigrama explícito (**não** semântico) |
 | Write sem vetor | `remember(text=)` → **L3** (`remember_text_with`); L4 só com `embedding=` ou `NEURAL_SGDB_EMBEDDER=demo` |
@@ -55,9 +55,16 @@ medicao de custo de open (`open_rebuild_ms_last`, `open_rebuild_ms_max`,
 `opens`). E opt-in de proposito: o fingerprint e O(n log n), entao o `health`
 default nao paga esse custo.
 
-**v1.1.22 — nenhuma mudança de superfície.** O contrato sobe junto com a versão do
-crate (o `serverInfo.version` identifica a BUILD do server), mas as 4 tools, os
-34 aliases, os parâmetros e os resources ficam idênticos. O que entrou foi lib:
+**v1.1.23 — o `enum` anunciado agora lista todo view que o handler serve.** O
+`view=index` (ADR-0011) existia desde o v1.1.21, o handler o servia e o hot test
+o exercitava — mas `tools/list` anunciava o `enum` sem ele, e o modelo só lê o
+schema. Feature invisível, corrigida no `enum` + descrição, com guard no hot test
+(`tools/list` anuncia todos os views do `health`). Views do `health`:
+`status` | `validate` | `era` | `tensions` | `staleness` | `index`.
+
+**v1.1.22 — nenhuma mudança de superfície.** O contrato subiu junto com a versão
+do crate (o `serverInfo.version` identifica a BUILD do server), mas as 4 tools,
+os aliases, os parâmetros e os resources ficaram idênticos. O que entrou foi lib:
 `recall_adaptive` (ADR-0012) — deliberadamente **não** exposto como tool/param
 enquanto um host não medir que vale: o bench mostra que o threshold default faz
 escalar quase sempre (ver `BENCHMARKS.md` §Recall adaptativo).

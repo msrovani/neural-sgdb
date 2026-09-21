@@ -36,14 +36,15 @@ filesystem, no external runtime.
 
 ## Status
 
-**v1.1.20** — substrate **agêntico** (MCP 4 tools contract **1.1.20**, doutrina,
+**v1.1.23** — substrate **agêntico** (MCP 4 tools contract **1.1.23**, doutrina,
 hits tipados, TTL/GC, timeline, ANN) + **ADC-lite** + telepatia **2-DB** +
 **host harvest** + **ADR-0010 harness** (`commit_run` / `deprecate_run` /
-`mom/anti-pattern`) + **null-scoping `ScopeDims`**. Extensão de browser / Store
-**estacionadas**. Crate em `Cargo.toml`: **1.1.20**.
+`mom/anti-pattern`) + **null-scoping `ScopeDims`** + **integridade do índice
+derivado** (`index_fingerprint`, ADR-0011) + **recall adaptativo** (ADR-0012).
+Extensão de browser / Store **estacionadas**. Crate em `Cargo.toml`: **1.1.23**.
 
-- `cargo test --lib` on host: **292** (p2p **338**, no_std **244**)
-- hot test MCP: **100/0**; `agent_protocol`: **25/0**
+- `cargo test --lib` on host: **330** (p2p **376**, no_std **274**)
+- hot test MCP: **103/0**; `agent_protocol`: **25/0**
 - `cargo check --no-default-features --target x86_64-unknown-none`: **clean**
 - Playbooks: [`docs/agent-self-program.md`](docs/agent-self-program.md),
   [`docs/harness-prompts.md`](docs/harness-prompts.md),
@@ -199,7 +200,7 @@ lists conflicts / superseded / unseen scopes.
 
 Host adapters for claw-like apps (Hermes provider, OpenClaw skeleton, shared
 MCP client) live in [`connectors/`](connectors/README.md) — **outside** crate
-SemVer; `crates/nsgdb-embed` (LocalEmbedder 384-dim, `cargo run --manifest-path crates/nsgdb-embed/Cargo.toml --example demo`) and `crates/nsgdb-wasm` (`Storage` stub) are host crates — core SemVer = `Cargo.toml` (**1.1.20**).
+SemVer; `crates/nsgdb-embed` (LocalEmbedder 384-dim, `cargo run --manifest-path crates/nsgdb-embed/Cargo.toml --example demo`) and `crates/nsgdb-wasm` (`Storage` stub) are host crates — core SemVer = `Cargo.toml` (**1.1.23**).
 Protocolo do agente: `examples/agent_protocol.rs` (25 checks), `two_ai_protocol.rs` (16), `memory_arena_eval.rs`. Fim de tarefa: `curate(op=commit_run)` (ADR-0010).
 
 ### Cursor (Windows)
@@ -294,6 +295,9 @@ Licensed under **MIT** **or** **Apache-2.0** (dual license), your choice.
 - [x] **v1.1.18 telepathy 2-DB + host harvest** — MOM, surprise→reinforce, paging, `health(view=staleness)`
 - [x] **v1.1.19 ADR-0010 harness** — `commit_run` / `deprecate_run` / `mom/anti-pattern` (sem `Deprecated` state)
 - [x] **v1.1.20 null-scoping ScopeDims** — `allows_scope_filter`; consolidate herda dims; hot test **100/0**
+- [x] **v1.1.21 integridade do índice derivado + medição de open** — `index_fingerprint` (ADR-0011, `fp(open) == fp(rebuild)`), invariante de `corpus_mean` no `validate`, `open_rebuild_ms`/`opens` no `health`, erro de tool desconhecida com `did_you_mean`
+- [x] **v1.1.22 math consolidado + recall adaptativo** — `src/math.rs` unifica os polyfills (movidos sem tocar na aritmética); `recall_adaptive` (ADR-0012) escala `1→4→8→16` só enquanto a fronteira do top-k for ambígua, com `RecallProbe` separando "store acabou" de "pool faminto"
+- [x] **v1.1.23 revisão de documentação + fix do schema anunciado** — `health(view=index)` funcionava mas o `enum` do `tools/list` não o anunciava (feature invisível ao modelo); versões/números de teste alinhados em README/VERSIONING/api/architecture
 - [x] **Host crates** — `crates/nsgdb-embed` + `crates/nsgdb-wasm` (sem quebrar core `no_std` zero deps)
 - [ ] **Browser extension** — estacionada (`extension/` stub; auto-captura comentada). Produto = agente via MCP, não scraper de abas.
 

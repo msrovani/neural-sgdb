@@ -12,15 +12,17 @@
 //! - **magic/versão corrompidos**: mutação do magic/version → `Err`, nunca
 //!   panic.
 //!
-//! Wire types cobertos:
+//! Wire types cobertos (**9** — a contagem é pinada pelo que os testes
+//! efetivamente chamam; a lista já esteve em 8 depois do `AUD1` existir):
 //! 1. NMD1 — `MemoryDoc` (doc)
 //! 2. MDR1 — `MemoryRecord` (doc + estado + validade + meta)
 //! 3. MDM1 — `MemoryMeta`
 //! 4. CFL1 — `ConflictRecord`
-//! 5. MDLT — `MemoryDelta` (p2p)
-//! 6. MSNP — `MemorySnapshot` (p2p)
-//! 7. `SignedEnvelope` (p2p)
-//! 8. `CrdtState` (p2p)
+//! 5. AUD1 — `AuditEntry` (hash-chain ledger)
+//! 6. MDLT — `MemoryDelta` (p2p)
+//! 7. MSNP — `MemorySnapshot` (p2p)
+//! 8. `SignedEnvelope` (p2p)
+//! 9. `CrdtState` (p2p)
 //!
 //! no_std-safe: só `alloc`. p2p-gated apenas nos wire types p2p.
 
