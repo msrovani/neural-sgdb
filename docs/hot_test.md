@@ -649,3 +649,51 @@ aparece em prosa e não tem nada que o pine**. Onde existe tabela pinada por tes
 divergência não sobrevive; onde é só prosa, ela entra em silêncio e fica por
 cinco releases — que foi exatamente o caso dos status `v1.1.11` em
 `docs/architecture/`.
+
+## v1.1.24 — unificação de escopo + ledger de negativos (2026-09-22)
+
+Release 3/3 do plano (itens 4 e 7). **Hot test 110/0** (+6 asserções, fase nova
+"ledger de negativos"); matriz **337+1 / 383+1 / 281+1**; gates clippy/rustdoc
+`-D warnings` e no_std bare-metal verdes. Contrato MCP → **1.1.24**.
+
+### O que o characterization test provou ANTES de tocar no código
+
+O item 4 parecia um bug de leitura e **não era**: o read-side já unificava os
+dois mecanismos de escopo (o decode promove o legado → `user` quando as dims vêm
+vazias, e `effective_scope_dims` faz o mesmo nos filtros). O teste pinou o estado
+real e mostrou que o desacordo morava nos BYTES:
+
+```text
+set_scope("kA","user/ana")  ⇒  scope_of            == "user/ana"
+                               scope_dims_of.user  == "user/ana"   (decode promove)
+                               sys/meta/md/L4/kA     dims = {"","","",""}   ← os bytes divergem
+                               encode(decode(raw)) != raw                  ← storage não canônico
+                               validate()            nada                 ← sem invariante
+```
+
+Ou seja: eu ia "consertar" uma assimetria de leitura que não existia e deixar
+passar a de escrita, que existia. Sem o teste antes, a mudança teria sido
+cosmética e a divergência de interop (peer/OS lendo `scope_dims` como campo)
+ficaria. Onde o API virou write-through, os bytes ficaram canônicos e o
+`validate` §6 passou a ter dentes.
+
+### Dois erros meus que os próprios testes pegaram
+
+1. **Probe "vazio" que não estava vazio.** A fase nova do hot test usou
+   `zzz-nunca-escrito-neste-banco` e o `recall_ledger` **achou** um documento —
+   o BM25 casa por sobreposição parcial e o token `banco` existia num doc do
+   corpus. Um probe só é ausência se NENHUM token existir; a query virou
+   `zzqxx wvyyzz qqzzww`.
+2. **Acentuação não normaliza.** Eu documentei e testei que `café` colidiria
+   com `cafe`; o tokenizer do BM25 não dobra diacríticos, então o teste falhou e
+   a doc ficou verdadeira: caixa e pontuação não fragmentam, **acento e paráfrase
+   fragmentam** (mesma limitação do índice lexical). A afirmação bonita caiu, o
+   comportamento medido ficou.
+
+### Pin que quebrou junto (e por isso é bom)
+
+`ALIAS_SURFACE` 34 → **38** quebrou em **dois** pontos (a tabela pinada no
+`mcp_server` e o `alias_count` do erro de tool desconhecida — no teste unitário
+e no hot test). É exatamente o comportamento desejado: a superfície de alias é um
+número que não consegue entrar em silêncio. A lição do v1.1.23 (schema anunciado
+checado por asserção) continua pagando.

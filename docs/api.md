@@ -1,7 +1,7 @@
 ﻿# neural-sgdb — API Contract
 
 > Contract document for the extraction of the SGDB core from neural-os-core.
-> Status: **current public contract (crate v1.1.23)** —
+> Status: **current public contract (crate v1.1.24)** —
 > this document is the current public contract; roadmap items are explicitly
 > marked as such. The internal API lives in `crates/k_ai/src/sgdb/` of the
 > parent OS; this doc defines the public surface the community crate exposes
@@ -343,10 +343,10 @@ código, binários). Duas regras tornam o consumo determinístico:
    `Sgdb::primary_of(key)` resolve `md/L2/<id>` → primário existente para
    follow-ups.
 
-## Additive public surface (v1.1.2–v1.1.23)
+## Additive public surface (v1.1.2–v1.1.24)
 
 Everything below is **additive** (MINOR per VERSIONING.md) — no signature of a
-v1.0 method changed; crate version **1.1.23** in `Cargo.toml`. Key additions since the contract above:
+v1.0 method changed; crate version **1.1.24** in `Cargo.toml`. Key additions since the contract above:
 
 ```rust
 // ---- S1: recall is LOUD on dimension mismatch (v1.1.3) ----
@@ -544,6 +544,45 @@ pub struct AdaptiveRecall {
 pub struct RecallProbe { pub considered: usize, pub survivors: usize, pub budget: usize }
 // RecallProbe::saturated(): orçamento esgotado ⇒ pode haver VÁLIDO além do pool.
 // Sem isso, `survivors <= k` confundiria "store acabou" com "pool faminto".
+
+// ---- Escopo: ScopeDims AUTORITATIVO (v1.1.24, ADR-0013) ----
+// O `scope` legado (MDM1 v4) é o ESPELHO de `scope_dims.user` (MDM1 v7):
+// `scope == scope_dims.user` é o invariante, e vale nos DOIS sentidos.
+// `set_scope` faz write-through nos dois campos (os bytes de `sys/meta/`
+// ficam canônicos); `set_scope_dims` já espelhava o contrário. A promoção do
+// decode (legado → user quando as dims vêm vazias) PERMANECE — é o que mantém
+// registros pré-v7 e payloads de peer corretos. Sem bump de MDM1: é
+// canonicalização de escrita, não reinterpretação de bytes.
+pub fn scope_of(&mut self, key: &str) -> Result<String, SgdbError>;      // projeção `user`
+pub fn scope_dims_of(&mut self, key: &str) -> Result<ScopeDims, SgdbError>; // AUTORITATIVO
+// validate() §6: "legacy scope disagrees with scope_dims.user" quando os dois
+// campos vêm preenchidos e diferentes (só alcançável por meta montada à mão ou
+// import de escritor divergente — o caminho de API é canônico).
+
+// ---- Ledger de negativos (v1.1.24, ADR-0014, src/negative.rs) ----
+// "O que já procurei e NÃO estava lá" — side-table
+// `sys/negative/<fnv1a64(scope ‖ 0x1f ‖ query):016x>` (valor `NDG1`; NÃO é
+// wire type — NMD1/TKLV intactos). Identidade = tokens do BM25 re-unidos
+// (caixa/pontuação não fragmentam; acento e paráfrase ainda fragmentam).
+pub struct AbsenceEntry { pub query: String, pub scope: String,
+                          pub probes: u32, pub first_tick: u64, pub last_tick: u64 }
+pub fn normalize_query(s: &str) -> String;                 // tokens BM25 re-unidos
+pub fn negative_key(scope: &str, norm_query: &str) -> String; // largura fixa (regra 4 ART)
+pub fn note_absence(&mut self, query: &str, scope: &str, now: u64) -> Result<u32, SgdbError>;
+// reforça (probes++) em vez de duplicar; `first_tick` preservado; u32 saturante.
+pub fn forget_absence(&mut self, query: &str, scope: &str) -> Result<bool, SgdbError>;
+pub fn recall_absences(&mut self, scope: Option<&str>, limit: usize) -> Result<Vec<AbsenceEntry>, SgdbError>;
+// `None` = só as globais (null-scoping); recentes primeiro (last_tick desc, key asc).
+pub fn absence_count(&mut self) -> Result<usize, SgdbError>;
+pub fn prune_absences(&mut self, now: u64, max_age_ticks: u64, max_remove: usize)
+    -> Result<usize, SgdbError>;   // retenção do host; max_age_ticks == 0 DESLIGA
+pub struct RecallLedger { pub hits: Vec<Hit>, pub absences: Vec<AbsenceEntry>, pub recorded: bool }
+pub fn recall_with_ledger(&mut self, query_text: &str, k: usize,
+    scope: Option<&str>, now: u64) -> Result<RecallLedger, SgdbError>;
+// Probe lexical (sem embedding, ADR-0008) + ledger numa chamada. Sem hits ⇒
+// registra/reforça (`recorded = true`); com hits ⇒ REMOVE a ausência
+// (self-healing: o fato agora existe). O `recall` default NÃO tem efeito
+// colateral — mutar uma leitura só por API que diz que escreve.
 ```
 
 ## Format decision (v0.6)

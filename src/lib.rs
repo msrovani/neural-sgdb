@@ -83,6 +83,7 @@ pub mod lexical;
 pub mod limits;
 pub mod memory_doc;
 pub mod metrics;
+pub mod negative;
 pub mod staleness;
 pub mod storage;
 pub mod tickv;
@@ -121,6 +122,7 @@ pub use hamming_dispatch::{
     select_best_hamming_kernel, CpuCaps,
 };
 pub use lexical::{tokenize_for_rerank, LexicalIndex};
+pub use negative::{negative_key, normalize_query, AbsenceEntry, NEGATIVE_PREFIX};
 pub use memory_doc::{
     generate_memory_id, LineageEntry, MemoryDoc, MemoryDocView, MemoryLayer, MemoryMeta,
     MemoryRecord, MemoryState, RelationKind, ScopeDims, ScopeFilter, VectorClock,
@@ -131,8 +133,9 @@ pub use harness::{
 };
 pub use sgdb::{
     AdaptiveRecall, AuditReport, ConsolidateConfig, DecayConfig, GcConfig, GcReport, HealthReport,
-    Hit, HitProvenance, LexicalAnchorReranker, RecallProbe, RecallWeights, RememberOptions,
-    RememberOutcome, Reranker, ScoreBreakdown, ScopeDistribution, Sgdb, ValidateIssue,
+    Hit, HitProvenance, LexicalAnchorReranker, RecallLedger, RecallProbe, RecallWeights,
+    RememberOptions, RememberOutcome, Reranker, ScoreBreakdown, ScopeDistribution, Sgdb,
+    ValidateIssue,
 };
 pub use storage::{InMemory, SnapshotStorage, Storage, SgdbError};
 pub use staleness::{StalenessConfig, StalenessHit, StalenessLevel, StalenessReason};

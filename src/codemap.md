@@ -18,7 +18,7 @@ Layered architecture with injectable seams (replacing the origin kernel):
 | `hamming_dispatch.rs` | SIMD dispatch scalar/AVX2/AVX-512 (`#[target_feature]`), `#[inline(always)]` hot (v1.1.11), seam `cpu_caps()`/`set_cpu_caps()` | Runtime strategy |
 | `ctype.rs` | **v1.1.6**: `ContentType` (Text/Json/Code/Embedding(dim)/Binary), `RecallPath`, `detect_content_type`, `stable_label`/`parse_stable_label`/`renders_prose` — tipagem do datum p/ consumidor máquina | HINT derivation (no_std-safe) |
 | `engine.rs` | `AiosDatabaseEngine` — RAM L0/L1 + Storage L2–L7, ART/BQ indexing, rebuild, side-tables, relations, `entity_index` | Persistence engine |
-| `sgdb.rs` | `Sgdb` — public facade; `remember_text_with` (v1.1.9 lexical write); `remember_semantic_with`/`RememberOutcome`/`recall_empty_hint` (v1.1.7); `Hit` tipado v1.1.6; **v1.1.10**: `decay_importance`/`consolidate_recurrences`/`recall_weighted_full` (`Hit.score_breakdown`)/`audit_checkpoint`/`audit_verify`/`rollback_to` + `validate_written`; **v1.1.11**: `Storage::put_many` batch, `recall_weighted_full` select_nth, `search_fast` | Facade |
+| `sgdb.rs` | `Sgdb` — public facade; `remember_text_with` (v1.1.9 lexical write); `remember_semantic_with`/`RememberOutcome`/`recall_empty_hint` (v1.1.7); `Hit` tipado v1.1.6; **v1.1.10**: `decay_importance`/`consolidate_recurrences`/`recall_weighted_full` (`Hit.score_breakdown`)/`audit_checkpoint`/`audit_verify`/`rollback_to` + `validate_written`; **v1.1.11**: `Storage::put_many` batch, `recall_weighted_full` select_nth, `search_fast`; **v1.1.24**: `set_scope` write-through (ADR-0013) + `validate` §6 (escopo) e ledger de negativos (`note_absence`/`forget_absence`/`recall_absences`/`recall_with_ledger`/`prune_absences`, ADR-0014) | Facade |
 | `audit.rs` | **v1.1.10**: ledger hash-chain `sys/audit/<seq:016x>` (wire `AUD1`), `AuditEntry`/`AuditSnapshotItem`, `audit_key`/`audit_seq_from_key` — base do rollback cognitivo | Append-only ledger |
 | `doctrine.rs` | **v1.1.8**: agent doctrine (`DOCTRINE`, key/scope/entities) — source `docs/doctrine.md` | Compile-time include |
 | `staleness.rs` | **v1.1.18**: `StalenessLevel`/`Reason`/`Config`/`Hit` — classify only (TTL/Decay/contradicts/aging) | Read-only report |
@@ -29,6 +29,7 @@ Layered architecture with injectable seams (replacing the origin kernel):
 | `conflict.rs` | `ConflictRecord` (CFL1), conflict detection/preservation/resolution | CRDT adjunct |
 | `fingerprint.rs` | **v1.1.21**: `index_fingerprint` — oráculo do estado DERIVADO (ADR-0011); ids/órfãos do BQ/floats FORA do hash | Integrity oracle |
 | `math.rs` | **v1.1.22**: polyfills `sqrt_f32`/`ln_f32`/`exp_f32` (core não tem `f32::sqrt`/`ln`/`exp`); testes host-only (`#[cfg(all(test, feature = "std"))]`) | Core-safe math |
+| `negative.rs` | **v1.1.24** (ADR-0014): ledger de negativos — `AbsenceEntry` (wire de valor `NDG1`), `normalize_query` (tokens BM25), `negative_key` (`sys/negative/<fnv1a64(scope‖0x1f‖query):016x>`, largura fixa). Side-table, **não** wire type; decode truncation-safe | Append-only registry |
 | `harness.rs` | **v1.1.19**: ADR-0010 harness (`CommitRunPlan`/`DeprecateRunReport`, `MOM_ANTI_PATTERN`) | Host harness |
 | `limits.rs` | **P1-3**: centralized storage/embedding ceilings | Constants |
 | `metrics.rs` | Runtime metrics counters | Observability |

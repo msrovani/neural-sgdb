@@ -77,7 +77,7 @@ v1.1.5–v1.1.6 acrescentaram era guard e hits tipados — ver `CHANGELOG.md`.
 
 Status: itens **1–10 entregues em v1.1.4** (2026-08-14, commits por item com
 regressão; na época: matriz 210+1 / 256+1 / 162+1; hot test 22 tools).
-**Estado corrente (v1.1.23):** crate 1.1.23; MCP 4 tools + aliases; default
+**Estado corrente (v1.1.24):** crate 1.1.24; MCP 4 tools + aliases; default
 recall lexical (ADR-0008); hot test **103/0**; matriz **330+1 / 376+1 / 274+1**.
 Typed hits (v1.1.6), doutrina (v1.1.8), oráculo do índice derivado (ADR-0011) e
 recall adaptativo (ADR-0012) permanecem.

@@ -275,7 +275,7 @@ fn error_response(id: &Value, code: i64, message: &str) -> Value {
 
 /// NÃºmero de tools em `tools/list` (aliases antigos ainda funcionam em tools/call).
 const EXPECTED_MCP_TOOL_COUNT: usize = 4;
-const MCP_CONTRACT_VERSION: &str = "1.1.23";
+const MCP_CONTRACT_VERSION: &str = "1.1.24";
 const BUILD_GIT: &str = env!("NEURAL_SGDB_BUILD_GIT");
 
 /// Lista pÃºblica: 4 tools. Os 23 nomes antigos continuam vÃ¡lidos em `tools/call`.
@@ -308,12 +308,16 @@ const ALIAS_SURFACE: &[&str] = &[
     "explain",
     "feedback",
     "forget",
+    "forget_absence",
     "gc",
     "merge_memories",
+    "note_absence",
     "profile",
     "rag_context",
+    "recall_absences",
     "recall_ann",
     "recall_entities",
+    "recall_ledger",
     "recall_temporal",
     "reinforce",
     "related_to",
@@ -1429,6 +1433,148 @@ fn main() {
                                 "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
                         }
                     }
+                    // ---- Ledger de negativos (v1.1.24 item 7, ADR-0014) ----
+                    // Shape JSON PROPRIO: nao e a lista de hits do `format=json`
+                    // (compat: quem parseia hits nao ve campo novo nenhum).
+                    "recall_absences" => {
+                        let limit = args["limit"].as_u64().unwrap_or(50) as usize;
+                        let scope = args["scope_user"]
+                            .as_str()
+                            .or(args["scope"].as_str())
+                            .unwrap_or("");
+                        let scope_opt = if scope.is_empty() { None } else { Some(scope) };
+                        match db.recall_absences(scope_opt, limit) {
+                            Ok(list) if list.is_empty() => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":if scope.is_empty() {
+                                    String::from("nenhuma ausencia global registrada")
+                                } else {
+                                    format!("nenhuma ausencia registrada no scope {scope:?}")
+                                }}],"isError":false}})),
+                            Ok(list) => {
+                                let text = if args["format"].as_str().unwrap_or("") == "json" {
+                                    serde_json::to_string(&json!(list
+                                        .iter()
+                                        .map(|e| json!({"query":e.query,"scope":e.scope,"probes":e.probes,
+                                            "first_tick":e.first_tick,"last_tick":e.last_tick}))
+                                        .collect::<Vec<_>>()))
+                                    .unwrap_or_else(|_| String::from("[]"))
+                                } else {
+                                    list.iter()
+                                        .map(|e| format!(
+                                            "- {} | scope={} probes={} first={} last={} [ausencia]",
+                                            e.query, e.scope, e.probes, e.first_tick, e.last_tick
+                                        ))
+                                        .collect::<Vec<_>>()
+                                        .join("\n")
+                                };
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                    "content":[{"type":"text","text":text}],"isError":false}}))
+                            }
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
+                        }
+                    }
+                    "note_absence" => {
+                        let query = args["query"].as_str().unwrap_or("");
+                        if query.trim().is_empty() {
+                            send(&error_response(&id, -32602, "parametro 'query' obrigatorio"));
+                            continue;
+                        }
+                        let scope = args["scope_user"]
+                            .as_str()
+                            .or(args["scope"].as_str())
+                            .unwrap_or("");
+                        let now = args["now"].as_u64().unwrap_or_else(|| {
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis() as u64)
+                                .unwrap_or(0)
+                        });
+                        match db.note_absence(query, scope, now) {
+                            Ok(probes) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":format!(
+                                    "ausencia registrada (probes={probes}, scope={scope:?}) — proximo recall desta query avisa que ja foi procurada")}],
+                                "isError":false}})),
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
+                        }
+                    }
+                    "forget_absence" => {
+                        let query = args["query"].as_str().unwrap_or("");
+                        if query.trim().is_empty() {
+                            send(&error_response(&id, -32602, "parametro 'query' obrigatorio"));
+                            continue;
+                        }
+                        let scope = args["scope_user"]
+                            .as_str()
+                            .or(args["scope"].as_str())
+                            .unwrap_or("");
+                        match db.forget_absence(query, scope) {
+                            Ok(true) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":String::from("ausencia removida")}],"isError":false}})),
+                            Ok(false) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":String::from("nenhuma ausencia registrada para essa query (nada a remover)")}],"isError":false}})),
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
+                        }
+                    }
+                    "recall_ledger" => {
+                        let query = args["query"].as_str().unwrap_or("");
+                        if query.trim().is_empty() {
+                            send(&error_response(&id, -32602, "parametro 'query' obrigatorio"));
+                            continue;
+                        }
+                        let k = args["k"].as_u64().unwrap_or(5) as usize;
+                        let scope = args["scope_user"]
+                            .as_str()
+                            .or(args["scope"].as_str())
+                            .unwrap_or("");
+                        let scope_opt = if scope.is_empty() { None } else { Some(scope) };
+                        let now = args["now"].as_u64().unwrap_or_else(|| {
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis() as u64)
+                                .unwrap_or(0)
+                        });
+                        match db.recall_with_ledger(query, k, scope_opt, now) {
+                            Ok(r) => {
+                                let absences: Vec<Value> = r
+                                    .absences
+                                    .iter()
+                                    .map(|e| json!({"query":e.query,"scope":e.scope,"probes":e.probes,
+                                        "first_tick":e.first_tick,"last_tick":e.last_tick}))
+                                    .collect();
+                                let text = if args["format"].as_str().unwrap_or("") == "json" {
+                                    let hits: Vec<Value> = r.hits.iter().map(hit_json).collect();
+                                    serde_json::to_string(&json!({
+                                        "hits": hits, "absences": absences, "recorded": r.recorded}))
+                                    .unwrap_or_else(|_| String::from("{}"))
+                                } else {
+                                    let mut lines: Vec<String> =
+                                        r.hits.iter().map(fmt_hit).collect();
+                                    if lines.is_empty() {
+                                        lines.push(String::from("(nenhum hit)"));
+                                    }
+                                    lines.push(format!(
+                                        "[ledger] recorded={} ausencias={}",
+                                        r.recorded,
+                                        r.absences.len()
+                                    ));
+                                    for e in &r.absences {
+                                        lines.push(format!(
+                                            "  - {} probes={} first={} last={}",
+                                            e.query, e.probes, e.first_tick, e.last_tick
+                                        ));
+                                    }
+                                    lines.join("\n")
+                                };
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                    "content":[{"type":"text","text":text}],"isError":false}}))
+                            }
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
+                        }
+                    }
                     "explain" => {
                         let key = args["key"].as_str().unwrap_or("");
                         if key.is_empty() {
@@ -2104,7 +2250,11 @@ mod tests {
         }
         // tripwire: a superficie derivada do dispatch tem 34 nomes. Se um arm
         // novo for adicionado sem entrar aqui, o `did_you_mean` fica cego.
-        assert_eq!(ALIAS_SURFACE.len(), 34, "superficie de alias mudou");
+        assert_eq!(
+        ALIAS_SURFACE.len(),
+        38,
+        "superficie de alias mudou (v1.1.24: +4 do ledger de negativos)"
+    );
         assert_eq!(LISTED_TOOLS.len(), EXPECTED_MCP_TOOL_COUNT);
     }
 
@@ -2148,7 +2298,7 @@ mod tests {
         assert_eq!(v["error"]["code"], -32602, "o codigo de erro nao muda");
         assert_eq!(v["error"]["message"], "Unknown tool");
         assert_eq!(v["error"]["data"]["tool"], "recal");
-        assert_eq!(v["error"]["data"]["alias_count"], 34);
+        assert_eq!(v["error"]["data"]["alias_count"], 38);
         assert_eq!(
             v["error"]["data"]["listed_tools"].as_array().map(|a| a.len()),
             Some(4)

@@ -62,13 +62,13 @@ migrations in `MIGRATIONS.md` and never silently reinterpreted old bytes
 
 ## Current line (1.1.x)
 
-Crate version in `Cargo.toml` is **1.1.23**; additive feature releases
-**v1.1.2–v1.1.23** are documented in `CHANGELOG.md` and `docs/api.md` without
+Crate version in `Cargo.toml` is **1.1.24**; additive feature releases
+**v1.1.2–v1.1.24** are documented in `CHANGELOG.md` and `docs/api.md` without
 a MAJOR bump. Architecture docs in `docs/architecture/` describe the
-**shipped** system at **v1.1.23** (lexical-first MCP, ADR-0008, ADR-0010
+**shipped** system at **v1.1.24** (lexical-first MCP, ADR-0008, ADR-0010
 `commit_run`, null-scoping `ScopeDims`, ADR-0011 oracle, ADR-0012 adaptive
 recall). Typed hits
-landed in v1.1.6; agent doctrine in v1.1.8; cognitive metadata in v1.1.10; host governance + micro-ganhos in v1.1.11; security hardening 11→1 em v1.1.12; v1.1.13 tentou Store/extensão — **track browser estacionado** (não é produto); v1.1.15 = MDM1 v7 + TTL/GC + ANN; **v1.1.17** = ADC-lite dual-path + state-first; **v1.1.18** = telepathy 2-DB FileStorage harness; **v1.1.19** = harness `commit_run` / anti-patterns (ADR-0010); **v1.1.20** = null-scoping honra `ScopeDims` + pool `recall_*_dims` + consolidate herda dims; **v1.1.21** = oráculo `index_fingerprint` + invariante de `corpus_mean` + métricas de `open` + erro de alias útil (ADR-0011); **v1.1.22** = `src/math.rs` consolidado + `recall_adaptive` / `RecallProbe` (ADR-0012); **v1.1.23** = revisão de documentação + fix do `enum` anunciado em `health` (schema divergindo do handler).
+landed in v1.1.6; agent doctrine in v1.1.8; cognitive metadata in v1.1.10; host governance + micro-ganhos in v1.1.11; security hardening 11→1 em v1.1.12; v1.1.13 tentou Store/extensão — **track browser estacionado** (não é produto); v1.1.15 = MDM1 v7 + TTL/GC + ANN; **v1.1.17** = ADC-lite dual-path + state-first; **v1.1.18** = telepathy 2-DB FileStorage harness; **v1.1.19** = harness `commit_run` / anti-patterns (ADR-0010); **v1.1.20** = null-scoping honra `ScopeDims` + pool `recall_*_dims` + consolidate herda dims; **v1.1.21** = oráculo `index_fingerprint` + invariante de `corpus_mean` + métricas de `open` + erro de alias útil (ADR-0011); **v1.1.22** = `src/math.rs` consolidado + `recall_adaptive` / `RecallProbe` (ADR-0012); **v1.1.23** = revisão de documentação + fix do `enum` anunciado em `health` (schema divergindo do handler); **v1.1.24** = `ScopeDims` autoritativo (o `scope` legado vira espelho de `user`, write-through; ADR-0013) + ledger de negativos `sys/negative/` (ADR-0014).
 
 ## Host connectors (`connectors/`)
 

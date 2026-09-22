@@ -23,10 +23,10 @@ Tree OS local de referência: `C:\DEV\neural-os-core-latest` (não
 |-----------|----------------------------|-----|
 | NMD1 golden L1 `"k"` / `0xAA` | `src/memory_doc.rs::golden_nmd1_bytes` | `crates/k_ai/src/sgdb/memory_doc.rs::golden_nmd1_bytes_match_neural_sgdb` — **mesmo vetor de bytes** |
 | META (MDM1) | `META_VERSION = 7` (scope_dims + model_id) | vendored `crates/neural-sgdb` também `META_VERSION = 7` |
-| Crate SemVer vendored | **1.1.23** | **1.1.16** (`crates/neural-sgdb/Cargo.toml`) |
+| Crate SemVer vendored | **1.1.24** | **1.1.16** (`crates/neural-sgdb/Cargo.toml`) |
 
 **Conclusão:** o **fio NMD1** (e o espelho TKLV no nano stack) continua o
-contrato com o OS. O **lag de produto** (1.1.16→**1.1.23**, 7 releases) afecta
+contrato com o OS. O **lag de produto** (1.1.16→**1.1.24**, 8 releases) afecta
 APIs cognitivas / MCP / harness (`commit_run`, null-scoping `ScopeDims`, oráculo
 `index_fingerprint`, `recall_adaptive`), **não** o layout NMD1 dos goldens acima —
 e é exatamente por isso que o re-sync vendored continua sendo o item de interop

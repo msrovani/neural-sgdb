@@ -47,8 +47,20 @@ The OS interop contract. NMD1 NEVER changes without a joint bump in
 | `sys/audit/` | hash-chain ledger (`AUD1`, `sys/audit/<seq:016x>`) + snapshot for `rollback_to` | v1.1.10 |
 | `sys/ttl/` | TTL per-key → 8B `expires_at u64le` (host-driven sweep `expire_ttl`) | v1.1.15 |
 | `sys/event/` | evento temporal (start/close) → timeline `recall_timeline` | v1.1.15 |
+| `sys/negative/` | ledger de negativos: `NDG1` (probes/first/last/scope/query) por `fnv1a64(scope‖0x1f‖query)` — "o que já procurei e não estava lá" | v1.1.24 |
 
 ## Known migrations
+
+### MDM1 v7 — sem bump no v1.1.24 (canonicalização de escrita)
+
+O v1.1.24 (ADR-0013) torna `ScopeDims` **autoritativo** e o `scope` legado um
+espelho de `scope_dims.user`: `set_scope` passa a escrever os DOIS campos
+(write-through), então os bytes de `sys/meta/` ficam canônicos. **Nenhuma
+mudança de layout, nenhuma mudança de versão, nenhum byte reinterpretado** — a
+regra de promoção do decode (legado → `user` quando as dims vêm vazias)
+continua valendo para registros pré-v7 e para payloads de peer. Um leitor que
+decodifica os campos sem essa promoção passa a ver os dois preenchidos (antes
+via `scope` setado e dims vazias).
 
 ### MDM1 v1 → v2 (v0.7)
 

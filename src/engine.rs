@@ -249,6 +249,13 @@ impl AiosDatabaseEngine {
         self.storage.put(key, val)
     }
 
+    /// Delete CRU do storage (v1.1.24): simétrico a `storage_put`, para
+    /// side-tables que NÃO passam por índices derivados (`sys/negative/` do
+    /// ledger — remover uma ausência não toca doc, ART, BQ nem lexical).
+    pub(crate) fn storage_delete(&mut self, key: &[u8]) -> Result<(), SgdbError> {
+        self.storage.delete(key)
+    }
+
     /// Persiste doc: L0/L1 → RAM; demais → Storage (`md/Lx/key`) + indexa.
     /// v0.6: além do NMD1, escreve a side-table `sys/meta/` (identidade +
     /// proveniência) — identidade é ESTÁVEL: um doc já existente na chave

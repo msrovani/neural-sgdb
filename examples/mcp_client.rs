@@ -190,8 +190,8 @@ fn main() {
     rep.check("initialize responde", !r.get("error").is_some(), r.to_string());
     rep.check("protocolVersion 2025-11-25",
         r["result"]["protocolVersion"] == "2025-11-25", r.to_string());
-    rep.check("serverInfo version 1.1.23",
-        r["result"]["serverInfo"]["version"] == "1.1.23", r.to_string());
+    rep.check("serverInfo version 1.1.24",
+        r["result"]["serverInfo"]["version"] == "1.1.24", r.to_string());
     rep.check("serverInfo mcp_tool_count 4",
         r["result"]["serverInfo"]["mcp_tool_count"] == 4, r.to_string());
     let instr = r["result"]["instructions"].as_str().unwrap_or("");
@@ -555,6 +555,67 @@ fn main() {
     rep.check("deprecate_run run vazio e no-op seguro", !is_err && txt.contains("archived=0"), txt.clone());
     rep.phase("harness commit_run", &t);
 
+    // ---------- fase 6d: ledger de negativos (v1.1.24, item 7) ----------
+    // A memória guarda o que foi DITO; o ledger guarda o que foi PROCURADO e
+    // não estava lá. O shape JSON é PRÓPRIO (query/probes/first/last) — não é
+    // a lista de hits do `format=json`, que continua intocada.
+    let t = Instant::now();
+    // Tokens que NÃO existem em documento nenhum: o BM25 casa por sobreposição
+    // parcial, então uma query com uma palavra conhecida ("banco") ACHA.
+    let missing = "zzqxx wvyyzz qqzzww";
+    let r = srv.rpc(
+        "tools/call",
+        json!({"name":"recall_ledger","arguments":{"query":missing,"k":3,"now":1900000000001u64}}),
+    );
+    let txt = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+    rep.check(
+        "recall_ledger: probe vazio registra a ausencia",
+        r["result"]["isError"] == false && txt.contains("[ledger] recorded=true"),
+        r.to_string(),
+    );
+    let r2 = srv.rpc(
+        "tools/call",
+        json!({"name":"recall_ledger","arguments":{"query":missing,"k":3,"now":1900000000002u64}}),
+    );
+    let txt2 = r2["result"]["content"][0]["text"].as_str().unwrap_or("");
+    rep.check(
+        "recall_ledger: re-probe REFORCA (probes=2, sem duplicar)",
+        txt2.contains("probes=2"),
+        r2.to_string(),
+    );
+    let (txt, is_err) = srv.tool("recall_absences", json!({"format":"json","limit":10}));
+    rep.check(
+        "recall_absences: shape JSON proprio (query/probes, nao e a lista de hits)",
+        !is_err
+            && txt.contains("zzqxx wvyyzz qqzzww")
+            && txt.contains("probes")
+            && !txt.contains("\"dist\""),
+        txt.clone(),
+    );
+    let (txt, is_err) = srv.tool("note_absence", json!({"query":"outra-ausente","now":1900000000003u64}));
+    rep.check("note_absence explicito", !is_err && txt.contains("probes=1"), txt.clone());
+    let (txt, is_err) = srv.tool("forget_absence", json!({"query":"outra-ausente"}));
+    rep.check("forget_absence remove", !is_err && txt.contains("removida"), txt.clone());
+    // self-healing: a memÃ³ria EXISTE ⇒ o probe acha e limpa a ausÃªncia
+    let (_, _) = srv.tool("note_absence", json!({"query":"hot test alpha","now":1900000000004u64}));
+    let r3 = srv.rpc(
+        "tools/call",
+        json!({"name":"recall_ledger","arguments":{"query":"hot test alpha","k":3}}),
+    );
+    let txt3 = r3["result"]["content"][0]["text"].as_str().unwrap_or("");
+    rep.check(
+        "recall_ledger: achou memoria -> recorded=false",
+        txt3.contains("recorded=false") && txt3.contains("md/"),
+        r3.to_string(),
+    );
+    let (txt, _) = srv.tool("recall_absences", json!({"format":"json"}));
+    rep.check(
+        "ausencia obsoleta removida (self-healing)",
+        !txt.contains("hot test alpha"),
+        txt.clone(),
+    );
+    rep.phase("ledger de negativos", &t);
+
     // ---------- fase 7: observabilidade (health/validate) ----------
     let t = Instant::now();
     let (txt, is_err) = srv.tool("health", json!({}));
@@ -672,7 +733,7 @@ fn main() {
     rep.check("tool desconhecida -> data com listed_tools/alias_count",
         r["error"]["code"] == -32602
             && r["error"]["data"]["listed_tools"].as_array().map(|a| a.len()) == Some(4)
-            && r["error"]["data"]["alias_count"] == 34,
+            && r["error"]["data"]["alias_count"] == 38,
         r.to_string());
     let r = srv.rpc("tools/call", json!({"name": "remember"}));
     rep.check("parametro faltando â†’ -32602", r["error"]["code"] == -32602, r.to_string());

@@ -18,6 +18,7 @@ use crate::memory_doc::{
     LineageEntry, MemoryDoc, MemoryLayer, MemoryMeta, MemoryRecord, MemoryState, RelationKind,
     ScopeDims, ScopeFilter,
 };
+use crate::negative::AbsenceEntry;
 use crate::storage::{Storage, SgdbError};
 
 /// Resolve o tipo de conteúdo do hit (v1.1.6 item 2 — seam de WRITE): a
@@ -161,6 +162,24 @@ pub struct AdaptiveRecall {
     pub boundary_decisive: bool,
     /// Pool do degrau vencedor — o "porquê" de `boundary_decisive`.
     pub probe: RecallProbe,
+}
+
+/// Resultado de um recall que CONSULTA e MANTÉM o ledger de negativos
+/// (v1.1.24, ADR-0014). Devolve os hits do probe lexical **e** o estado do
+/// ledger para a mesma query — a camada superior vê numa única chamada
+/// "achei" / "já procurei antes e não estava lá".
+#[derive(Clone, Debug)]
+pub struct RecallLedger {
+    /// Hits do probe (mode lexical: semântica é do caller, que pode usar
+    /// `note_absence` depois).
+    pub hits: Vec<Hit>,
+    /// Ausências já registradas para esta query+escopo ANTES desta chamada
+    /// (`probes` já reflete o registro desta, se `recorded`).
+    pub absences: Vec<AbsenceEntry>,
+    /// `true` = o probe voltou vazio e esta chamada registrou/reforçou a
+    /// ausência. `false` = achou memória (e, se havia ausência, ela foi
+    /// REMOVIDA — self-healing).
+    pub recorded: bool,
 }
 
 /// Degraus do recall adaptativo: barato primeiro, caro só se preciso.
@@ -978,6 +997,193 @@ impl Sgdb {
         Ok(facts)
     }
 
+    // ---- Ledger de negativos (v1.1.24, item 7 — ADR-0014) ----
+    //
+    // A memória guarda o que foi DITO; o ledger guarda o que foi PROCURADO e
+    // não estava lá. Sem ele, um agente re-probe o mesmo buraco a cada sessão
+    // (um turno pago por vez) e não consegue distinguir "nunca escrevi isto"
+    // de "escrevi noutro escopo". O registro é ESCOPADO (a ausência de um
+    // tenant não vira evidência do outro) e REFORÇA em vez de duplicar.
+
+    /// Registra (ou reforça) uma ausência: a `query`, no `scope`, foi
+    /// procurada e não estava lá. Idempotente por identidade: a mesma query
+    /// normalizada só incrementa `probes` e move `last_tick` — nunca cria uma
+    /// segunda entrada. Devolve o total de probes.
+    pub fn note_absence(&mut self, query: &str, scope: &str, now: u64) -> Result<u32, SgdbError> {
+        if !scope.is_empty() {
+            validate_written(scope)?;
+        }
+        let norm = crate::negative::normalize_query(query);
+        if norm.is_empty() {
+            return Err(SgdbError::Invalid("empty absence query"));
+        }
+        if norm.len() > crate::limits::MAX_KLEN {
+            return Err(SgdbError::Invalid("absence query exceeds MAX_KLEN"));
+        }
+        let key = crate::negative::negative_key(scope, &norm);
+        let mut e = match self.engine.storage_get(key.as_bytes())? {
+            Some(bytes) => AbsenceEntry::decode(&bytes).map(|(e, _)| e).unwrap_or_default(),
+            None => AbsenceEntry::default(),
+        };
+        if e.probes == 0 {
+            // primeira vez: `first_tick` fica no primeiro registro
+            e.first_tick = now;
+            e.query = norm;
+            e.scope = scope.to_string();
+        }
+        e.probes = e.probes.saturating_add(1);
+        e.last_tick = now;
+        self.engine.storage_put(key.as_bytes(), &e.encode())?;
+        Ok(e.probes)
+    }
+
+    /// Remove uma ausência (a camada superior descobriu a memória por outro
+    /// caminho, ou a pergunta deixou de importar). Devolve `true` se havia
+    /// algo para remover. Idempotente.
+    pub fn forget_absence(&mut self, query: &str, scope: &str) -> Result<bool, SgdbError> {
+        let norm = crate::negative::normalize_query(query);
+        if norm.is_empty() {
+            return Err(SgdbError::Invalid("empty absence query"));
+        }
+        let key = crate::negative::negative_key(scope, &norm);
+        let existed = self.engine.storage_get(key.as_bytes())?.is_some();
+        if existed {
+            self.engine.storage_delete(key.as_bytes())?;
+        }
+        Ok(existed)
+    }
+
+    /// Lista as ausências registradas, recentes primeiro (`last_tick` desc,
+    /// desempate pela chave — determinístico). `None` = só as GLOBAIS (o
+    /// null-scoping de sempre: sem escopo não se vê ausência de tenant).
+    pub fn recall_absences(
+        &mut self,
+        scope: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<AbsenceEntry>, SgdbError> {
+        let rows = self.engine.scan_prefix_storage(crate::negative::NEGATIVE_PREFIX)?;
+        let mut out: Vec<AbsenceEntry> = Vec::new();
+        for (_, bytes) in rows {
+            let Some((e, _)) = AbsenceEntry::decode(&bytes) else {
+                continue;
+            };
+            let visible = match scope {
+                None => e.scope.is_empty(),
+                Some(s) => e.scope == s,
+            };
+            if visible {
+                out.push(e);
+            }
+        }
+        out.sort_by(|a, b| {
+            b.last_tick
+                .cmp(&a.last_tick)
+                .then_with(|| a.scope.cmp(&b.scope))
+                .then_with(|| a.query.cmp(&b.query))
+        });
+        out.truncate(limit);
+        Ok(out)
+    }
+
+    /// Número de ausências registradas (`0` barato para `health`/hosts).
+    pub fn absence_count(&mut self) -> Result<usize, SgdbError> {
+        Ok(self
+            .engine
+            .scan_prefix_storage(crate::negative::NEGATIVE_PREFIX)?
+            .len())
+    }
+
+    /// **O probe com ledger**: faz um recall lexical (sem embedding — o
+    /// default do MCP, ADR-0008) e reconcilia o ledger com o resultado.
+    ///
+    /// - Achou memória ⇒ remove a ausência daquela query (self-healing: o
+    ///   fato chegou) e `recorded = false`.
+    /// - Não achou ⇒ registra/reforça a ausência e `recorded = true`;
+    ///   `absences` traz o registro JÁ atualizado, então o host sabe quantas
+    ///   vezes isto já foi procurado sem sucesso.
+    ///
+    /// `scope` é o MESMO parâmetro do recall escopado (null-scoping: `None`
+    /// só vê globais). O ledger é sempre mutado — por isso este é um método
+    /// explicitamente opt-in, com efeito colateral declarado no nome.
+    pub fn recall_with_ledger(
+        &mut self,
+        query_text: &str,
+        k: usize,
+        scope: Option<&str>,
+        now: u64,
+    ) -> Result<RecallLedger, SgdbError> {
+        let scope_s = scope.filter(|s| !s.is_empty()).unwrap_or("");
+        let hits = if scope_s.is_empty() {
+            self.recall_lexical(query_text, k)?
+        } else {
+            self.recall_lexical_scoped(query_text, k, scope_s)?
+        };
+        let recorded = if hits.is_empty() {
+            self.note_absence(query_text, scope_s, now)?;
+            true
+        } else {
+            // o fato agora existe — a ausência registrada está obsoleta
+            self.forget_absence(query_text, scope_s)?;
+            false
+        };
+        let absences = self.expiring_absences(query_text, scope_s)?;
+        Ok(RecallLedger {
+            hits,
+            absences,
+            recorded,
+        })
+    }
+
+    /// Ausências da EXATA query+escopo (0 ou 1 entrada) — o "porquê" que
+    /// acompanha `recall_with_ledger`.
+    fn expiring_absences(
+        &mut self,
+        query_text: &str,
+        scope: &str,
+    ) -> Result<Vec<AbsenceEntry>, SgdbError> {
+        let norm = crate::negative::normalize_query(query_text);
+        if norm.is_empty() {
+            return Ok(Vec::new());
+        }
+        let key = crate::negative::negative_key(scope, &norm);
+        Ok(match self.engine.storage_get(key.as_bytes())? {
+            Some(bytes) => AbsenceEntry::decode(&bytes)
+                .map(|(e, _)| alloc::vec![e])
+                .unwrap_or_default(),
+            None => Vec::new(),
+        })
+    }
+
+    /// Retenção do ledger (host-scheduler): remove ausências cujo último probe
+    /// seja mais antigo que `max_age_ticks`. `max_age_ticks == 0` DESLIGA (não
+    /// remove nada) — mesma convenção do `DecayConfig.half_life_ms`. `max_remove`
+    /// limita o trabalho de uma passada (0 = sem limite). Determinístico.
+    pub fn prune_absences(
+        &mut self,
+        now: u64,
+        max_age_ticks: u64,
+        max_remove: usize,
+    ) -> Result<usize, SgdbError> {
+        if max_age_ticks == 0 {
+            return Ok(0);
+        }
+        let rows = self.engine.scan_prefix_storage(crate::negative::NEGATIVE_PREFIX)?;
+        let mut removed = 0usize;
+        for (key, bytes) in rows {
+            if max_remove != 0 && removed >= max_remove {
+                break;
+            }
+            let Some((e, _)) = AbsenceEntry::decode(&bytes) else {
+                continue;
+            };
+            if e.last_tick != 0 && now.saturating_sub(e.last_tick) > max_age_ticks {
+                self.engine.storage_delete(&key)?;
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+
     /// Redefine todos os contadores (ex: antes de um teste de carga).
     pub fn reset_metrics(&mut self) {
         self.metrics = crate::metrics::Metrics::default();
@@ -1105,6 +1311,14 @@ impl Sgdb {
     /// user/agent/projeto. Vazio = escopo global (default, não bate filtro de
     /// scope). Registros pré-v1.1.4 decodificam com `scope = ""` (migração
     /// MDM1 v4 explícita).
+    ///
+    /// **v1.1.24 (ADR-0013): `ScopeDims` é AUTORITATIVO; `scope` é o seu
+    /// ESPELHO de `user`.** Este setter escreve os DOIS campos
+    /// (write-through), então os bytes persistidos em `sys/meta/` já ficam
+    /// canônicos — antes o `scope` ia para o storage sozinho e só o decode
+    /// de compat derivava `dims.user` (quem lê o storage cru via o escopo
+    /// global). `set_scope_dims` sempre espelhou na direção oposta; agora a
+    /// identidade `scope == scope_dims.user` vale nos dois sentidos.
     pub fn set_scope(&mut self, key: &str, scope: &str) -> Result<(), SgdbError> {
         if !scope.is_empty() {
             validate_written(scope)?;
@@ -1112,11 +1326,13 @@ impl Sgdb {
         let sk = self.resolve_known_key(key);
         let mut m = self.engine.ensure_meta(&sk)?;
         m.scope = scope.to_string();
+        m.scope_dims.user = scope.to_string();
         self.engine.write_meta(&sk, &m)
     }
 
-    /// Lê o escopo atual de uma memória (vazio = global). `meta()` já expõe
-    /// o campo — esta é a conveniência explícita para o filtro de scope.
+    /// Lê o escopo atual de uma memória (vazio = global) — a **projeção
+    /// `user`** do escopo autoritativo (`scope_dims_of`). Depois do
+    /// write-through do v1.1.24 os dois concordam por construção.
     pub fn scope_of(&mut self, key: &str) -> Result<String, SgdbError> {
         let sk = self.resolve_known_key(key);
         Ok(self.engine.meta(&sk)?.map(|m| m.scope).unwrap_or_default())
@@ -1139,7 +1355,10 @@ impl Sgdb {
         self.engine.write_meta(&sk, &m)
     }
 
-    /// Lê as dimensões de escopo (global = tudo vazio).
+    /// Lê as dimensões de escopo (global = tudo vazio) — **a forma
+    /// autoritativa** do escopo (v1.1.24, ADR-0013): `scope_of` é apenas a
+    /// sua projeção `user`. O decode promove o legado `scope` (v1–v6) para
+    /// `user` quando as dims vêm vazias, então registros antigos leem igual.
     pub fn scope_dims_of(&mut self, key: &str) -> Result<ScopeDims, SgdbError> {
         let sk = self.resolve_known_key(key);
         Ok(self
@@ -4576,6 +4795,33 @@ impl Sgdb {
             }),
         }
 
+        // 6. escopo (v1.1.24, ADR-0013): `scope` legado é ALIAS de
+        //    `scope_dims.user`. O invariante é `scope == dims.user` DEPOIS do
+        //    decode (que já promove o legado para `user` quando dims é
+        //    global). O caminho de API faz write-through nos dois sentidos,
+        //    então uma divergência só aparece se um escritor EXTERNO gravou a
+        //    meta à mão (`put` com meta construída) ou veio de um import de
+        //    peer com o formato antigo — sinalizar aqui é a única defesa.
+        if let Ok(rows) = self.engine.scan_prefix_storage(b"sys/meta/") {
+            for (mk, bytes) in rows {
+                let target = String::from_utf8_lossy(&mk[9..]).into_owned();
+                if !(target.starts_with("md/L3/")
+                    || target.starts_with("md/L4/")
+                    || target.starts_with("md/L5/"))
+                {
+                    continue;
+                }
+                if let Ok(m) = MemoryMeta::decode(&bytes) {
+                    if !m.scope_dims.user.is_empty() && m.scope != m.scope_dims.user {
+                        issues.push(ValidateIssue {
+                            key: target,
+                            message: "legacy scope disagrees with scope_dims.user",
+                        });
+                    }
+                }
+            }
+        }
+
         issues
     }
 
@@ -4835,6 +5081,230 @@ mod tests {
         // scope_of / meta expõem o campo
         assert_eq!(db.scope_of("kA").unwrap(), "user/ana");
         assert_eq!(db.scope_of("kG").unwrap(), "", "sem marcação = global");
+    }
+
+    #[test]
+    fn scope_dims_is_authoritative_and_scope_is_its_alias() {
+        // CHARACTERIZATION do item 4 (Release 3). O teste nasceu pinando o
+        // estado PRÉ-unificação e foi atualizado junto com a mudança; o
+        // "antes" medido está registrado no ADR-0013:
+        //   (a) `set_scope` gravava só o campo legado — os BYTES em
+        //       `sys/meta/` ficavam com as 4 dims vazias (só o decode de
+        //       compat derivava `dims.user`);
+        //   (b) `encode(decode(raw)) != raw` (storage não canônico);
+        //   (c) nenhum invariante sinalizava um meta divergente.
+        // Agora: `scope == scope_dims.user` vale nos DOIS sentidos, no
+        // storage cru e na leitura.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("kA", "preferencia da ana: cafe", &[1.0, -1.0, 1.0, -1.0])
+            .unwrap();
+        db.set_scope("kA", "user/ana").unwrap();
+        // (1) as duas leituras concordam, e a escrita legada espelha em user.
+        assert_eq!(db.scope_of("kA").unwrap(), "user/ana");
+        assert_eq!(db.scope_dims_of("kA").unwrap().user, "user/ana");
+        // (2) os bytes GRAVADOS já são a forma canônica (write-through):
+        //     re-encodar a meta decodificada devolve exatamente o storage.
+        let raw = db
+            .engine
+            .storage_get(b"sys/meta/md/L4/kA")
+            .unwrap()
+            .expect("meta persistida");
+        let m = MemoryMeta::decode(&raw).unwrap();
+        assert_eq!(m.scope, m.scope_dims.user, "invariante: scope é alias de user");
+        assert_eq!(
+            MemoryMeta::encode(&m),
+            raw,
+            "DEPOIS: o storage guarda a forma canônica (scope == dims.user)"
+        );
+        // (3) recall multi-dim acha; distribuição legada conta o escopo.
+        let f = ScopeFilter::single("user/ana");
+        assert_eq!(
+            db.recall_scoped_dims(&[1.0, -1.0, 1.0, -1.0], 10, &f).unwrap().len(),
+            1
+        );
+        assert_eq!(
+            db.scope_distribution_dims().unwrap(),
+            alloc::vec![(String::from("user/ana///"), 1)],
+            "rótulo projeta as 4 dimensões — o legado vira só `user`"
+        );
+        assert_eq!(
+            db.scope_distribution().unwrap().scoped,
+            alloc::vec![(String::from("user/ana"), 1)]
+        );
+        // (4) a direção inversa também espelha: dims → legado.
+        db.remember_semantic("kB", "preferencia do bruno", &[1.0, -1.0, 1.0, -1.0])
+            .unwrap();
+        db.set_scope_dims(
+            "kB",
+            &ScopeDims {
+                user: String::from("user/bruno"),
+                agent: String::from("agent/7"),
+                app: String::new(),
+                run: String::new(),
+            },
+        )
+        .unwrap();
+        assert_eq!(db.scope_of("kB").unwrap(), "user/bruno", "user espelha o legado");
+        let raw_b = db
+            .engine
+            .storage_get(b"sys/meta/md/L4/kB")
+            .unwrap()
+            .unwrap();
+        assert_eq!(MemoryMeta::encode(&MemoryMeta::decode(&raw_b).unwrap()), raw_b);
+        // (5) limpar o legado limpa o user (e vice-versa) — sem escopo órfão.
+        db.set_scope("kB", "").unwrap();
+        assert_eq!(db.scope_of("kB").unwrap(), "");
+        assert_eq!(db.scope_dims_of("kB").unwrap().user, "");
+        assert_eq!(
+            db.scope_dims_of("kB").unwrap().agent,
+            "agent/7",
+            "limpar o alias não apaga as outras dimensões"
+        );
+        // (6) o invariante tem dentes: uma meta EXTERNA divergente (gravada à
+        //     mão, como um import de peer faria) é sinalizada pelo validate.
+        db.remember_semantic("kC", "fato do carlos", &[1.0, -1.0, 1.0, -1.0])
+            .unwrap();
+        let mut hand = MemoryMeta::decode(
+            &db.engine
+                .storage_get(b"sys/meta/md/L4/kC")
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        hand.scope = String::from("user/carlos");
+        hand.scope_dims.user = String::from("user/outro");
+        db.engine
+            .storage_put_raw(b"sys/meta/md/L4/kC", &MemoryMeta::encode(&hand))
+            .unwrap();
+        let issues = db.validate();
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.key == "md/L4/kC"
+                    && i.message == "legacy scope disagrees with scope_dims.user"),
+            "validate deveria flaggar o desacordo de escopo: {issues:?}"
+        );
+        assert!(
+            !issues.iter().any(|i| i.key == "md/L4/kA"),
+            "o caminho API é canônico — não pode aparecer: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn negative_ledger_records_reinforces_and_self_heals() {
+        // v1.1.24 item 7 (ADR-0014): o ledger de negativos lembra do que foi
+        // PROCURADO e não estava lá — e se cura sozinho quando o fato chega.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        // (1) probe vazio ⇒ registra
+        let r = db.recall_with_ledger("cha verde", 5, None, 100).unwrap();
+        assert!(r.hits.is_empty());
+        assert!(r.recorded, "probe vazio registra a ausência");
+        assert_eq!(r.absences.len(), 1);
+        assert_eq!(r.absences[0].probes, 1);
+        assert_eq!(r.absences[0].first_tick, 100);
+        assert_eq!(r.absences[0].last_tick, 100);
+        assert_eq!(r.absences[0].query, "cha verde");
+        // (2) re-probe ⇒ REFORÇA (não duplica): probes++, first preservado
+        let r2 = db.recall_with_ledger("cha verde", 5, None, 200).unwrap();
+        assert_eq!(db.absence_count().unwrap(), 1, "não duplica entrada");
+        assert_eq!(r2.absences[0].probes, 2);
+        assert_eq!(r2.absences[0].first_tick, 100, "first_tick é o do 1º registro");
+        assert_eq!(r2.absences[0].last_tick, 200);
+        // (3) a identidade é NORMALIZADA (mesmos tokens ⇒ mesma entrada)
+        db.note_absence("CHA, verde!", "", 250).unwrap();
+        assert_eq!(db.absence_count().unwrap(), 1);
+        assert_eq!(db.recall_absences(None, 10).unwrap()[0].probes, 3);
+        // (4) o fato chega ⇒ o probe acha e a ausência é REMOVIDA (self-heal)
+        db.remember_text_with(
+            "cha-quente",
+            "cha verde gelado",
+            RememberOptions {
+                scope: None,
+                entities: &[],
+                content_type: None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let r3 = db.recall_with_ledger("cha verde", 5, None, 300).unwrap();
+        assert!(!r3.hits.is_empty(), "agora a memória existe: {:?}", r3.hits);
+        assert!(!r3.recorded);
+        assert!(r3.absences.is_empty(), "ausência obsoleta removida");
+        assert_eq!(db.absence_count().unwrap(), 0);
+        // (5) query vazia é erro; e o ledger não gera falso positivo no validate
+        assert!(db.note_absence("   ", "", 1).is_err());
+        db.note_absence("nunca escrito", "", 400).unwrap();
+        assert!(db.validate().is_empty(), "side-table do ledger não é órfã: {:?}", db.validate());
+    }
+
+    #[test]
+    fn negative_ledger_is_scoped_and_null_scoped() {
+        // A ausência de um tenant NUNCA é evidência do outro (mesma regra de
+        // null-scoping do recall): sem scope, só as globais aparecem.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.note_absence("fato compartilhado", "", 10).unwrap();
+        db.note_absence("fato compartilhado", "user/ana", 11).unwrap();
+        db.note_absence("segredo", "user/ana", 12).unwrap();
+        assert_eq!(db.absence_count().unwrap(), 3, "a MESMA query em escopos distintos são entradas distintas");
+        let g = db.recall_absences(None, 10).unwrap();
+        assert_eq!(g.len(), 1);
+        assert_eq!(g[0].query, "fato compartilhado");
+        assert_eq!(g[0].scope, "");
+        let a = db.recall_absences(Some("user/ana"), 10).unwrap();
+        assert_eq!(a.len(), 2, "recentes primeiro: {:?}", a);
+        assert_eq!(a[0].query, "segredo", "last_tick desc");
+        assert!(db.recall_absences(Some("user/bruno"), 10).unwrap().is_empty());
+        // recall_with_ledger escopado não vê a memória global nem vice-versa
+        db.remember_text_with(
+            "global-x",
+            "chave global do sistema",
+            RememberOptions {
+                scope: None,
+                entities: &[],
+                content_type: None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let rg = db.recall_with_ledger("chave global do sistema", 5, None, 20).unwrap();
+        assert!(!rg.hits.is_empty(), "o probe global acha a memória global");
+        let ra = db
+            .recall_with_ledger("chave global do sistema", 5, Some("user/ana"), 21)
+            .unwrap();
+        assert!(ra.hits.is_empty(), "escopado não vê a global: {:?}", ra.hits);
+        assert!(ra.recorded, "e registra a ausência NO escopo");
+        assert_eq!(db.recall_absences(Some("user/ana"), 10).unwrap().len(), 3);
+        assert_eq!(db.recall_absences(None, 10).unwrap().len(), 1, "a global intacta");
+    }
+
+    #[test]
+    fn negative_ledger_prunes_and_forgets() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.note_absence("velha", "", 100).unwrap();
+        db.note_absence("media", "", 900).unwrap();
+        db.note_absence("nova", "", 990).unwrap();
+        // max_age_ticks = 0 DESLIGA (não remove) — convenção do DecayConfig
+        assert_eq!(db.prune_absences(1_000, 0, 0).unwrap(), 0);
+        assert_eq!(db.absence_count().unwrap(), 3);
+        // em now=1000, retenção 500 ⇒ só "velha" (last=100) sai
+        assert_eq!(db.prune_absences(1_000, 500, 0).unwrap(), 1);
+        assert_eq!(db.absence_count().unwrap(), 2);
+        assert!(db
+            .recall_absences(None, 10)
+            .unwrap()
+            .iter()
+            .all(|e| e.query != "velha"));
+        // max_remove limita a passada (determinístico: varre em ordem de chave)
+        assert_eq!(db.prune_absences(10_000, 1, 1).unwrap(), 1);
+        assert_eq!(db.absence_count().unwrap(), 1, "a passada removeu exatamente 1");
+        // forget explícito: true na primeira vez, false depois (idempotente)
+        let sobra = db.recall_absences(None, 10).unwrap()[0].query.clone();
+        assert!(db.forget_absence(&sobra, "").unwrap());
+        assert!(!db.forget_absence(&sobra, "").unwrap());
+        assert_eq!(db.absence_count().unwrap(), 0);
+        // escopo hostil é rejeitado na escrita (regra do write-path)
+        assert!(db.note_absence("x", "user/../etc", 1).is_err());
+        assert!(db.note_absence("x", "a#b", 1).is_err());
     }
 
     #[test]

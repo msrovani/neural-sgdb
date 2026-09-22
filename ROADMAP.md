@@ -1,8 +1,8 @@
 # Roadmap — neural-sgdb
 
-Status: **v1.1.x maintenance line (crate v1.1.23)** —
+Status: **v1.1.x maintenance line (crate v1.1.24)** —
 stable API, zero deps, `no_std` + `std`, CI gates green. Crate version
-**1.1.23**; histórico v1.1.2–v1.1.23 no `CHANGELOG.md`. This roadmap is honest
+**1.1.24**; histórico v1.1.2–v1.1.24 no `CHANGELOG.md`. This roadmap is honest
 about what is DONE, what is NEXT, and what is deliberately NOT planned.
 
 Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
@@ -29,10 +29,18 @@ Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
    densos: 44% a 338 candidatos/query vs 40% a ~160 do 16× fixo), então o que
    ficou entregue é o instrumento para o host decidir, não uma promessa.
 
-🔜 **Release 3 do plano (itens 4 e 7)** — unificação de scope + ledger de
-   negativos. É o único pedaço do plano de 8 itens não entregue: os dois únicos
-   itens que MUDAM comportamento, por isso por último e abertos com
-   characterization test.
+✅ **v1.1.24 — unificação de escopo + ledger de negativos (2026-09-22)** —
+   release **3/3** do plano de melhorias (itens 4 e 7), o único pedaço que
+   MUDOU comportamento — por isso por último e aberto com characterization
+   test. **`ScopeDims` autoritativo** ([ADR-0013](docs/adr/0013-scope-dims-is-authoritative.md)):
+   `set_scope` faz write-through nos dois campos, então os bytes persistidos em
+   `sys/meta/` são canônicos (`scope == scope_dims.user` nos dois sentidos) —
+   antes o desacordo morava no storage e só o decode de compat o escondia;
+   `validate` §6 sinaliza meta divergente. **Ledger de negativos**
+   ([ADR-0014](docs/adr/0014-negative-ledger.md)): side-table
+   `sys/negative/` que lembra do que foi PROCURADO e não estava lá, com
+   self-healing (achou ⇒ remove a ausência) e 4 aliases MCP. Sem mudança de
+   formato; matriz **337+1 / 383+1 / 281+1**, hot test **110/0**.
 
 🔜 **Index snapshot on `Sgdb::open` — §3, agora GATED EM DADOS** — hoje rebuild
    linear de ART/BQ/lexical. TickvFile já tem TKCK fast-mount; falta

@@ -1,6 +1,6 @@
 ﻿# 06 — Cognitive API
 
-> Status: **current (v1.1.23)** — the cognitive surface ships in `Sgdb` +
+> Status: **current (v1.1.24)** — the cognitive surface ships in `Sgdb` +
 > MCP server (**4 tools**, aliases for the 23 legacy names). **implemented** =
 > code + tests; **remaining** = honest gap. All English per repo policy.
 
@@ -74,7 +74,7 @@ material for the agent/LLM above.
 ## 6. MCP surface (implemented — 4 tools + aliases)
 
 `cargo run --release --example mcp_server` — JSON-RPC 2.0 stdio, handshake
-`2025-11-25`. `serverInfo.version` = `MCP_CONTRACT_VERSION` = **1.1.23**, e o
+`2025-11-25`. `serverInfo.version` = `MCP_CONTRACT_VERSION` = **1.1.24**, e o
 `examples/mcp_client.rs` é pinado no MESMO commit — o hot test falha alto se
 divergirem.
 
@@ -118,6 +118,36 @@ reader consumes typed hits (`content_type`, `payload_type`, `rel`,
 | `memory_arena_eval.rs` | utility eval (protocol v2 vs naive hoarder) |
 | `two_ai_protocol.rs` | typed hit consumption |
 | `embedder_http.rs` | real HTTP Embedder seam |
+
+## 8b. Escopo autoritativo + ledger de negativos (v1.1.24)
+
+**`ScopeDims` é autoritativo; o `scope` legado é o espelho de `user`**
+([ADR-0013](../adr/0013-scope-dims-is-authoritative.md)). Os dois mecanismos já
+concordavam em toda LEITURA (o decode promove o legado → `user` quando as dims
+vêm vazias, e `effective_scope_dims` faz o mesmo nos filtros de recall); o
+desacordo morava nos BYTES gravados. Agora `set_scope` faz write-through nos
+dois campos, o `sys/meta/` fica canônico e `validate` §6 sinaliza
+`legacy scope disagrees with scope_dims.user` em meta divergente (só alcançável
+por escrita externa/import). Não há bump de MDM1: é canonicalização de escrita,
+não reinterpretação de bytes.
+
+**Ledger de negativos** ([ADR-0014](../adr/0014-negative-ledger.md)) —
+"o que já procurei e não estava lá", o complemento do `mom/anti-pattern`
+(que é uma *memória positiva* com lição negativa). Side-table
+`sys/negative/<fnv1a64(scope‖0x1f‖query):016x>`:
+
+- identidade = tokens do BM25 (caixa/pontuação não fragmentam; acento e
+  paráfrase sim — mesma limitação do índice lexical);
+- **escopado**: sem `scope` só as ausências globais aparecem (null-scoping);
+- `note_absence` **reforça** (`probes++`), não duplica;
+- `recall_with_ledger` = probe lexical **e** ledger numa chamada, com
+  **self-healing** (achou memória ⇒ remove a ausência obsoleta);
+- `prune_absences` é a retenção do host (`0` desliga); nunca é chamada pelo
+  core por conta própria.
+
+O `recall` default **não** tem efeito colateral — mutar uma leitura só acontece
+por API cujo nome diz que escreve (a mesma postura do ADR-0012 quanto a mudar a
+ordem de um recall por conta própria).
 
 ## 9. Remaining gaps
 

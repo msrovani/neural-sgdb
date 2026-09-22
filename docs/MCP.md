@@ -3,14 +3,14 @@
 Guia de instalação, contrato e troubleshooting do servidor MCP
 (`examples/mcp_server.rs`).
 
-## Contrato atual (v1.1.23)
+## Contrato atual (v1.1.24)
 
 | Campo | Valor |
 |-------|-------|
 | Protocolo | JSON-RPC 2.0 over **stdio** (uma linha JSON por mensagem) |
 | Handshake | `initialize` → `protocolVersion: 2025-11-25` |
-| `serverInfo.version` | `1.1.23` (`MCP_CONTRACT_VERSION` em `examples/mcp_server.rs`) |
-| Tools | **4** (`remember`, `recall`, `health`, `curate`) — 34 nomes antigos/alias ainda funcionam em `tools/call` (`ALIAS_SURFACE`) |
+| `serverInfo.version` | `1.1.24` (`MCP_CONTRACT_VERSION` em `examples/mcp_server.rs`) |
+| Tools | **4** (`remember`, `recall`, `health`, `curate`) — 38 nomes antigos/alias ainda funcionam em `tools/call` (`ALIAS_SURFACE`) |
 | Recall default | **lexical** (ADR-0008). Cosine: `embedding=` ou `NEURAL_SGDB_EMBEDDER=demo` |
 | Embedder host | unset = none; `NEURAL_SGDB_EMBEDDER=demo` = trigrama explícito (**não** semântico) |
 | Write sem vetor | `remember(text=)` → **L3** (`remember_text_with`); L4 só com `embedding=` ou `NEURAL_SGDB_EMBEDDER=demo` |
@@ -30,7 +30,7 @@ L3; `recall(entities|at|rag=true)` → 1-hop / temporal / rag; `health(view=era|
 (v1.1.10: metadado cognitivo; **v1.1.19+**: harness ADR-0010 `commit_run`/`deprecate_run`;
 `audit_verify` expõe `structuredContent` com o `AuditReport`).
 
-Aliases (ainda aceitos no call): **34** nomes — a lista vive em `ALIAS_SURFACE`
+Aliases (ainda aceitos no call): **38** nomes — a lista vive em `ALIAS_SURFACE`
 (`examples/mcp_server.rs`) e e pinada por teste, em vez de prosa (a contagem
 "23" era do rework v1.1.8 e envelheceu com as ops cognitivas de v1.1.10 e o
 harness de v1.1.19):
@@ -48,6 +48,15 @@ set_ttl  supersede  timeline  validate
 `-32602`, mas passa a carregar `data.did_you_mean` (ate 3 sugestoes
 deterministicas), `data.listed_tools` (as 4) e `data.alias_count`. Um agente que
 errou o nome conserta o schema em uma chamada em vez de queimar um turno.
+
+**v1.1.24 — ledger de negativos (4 aliases, JSON próprio).** `recall_ledger`
+(`{query,k,now,scope}`) faz o probe lexical **e** reconcilia o ledger numa
+chamada; `recall_absences` lista as ausências registradas (`{limit,scope,format}`);
+`note_absence` registra explicitamente (`{query,now}`); `forget_absence` remove.
+O JSON do ledger é **shape próprio** (`{query,scope,probes,first_tick,last_tick}`) —
+nunca a lista de hits do `format=json`, então um consumidor de hits não vê campo
+novo. Escopado: sem `scope` só as ausências globais aparecem (null-scoping).
+Ver [ADR-0014](adr/0014-negative-ledger.md).
 
 **v1.1.21 — `health(view=index)`** devolve `index_fingerprint`
 (`{:016x}`), `doc_count`, `bq_len`, `indexed_embedding_dims` e o contrato de

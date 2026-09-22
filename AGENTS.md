@@ -6,15 +6,15 @@ repo. **Read `codemap.md` (atlas), `docs/api.md` (contract) and
 Storage, Cognitive API; typed hits from v1.1.6; current crate = `Cargo.toml`) and
 `docs/implementation-status.md` before editing code.**
 
-**Shipped crate is 1.1.23 (agentic MCP contract 1.1.23):** MCP lists **4 tools**
-(`remember`/`recall`/`health`/`curate`; **34** alias names live in
+**Shipped crate is 1.1.24 (agentic MCP contract 1.1.24):** MCP lists **4 tools**
+(`remember`/`recall`/`health`/`curate`; **38** alias names live in
 `ALIAS_SURFACE` em `examples/mcp_server.rs` — tabela pinada por teste, não prosa).
 `curate` ganhou ops de metadado cognitivo (decay/consolidate/audit_checkpoint/
 audit_verify/rollback_to) e harness ADR-0010 (`commit_run`/`deprecate_run`).
 Default retrieval is **lexical**. Unset `NEURAL_SGDB_EMBEDDER` = none;
 `=demo` only if requested (não setar no `mcp.json` global). `remember(text=)`
 without a vector → L3 (`remember_text_with`). Resources: `nsgdb://doctrine` +
-`nsgdb://session`. Hot test **103/0**. Lib tests **330+1 / 376+1 / 274+1**
+`nsgdb://session`. Hot test **110/0**. Lib tests **337+1 / 383+1 / 281+1**
 (default / p2p / no_std). Bump `MCP_CONTRACT_VERSION` ⇒ pin `mcp_client`
 `serverInfo.version` no mesmo commit (senão hot test falha). **v1.1.17:**
 ADC-lite dual-path + state-first ranking (`corpus_mean`, `bq_top_k_f32_dual`);
@@ -22,7 +22,9 @@ bitvecs/era intactos. **v1.1.18:** telepathy 2-DB + host harvest (MOM,
 surprise→reinforce, paging, `health(view=staleness)`). **v1.1.19:** ADR-0010
 harness `commit_run` / `deprecate_run` / `mom/anti-pattern`. **v1.1.20:**
 null-scoping honra `ScopeDims`; `recall_*_dims` pool unfiltered;
-consolidate herda dims.
+consolidate herda dims. **v1.1.24:** `ScopeDims` é AUTORITATIVO (o `scope`
+legado vira espelho de `user`, write-through) + ledger de negativos
+(`sys/negative/`).
 
 **Interop OS:** NMD1/TKLV byte-identical with `neural-os-core` (`k_ai` golden
 `golden_nmd1_bytes_match_neural_sgdb`). See [`docs/interop-os.md`](docs/interop-os.md).
@@ -435,7 +437,7 @@ turno, exact vs paraphrase, isolamento de scope). Paraphrase MISSA no lexical
 
 Release 1/3 do plano de melhorias (itens 1, 2, 3, 6) — **tudo aditivo, nada muda
 comportamento de recall**. Sem mudança de formato. Contrato MCP → **1.1.21**.
-Matrix corrente (pós-v1.1.23): **330+1 / 376+1 / 274+1**.
+Matrix corrente (pós-v1.1.24): **337+1 / 383+1 / 281+1**.
 
 - **`index_fingerprint` (ADR-0011)** — oráculo canônico do estado derivado;
   invariante `fp(open) == fp(rebuild_indices())`. **Três exclusões que são o
@@ -532,6 +534,37 @@ Auditoria de `docs/` + raiz. Sem mudança de formato; `MCP_CONTRACT_VERSION` →
   **schema anunciado checado por asserção** — não documentação em prosa.
 - Matrix: **330+1 / 376+1 / 274+1**; hot test **103/0**.
 
+## Post-audit v1.1.24 (unificação de escopo + ledger de negativos)
+
+Release **3/3** do plano de melhorias (itens 4 e 7) — os dois únicos itens que
+MUDAM comportamento, por isso por último. Sem mudança de formato (NMD1/TKLV
+intocados; MDM1 **sem** bump). Contrato MCP → **1.1.24**.
+
+- **`ScopeDims` autoritativo, `scope` legado é espelho de `user` (ADR-0013).**
+  O read-side já unificava (o decode promove o legado → `user` com dims vazias;
+  `effective_scope_dims` idem nos filtros); o desacordo morava nos **bytes**
+  persistidos: `set_scope` gravava só o campo legado, então
+  `encode(decode(raw)) != raw` e quem lesse `scope_dims` como campo (peer, OS,
+  outra implementação) via escopo global. Agora `set_scope` faz **write-through**
+  nos dois campos; `validate` §6 sinaliza
+  `legacy scope disagrees with scope_dims.user` (só alcançável por meta montada
+  à mão / import divergente). **Caracterization test antes de tocar**: o teste
+  pinou o estado v1.1.23, foi verde ANTES da mudança e foi atualizado junto.
+- **Ledger de negativos (ADR-0014)**: side-table
+  `sys/negative/<fnv1a64(scope‖0x1f‖query):016x>` (valor `NDG1`, **não** é wire
+  type) para "o que já procurei e não estava lá". Identidade = tokens do BM25
+  (caixa/pontuação não fragmentam; **acento e paráfrase fragmentam** — mesma
+  limitação do BM25, documentada). Escopado (ausência de um tenant nunca é
+  evidência de outro). `note_absence` **reforça** (probes++) em vez de duplicar;
+  `recall_with_ledger` = probe lexical + ledger numa chamada, com
+  **self-healing** (achou ⇒ remove a ausência). `prune_absences` é a retenção do
+  host (`max_age_ticks == 0` DESLIGA, convenção do `DecayConfig`).
+  MCP: `recall_ledger` / `recall_absences` / `note_absence` / `forget_absence`
+  com **JSON próprio** — o shape de `format=json` dos hits fica intacto.
+  Lição de teste: o BM25 casa por **sobreposição parcial**, então um probe só é
+  "vazio" se NENHUM token existir (a primeira versão do teste usou
+  `…neste-banco` e achou um doc por causa de `banco`).
+
 ## Repository Map
 
 A full codemap is available at `codemap.md` in the project root.
@@ -612,7 +645,7 @@ let facts = db.scan_prefix("md/L3/")?;                 // ART prefix scan
 ```bash
 cargo run --release --example bench        # benchmarks (ART/BQ/recall vs FP32)
 cargo run --release --example mcp_server   # MCP server for AI agents
-cargo run --release --example mcp_client   # HOT TEST: drives mcp_server like an IDE (103/0)
+cargo run --release --example mcp_client   # HOT TEST: drives mcp_server like an IDE (110/0)
 cargo run --release --example agent_protocol  # DECISION PROTOCOL (itens 2–6 + P1–P6): como o agente USA o DB
 cargo run --release --example two_ai_protocol # PROTOCOLO MÁQUINA→MÁQUINA (v1.1.6 itens 1–5): IA-A grava datum declarado, IA-B lê tipado
 cargo run --release --example memory_arena_eval # MEMORY-ARENA EVAL (P7): utilidade da memória em tarefas interdependentes
@@ -636,9 +669,9 @@ hash, not a semantic model). Restart opencode after changing the config.
 ## Running tests
 
 ```bash
-cargo test                                 # 330+1 tests (InMemory/FileStorage/TickvFile)
-cargo test --features p2p                  # 376+1 (includes CRDT sync + mesh harness)
-cargo test --no-default-features           # 274+1 (no_std core, host test harness)
+cargo test                                 # 337+1 tests (InMemory/FileStorage/TickvFile)
+cargo test --features p2p                  # 383+1 (includes CRDT sync + mesh harness)
+cargo test --no-default-features           # 281+1 (no_std core, host test harness)
 cargo check --no-default-features --target x86_64-unknown-none   # no_std gate
 cargo clippy --all-targets --all-features -- -D warnings          # lint gate (P0-5)
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-6/P0-10)
@@ -685,7 +718,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-
   module-doc tem de bater com os decoders de fato chamados no teste: o `AUD1`
   (v1.1.10) entrou no harness e a lista continuou dizendo 8 — adicionar um tipo
   wire é adicioná-lo AQUI (mais o `prop_tests` do próprio módulo) e manter a
-  matrix (**330+1 / 376+1 / 274+1**) verde. `SignedEnvelope::decode` returns
+  matrix (**337+1 / 383+1 / 281+1**) verde. `SignedEnvelope::decode` returns
   `Option<(Self, usize)>` (no magic byte — corrupt via field lengths, not
   byte 0).
 - **TickvFile** (`src/tickv.rs`): 512-aligned records, tombstone `vlen=0` or

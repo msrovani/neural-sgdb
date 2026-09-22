@@ -1,6 +1,6 @@
 ﻿# neural-sgdb — Implementation Status
 
-> **Current snapshot (2026-09-21, v1.1.23).** Capability matrix vs the shipped
+> **Current snapshot (2026-09-22, v1.1.24).** Capability matrix vs the shipped
 > codebase. For the public contract see [`docs/api.md`](api.md); for architecture
 > narrative see [`docs/architecture/README.md`](architecture/README.md).
 
@@ -17,11 +17,11 @@
 
 | Check | Command | Result |
 |---|---|---|
-| Default tests | `cargo test --lib` | **330** |
-| P2P tests | `cargo test --features p2p --lib` | **376** |
-| no_std tests | `cargo test --no-default-features --lib` | **274** |
+| Default tests | `cargo test --lib` | **337** |
+| P2P tests | `cargo test --features p2p --lib` | **383** |
+| no_std tests | `cargo test --no-default-features --lib` | **281** |
 | no_std target | `cargo check --no-default-features --target x86_64-unknown-none` | **ok** |
-| Hot test (MCP) | `cargo run --release --example mcp_client` | **103/0 exit 0** |
+| Hot test (MCP) | `cargo run --release --example mcp_client` | **110/0 exit 0** |
 | AI-user sim | `cargo run --release --example agent_sim` | loop real, scope isolado |
 | Machine protocol | `cargo run --release --example two_ai_protocol` | **16/16 exit 0** |
 | Agent protocol | `cargo run --release --example agent_protocol` | **23/23 exit 0** |
@@ -36,6 +36,8 @@
 | MDM1 v7 scope_dims+model_id (v1.1.14/15) | IMPLEMENTED | `ScopeDims{user,agent,app,run}`, `model_id`, `mixed_models` verdict |
 | Harness commit_run (ADR-0010, v1.1.19) | IMPLEMENTED | `src/harness.rs`: `commit_run`/`deprecate_run`/`consolidate_recurrences_scoped`/`remember_episodic_scoped`; MCP `curate` ops; `mom/anti-pattern` |
 | Null-scoping ScopeDims (v1.1.20) | IMPLEMENTED | `allows_scope_filter`; `recall_*_dims` pool; consolidate herda dims; 14 harness tests |
+| ScopeDims autoritativo (ADR-0013, v1.1.24) | IMPLEMENTED | `set_scope` write-through (`scope == scope_dims.user`); `validate` §6 sinaliza divergência; characterization test com o "antes" no cabeçalho |
+| Ledger de negativos (ADR-0014, v1.1.24) | IMPLEMENTED | `src/negative.rs` (`NDG1`), `sys/negative/`; `note_absence`/`forget_absence`/`recall_absences`/`recall_with_ledger` (self-healing)/`prune_absences`; 4 aliases MCP com JSON próprio |
 | Hybrid RRF + rerank seam (v1.1.14) | IMPLEMENTED | `recall_hybrid_rrf`, `Reranker`, `recall_reranked` |
 | Local embedder crate (v1.1.14) | IMPLEMENTED | `nsgdb-embed` 384d, `LOCAL_MODEL_ID` |
 | TTL per-key + GC (v1.1.15) | IMPLEMENTED | `sys/ttl/`, `expire_ttl`, `GcConfig/collect_garbage` |
@@ -112,13 +114,13 @@ mesh harness tests. `node_versions` gossip may not converge in directed
 topologies; **content** does.
 
 ### MCP
-4 tools (`remember`/`recall`/`health`/`curate`); 23 legacy names as
-`tools/call` aliases. Default recall **lexical** (ADR-0008). Unset
+4 tools (`remember`/`recall`/`health`/`curate`); 38 legacy names as
+`tools/call` aliases (incl. the 4 ledger aliases of ADR-0014). Default recall **lexical** (ADR-0008). Unset
 `NEURAL_SGDB_EMBEDDER` = none (`=demo` explicit only). `remember(text=)`
 without vector → L3. Resources `nsgdb://doctrine` + `nsgdb://session`.
 `health(view=tensions|staleness|era)`. Harness ADR-0010:
-`curate(op=commit_run|deprecate_run)`. Hot test **103/0**. MCP contract
-**1.1.23**.
+`curate(op=commit_run|deprecate_run)`. Hot test **110/0**. MCP contract
+**1.1.24**.
 
 ### Host connectors
 `connectors/` is host-side (not crate SemVer). Hermes `MemoryProvider` is

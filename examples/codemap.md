@@ -32,18 +32,24 @@ protocols that codify HOW to use the DB.
 
 ## mcp_client.rs — HOT TEST
 - `cargo run --release --example mcp_client` — drives `mcp_server` like an IDE;
-  **103/0 checks exit 0** (v1.1.23). Covers 4-tool surface + aliases, lexical
+  **110/0 checks exit 0** (v1.1.24). Covers 4-tool surface + aliases, lexical
   default (ADR-0008), `format=json`, `remember(type=)`, temporal, entities,
   lazy pagination, scope, persistence across restart, metadado cognitivo
-  (`consolidate`/`audit_*`/`decay`), e **fase harness** (`commit_run` /
-  `deprecate_run`, ADR-0010). Episódicos L2 precisam de `now` DISTINTO por
-  chamada (senão as chaves `md/L2/ts/<hex>` colidem no mesmo ms).
+  (`consolidate`/`audit_*`/`decay`), **fase harness** (`commit_run` /
+  `deprecate_run`, ADR-0010) e **fase ledger de negativos** (v1.1.24:
+  `recall_ledger`/`recall_absences`/`note_absence`/`forget_absence`).
+  Episódicos L2 precisam de `now` DISTINTO por chamada (senão as chaves
+  `md/L2/ts/<hex>` colidem no mesmo ms); e a query de um probe "vazio" precisa
+  de TODOS os tokens inéditos — o BM25 casa por sobreposição parcial (a 1ª
+  versão do teste usou `…neste-banco` e achou um doc por causa de `banco`).
 
 ## mcp_server.rs
 - `cargo run --release --example mcp_server` — connectable to Claude Code/Cursor/OpenCode
 - MCP (Model Context Protocol) over stdio: JSON-RPC 2.0, one message per `\n`
   line, stdout JSON-RPC ONLY (logs → stderr), legacy `2025-11-25` handshake
-- Tools (4): `remember`, `recall`, `health`, `curate` (aliases: 23 nomes antigos no call)
+- Tools (4): `remember`, `recall`, `health`, `curate` (aliases: **38** nomes no call — `ALIAS_SURFACE`, tabela pinada por teste)
+- **v1.1.24 (ledger)**: aliases `recall_ledger`/`recall_absences`/`note_absence`/
+  `forget_absence` com **JSON próprio** (não é a lista de hits do `format=json`)
 - **Hits TIPADOS (v1.1.6)**: `format=json` devolve hits ESTRUTURADOS
   (`[{key,text,dist,score,path,type,dim,matched_terms,validity,rel,
   provenance}]`); `remember(type=)` declara o rótulo (seam MDM1 v6);

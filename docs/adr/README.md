@@ -29,7 +29,10 @@ decisions MUST add an ADR in the same commit as the code.
 | 0008 | Default retrieval is lexical; embeddings are host-side | MCP default = lexical; `DemoEmbedder` is not the product path; optional local HTTP embedder; never in the core |
 | 0009 | Index snapshot on open; metrics-gated auto-adapt | Storage = truth; TKCK-like index snapshot; measure `open_ms`/`doc_count`/reopens; auto persist+fast-mount when budget breaks — **not** mid-query; impl ROADMAP Next |
 | 0010 | Harness commit_run / anti-patterns / obsolescence | No `Deprecated` state; `arch/rev/*` + supersede; `mom/anti-pattern`; facade `commit_run` (**v1.1.19**); null-scoping `ScopeDims` (**v1.1.20**) |
-| 0011 | Derived-index integrity oracle | `index_fingerprint` = `fp(open) == fp(rebuild)`; ids/órfãos do BQ/floats FORA; `validate` checa `corpus_mean` com tolerância relativa; ADR-0009 §3 ganha o validador (**v1.1.21**) || 0012 | Adaptive recall: pay for the boundary only when it is ambiguous | `recall_adaptive` escala `1→4→8→16` enquanto o gap `k`/`k+1` couber em `SCORE_TIE_MARGIN`; `RecallProbe` distingue "store acabou" de "pool faminto"; opt-in (muda ordem) — e o bench MEDE que o default ainda escala demais (**v1.1.22**) |
+| 0011 | Derived-index integrity oracle | `index_fingerprint` = `fp(open) == fp(rebuild)`; ids/órfãos do BQ/floats FORA; `validate` checa `corpus_mean` com tolerância relativa; ADR-0009 §3 ganha o validador (**v1.1.21**) |
+| 0012 | Adaptive recall: pay for the boundary only when it is ambiguous | `recall_adaptive` escala `1→4→8→16` enquanto o gap `k`/`k+1` couber em `SCORE_TIE_MARGIN`; `RecallProbe` distingue "store acabou" de "pool faminto"; opt-in (muda ordem) — e o bench MEDE que o default ainda escala demais (**v1.1.22**) |
+| 0013 | `ScopeDims` is authoritative; legacy `scope` mirrors `user` | `set_scope` faz write-through nos dois campos (bytes canônicos); decode-compat preservado; `validate` §6 sinaliza divergência; sem bump de MDM1 (**v1.1.24**) |
+| 0014 | Negative ledger: remember what was searched and absent | Side-table `sys/negative/<fnv1a64(scope‖0x1f‖query)>`; identidade = tokens do BM25; escopado; reforça (não duplica); `recall_with_ledger` registra/auto-cura; MCP 4 aliases com JSON próprio (**v1.1.24**) |
 
 ## Retrospective history
 

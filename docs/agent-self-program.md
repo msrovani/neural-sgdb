@@ -48,7 +48,10 @@ playbook são a rede de segurança.
 4. Carregar a **memória operacional** (secção 3) se ainda não estiver no contexto.
 5. `health(view=tensions)` — `unseen_scopes` ≠ DB vazio (null-scoping).
 6. `health(view=staleness)` — o que envelheceu (TTL / Decayed / contradicts); **não** auto-forget.
-7. Só então agir / `remember`. **Gather → act. Não hoarde.**
+7. `recall_absences` (v1.1.24) — **o que já foi procurado e não estava lá**. Ler ANTES
+   de re-probar: a lista diz a pergunta, o escopo, quantas vezes foi sondada e
+   desde quando. Para sondar e registrar numa só chamada use `recall_ledger`.
+8. Só então agir / `remember`. **Gather → act. Não hoarde.**
 
 ---
 
@@ -193,6 +196,9 @@ Ops úteis: `explain`, `reinforce`, `feedback`, `forget`, `supersede`,
 - Tratar `DemoEmbedder` / `NEURAL_SGDB_EMBEDDER=demo` como semântica real.
 - Setar `NEURAL_SGDB_EMBEDDER=demo` no `mcp.json` **global** sem pedido explícito.
 - Recall sem `scope` e concluir que “não há memória” (null-scoping; inclui `ScopeDims`).
+- Re-probar a MESMA pergunta sem olhar `recall_absences` — o ledger existe para
+  isso; e não confundir registro de ausência com afirmação sobre o mundo (ele
+  vale para a query, o escopo e o índice do momento da sondagem).
 - Pedir / implementar `MemoryState::Deprecated` (ADR-0010: usar supersede/Archived).
 - Hoarding / dump de markdown ou transcripts no DB.
 - Follow-up com key curta em vez de `md/L3|L4/...`.
@@ -245,7 +251,8 @@ Playbook: docs/agent-self-program.md; prompts harness: docs/harness-prompts.md; 
 ```text
 You use neural-sgdb via MCP (remember/recall/health/curate). Follow docs/doctrine.md
 and docs/agent-self-program.md: cold-start every session, null-scoping (incl. ScopeDims),
-lexical default, full storage keys, gather-then-remember, no hoarding. End of task:
+check recall_absences before re-probing (negative ledger), lexical default, full storage
+keys, gather-then-remember, no hoarding. End of task:
 curate(op=commit_run). Prefer format=json. See docs/harness-prompts.md for the six pillars.
 ```
 

@@ -36,12 +36,12 @@ TKLV formats.
 ## Commands
 
 ```bash
-cargo test                                   # 330+1 tests
-cargo test --features p2p                    # 376+1
-cargo test --no-default-features             # 274+1 (no_std core, host harness)
+cargo test                                   # 337+1 tests
+cargo test --features p2p                    # 383+1
+cargo test --no-default-features             # 281+1 (no_std core, host harness)
 cargo run --release --example bench          # benchmarks
 cargo run --release --example mcp_server     # MCP server (4 tools, lexical default)
-cargo run --release --example mcp_client     # HOT TEST (103/0 checks; rebuild mcp_server first)
+cargo run --release --example mcp_client     # HOT TEST (110/0 checks; rebuild mcp_server first)
 cargo run --release --example two_ai_protocol # machine→machine contract (16/16)
 cargo check --no-default-features --target x86_64-unknown-none
 ```

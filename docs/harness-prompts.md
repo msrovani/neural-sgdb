@@ -1,6 +1,6 @@
 # Harness Engineering × neural-sgdb — prompts corrigidos
 
-> **Status:** alinhado a **v1.1.23** / ADR-0010 (implemented).  
+> **Status:** alinhado a **v1.1.24** / ADR-0010 (implemented).  
 > Substitui o rascunho externo que pedia `MemoryState::Deprecated`, schema novo
 > para anti-patterns e “implementar” capacidades já shipped.  
 > Canónico: este ficheiro + [`adr/0010-harness-commit-run.md`](adr/0010-harness-commit-run.md)
@@ -10,7 +10,7 @@
 
 ## Correções vs texto de origem (obrigatório)
 
-| Origem (errado / desatualizado) | Contrato real (v1.1.19–v1.1.23) |
+| Origem (errado / desatualizado) | Contrato real (v1.1.19–v1.1.24) |
 |---------------------------------|--------------------------------|
 | Marcar memórias `deprecated` | **Não** existe `MemoryState::Deprecated`. Usar `supersede` → `Superseded`, ou `forget` → `Archived` |
 | “Schema/métodos novos” p/ anti-patterns | Anti-pattern = memória normal + entities `mom/anti-pattern` + `avoid/<slug>` (sem MDM1 v8, sem ContentType novo) |
@@ -32,7 +32,7 @@ secção 7 de [`agent-self-program.md`](agent-self-program.md).
 # [SYSTEM PROTOCOL: GLOBAL HARNESS & AGENTIC GUARDRAILS]
 # Applicability: Universal (all projects / IDEs)
 # Paradigm: Harness Engineering (Model as Commodity, Harness as Moat)
-# Memory: neural-sgdb MCP (remember / recall / health / curate) — v1.1.23+
+# Memory: neural-sgdb MCP (remember / recall / health / curate) — v1.1.24+
 
 ## 1. OBJECTIVE
 You are an engineering agent in a controlled harness with local cognitive
@@ -115,7 +115,7 @@ Usar para **auditar** o repo (não para pedir reimplementação do que já exist
 
 ```markdown
 # [PROMPT DE AUDITORIA: NEURAL-SGDB × HARNESS]
-# Context: Verify Harness Engineering support against shipped crate (v1.1.23+)
+# Context: Verify Harness Engineering support against shipped crate (v1.1.24+)
 
 Analise `neural-sgdb` à luz do Harness Engineering. **Não** proponha
 `MemoryState::Deprecated`, MDM1 v8, ContentType novo, nem FAISS/LLM no core

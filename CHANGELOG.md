@@ -4,6 +4,61 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [1.1.24] — 2026-09-22 (unificação de escopo + ledger de negativos)
+
+Release **3/3** do plano de melhorias (itens 4 e 7) — os dois únicos itens que
+**mudam comportamento**, por isso por último e abertos com characterization
+test. Sem mudança de formato (NMD1/TKLV intocados, MDM1 sem bump).
+`MCP_CONTRACT_VERSION` → **1.1.24** (4 aliases novos na superfície anunciada).
+
+### Added
+- **Ledger de negativos (item 7, [ADR-0014](docs/adr/0014-negative-ledger.md))**
+  — "o que já verifiquei e NÃO existe". Side-table
+  `sys/negative/<fnv1a64(scope‖0x1f‖query):016x>` (wire de valor `NDG1`,
+  **não** é wire type; NMD1/TKLV intactos), com `src/negative.rs`
+  (`AbsenceEntry`, `normalize_query`, `negative_key`). APIs:
+  `note_absence` (reforça em vez de duplicar), `forget_absence`,
+  `recall_absences` (recentes primeiro, null-scoping respeitado),
+  `absence_count`, `prune_absences` (retenção do host; `0` desliga) e
+  `recall_with_ledger` — probe lexical + ledger numa chamada, com
+  **self-healing**: ao achar memória, a ausência registrada é removida.
+  Identidade normalizada pelos tokens do BM25 (caixa/pontuação não fragmentam;
+  paráfrase e acento ainda fragmentam — documentado). Escopado: a ausência de um
+  tenant nunca vira evidência do outro. MCP: `recall_ledger`,
+  `recall_absences`, `note_absence`, `forget_absence` (JSON **próprio**, o shape
+  de `format=json` dos hits fica intacto).
+
+### Changed
+- **`ScopeDims` é AUTORITATIVO; o `scope` legado é o espelho de `user`
+  (item 4, [ADR-0013](docs/adr/0013-scope-dims-is-authoritative.md)).**
+  O read-side já unificava (o decode promove o legado para `user` com dims
+  vazias; `effective_scope_dims` faz o mesmo nos filtros) — o desacordo morava
+  nos **bytes**: `set_scope` gravava só o campo legado, então o `sys/meta/`
+  persistido tinha as 4 dims vazias e `encode(decode(raw)) != raw`. Quem lesse
+  `scope_dims` como campo (outra implementação, um peer, o OS) via escopo
+  global. Agora `set_scope` faz **write-through** nos dois campos, o storage
+  fica canônico e o invariante `scope == scope_dims.user` vale nos dois
+  sentidos. A promoção no decode **permanece** (registros pré-v7 e payloads de
+  peer seguem corretos) — é canonicalização de escrita, não reinterpretação de
+  bytes.
+- **`validate()` §6 novo**: sinaliza `legacy scope disagrees with scope_dims.user`
+  em qualquer `sys/meta/` de primário com os dois campos preenchidos e
+  divergentes. O caminho de API não consegue mais produzir esse estado; uma meta
+  montada à mão (`put` com `doc.meta`) ou importada de um escritor divergente
+  agora é **observável**. `scope_dims_of` documentado como o acessor
+  autoritativo; `scope_of` como sua projeção `user`.
+- **Caracterization test antes de tocar no comportamento**: o teste pinou o
+  estado v1.1.23 (dims vazias no storage, `encode∘decode != raw`, distribuição
+  `user/ana///`), foi verificado verde **antes** da mudança e atualizado junto,
+  com o "antes" medido preservado no cabeçalho do teste e no ADR-0013.
+
+### Testes
+- Matriz de testes: **337+1 / 383+1 / 281+1** (default / p2p / no_std);
+  hot test MCP **110/0** (fase nova "ledger de negativos", 6 asserções);
+  protocolos `agent_protocol` 25/0, `two_ai_protocol` 16/0, `audit` 25/0,
+  `memory_arena_eval` PASS. 7 testes novos no lib (1 de escopo +
+  3 de ledger + 3 do codec em `src/negative.rs`).
+
 ## [1.1.23] — 2026-09-21 (revisão de documentação + fix do schema anunciado)
 
 Sem mudança de formato (NMD1/TKLV) e **sem mudança de comportamento**. Bump de
