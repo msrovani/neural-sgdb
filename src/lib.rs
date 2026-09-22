@@ -134,7 +134,8 @@ pub use harness::{
 pub use sgdb::{
     AdaptiveRecall, AuditReport, ConsolidateConfig, DecayConfig, GcConfig, GcReport, HealthReport,
     Hit, HitProvenance, LexicalAnchorReranker, RecallLedger, RecallProbe, RecallWeights,
-    RememberOptions, RememberOutcome, Reranker, ScoreBreakdown, ScopeDistribution, Sgdb,
+    RememberOptions, RememberOutcome, Reranker, ScoreBreakdown, ScopeDistribution, ScopeProbes,
+    Sgdb,
     ValidateIssue,
 };
 pub use storage::{InMemory, SnapshotStorage, Storage, SgdbError};

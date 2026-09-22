@@ -4,6 +4,105 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [1.1.26] — 2026-09-22 (descoberta de escopo + anunciado == servido)
+
+Sem mudança de formato (NMD1/TKLV intocados, MDM1 sem bump). `MCP_CONTRACT_VERSION`
+→ **1.1.26**: o VALOR de dois campos visíveis mudou (`global_memory_count`,
+`scope_labels`) e um parâmetro que o schema anunciava desde o v1.1.14 passou a
+fazer alguma coisa. ADR-0015.
+
+### Fixed
+- **Ponto cego de escopo: a memória gravada não era alcançável por NENHUMA rota
+  documentada.** Descoberto USANDO o DB (flush do harness contra o banco real),
+  não lendo código. `curate(op=commit_run, scope_run="release-x")` — o caminho
+  natural do ADR-0010 — grava `ScopeDims{user:"",run:"release-x"}`; como o
+  legado espelha `user` (ADR-0013), `scope == ""` e o `scope_distribution`
+  classificava com esse campo. Medido: `global_count = 1` (contado como GLOBAL),
+  ausente de `scope_labels`/`scopes_to_probe`, `recall(scope=…)` → 0 hits,
+  `recall` global → 0 hits (null-scoping correto), e a única rota
+  (`scope_distribution_dims`) **não exposta por nenhuma superfície**. Agora
+  global = `scope == ""` **e** dims globais; a classificação roda em um scan
+  único (`scan_scope_metas`); `Sgdb::scope_probes` devolve as duas rotas com
+  procedência (`legacy` vs `dims_only` — as labels são ambíguas por forma, um
+  `scope` legado pode conter `/`); e `nsgdb://session` publica
+  `scopes_to_probe_dims` com descritores prontos para o `recall`.
+- **`recall` ignorava `scope_user/scope_agent/scope_app/scope_run`, que o schema
+  ANUNCIA desde o v1.1.14.** `recall(scope_run="x")` respondia igual a
+  `recall()`: 0 hits, `isError:false`, mais um hint mandando usar
+  `recall(scope=…)` — que também dava 0. Pior, o sub-modo `entities` **já honrava**
+  dims (roteado para `recall_entities`), então dois usos do mesmo tool se
+  comportavam diferente. Mesma família do `view=index` do v1.1.23, invertida: o
+  modelo lê o schema, não o código. Agora o caminho principal roteia para
+  `recall_lexical_dims`/`recall_scoped_dims` (dims vencem o `scope` legado, que é
+  menos específico), a resposta ecoa o `scope_dims` efetivo, e onde o core não
+  tem rota (`hybrid` RRF, `temporal`) a chamada é **recusada com erro acionável**
+  em vez de responder o pool global (que vazaria escopo).
+- **A invariante do ADR-0013 quebrava na escrita com AMBOS os escopos.**
+  `remember(scope="proj/x", scope_run="r1")` gravava `scope="proj/x"` com
+  `dims.user == ""`: o `finish_remember` promovia o legado para `dims.user`
+  apenas quando as dims estavam TODAS vazias, então o `set_scope_dims` seguinte
+  clobberava o write-through do `set_scope`. Como `effective_scope_dims` prefere
+  dims não-globais, a dimensão `user` era **perdida**: quem filtrasse por
+  `scope_user` não achava a memória e quem filtrasse por `run` a achava sob
+  outro user. A promoção agora preenche um `user` vazio sempre que `scope` é
+  não-vazio. Teste com mutação provada.
+
+### Changed
+- **`scope_distribution()` e `scope_distribution_dims()` passam a ser projeções
+  de uma classificação única** (`scan_scope_metas`), e o rótulo de dims vem de
+  `ScopeDims::label()` — a mesma regra estava copiada em três funções e a
+  formatação em duas.
+- **`scopes_to_probe` não é mais truncado.** Era derivado de
+  `health.scope_labels`, que faz `truncate(8)` por EXIBIÇÃO — o 9º escopo mais
+  populoso era indescobrível ao cold-start. Descoberta não pode ser limitada
+  por uma decisão de formatação.
+
+### Testes
+- 9 asserções novas no hot test (fase 7): `scope_run` alcança o doc gravado,
+  run errado não vaza, global não vaza, `hybrid`+dims recusa, `global_memory_count`
+  não se move, `scopes_to_probe_dims` publicado, e `scope`+`scope_run` juntos
+  concordam. Hot test **119/0**.
+- 3 testes de lib novos (um com mutação provada). O exemplo
+  `scope_blind_spot_probe` foi promovido a teste de regressão e removido.
+- Matrix **342+1 / 388+1 / 286+1** (default / p2p / no_std); clippy/rustdoc
+  `-D warnings` e no_std bare-metal verdes; `agent_protocol` 25/0,
+  `two_ai_protocol` 16/0, `audit` 25/0.
+
+## [1.1.25] — 2026-09-22 (payload_type honra a camada)
+
+Sem mudança de formato (NMD1/TKLV intocados, MDM1 sem bump). `MCP_CONTRACT_VERSION`
+→ **1.1.25**: o VALOR de um campo visível ao consumidor mudou (`Hit.payload_type`
+no `format=json`), e dois builds diferentes não podem se chamar 1.1.24.
+
+### Fixed
+- **`payload_type` declarava `Embedding(dim)` para prosa L3.** O campo promete "o
+  datum REAL do payload"; a regra em uso era a do `index_doc`
+  (`len % 4 == 0 && len >= 4`), que **qualquer texto de tamanho múltiplo de 4**
+  satisfaz — 25% deles. Um `remember(text="dezesseis bytes!")` (16 B) respondia
+  `payload_type = Embedding(4)`, e um consumidor máquina que confiasse no campo
+  tentaria reusar um vetor que não existe — exatamente o erro que os hits
+  tipados (v1.1.6) existem para evitar. Agora só **L4/L5** (as camadas que o BQ
+  indexa) rendem `Embedding`; fora delas o payload passa pelo detector normal
+  (Text/Json/Code/Binary). Descoberto **usando** o DB (flush do harness contra o
+  banco real), não lendo código.
+- A decisão — que estava duplicada em **quatro** call sites (recall semântico,
+  `recall_impl_dims`, recall de entidades e `primary_of`, este último com um
+  branch explícito para L3) — virou uma função nomeada em `src/ctype.rs`:
+  `payload_content_type(key, payload, has_bitvec)` + `key_carries_embedding(key)`.
+  `embedding_dim_of` ganhou a precondição de camada na doc.
+
+### Testes
+- `payload_type_honors_the_layer_not_the_byte_count` (ctype): L3/L2 de prosa de
+  16 B → Text; o MESMO payload em L4 → `Embedding(4)`; L5 com bitvec →
+  `Embedding(4)`; L3 não-UTF8 continua Binary; L4 com payload curto não inventa
+  vetor.
+- `l3_prose_is_never_typed_as_embedding_in_any_path` (sgdb): cobre os caminhos de
+  entidades, lexical, `primary_of` (companion L2 com primário L3) e confirma que
+  o semântico L4 segue reportando o vetor. **Verificado com mutação**: removida a
+  guarda de camada, o teste falha com a asserção exata; restaurada, passa.
+- Matrix **339+1 / 385+1 / 283+1** (default / p2p / no_std); clippy/rustdoc
+  `-D warnings` e no_std bare-metal verdes; hot test **110/0**.
+
 ## [1.1.24] — 2026-09-22 (unificação de escopo + ledger de negativos)
 
 Release **3/3** do plano de melhorias (itens 4 e 7) — os dois únicos itens que

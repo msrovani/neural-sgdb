@@ -1,6 +1,6 @@
 ﻿# 03 — Retrieval Architecture
 
-> Status: **current (v1.1.24)** — ART + BQ + lexical + entities + typed hits
+> Status: **current (v1.1.26)** — ART + BQ + lexical + entities + typed hits
 > ship in production code. MCP default retrieval is **lexical** (ADR-0008).
 > **implemented** = code + tests; **remaining** =
 > honest gap. All English per repo policy.
@@ -133,6 +133,11 @@ Hit {
 
 - Prose projection only for Text/Json/Code.
 - Embedding/Binary → empty `text`; consumer reads `content_type`/`payload_type`.
+- **`payload_type` honors the LAYER (v1.1.25):** `Embedding(dim)` only for
+  L4/L5 — the layers the BQ indexes. Before, the `index_doc` arithmetic
+  (`len % 4 == 0`) labelled **any prose whose byte length was a multiple of 4**
+  as a vector (a quarter of all texts), so a machine consumer could try to
+  reuse a vector that never existed.
 - MCP `format=json` — stable string labels.
 - `rel` links companion `/L2/` → primary `/L4|L5|L3/`.
 

@@ -1,6 +1,6 @@
 ﻿# neural-sgdb — Implementation Status
 
-> **Current snapshot (2026-09-22, v1.1.24).** Capability matrix vs the shipped
+> **Current snapshot (2026-09-22, v1.1.26).** Capability matrix vs the shipped
 > codebase. For the public contract see [`docs/api.md`](api.md); for architecture
 > narrative see [`docs/architecture/README.md`](architecture/README.md).
 
@@ -17,11 +17,11 @@
 
 | Check | Command | Result |
 |---|---|---|
-| Default tests | `cargo test --lib` | **337** |
-| P2P tests | `cargo test --features p2p --lib` | **383** |
-| no_std tests | `cargo test --no-default-features --lib` | **281** |
+| Default tests | `cargo test --lib` | **339** |
+| P2P tests | `cargo test --features p2p --lib` | **385** |
+| no_std tests | `cargo test --no-default-features --lib` | **283** |
 | no_std target | `cargo check --no-default-features --target x86_64-unknown-none` | **ok** |
-| Hot test (MCP) | `cargo run --release --example mcp_client` | **110/0 exit 0** |
+| Hot test (MCP) | `cargo run --release --example mcp_client` | **119/0 exit 0** |
 | AI-user sim | `cargo run --release --example agent_sim` | loop real, scope isolado |
 | Machine protocol | `cargo run --release --example two_ai_protocol` | **16/16 exit 0** |
 | Agent protocol | `cargo run --release --example agent_protocol` | **23/23 exit 0** |
@@ -38,6 +38,8 @@
 | Null-scoping ScopeDims (v1.1.20) | IMPLEMENTED | `allows_scope_filter`; `recall_*_dims` pool; consolidate herda dims; 14 harness tests |
 | ScopeDims autoritativo (ADR-0013, v1.1.24) | IMPLEMENTED | `set_scope` write-through (`scope == scope_dims.user`); `validate` §6 sinaliza divergência; characterization test com o "antes" no cabeçalho |
 | Ledger de negativos (ADR-0014, v1.1.24) | IMPLEMENTED | `src/negative.rs` (`NDG1`), `sys/negative/`; `note_absence`/`forget_absence`/`recall_absences`/`recall_with_ledger` (self-healing)/`prune_absences`; 4 aliases MCP com JSON próprio |
+| Descoberta de escopo + anunciado == servido (ADR-0015, v1.1.26) | IMPLEMENTED | `scan_scope_metas` (global = `scope==""` **e** dims globais), `scope_probes{legacy,dims_only}`, `ScopeDims::label()`; `nsgdb://session` publica `scopes_to_probe_dims`; `recall` honra `scope_user/agent/app/run` (hybrid/temporal RECUSAM em voz alta); `scope`+dims na escrita preserva `scope == dims.user`; 3 testes de lib (1 com mutação provada) + 9 asserções no hot test |
+| `payload_type` por camada (v1.1.25) | IMPLEMENTED | `ctype::payload_content_type`/`key_carries_embedding`; `Embedding(dim)` só p/ L4/L5 (antes, prosa com `len % 4 == 0` saía como `Embedding(len/4)`); teste c/ mutação provada |
 | Hybrid RRF + rerank seam (v1.1.14) | IMPLEMENTED | `recall_hybrid_rrf`, `Reranker`, `recall_reranked` |
 | Local embedder crate (v1.1.14) | IMPLEMENTED | `nsgdb-embed` 384d, `LOCAL_MODEL_ID` |
 | TTL per-key + GC (v1.1.15) | IMPLEMENTED | `sys/ttl/`, `expire_ttl`, `GcConfig/collect_garbage` |
@@ -119,8 +121,8 @@ topologies; **content** does.
 `NEURAL_SGDB_EMBEDDER` = none (`=demo` explicit only). `remember(text=)`
 without vector → L3. Resources `nsgdb://doctrine` + `nsgdb://session`.
 `health(view=tensions|staleness|era)`. Harness ADR-0010:
-`curate(op=commit_run|deprecate_run)`. Hot test **110/0**. MCP contract
-**1.1.24**.
+`curate(op=commit_run|deprecate_run)`. Hot test **119/0**. MCP contract
+**1.1.26**.
 
 ### Host connectors
 `connectors/` is host-side (not crate SemVer). Hermes `MemoryProvider` is

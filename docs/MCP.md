@@ -3,13 +3,13 @@
 Guia de instalação, contrato e troubleshooting do servidor MCP
 (`examples/mcp_server.rs`).
 
-## Contrato atual (v1.1.24)
+## Contrato atual (v1.1.26)
 
 | Campo | Valor |
 |-------|-------|
 | Protocolo | JSON-RPC 2.0 over **stdio** (uma linha JSON por mensagem) |
 | Handshake | `initialize` → `protocolVersion: 2025-11-25` |
-| `serverInfo.version` | `1.1.24` (`MCP_CONTRACT_VERSION` em `examples/mcp_server.rs`) |
+| `serverInfo.version` | `1.1.26` (`MCP_CONTRACT_VERSION` em `examples/mcp_server.rs`) |
 | Tools | **4** (`remember`, `recall`, `health`, `curate`) — 38 nomes antigos/alias ainda funcionam em `tools/call` (`ALIAS_SURFACE`) |
 | Recall default | **lexical** (ADR-0008). Cosine: `embedding=` ou `NEURAL_SGDB_EMBEDDER=demo` |
 | Embedder host | unset = none; `NEURAL_SGDB_EMBEDDER=demo` = trigrama explícito (**não** semântico) |
@@ -48,6 +48,24 @@ set_ttl  supersede  timeline  validate
 `-32602`, mas passa a carregar `data.did_you_mean` (ate 3 sugestoes
 deterministicas), `data.listed_tools` (as 4) e `data.alias_count`. Um agente que
 errou o nome conserta o schema em uma chamada em vez de queimar um turno.
+
+**v1.1.26 — descoberta de escopo (ADR-0015).** `nsgdb://session` ganhou
+`scopes_to_probe_dims`: um descritor `{label,user,agent,app,run,count}` por
+escopo que `scope=` NAO alcanca (gravado so com `scope_run`/`agent`/`app`), ja no
+shape dos argumentos do `recall`. O `recall` passou a HONRAR
+`scope_user/agent/app/run` — o schema os anunciava desde o v1.1.14 e o handler os
+ignorava (`recall(scope_run="x")` respondia igual a `recall()`); agora dims
+vencem o `scope` legado, a resposta ecoa `scope_dims`, e `mode=hybrid` /
+`recall_temporal` **recusam** dims em voz alta (em vez de devolver o pool global,
+que vazaria escopo). `global_memory_count` deixou de contar memorias de dim
+nao-`user` como globais. `scopes_to_probe` nao e mais truncado em 8.
+
+**v1.1.25 — `payload_type` deixa de mentir sobre prosa L3.** O `format=json`
+expunha `payload_type=embedding` para memória de TEXTO cujo tamanho fosse
+múltiplo de 4 (25% delas) — um consumidor máquina tentaria reusar um vetor
+inexistente. Agora só L4/L5 rendem `Embedding(dim)`; fora delas sai
+`text`/`json`/`code`/`binary`. A prosa do `fmt_hit` ganhou o tag `payload=`
+só quando ele realmente difere do `type` (ex.: companion L2 de um primário L4).
 
 **v1.1.24 — ledger de negativos (4 aliases, JSON próprio).** `recall_ledger`
 (`{query,k,now,scope}`) faz o probe lexical **e** reconcilia o ledger numa

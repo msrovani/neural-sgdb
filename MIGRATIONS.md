@@ -62,6 +62,30 @@ continua valendo para registros pré-v7 e para payloads de peer. Um leitor que
 decodifica os campos sem essa promoção passa a ver os dois preenchidos (antes
 via `scope` setado e dims vazias).
 
+### Sem bump no v1.1.26 (correção de classificação + invariante de escrita)
+
+O v1.1.26 (ADR-0015) **não muda formato**: NMD1/TKLV intocados, MDM1 sem bump,
+nenhum byte reinterpretado. Duas mudanças de *valor* que um consumidor sente:
+
+1. **`scope_distribution()` / `global_memory_count` / `scope_labels`.** Global
+   passou a ser `scope == ""` **e** `scope_dims.is_global()` (era só
+   `scope.is_empty()`). Uma memória gravada com `scope_run`/`agent`/`app` sem
+   `user` deixa de ser contada como global e passa a aparecer em `scope_labels`
+   sob o rótulo de dims (`///run-x`). Corpus escrito só com escopos de `user`
+   (o caso dos conectores: `tenant/x/agent/y/workspace/z`) **não muda** — as
+   labels legadas são as mesmas.
+2. **`scope == scope_dims.user` na escrita com AMBOS os escopos.** Quem gravava
+   `scope="proj/x"` **e** `scope_run="r1"` obtinha `dims.user == ""` (o
+   `set_scope_dims` clobberava o write-through do `set_scope`); a dim `user` era
+   perdida nos filtros. Agora `dims.user` é preenchido com o `scope`. Um corpus
+   gravado pelo caminho antigo tem metas com a divergência: `validate()` §6
+   reporta, e reescrever o escopo (`set_scope` + `set_scope_dims`, ou a
+   `scope`+dims numa nova escrita) reconcilia. Não é preciso migrar para ler.
+
+Também **novo** (aditivo): `Sgdb::scope_probes()`, `ScopeProbes`, `ScopeDims::label()`,
+`scopes_to_probe_dims` no `nsgdb://session`, e o `recall` do MCP honrando
+`scope_user/agent/app/run` (recusando em `hybrid`/`temporal`).
+
 ### MDM1 v1 → v2 (v0.7)
 
 Adds `version_id` (per-version identity). v1 records decode with

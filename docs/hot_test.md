@@ -697,3 +697,97 @@ ficaria. Onde o API virou write-through, os bytes ficaram canônicos e o
 e no hot test). É exatamente o comportamento desejado: a superfície de alias é um
 número que não consegue entrar em silêncio. A lição do v1.1.23 (schema anunciado
 checado por asserção) continua pagando.
+
+## v1.1.25 — `payload_type` honra a camada (2026-09-22)
+
+Hot test **110/0**; matriz **339+1 / 385+1 / 283+1**; gates verdes. Contrato MCP
+→ **1.1.25**.
+
+### O bug que só aparece USANDO o DB
+
+Ao ler os hits do flush do harness (pós-tarefas do v1.1.24) com `format=json`,
+os fatos L3 — texto puro — voltaram assim:
+
+```json
+{"type":"text", "payload_type":"embedding", "payload_dim":36}
+```
+
+`payload_type` promete "o datum REAL do payload", e para `remember(text=…)` o
+datum é prosa. A regra em uso era a do `index_doc` (`len % 4 == 0 && len >= 4`)
+— que **todo texto de tamanho múltiplo de 4 satisfaz**. `36 = 144 B ÷ 4`: o
+tamanho do texto entregou a "dimensão". Uma em cada quatro memórias de texto cai
+nisso.
+
+O custo é assimétrico e exatamente o que os hits tipados (v1.1.6) existem para
+evitar: `type=text` (a projeção) dizia a verdade, mas `payload_type` dizia
+"embedding" e um consumidor máquina que confiasse nele tentaria reusar o vetor
+com o mesmo modelo — e não há vetor.
+
+### O que o fix mudou (e o que NÃO mudou)
+
+- `Embedding(dim)` só sai para **L4/L5** (`key_carries_embedding`) — as camadas
+  que o BQ indexa.
+- Fora delas o payload passa pelo detector normal: `Text`/`Json`/`Code`/`Binary`.
+- **Nada mudou** na regra de indexação do BQ, no `validate` §2 nem na era
+  (ADR-0007): L4/L5 continuam `Embedding(len/4)`, com ou sem bitvec.
+- A decisão estava **copiada em 4 call sites** (um deles, `primary_of`, com um
+  branch explícito para L3) e virou `payload_content_type`/`key_carries_embedding`
+  em `src/ctype.rs`. `embedding_dim_of` ficou com a precondição de camada na doc.
+
+### Prova de que o teste tem dentes
+
+Removida a guarda de camada (mutação temporária), o teste novo falha com a
+asserção exata:
+
+```
+panicked at src/sgdb.rs: assertion `left == right` failed:
+  L3 de prosa: payload_type = Text (não Embedding(len/4))
+```
+
+Restaurada, passa. Fica a regra: **teste de fix de tipo/contrato só vale depois
+de provar que ele morre sem o fix** — senão ele apenas descreve o comportamento
+novo sem provar que o antigo era o bug.
+
+
+## v1.1.26 — ponto cego de escopo + anunciado == servido (2026-09-22)
+
+Achado do ritual de fim de tarefa (flush do harness contra o banco real), nao da
+leitura de codigo — terceiro release seguido em que o achado vem de USAR o DB.
+
+**Hot test 119/0** (+9 assercoes, fase 7). Matriz **342+1 / 388+1 / 286+1**.
+Contrato MCP -> **1.1.26** (dois campos visiveis mudaram de VALOR: `global_memory_count`
+e `scope_labels`).
+
+### As 9 assercoes novas, e por que cada uma
+
+1. `remember(scope_run=)` devolve storage key — a chave e capturada do
+   `structuredContent` (nao do texto) porque as assercoes seguintes precisam
+   dela exata.
+2. `recall(scope_run=)` encontra o doc — **guard comportamental de anunciado ==
+   servido**. Antes respondia 0 hits com `isError:false`.
+3. `recall(scope_run=OUTRO)` nao vaza.
+4. `recall` global nao ve dims escopadas — assertado sobre a KEY exata, nao
+   sobre "0 hits": o BM25 casa por **sobreposicao parcial** e a primeira versao
+   do teste passou/falhou por um token ("fact") comum a outro doc. Mesma licao
+   do ledger (v1.1.24), reincidente.
+5. `hybrid` + dims recusa em voz alta (`isError: true`, "nao suportados") — em
+   vez de devolver o pool global.
+6. `global_memory_count` nao se MOVE ao gravar com `scope_run` (comparacao
+   antes/depois: a assercao `== 0` seria falsa porque o hot test ja tem
+   memorias globais de fases anteriores).
+7. `nsgdb://session` publica `scopes_to_probe_dims` com a label do run.
+8. `remember` com `scope=` **e** `scope_run=` e aceito.
+9. `recall(scope_user=, scope_run=)` acha o doc — a invariante do ADR-0013
+   (`scope` espelha `dims.user`) vale na ESCRITA com ambos.
+
+### Licoes
+
+- **Uma assercao sobre um texto livre nao e uma assercao.** Duas vezes no mesmo
+  dia a primeira versao de um teste passou por acidente textual (o probe "vazio"
+  do ledger, o "0 hits" aqui). Comparar a KEY e comparar o fato.
+- **O valor anterior no comparativo antes/depois tem de vir do proprio estado.**
+  `== 0` codifica uma suposicao sobre o corpus do teste; `antes == depois`
+  codifica a propriedade que se quer provar.
+- **Regra duplicada e regra que vai divergir.** A classificacao de escopo estava
+  copiada em tres funcoes; uma copia tratava dims nao-`user` como global. O
+  v1.1.25 tinha ensinado o mesmo com `payload_content_type` (4 call sites).

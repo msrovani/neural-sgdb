@@ -32,12 +32,15 @@ protocols that codify HOW to use the DB.
 
 ## mcp_client.rs — HOT TEST
 - `cargo run --release --example mcp_client` — drives `mcp_server` like an IDE;
-  **110/0 checks exit 0** (v1.1.24). Covers 4-tool surface + aliases, lexical
+  **119/0 checks exit 0** (v1.1.26). Covers 4-tool surface + aliases, lexical
   default (ADR-0008), `format=json`, `remember(type=)`, temporal, entities,
   lazy pagination, scope, persistence across restart, metadado cognitivo
   (`consolidate`/`audit_*`/`decay`), **fase harness** (`commit_run` /
-  `deprecate_run`, ADR-0010) e **fase ledger de negativos** (v1.1.24:
-  `recall_ledger`/`recall_absences`/`note_absence`/`forget_absence`).
+  `deprecate_run`, ADR-0010), **fase ledger de negativos** (v1.1.24:
+  `recall_ledger`/`recall_absences`/`note_absence`/`forget_absence`) e **fase 7
+  com o guard de descoberta de escopo** (v1.1.26: `scope_run` alcanca o doc
+  gravado, recusa de dims em hybrid/temporal, `scopes_to_probe_dims`, e a
+  invariante `scope`+dims na escrita — ADR-0015).
   Episódicos L2 precisam de `now` DISTINTO por chamada (senão as chaves
   `md/L2/ts/<hex>` colidem no mesmo ms); e a query de um probe "vazio" precisa
   de TODOS os tokens inéditos — o BM25 casa por sobreposição parcial (a 1ª

@@ -36,16 +36,16 @@ filesystem, no external runtime.
 
 ## Status
 
-**v1.1.24** — substrate **agêntico** (MCP 4 tools contract **1.1.24**, doutrina,
+**v1.1.26** — substrate **agêntico** (MCP 4 tools contract **1.1.26**, doutrina,
 hits tipados, TTL/GC, timeline, ANN) + **ADC-lite** + telepatia **2-DB** +
 **host harvest** + **ADR-0010 harness** (`commit_run` / `deprecate_run` /
 `mom/anti-pattern`) + **null-scoping `ScopeDims`** + **integridade do índice
 derivado** (`index_fingerprint`, ADR-0011) + **recall adaptativo** (ADR-0012) +
 **`ScopeDims` autoritativo** (ADR-0013) e **ledger de negativos** (ADR-0014).
-Extensão de browser / Store **estacionadas**. Crate em `Cargo.toml`: **1.1.24**.
+Extensão de browser / Store **estacionadas**. Crate em `Cargo.toml`: **1.1.26**.
 
-- `cargo test --lib` on host: **337** (p2p **383**, no_std **281**)
-- hot test MCP: **110/0**; `agent_protocol`: **25/0**
+- `cargo test --lib` on host: **339** (p2p **385**, no_std **283**)
+- hot test MCP: **119/0**; `agent_protocol`: **25/0**
 - `cargo check --no-default-features --target x86_64-unknown-none`: **clean**
 - Playbooks: [`docs/agent-self-program.md`](docs/agent-self-program.md),
   [`docs/harness-prompts.md`](docs/harness-prompts.md),
@@ -201,7 +201,7 @@ lists conflicts / superseded / unseen scopes.
 
 Host adapters for claw-like apps (Hermes provider, OpenClaw skeleton, shared
 MCP client) live in [`connectors/`](connectors/README.md) — **outside** crate
-SemVer; `crates/nsgdb-embed` (LocalEmbedder 384-dim, `cargo run --manifest-path crates/nsgdb-embed/Cargo.toml --example demo`) and `crates/nsgdb-wasm` (`Storage` stub) are host crates — core SemVer = `Cargo.toml` (**1.1.24**).
+SemVer; `crates/nsgdb-embed` (LocalEmbedder 384-dim, `cargo run --manifest-path crates/nsgdb-embed/Cargo.toml --example demo`) and `crates/nsgdb-wasm` (`Storage` stub) are host crates — core SemVer = `Cargo.toml` (**1.1.26**).
 Protocolo do agente: `examples/agent_protocol.rs` (25 checks), `two_ai_protocol.rs` (16), `memory_arena_eval.rs`. Fim de tarefa: `curate(op=commit_run)` (ADR-0010).
 
 ### Cursor (Windows)
@@ -299,6 +299,7 @@ Licensed under **MIT** **or** **Apache-2.0** (dual license), your choice.
 - [x] **v1.1.21 integridade do índice derivado + medição de open** — `index_fingerprint` (ADR-0011, `fp(open) == fp(rebuild)`), invariante de `corpus_mean` no `validate`, `open_rebuild_ms`/`opens` no `health`, erro de tool desconhecida com `did_you_mean`
 - [x] **v1.1.22 math consolidado + recall adaptativo** — `src/math.rs` unifica os polyfills (movidos sem tocar na aritmética); `recall_adaptive` (ADR-0012) escala `1→4→8→16` só enquanto a fronteira do top-k for ambígua, com `RecallProbe` separando "store acabou" de "pool faminto"
 - [x] **v1.1.23 revisão de documentação + fix do schema anunciado** — `health(view=index)` funcionava mas o `enum` do `tools/list` não o anunciava (feature invisível ao modelo); versões/números de teste alinhados em README/VERSIONING/api/architecture
+- [x] **v1.1.25 `payload_type` honra a camada** — prosa L3 deixou de ser reportada como `Embedding(len/4)` (a regra antiga marcava TODO texto de tamanho múltiplo de 4 como vetor); a decisão duplicada em 4 call sites virou `payload_content_type`
 - [x] **v1.1.24 escopo unificado + ledger de negativos** — `ScopeDims` autoritativo (o `scope` legado vira espelho de `user`, write-through canônico + `validate` §6; ADR-0013); ledger `sys/negative/` do que já foi procurado e não estava lá, com self-healing e 4 aliases MCP (ADR-0014)
 - [x] **Host crates** — `crates/nsgdb-embed` + `crates/nsgdb-wasm` (sem quebrar core `no_std` zero deps)
 - [ ] **Browser extension** — estacionada (`extension/` stub; auto-captura comentada). Produto = agente via MCP, não scraper de abas.

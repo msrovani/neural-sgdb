@@ -315,6 +315,17 @@ impl ScopeDims {
             })
         }
     }
+    /// Label canônico das dims — `user/agent/app/run`.
+    ///
+    /// É a forma que `Sgdb::scope_distribution_dims` publica e que o
+    /// cold-start (`nsgdb://session`, campo `scopes_to_probe_dims`) usa para
+    /// nomear um escopo que NÃO cabe no campo legado. Fonte única: a
+    /// formatação já esteve duplicada, e uma regra copiada em N lugares é a
+    /// que diverge no N-ésimo.
+    pub fn label(&self) -> String {
+        alloc::format!("{}/{}/{}/{}", self.user, self.agent, self.app, self.run)
+    }
+
     /// Filtro multi-dim: `None` = wildcard na dimensão, `Some("")` = exige
     /// global na dimensão, `Some(s)` = exige valor exato.
     pub fn matches(&self, filter: &ScopeFilter) -> bool {

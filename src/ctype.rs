@@ -85,8 +85,13 @@ fn looks_like_code(s: &str) -> bool {
     kw_hits >= 2 || braces >= 1 || semis >= 1 || arrows >= 1
 }
 
-/// Detector de payload de embedding: L4/L5 com bitvec OU payload f32
+/// Detector de payload de embedding: bitvec OU payload f32
 /// (`payload.len() % 4 == 0 && >= 4`) — a mesma regra do `index_doc`/S1.
+///
+/// **Precondição de camada (v1.1.25):** só chame isto para L4/L5 — ver
+/// [`payload_content_type`], que é a porta de entrada correta. Um payload de
+/// PROSA cujo tamanho por acaso é múltiplo de 4 (25% dos textos!) satisfaz a
+/// aritmética aqui e viraria `Embedding(len/4)`.
 pub fn embedding_dim_of(payload: &[u8], has_bitvec: bool) -> Option<u32> {
     if !has_bitvec && payload.len() < 4 {
         return None;
@@ -95,6 +100,31 @@ pub fn embedding_dim_of(payload: &[u8], has_bitvec: bool) -> Option<u32> {
         return None;
     }
     Some((payload.len() / 4) as u32)
+}
+
+/// A CAMADA carrega vetor? Só L4 (semântica) e L5 (procedural) — exatamente as
+/// que o BQ indexa (`engine::index_doc`, replicada no `validate`). Fora delas
+/// um payload com `len % 4 == 0` é prosa, JSON, código ou binário.
+pub fn key_carries_embedding(storage_key: &str) -> bool {
+    storage_key.starts_with("md/L4/") || storage_key.starts_with("md/L5/")
+}
+
+/// Tipo do datum REAL do payload de um documento, honrando a CAMADA
+/// (v1.1.25): `Embedding(dim)` só para L4/L5 (com bitvec ou payload f32);
+/// fora delas o payload passa pelo detector normal (Text/Json/Code/Binary).
+///
+/// Nomeia a decisão que estava duplicada em quatro call sites (recall
+/// semântico, dims, entidades e `primary_of`) — e que rotulava um L3 de prosa
+/// como `Embedding(len/4)`: um consumidor máquina que confiasse no campo
+/// tentaria reusar um vetor que não existe, que é justamente o erro que os
+/// hits tipados (v1.1.6) existem para evitar.
+pub fn payload_content_type(storage_key: &str, payload: &[u8], has_bitvec: bool) -> ContentType {
+    let dim = if key_carries_embedding(storage_key) {
+        embedding_dim_of(payload, has_bitvec)
+    } else {
+        None
+    };
+    detect_content_type(payload, dim)
 }
 
 /// Rótulo ESTÁVEL do tipo (v1.1.6 item 2 — seam de WRITE): o writer declara
@@ -216,5 +246,51 @@ mod tests {
         assert_eq!(embedding_dim_of(&[0u8; 16], false), Some(4));
         assert_eq!(embedding_dim_of(b"texto", true), None); // 5B não é múltiplo
         assert_eq!(embedding_dim_of(b"ab", false), None); // < 4B
+    }
+
+    #[test]
+    fn payload_type_honors_the_layer_not_the_byte_count() {
+        // v1.1.25: a aritmética de `embedding_dim_of` (len % 4 == 0 && >= 4)
+        // é satisfeita por QUALQUER prosa de tamanho múltiplo de 4 — 25% dos
+        // textos. Só a camada decide se o payload é um vetor.
+        assert!(key_carries_embedding("md/L4/k"));
+        assert!(key_carries_embedding("md/L5/k"));
+        assert!(!key_carries_embedding("md/L3/k"), "L3 é texto, não vetor");
+        assert!(!key_carries_embedding("md/L2/k"), "companion é a projeção");
+        // prosa de 16 bytes (múltiplo de 4) NÃO vira Embedding(4)
+        assert_eq!(
+            payload_content_type("md/L3/prose", b"dezesseis bytes!", false),
+            ContentType::Text
+        );
+        assert_eq!(
+            payload_content_type("md/L2/prose", b"dezesseis bytes!", false),
+            ContentType::Text
+        );
+        // o mesmo payload em L4 É o vetor (o consumidor reusa com o mesmo modelo)
+        assert_eq!(
+            payload_content_type("md/L4/k", &[0u8; 16], false),
+            ContentType::Embedding(4)
+        );
+        assert_eq!(
+            payload_content_type("md/L5/k", &[0u8; 16], true),
+            ContentType::Embedding(4)
+        );
+        // L3 não-UTF8 continua Binary (nunca from_utf8_lossy)
+        assert_eq!(
+            payload_content_type("md/L3/bin", &[0xff, 0xfe, 0xfd, 0xfc], false),
+            ContentType::Binary
+        );
+        // JSON delimitado em L3 continua Json
+        assert_eq!(
+            payload_content_type("md/L3/j", b"{\"num\": 42, \"x\": true}", false),
+            ContentType::Json
+        );
+        // L4/L5 continuam reportando a dim do payload (regra do index_doc)
+        assert_eq!(
+            payload_content_type("md/L4/big", &[0u8; 64], false),
+            ContentType::Embedding(16)
+        );
+        // e um L4 com payload curto demais não inventa vetor
+        assert_eq!(payload_content_type("md/L4/short", b"abc", false), ContentType::Text);
     }
 }

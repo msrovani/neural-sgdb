@@ -6,7 +6,7 @@ repo. **Read `codemap.md` (atlas), `docs/api.md` (contract) and
 Storage, Cognitive API; typed hits from v1.1.6; current crate = `Cargo.toml`) and
 `docs/implementation-status.md` before editing code.**
 
-**Shipped crate is 1.1.24 (agentic MCP contract 1.1.24):** MCP lists **4 tools**
+**Shipped crate is 1.1.26 (agentic MCP contract 1.1.26):** MCP lists **4 tools**
 (`remember`/`recall`/`health`/`curate`; **38** alias names live in
 `ALIAS_SURFACE` em `examples/mcp_server.rs` — tabela pinada por teste, não prosa).
 `curate` ganhou ops de metadado cognitivo (decay/consolidate/audit_checkpoint/
@@ -14,7 +14,7 @@ audit_verify/rollback_to) e harness ADR-0010 (`commit_run`/`deprecate_run`).
 Default retrieval is **lexical**. Unset `NEURAL_SGDB_EMBEDDER` = none;
 `=demo` only if requested (não setar no `mcp.json` global). `remember(text=)`
 without a vector → L3 (`remember_text_with`). Resources: `nsgdb://doctrine` +
-`nsgdb://session`. Hot test **110/0**. Lib tests **337+1 / 383+1 / 281+1**
+`nsgdb://session`. Hot test **119/0**. Lib tests **342+1 / 388+1 / 286+1**
 (default / p2p / no_std). Bump `MCP_CONTRACT_VERSION` ⇒ pin `mcp_client`
 `serverInfo.version` no mesmo commit (senão hot test falha). **v1.1.17:**
 ADC-lite dual-path + state-first ranking (`corpus_mean`, `bq_top_k_f32_dual`);
@@ -437,7 +437,7 @@ turno, exact vs paraphrase, isolamento de scope). Paraphrase MISSA no lexical
 
 Release 1/3 do plano de melhorias (itens 1, 2, 3, 6) — **tudo aditivo, nada muda
 comportamento de recall**. Sem mudança de formato. Contrato MCP → **1.1.21**.
-Matrix corrente (pós-v1.1.24): **337+1 / 383+1 / 281+1**.
+Matrix corrente (pós-v1.1.26): **342+1 / 388+1 / 286+1**.
 
 - **`index_fingerprint` (ADR-0011)** — oráculo canônico do estado derivado;
   invariante `fp(open) == fp(rebuild_indices())`. **Três exclusões que são o
@@ -533,6 +533,84 @@ Auditoria de `docs/` + raiz. Sem mudança de formato; `MCP_CONTRACT_VERSION` →
   funcionou nas três foi **tabela pinada por teste** (`ALIAS_SURFACE`) ou
   **schema anunciado checado por asserção** — não documentação em prosa.
 - Matrix: **330+1 / 376+1 / 274+1**; hot test **103/0**.
+
+## Post-audit v1.1.26 (descoberta de escopo + anunciado == servido)
+
+Bug de consumidor achado **usando** o DB (flush do harness contra o banco real),
+não lendo código — o mesmo método do v1.1.25, e o segundo achado seguido que veio
+do ritual de fim de tarefa em vez da leitura. Sem mudança de formato; contrato
+MCP → **1.1.26** (dois campos visíveis mudaram de VALOR). ADR-0015.
+
+- **O ponto cego:** `curate(op=commit_run, scope_run="release-x")` — o caminho
+  natural do ADR-0010 — grava `ScopeDims{user:"", run:"release-x"}`. Como o
+  legado espelha `user` (ADR-0013), `scope == ""`, e o `scope_distribution`
+  classificava escopo com exatamente esse campo: o doc era contado como
+  **GLOBAL**, `global_memory_count` mentia, `scope_labels`/`scopes_to_probe`
+  nunca o listavam, `recall(scope=…)` dava 0, o global dava 0 (null-scoping
+  correto) — e a única função que o enxergava (`scope_distribution_dims`) **não
+  era exposta por superfície nenhuma**. A memória recém-gravada não tinha
+  NENHUMA rota documentada até ela.
+- **O terceiro mecanismo (o que faltava): `scan_scope_metas`.** Global é
+  `scope == ""` **e** dims globais. Um scan, uma classificação: `global`,
+  `legacy` (alcançável por `scope=`), `dims_only` (só por filtro multi-dim).
+  `scope_distribution`, `scope_distribution_dims` e `scope_probes` viraram
+  projeções dela — a regra estava **copiada em três funções** e a cópia divergiu
+  (era a lição do v1.1.25, no mesmo padrão: regra duplicada → N-ésima diverge).
+- **Procedência viaja, porque forma não carrega informação.** `ScopeProbes{
+  legacy, dims_only}` — duas listas, duas rotas. A label sozinha é ambígua: um
+  `scope` legado pode conter `/` (os conectores usam
+  `tenant/x/agent/y/workspace/z`), então por forma não se distinguem de uma
+  label de dims. Quem sabe qual rota usar é quem a produziu.
+- **`announced == served`, invertido.** O schema do `recall` anuncia
+  `scope_user/agent/app/run` desde o v1.1.14 e o handler lia só `scope`:
+  `recall(scope_run="x")` respondia **igual** a `recall()` — 0 hits,
+  `isError:false`, mais um hint mandando usar `recall(scope=…)`, que também dava
+  0. E o sub-modo `entities` **já honrava** dims (roteado para `recall_entities`):
+  dois usos do MESMO tool com comportamentos diferentes. É o achado do v1.1.23
+  (`view=index`) na direção oposta — mesma raiz: **o modelo lê o schema, não o
+  código**.
+- **Recusar em voz alta é parte do contrato.** Onde o core não tem rota de dims
+  (`hybrid` RRF, `temporal`) a chamada falha com erro acionável em vez de
+  responder o pool global — que vazaria escopo, exatamente o que o null-scoping
+  existe para impedir. Mesma postura do S1 (dim mismatch).
+- **A invariante do ADR-0013 tinha um furo na escrita com AMBOS.**
+  `remember(scope="proj/x", scope_run="r1")` gravava `scope="proj/x"` com
+  `dims.user == ""`: o `finish_remember` promovia o legado para `dims.user` só
+  quando as dims estavam TODAS vazias, e o `set_scope_dims` seguinte clobberava
+  o write-through do `set_scope`. Como `effective_scope_dims` prefere dims
+  não-globais, a dim `user` era **perdida** — filtrar por `scope_user` não achava
+  e filtrar por `run` achava sob outro user. Terceiro bug do mesmo dia nessa
+  família, cada um com teste de mutação.
+- **Descoberta não pode ser limitada por formatação.** `scopes_to_probe` vinha
+  de `health.scope_labels`, que faz `truncate(8)` por EXIBIÇÃO: o 9º escopo mais
+  populoso era indescobrível. Agora vem da distribuição completa, e
+  `scopes_to_probe_dims` carrega descritores `{label,user,agent,app,run,count}`
+  já no shape dos argumentos do `recall`.
+- Matrix **342+1 / 388+1 / 286+1**; gates verdes; hot test **119/0** (+9
+  asserções). O `scope_blind_spot_probe` foi promovido a teste de regressão e
+  removido.
+
+## Post-audit v1.1.25 (payload_type honra a camada)
+
+Bug de consumidor achado **usando** o DB (flush do harness contra o banco real),
+não lendo código. Sem mudança de formato; contrato MCP → **1.1.25** (o VALOR de
+um campo visível mudou).
+
+- **`Hit.payload_type` declarava `Embedding(dim)` para prosa L3.** A regra em uso
+  era a do `index_doc` (`len % 4 == 0 && >= 4`) — que **qualquer texto de tamanho
+  múltiplo de 4 satisfaz** (25% deles). Um L3 de 16 B respondia
+  `Embedding(4)`: um consumidor máquina reusaria um vetor inexistente. Agora só
+  **L4/L5** rendem `Embedding`; fora delas o payload passa pelo detector normal.
+  `embedding_dim_of` ganhou a precondição de camada na doc.
+- **A decisão estava duplicada em 4 call sites** (recall semântico,
+  `recall_impl_dims`, entidades, `primary_of` — este com branch explícito para
+  L3). Virou função nomeada em `src/ctype.rs`: `payload_content_type(key,
+  payload, has_bitvec)` + `key_carries_embedding(key)`. Lição: quando a MESMA
+  regra aparece copiada em N lugares, o N-ésimo divergirá — e o consumidor acha.
+- **Teste com mutação**: removida a guarda de camada, o teste falha com a
+  asserção exata; restaurada, passa. Regra de casa: teste de fix de tipo/contrato
+  só vale depois de provar que ele morre sem o fix.
+- Matrix: **339+1 / 385+1 / 283+1**; hot test **110/0**.
 
 ## Post-audit v1.1.24 (unificação de escopo + ledger de negativos)
 
@@ -645,7 +723,7 @@ let facts = db.scan_prefix("md/L3/")?;                 // ART prefix scan
 ```bash
 cargo run --release --example bench        # benchmarks (ART/BQ/recall vs FP32)
 cargo run --release --example mcp_server   # MCP server for AI agents
-cargo run --release --example mcp_client   # HOT TEST: drives mcp_server like an IDE (110/0)
+cargo run --release --example mcp_client   # HOT TEST: drives mcp_server like an IDE (119/0)
 cargo run --release --example agent_protocol  # DECISION PROTOCOL (itens 2–6 + P1–P6): como o agente USA o DB
 cargo run --release --example two_ai_protocol # PROTOCOLO MÁQUINA→MÁQUINA (v1.1.6 itens 1–5): IA-A grava datum declarado, IA-B lê tipado
 cargo run --release --example memory_arena_eval # MEMORY-ARENA EVAL (P7): utilidade da memória em tarefas interdependentes
@@ -669,9 +747,9 @@ hash, not a semantic model). Restart opencode after changing the config.
 ## Running tests
 
 ```bash
-cargo test                                 # 337+1 tests (InMemory/FileStorage/TickvFile)
-cargo test --features p2p                  # 383+1 (includes CRDT sync + mesh harness)
-cargo test --no-default-features           # 281+1 (no_std core, host test harness)
+cargo test                                 # 342+1 tests (InMemory/FileStorage/TickvFile)
+cargo test --features p2p                  # 388+1 (includes CRDT sync + mesh harness)
+cargo test --no-default-features           # 286+1 (no_std core, host test harness)
 cargo check --no-default-features --target x86_64-unknown-none   # no_std gate
 cargo clippy --all-targets --all-features -- -D warnings          # lint gate (P0-5)
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-6/P0-10)
@@ -718,7 +796,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-
   module-doc tem de bater com os decoders de fato chamados no teste: o `AUD1`
   (v1.1.10) entrou no harness e a lista continuou dizendo 8 — adicionar um tipo
   wire é adicioná-lo AQUI (mais o `prop_tests` do próprio módulo) e manter a
-  matrix (**337+1 / 383+1 / 281+1**) verde. `SignedEnvelope::decode` returns
+  matrix (**342+1 / 388+1 / 286+1**) verde. `SignedEnvelope::decode` returns
   `Option<(Self, usize)>` (no magic byte — corrupt via field lengths, not
   byte 0).
 - **TickvFile** (`src/tickv.rs`): 512-aligned records, tombstone `vlen=0` or

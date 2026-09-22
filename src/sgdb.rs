@@ -9,7 +9,8 @@ use alloc::vec::Vec;
 
 use crate::bq::{quantize_f32, BqFlatIndex};
 use crate::ctype::{
-    detect_content_type, embedding_dim_of, parse_stable_label, renders_prose, ContentType, RecallPath,
+    detect_content_type, parse_stable_label, payload_content_type, renders_prose, ContentType,
+    RecallPath,
 };
 use crate::engine::AiosDatabaseEngine;
 use crate::era::{estimate_era_migration, era_report_lines, EraReport};
@@ -254,10 +255,26 @@ pub struct HealthReport {
 /// Distribuição de memórias por escopo (multi-agente / mem0 null-scoping).
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct ScopeDistribution {
-    /// Primários L3/L4/L5 com `scope=""`.
+    /// Primários L3/L4/L5 sem NENHUM escopo (`scope=""` **e** dims globais).
     pub global_count: usize,
     /// `(scope_label, count)` ordenado por label asc (determinístico).
     pub scoped: Vec<(String, usize)>,
+}
+
+/// Probes de cold-start com PROCEDÊNCIA (v1.1.26).
+///
+/// Duas rotas, duas listas: `legacy` é o que `recall(scope=...)` alcança;
+/// `dims_only` é o que SÓ o filtro multi-dim alcança (`agent`/`app`/`run` sem
+/// `user`). Sem esta separação o cold-start não tinha como NOMEAR um escopo de
+/// `run` — e a memória do ADR-0010 (`commit_run` com `scope_run`) ficava num
+/// ponto cego: não era global, não casava `scope=`, e nenhuma superfície
+/// publicava a rota que faltava (a visão de dims).
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct ScopeProbes {
+    /// `(label, count)` alcançáveis por `recall(scope=...)`.
+    pub legacy: Vec<(String, usize)>,
+    /// `(label, count)` alcançáveis só por `scope_user/agent/app/run`.
+    pub dims_only: Vec<(String, usize)>,
 }
 
 /// Opções opcionais na escrita semântica L4+L2 (seam de scope/entities/type).
@@ -638,12 +655,23 @@ impl Sgdb {
         }
     }
 
-    /// Contagem de memórias primárias por escopo (L3/L4/L5 + `sys/meta/`).
-    pub fn scope_distribution(&mut self) -> Result<ScopeDistribution, SgdbError> {
+    /// Varre `sys/meta/` UMA vez e classifica os escopos com PROCEDÊNCIA
+    /// explícita. Fonte única de `scope_distribution`, `scope_distribution_dims`
+    /// e `scope_probes` — antes a mesma regra de classificação estava copiada
+    /// nos três, e a cópia divergiu (uma contava dims não-`user` como global).
+    ///
+    /// Classificação (v1.1.26):
+    /// - `scope` legado não-vazio → `legacy` (alcançável por `recall(scope=...)`);
+    /// - `scope` vazio e dims globais → GLOBAL de verdade;
+    /// - `scope` vazio e dims não-globais → `dims_only`: o doc tem escopo que
+    ///   `scope=` não nomeia. Era AQUI que a memória sumia — contada como global
+    ///   E invisível a toda rota documentada.
+    fn scan_scope_metas(&mut self) -> Result<(usize, ScopeProbes), SgdbError> {
         use alloc::collections::BTreeMap;
         let metas = self.engine.scan_prefix_storage(b"sys/meta/")?;
         let mut global = 0usize;
-        let mut scoped: BTreeMap<String, usize> = BTreeMap::new();
+        let mut legacy: BTreeMap<String, usize> = BTreeMap::new();
+        let mut dims_only: BTreeMap<String, usize> = BTreeMap::new();
         for (mk, bytes) in metas {
             let sk = match mk.strip_prefix(b"sys/meta/") {
                 Some(s) => String::from_utf8_lossy(s).into_owned(),
@@ -652,15 +680,41 @@ impl Sgdb {
             if !(sk.starts_with("md/L3/") || sk.starts_with("md/L4/") || sk.starts_with("md/L5/")) {
                 continue;
             }
-            let scope = match MemoryMeta::decode(&bytes) {
-                Ok(m) => m.scope,
-                Err(_) => continue,
+            let Ok(m) = MemoryMeta::decode(&bytes) else {
+                continue;
             };
-            if scope.is_empty() {
+            if !m.scope.is_empty() {
+                *legacy.entry(m.scope.clone()).or_insert(0) += 1;
+            } else if m.scope_dims.is_global() {
                 global += 1;
             } else {
-                *scoped.entry(scope).or_insert(0) += 1;
+                *dims_only.entry(m.scope_dims.label()).or_insert(0) += 1;
             }
+        }
+        Ok((
+            global,
+            ScopeProbes {
+                legacy: legacy.into_iter().collect(),
+                dims_only: dims_only.into_iter().collect(),
+            },
+        ))
+    }
+
+    /// Contagem de memórias primárias por escopo (L3/L4/L5 + `sys/meta/`).
+    ///
+    /// v1.1.26: GLOBAL é `scope_dims.is_global()`, NÃO `scope.is_empty()`. O
+    /// campo legado espelha `user` (ADR-0013), então um doc gravado só com
+    /// `run`/`agent`/`app` tem `scope == ""` e era contado como global — o que o
+    /// deixava fora de `scope_labels`/`scopes_to_probe` E fazia
+    /// `global_memory_count` mentir. Ele não é global (o recall global o filtra
+    /// por null-scoping) nem alcançável por `scope=`: sem este ramo não havia
+    /// rota nenhuma até a memória.
+    pub fn scope_distribution(&mut self) -> Result<ScopeDistribution, SgdbError> {
+        let (global, probes) = self.scan_scope_metas()?;
+        let mut scoped: alloc::collections::BTreeMap<String, usize> =
+            probes.legacy.into_iter().collect();
+        for (label, count) in probes.dims_only {
+            *scoped.entry(label).or_insert(0) += count;
         }
         Ok(ScopeDistribution {
             global_count: global,
@@ -668,8 +722,23 @@ impl Sgdb {
         })
     }
 
+    /// Probes de cold-start COM PROCEDÊNCIA (v1.1.26) — o que o
+    /// `nsgdb://session` publica para o agente saber o que sondar.
+    ///
+    /// A procedência tem de vir do CORE: o rótulo legado e o rótulo de dims são
+    /// ambos strings, e um `scope` legado pode conter `/` (os conectores usam
+    /// `tenant/x/agent/y/workspace/z`), então por forma não se distinguem —
+    /// quem sabe qual rota usar é quem os produziu.
+    pub fn scope_probes(&mut self) -> Result<ScopeProbes, SgdbError> {
+        let (_, probes) = self.scan_scope_metas()?;
+        Ok(probes)
+    }
+
     /// Distribuição por dims (v1.1.14): `(user/agent/app/run, count)`.
     /// Derivado de `sys/meta/` (fonte da verdade), determinístico.
+    ///
+    /// Rótulo via `ScopeDims::label()` (fonte única) — a formatação era
+    /// duplicada em três lugares.
     pub fn scope_distribution_dims(&mut self) -> Result<Vec<(String, usize)>, SgdbError> {
         use alloc::collections::BTreeMap;
         let metas = self.engine.scan_prefix_storage(b"sys/meta/")?;
@@ -688,11 +757,7 @@ impl Sgdb {
             if m.scope_dims.is_global() && m.scope.is_empty() {
                 continue;
             }
-            let label = alloc::format!(
-                "{}/{}/{}/{}",
-                m.scope_dims.user, m.scope_dims.agent, m.scope_dims.app, m.scope_dims.run
-            );
-            *map.entry(label).or_insert(0) += 1;
+            *map.entry(m.scope_dims.label()).or_insert(0) += 1;
         }
         Ok(map.into_iter().collect())
     }
@@ -1554,10 +1619,9 @@ impl Sgdb {
             let (prov, ct_fallback, declared) = match self.engine.get_by_storage_key(&sk) {
                 Ok(Some(doc)) => {
                     let st = self.engine.get_state(&sk);
-                    let ct = detect_content_type(
-                        &doc.payload,
-                        embedding_dim_of(&doc.payload, doc.bitvec.is_some()),
-                    );
+                    // v1.1.25: a camada decide se o payload é vetor — um L3 de
+                    // prosa com len % 4 == 0 NÃO é Embedding(len/4).
+                    let ct = payload_content_type(&sk, &doc.payload, doc.bitvec.is_some());
                     let declared = doc
                         .meta
                         .as_ref()
@@ -2044,7 +2108,15 @@ impl Sgdb {
         }
         // v1.1.14: escopo multi-dim vence o legado quando presente.
         let mut scope_dims = opts.scope_dims.clone().unwrap_or_default();
-        if scope_dims.is_global() && !scope.is_empty() {
+        // ADR-0013: `scope` legado é o ESPELHO de `scope_dims.user`. Promover
+        // só quando as dims estavam TODAS vazias deixava `scope="proj/x"` +
+        // `scope_run="r1"` com `dims.user == ""`: o `set_scope` acima gravava o
+        // write-through e o `set_scope_dims` logo abaixo o clobberava. Resultado:
+        // a invariante quebrava e `effective_scope_dims` — que prefere dims
+        // não-globais — PERDIA a dimensão user, então quem filtrasse por
+        // `scope_user` não achava a memória e quem filtrasse por `run` a achava
+        // sob outro user. Preencher a dim vazia reconcilia os dois lados.
+        if scope_dims.user.is_empty() && !scope.is_empty() {
             scope_dims.user = scope.clone();
         }
         if !scope_dims.is_global() {
@@ -2652,8 +2724,10 @@ impl Sgdb {
                     // v1.1.6 — tipo do datum: o payload L4/L5 é o embedding
                     // (floats NÃO viram prosa); o companion fornece o texto
                     // (projeção prosa) e então o tipo é o do TEXTO.
-                    let ct_fallback =
-                        detect_content_type(&doc.payload, embedding_dim_of(&doc.payload, doc.bitvec.is_some()));
+                    // v1.1.25: `payload_content_type` honra a CAMADA (só
+                    // L4/L5 rendem Embedding) — candidatos do BQ já são L4/L5,
+                    // mas a regra fica nomeada num lugar só.
+                    let ct_fallback = payload_content_type(&sk, &doc.payload, doc.bitvec.is_some());
                     // v1.1.6 item 2 — seam de WRITE: a declaração do writer
                     // (MDM1 v6) vence o detector na hora de tipar o hit.
                     let declared = doc
@@ -3659,11 +3733,9 @@ impl Sgdb {
         for prim in ["md/L4/", "md/L5/", "md/L3/"] {
             let cand = alloc::format!("{prim}{rest}");
             if let Ok(Some(doc)) = self.engine.get_by_storage_key(&cand) {
-                // tipo do payload do primário (Embedding(dim) p/ L4/L5)
-                let ct = detect_content_type(
-                    &doc.payload,
-                    embedding_dim_of(&doc.payload, doc.bitvec.is_some()),
-                );
+                // tipo do payload do primário (Embedding(dim) p/ L4/L5; um
+                // primário L3 responde com o tipo do TEXTO — v1.1.25)
+                let ct = payload_content_type(&cand, &doc.payload, doc.bitvec.is_some());
                 return Some((cand, ct));
             }
         }
@@ -3964,10 +4036,7 @@ impl Sgdb {
                 scope_dims: m.scope_dims.clone(),
                 model_id: m.model_id.clone(),
             });
-            let ct_fallback = detect_content_type(
-                &doc.payload,
-                embedding_dim_of(&doc.payload, doc.bitvec.is_some()),
-            );
+            let ct_fallback = payload_content_type(&sk, &doc.payload, doc.bitvec.is_some());
             let declared = doc
                 .meta
                 .as_ref()
@@ -5305,6 +5374,87 @@ mod tests {
         // escopo hostil é rejeitado na escrita (regra do write-path)
         assert!(db.note_absence("x", "user/../etc", 1).is_err());
         assert!(db.note_absence("x", "a#b", 1).is_err());
+    }
+
+    #[test]
+    fn l3_prose_is_never_typed_as_embedding_in_any_path() {
+        // v1.1.25: `payload_type` promete o datum REAL do payload. Um L3 de
+        // prosa cujo tamanho por acaso é múltiplo de 4 (25% dos textos)
+        // satisfazia a aritmética de `embedding_dim_of` e virava
+        // `Embedding(len/4)`: um consumidor máquina tentaria reusar um vetor
+        // que não existe — exatamente o erro que os hits tipados (v1.1.6)
+        // existem para evitar. Descoberto USANDO o DB (flush do harness contra
+        // o banco real), não por leitura de código.
+        let prose = "dezesseis bytes!";
+        assert_eq!(prose.len() % 4, 0, "o teste precisa do caso múltiplo de 4");
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_text_with(
+            "prosa",
+            prose,
+            RememberOptions {
+                scope: None,
+                entities: &["mom/fact"],
+                content_type: None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // (1) caminho de ENTIDADES — o que produziu o hit errado
+        let h = db.recall_entities(&["mom/fact"], 5).unwrap();
+        assert_eq!(h.len(), 1);
+        assert_eq!(
+            h[0].payload_type,
+            ContentType::Text,
+            "L3 de prosa: payload_type = Text (não Embedding(len/4))"
+        );
+        assert_eq!(h[0].content_type, ContentType::Text);
+        // (2) caminho LEXICAL direto
+        let hl = db.recall_lexical(prose, 5).unwrap();
+        assert!(!hl.is_empty());
+        assert_eq!(hl[0].payload_type, ContentType::Text);
+        // (3) `primary_of`: companion L2 cujo PRIMÁRIO é L3 — o datum real do
+        //     primário é texto, não vetor (o branch L3 do primary_of)
+        let mut db2 = Sgdb::open(InMemory::new()).unwrap();
+        db2.put(MemoryDoc::new(
+            MemoryLayer::L3EpisodicLong,
+            "dup",
+            prose.as_bytes().to_vec(),
+        ))
+        .unwrap();
+        db2.put(MemoryDoc::new(
+            MemoryLayer::L2EpisodicShort,
+            "dup",
+            b"projecao do primario l3".to_vec(),
+        ))
+        .unwrap();
+        let h3 = db2.recall_lexical("projecao", 5).unwrap();
+        let companion = h3
+            .iter()
+            .find(|h| h.key.starts_with("md/L2/"))
+            .expect("companion L2 no hit");
+        assert_eq!(companion.rel.as_deref(), Some("md/L3/dup"));
+        assert_eq!(
+            companion.payload_type,
+            ContentType::Text,
+            "datum do primário L3 = texto"
+        );
+        // (4) o caminho SEMÂNTICO continua reportando o vetor (o payload L4 É
+        //     o embedding — a correção não toca na era nem na regra do BQ)
+        db.remember_semantic("sem", "texto com companion", &[1.0, -1.0, 1.0, -1.0])
+            .unwrap();
+        let h4 = db.recall(&[1.0, -1.0, 1.0, -1.0], 5).unwrap();
+        assert_eq!(
+            h4[0].payload_type,
+            ContentType::Embedding(4),
+            "L4 intacto: o datum real é o vetor"
+        );
+        // …e o L5 cru (bitvec, sem companion) também
+        let mut db3 = Sgdb::open(InMemory::new()).unwrap();
+        let mut doc = MemoryDoc::new(MemoryLayer::L5Procedural, "raw", prose.as_bytes().to_vec());
+        doc.bitvec = Some(crate::bq::quantize_f32(&[0.5, -0.5, 0.5, -0.5]));
+        db3.put(doc).unwrap();
+        let ents = db3.recall_entities(&["nada"], 1).unwrap();
+        assert!(ents.is_empty(), "sem entidades declaradas");
     }
 
     #[test]
@@ -9341,6 +9491,144 @@ mod tests {
             a.escalations >= 1,
             "pool inicial faminto pelo filtro ⇒ escala: {a:?}"
         );
+    }
+
+    /// v1.1.26 — PONTO CEGO DE ESCOPO (descoberto USANDO o DB, no flush do
+    /// harness contra o banco real; o exemplo `scope_blind_spot_probe` virou
+    /// este teste).
+    ///
+    /// Um doc gravado só com a dim `run` (o caminho natural do ADR-0010:
+    /// `commit_run` com `scope_run`) tinha `scope == ""` — o legado espelha
+    /// `user` (ADR-0013) — e era **contado como global** por
+    /// `scope_distribution`. Consequência tripla: (a) `global_memory_count`
+    /// mentia; (b) `scope_labels` (fonte de `scopes_to_probe`) não o listava,
+    /// logo o cold-start nunca sondava o rótulo; (c) como não é global de
+    /// fato (o recall global filtra por null-scoping), e `scope=` também não
+    /// casa, NÃO EXISTIA rota nenhuma até a memória. A visão de dims (o
+    /// único descobridor) não era exposta por nenhuma superfície.
+    #[test]
+    fn run_only_scope_is_scoped_not_global_and_is_discoverable() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let dims = ScopeDims::from_args(None, None, None, Some("run/1"));
+        db.remember_text_with(
+            "fato",
+            "a release unificou escopo",
+            RememberOptions {
+                scope: None,
+                entities: &["mom/fact"],
+                content_type: None,
+                scope_dims: dims.clone(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // (a) NÃO é global — nem na estatística, nem no recall.
+        let dist = db.scope_distribution().unwrap();
+        assert_eq!(
+            dist.global_count, 0,
+            "doc com dim `run` não é global: {dist:?}"
+        );
+        assert_eq!(
+            dist.scoped,
+            vec![(String::from("///run/1"), 1usize)],
+            "o rótulo de dims é que o nomeia: {dist:?}"
+        );
+        assert!(
+            db.recall_lexical("release unificou escopo", 5)
+                .unwrap()
+                .is_empty(),
+            "null-scoping preservado: o recall global NÃO vê dims escopadas"
+        );
+
+        // (b) é discoverable pela visão de dims, e o rótulo casa com a label().
+        let dims_dist = db.scope_distribution_dims().unwrap();
+        assert_eq!(dims_dist, vec![(String::from("///run/1"), 1usize)]);
+        assert_eq!(dims_dist[0].0, dims.as_ref().unwrap().label());
+
+        // (c) a rota que faltava: recall por dims alcança o doc.
+        let filter = ScopeFilter {
+            run: Some(String::from("run/1")),
+            ..Default::default()
+        };
+        let hits = db
+            .recall_lexical_dims("release unificou escopo", 5, &filter)
+            .unwrap();
+        assert_eq!(hits.len(), 1, "a dim `run` tem de ser alcançável: {hits:?}");
+        assert!(db
+            .recall_lexical_dims("release unificou escopo", 5, &ScopeFilter {
+                run: Some(String::from("run/2")),
+                ..Default::default()
+            })
+            .unwrap()
+            .is_empty());
+    }
+
+    /// A visão legada (label = `scope`, ou seja `user`) continua idêntica — o
+    /// reparo no `scope_distribution` não pode renomear escopos legados
+    /// existentes (o hot test e os conectores dependem do rótulo do produto).
+    #[test]
+    fn user_scoped_label_is_unchanged_by_the_dims_repair() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_text_with(
+            "a",
+            "memoria do produto",
+            RememberOptions {
+                scope: Some("nsgdb/release"),
+                entities: &[],
+                content_type: None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // e um global de verdade para o contador ter contraexemplo
+        db.remember_text_with(
+            "g",
+            "memoria sem escopo",
+            RememberOptions {
+                scope: None,
+                entities: &[],
+                content_type: None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let dist = db.scope_distribution().unwrap();
+        assert_eq!(dist.scoped, vec![(String::from("nsgdb/release"), 1usize)]);
+        // o global (dims globais E legado vazio) é o único que conta como global
+        assert_eq!(
+            dist.global_count, 1,
+            "global de verdade continua global: {dist:?}"
+        );
+    }
+
+
+    /// ADR-0013 promete que `scope` é ESPELHO de `scope_dims.user`. A escrita
+    /// com AMBOS (legado `scope=` + dims) tem de preservar a invariante:
+    /// `set_scope` faz write-through, e `set_scope_dims` não pode clobberá-lo.
+    #[test]
+    fn scope_and_dims_agree_when_both_are_written() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let dims = ScopeDims::from_args(None, None, None, Some("r1"));
+        db.remember_text_with(
+            "k",
+            "texto",
+            RememberOptions {
+                scope: Some("proj/x"),
+                entities: &[],
+                content_type: None,
+                scope_dims: dims,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(db.scope_of("md/L3/k").unwrap(), "proj/x");
+        let d = db.scope_dims_of("md/L3/k").unwrap();
+        assert_eq!(
+            d.user, "proj/x",
+            "legado e dims.user tem de concordar (ADR-0013): {d:?}"
+        );
+        assert_eq!(d.run, "r1");
     }
 
     /// O recall default NÃO mudou: o adaptativo é uma API paralela, e o

@@ -1,7 +1,7 @@
 ﻿# neural-sgdb — API Contract
 
 > Contract document for the extraction of the SGDB core from neural-os-core.
-> Status: **current public contract (crate v1.1.24)** —
+> Status: **current public contract (crate v1.1.26)** —
 > this document is the current public contract; roadmap items are explicitly
 > marked as such. The internal API lives in `crates/k_ai/src/sgdb/` of the
 > parent OS; this doc defines the public surface the community crate exposes
@@ -342,11 +342,27 @@ código, binários). Duas regras tornam o consumo determinístico:
    carrega a key do primário `/L4|L5|L3/` e `payload_type` (o datum real);
    `Sgdb::primary_of(key)` resolve `md/L2/<id>` → primário existente para
    follow-ups.
+5. **`payload_type` honra a CAMADA (v1.1.25)** — `Embedding(dim)` só para
+   **L4/L5**, as camadas que o BQ indexa (`key_carries_embedding`). A aritmética
+   antiga (`len % 4 == 0 && >= 4`) rotulava como vetor **qualquer prosa cujo
+   tamanho fosse múltiplo de 4** (25% dos textos): um `remember(text=…)` L3 com
+   `len % 4 == 0` devolvia `payload_type = Embedding(len/4)` e um consumidor
+   máquina tentava reusar um vetor inexistente — o erro que os hits tipados
+   existem para evitar. Fora de L4/L5 o payload passa pelo detector normal
+   (Text/Json/Code/Binary). `content_type` (a projeção) não mudou.
+6. **Descoberta de escopo tem PROCEDÊNCIA (v1.1.26, ADR-0015)** — `scope` é uma
+   label (alcançada por `recall(scope=…)`) e dims são um filtro; um doc com
+   `run`/`agent`/`app` sem `user` **não é global** (o recall global o filtra por
+   null-scoping) e **não é alcançável por `scope=`**. `ScanScope` classifica uma
+   vez (`global` = `scope=="" && dims.is_global()`), e `ScopeProbes` publica as
+   duas rotas separadas: `legacy` (por label) e `dims_only` (só por
+   `scope_user/agent/app/run`). A label sozinha não identifica a rota — um
+   `scope` legado pode conter `/`.
 
-## Additive public surface (v1.1.2–v1.1.24)
+## Additive public surface (v1.1.2–v1.1.26)
 
 Everything below is **additive** (MINOR per VERSIONING.md) — no signature of a
-v1.0 method changed; crate version **1.1.24** in `Cargo.toml`. Key additions since the contract above:
+v1.0 method changed; crate version **1.1.26** in `Cargo.toml`. Key additions since the contract above:
 
 ```rust
 // ---- S1: recall is LOUD on dimension mismatch (v1.1.3) ----
@@ -359,6 +375,18 @@ pub fn indexed_embedding_dims(&self) -> BTreeSet<usize>;
 // trait Embedder { fn embed(&self, text: &str) -> Vec<f32>; }
 // Contract: whoever supplies embeddings uses the SAME model on write and
 // query (4-dim agent vector ≠ 256-dim demo — they don't cross-match).
+
+// ---- Descoberta de escopo com procedencia (v1.1.26, ADR-0015) ----
+// O que `recall(scope=...)` alcanca (legacy) e o que SO o filtro multi-dim
+// alcanca (dims_only) -- duas listas porque a label nao identifica a rota.
+pub struct ScopeProbes { pub legacy: Vec<(String, usize)>, pub dims_only: Vec<(String, usize)> }
+pub fn scope_probes(&mut self) -> Result<ScopeProbes, SgdbError>;
+// Global deixou de ser `scope.is_empty()`: e `scope == ""` E dims globais.
+// `global_memory_count` e `scope_labels` (health) seguem esta definicao.
+pub fn scope_distribution(&mut self) -> Result<ScopeDistribution, SgdbError>;
+// `ScopeDims::label()` = "user/agent/app/run" (fonte unica do rotulo).
+// Escrita com `scope=` legado E dims: `dims.user` vazio e preenchido com o
+// `scope`, preservando `scope == dims.user` (ADR-0013).
 
 // ---- Scoping multi-agente (v1.1.4 item 7) ----
 pub fn set_scope(&mut self, key: &str, scope: &str) -> Result<(), SgdbError>;

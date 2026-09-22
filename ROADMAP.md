@@ -1,8 +1,8 @@
 # Roadmap — neural-sgdb
 
-Status: **v1.1.x maintenance line (crate v1.1.24)** —
+Status: **v1.1.x maintenance line (crate v1.1.26)** —
 stable API, zero deps, `no_std` + `std`, CI gates green. Crate version
-**1.1.24**; histórico v1.1.2–v1.1.24 no `CHANGELOG.md`. This roadmap is honest
+**1.1.26**; histórico v1.1.2–v1.1.26 no `CHANGELOG.md`. This roadmap is honest
 about what is DONE, what is NEXT, and what is deliberately NOT planned.
 
 Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
@@ -28,6 +28,12 @@ Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
    **Veredito medido: o threshold default faz escalar quase sempre** (clusters
    densos: 44% a 338 candidatos/query vs 40% a ~160 do 16× fixo), então o que
    ficou entregue é o instrumento para o host decidir, não uma promessa.
+
+✅ **v1.1.25 — `payload_type` honra a camada (2026-09-22)** — bug de consumidor
+   achado USANDO o DB: a regra do `index_doc` (`len % 4 == 0`) rotulava prosa L3
+   de tamanho múltiplo de 4 como `Embedding(len/4)`; agora só L4/L5 rendem
+   vetor e a decisão (antes copiada em 4 call sites) é `payload_content_type`.
+   Sem mudança de formato; contrato MCP **1.1.25** (valor de campo visível).
 
 ✅ **v1.1.24 — unificação de escopo + ledger de negativos (2026-09-22)** —
    release **3/3** do plano de melhorias (itens 4 e 7), o único pedaço que

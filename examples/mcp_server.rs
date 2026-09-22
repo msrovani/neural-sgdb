@@ -275,7 +275,7 @@ fn error_response(id: &Value, code: i64, message: &str) -> Value {
 
 /// NÃºmero de tools em `tools/list` (aliases antigos ainda funcionam em tools/call).
 const EXPECTED_MCP_TOOL_COUNT: usize = 4;
-const MCP_CONTRACT_VERSION: &str = "1.1.24";
+const MCP_CONTRACT_VERSION: &str = "1.1.26";
 const BUILD_GIT: &str = env!("NEURAL_SGDB_BUILD_GIT");
 
 /// Lista pÃºblica: 4 tools. Os 23 nomes antigos continuam vÃ¡lidos em `tools/call`.
@@ -869,14 +869,16 @@ fn session_payload(db: &mut Sgdb, db_path: &str, embedder: &str) -> Value {
     let health = health_payload(db, db_path, embedder);
     let tensions = tensions_payload(db);
     let default_scope = db.default_scope().unwrap_or("").to_string();
+    // v1.1.26: a lista de probes vem de `scope_probes()` (procedência do core),
+    // NÃO de `health.scope_labels` — que é top-8 por EXIBIÇÃO e omitia escopos
+    // reais. Dois bugs num só: o truncamento escondia o 9º escopo, e a versão
+    // antiga do `scope_distribution` contava dims não-`user` como globais, então
+    // nem apareciam lá.
+    let probes = db.scope_probes().unwrap_or_default();
     let mut scopes_to_probe: Vec<String> = Vec::new();
-    if let Some(labels) = health.get("scope_labels").and_then(|v| v.as_array()) {
-        for entry in labels {
-            if let Some(scope) = entry.get(0).and_then(|s| s.as_str()) {
-                if !scope.is_empty() && !scopes_to_probe.iter().any(|s| s == scope) {
-                    scopes_to_probe.push(scope.to_string());
-                }
-            }
+    for (label, _) in &probes.legacy {
+        if !label.is_empty() && !scopes_to_probe.iter().any(|s| s == label) {
+            scopes_to_probe.push(label.clone());
         }
     }
     if !default_scope.is_empty() && !scopes_to_probe.iter().any(|s| s == &default_scope) {
@@ -886,11 +888,31 @@ fn session_payload(db: &mut Sgdb, db_path: &str, embedder: &str) -> Value {
     if !scopes_to_probe.iter().any(|s| s == neural_sgdb::DOCTRINE_SCOPE) {
         scopes_to_probe.push(neural_sgdb::DOCTRINE_SCOPE.to_string());
     }
+    // A rota que FALTAVA: `scope=` não nomeia estas. Cada entrada é um descritor
+    // pronto para o `recall` — o consumidor não precisa parsear o rótulo (um
+    // `scope` legado pode conter `/`, então por forma as duas listas seriam
+    // indistinguíveis).
+    let scopes_to_probe_dims: Vec<Value> = probes
+        .dims_only
+        .iter()
+        .map(|(label, count)| {
+            let mut seg = label.split('/');
+            json!({
+                "label": label,
+                "user": seg.next().unwrap_or(""),
+                "agent": seg.next().unwrap_or(""),
+                "app": seg.next().unwrap_or(""),
+                "run": seg.next().unwrap_or(""),
+                "count": count,
+            })
+        })
+        .collect();
     let cold_start = json!({
         "protocol": "gather-then-act",
         "steps": [
             "1. Ler este resource (nsgdb://session) e nsgdb://doctrine",
             "2. Para cada scope em scopes_to_probe: recall(mode=lexical, scope=..., k=5) OU recall(entities=[...], scope=...)",
+            "2b. Para cada entrada de scopes_to_probe_dims: recall(mode=lexical, k=5, scope_user/agent/app/run=os campos dela) — estas NAO sao alcancaveis por scope= (nem hybrid/temporal: eles recusam dims)",
             "3. Preferencias IDE: entities pref/idioma, pref/memoria, nsgdb/usage, mom/pref no default_scope",
             "4. Constraints de projeto: entities mom/constraint, adr/index, roadmap/non-goals, docs/telepathy no scope do repo (constraints primeiro)",
             "5. health(view=staleness) — classifica aging/TTL/contradicts; curate manual (nao auto-forget)",
@@ -898,6 +920,7 @@ fn session_payload(db: &mut Sgdb, db_path: &str, embedder: &str) -> Value {
         ],
         "default_scope": default_scope,
         "scopes_to_probe": scopes_to_probe,
+        "scopes_to_probe_dims": scopes_to_probe_dims,
         "unseen_scopes": tensions.get("unseen_scopes").cloned().unwrap_or(json!([])),
         "single_writer": "Um processo mcp_server por ficheiro NEURAL_SGDB_DB; dois writers no mesmo FileStorage e risco. Partilha de ficheiro = memorias comuns, nao sync CRDT.",
         "telepathy_when": "Dois ou mais Sgdb com DBs/nos distintos → cargo run --release --example p2p_telepathy --features p2p",
@@ -912,21 +935,51 @@ fn session_payload(db: &mut Sgdb, db_path: &str, embedder: &str) -> Value {
     })
 }
 
+/// Dims anunciadas sem rota no core → RECUSA explícita, nunca silêncio.
+/// (Devolver o pool global quando o chamador pediu `scope_run` seria vazar
+/// escopo, que é o que o null-scoping existe para impedir.)
+const ERR_DIMS_HYBRID: &str = "scope_user/agent/app/run nao suportados em mode=hybrid \
+(o RRF funde dois pools e nao tem variante de dims): use mode=lexical ou mode=semantic, \
+ou filtre por scope= (legado). Nada foi retornado para nao vazar escopo.";
+const ERR_DIMS_TEMPORAL: &str = "scope_user/agent/app/run nao suportados em recall_temporal \
+(o re-rank temporal obra sobre o pool semantico, sem variante de dims): use scope= (legado) \
+ou um dos campos na resposta. Nada foi retornado para nao vazar escopo.";
+
+/// Rota de recall do MCP.
+///
+/// v1.1.26 — o schema ANUNCIA `scope_user/agent/app/run` no `recall` desde o
+/// v1.1.14, e este caminho as IGNORAVA: `recall(scope_run="x")` respondia igual
+/// a `recall()` — 0 hits com `isError:false` e um hint em prosa. Mesma familia
+/// do `view=index` do v1.1.23 (anunciado != servido), invertida. Pior: o
+/// sub-modo `entities` JA honrava dims (roteado para `recall_entities`), entao
+/// dois usos do MESMO tool se comportavam de forma diferente.
+///
+/// Dims presentes vencem o `scope` legado: o filtro multi-dim e estritamente
+/// mais especifico.
 fn recall_for_mcp(
     db: &mut Sgdb,
     mode: &str,
     scope: &str,
+    filter: &neural_sgdb::ScopeFilter,
     emb: &[f32],
     query: &str,
     need: usize,
 ) -> Result<Vec<neural_sgdb::Hit>, String> {
-    let r = match (mode, scope.is_empty()) {
-        ("lexical", true) => db.recall_lexical(query, need),
-        ("lexical", false) => db.recall_lexical_scoped(query, need, scope),
-        ("hybrid", true) => db.recall_hybrid_rrf(emb, query, need),
-        ("hybrid", false) => db.recall_hybrid_rrf_scoped(emb, query, need, scope),
-        (_, true) => db.recall(emb, need),
-        _ => db.recall_scoped(emb, need, scope),
+    let r = if !filter.is_global_only() {
+        match mode {
+            "lexical" => db.recall_lexical_dims(query, need, filter),
+            "hybrid" => return Err(ERR_DIMS_HYBRID.into()),
+            _ => db.recall_scoped_dims(emb, need, filter),
+        }
+    } else {
+        match (mode, scope.is_empty()) {
+            ("lexical", true) => db.recall_lexical(query, need),
+            ("lexical", false) => db.recall_lexical_scoped(query, need, scope),
+            ("hybrid", true) => db.recall_hybrid_rrf(emb, query, need),
+            ("hybrid", false) => db.recall_hybrid_rrf_scoped(emb, query, need, scope),
+            (_, true) => db.recall(emb, need),
+            _ => db.recall_scoped(emb, need, scope),
+        }
     };
     r.map_err(mcp_actionable_error)
 }
@@ -1238,7 +1291,18 @@ fn main() {
                         let need = off.saturating_add(size).saturating_add(1);
                         // v1.1.4 item 7 â€” scope: explÃ­cito ou default (env/core).
                         let scope = db.resolve_scope_param(args["scope"].as_str());
-                        let all = match recall_for_mcp(&mut db, &mode, &scope, &emb, query, need) {
+                        // v1.1.26: as dims anunciadas no schema chegam aqui
+                        // (o no-op silencioso era o bug).
+                        let dims_filter = mcp_scope_filter(args);
+                        let all = match recall_for_mcp(
+                            &mut db,
+                            &mode,
+                            &scope,
+                            &dims_filter,
+                            &emb,
+                            query,
+                            need,
+                        ) {
                             Ok(h) => h,
                             Err(e) => {
                                 send(&json!({"jsonrpc":"2.0","id":id,"result":{
@@ -1256,10 +1320,19 @@ fn main() {
                         } else {
                             page.iter().map(fmt_hit).collect::<Vec<_>>().join("\n")
                         };
+                        // O filtro efetivo e reportado: quem pediu `scope_run`
+                        // tem de ver que o pedido foi atendido (e nao que o
+                        // `scope` legado venceu por acaso).
+                        let filter_echo = json!({
+                            "user": dims_filter.user,
+                            "agent": dims_filter.agent,
+                            "app": dims_filter.app,
+                            "run": dims_filter.run
+                        });
                         let structured = if json_fmt {
-                            json!({"hits": page.iter().map(hit_json).collect::<Vec<_>>(), "scope": scope, "mode": mode})
+                            json!({"hits": page.iter().map(hit_json).collect::<Vec<_>>(), "scope": scope, "mode": mode, "scope_dims": filter_echo})
                         } else {
-                            json!({"hit_count": page.len(), "scope": scope, "mode": mode})
+                            json!({"hit_count": page.len(), "scope": scope, "mode": mode, "scope_dims": filter_echo})
                         };
                         let mut result = mcp_tool_result(&text, structured, false);
                         if let Some(n) = next {
@@ -1317,7 +1390,15 @@ fn main() {
                                 }
                             }
                             _ => {
-                                match recall_for_mcp(&mut db, "semantic", "", &emb, query, k) {
+                                match recall_for_mcp(
+                                    &mut db,
+                                    "semantic",
+                                    "",
+                                    &mcp_scope_filter(args),
+                                    &emb,
+                                    query,
+                                    k,
+                                ) {
                                     Err(e) => {
                                         send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                             "content":[{"type":"text","text":e}],"isError":true}}));
@@ -1367,6 +1448,13 @@ fn main() {
                         let w_sem = args["w_sem"].as_f64().unwrap_or(1.0) as f32;
                         let w_time = args["w_time"].as_f64().unwrap_or(10.0) as f32;
                         let scope = args["scope"].as_str().unwrap_or("");
+                        // v1.1.26: dims nao tem rota neste sub-modo — recusa
+                        // explicita em vez de responder o pool global.
+                        if !mcp_scope_filter(args).is_global_only() {
+                            send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":ERR_DIMS_TEMPORAL}],"isError":true}}));
+                            continue;
+                        }
                         let hits = if scope.is_empty() {
                             db.recall_temporal(&emb, k, at, w_sem, w_time)
                         } else {

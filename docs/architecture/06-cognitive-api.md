@@ -1,6 +1,6 @@
 ﻿# 06 — Cognitive API
 
-> Status: **current (v1.1.24)** — the cognitive surface ships in `Sgdb` +
+> Status: **current (v1.1.26)** — the cognitive surface ships in `Sgdb` +
 > MCP server (**4 tools**, aliases for the 23 legacy names). **implemented** =
 > code + tests; **remaining** = honest gap. All English per repo policy.
 
@@ -74,7 +74,7 @@ material for the agent/LLM above.
 ## 6. MCP surface (implemented — 4 tools + aliases)
 
 `cargo run --release --example mcp_server` — JSON-RPC 2.0 stdio, handshake
-`2025-11-25`. `serverInfo.version` = `MCP_CONTRACT_VERSION` = **1.1.24**, e o
+`2025-11-25`. `serverInfo.version` = `MCP_CONTRACT_VERSION` = **1.1.26**, e o
 `examples/mcp_client.rs` é pinado no MESMO commit — o hot test falha alto se
 divergirem.
 
@@ -120,6 +120,19 @@ reader consumes typed hits (`content_type`, `payload_type`, `rel`,
 | `embedder_http.rs` | real HTTP Embedder seam |
 
 ## 8b. Escopo autoritativo + ledger de negativos (v1.1.24)
+
+**Descoberta de escopo: o que `scope=` alcanca e o que so as dims alcancam**
+([ADR-0015](../adr/0015-scope-discovery-probes-and-announced-surface.md), v1.1.26).
+Um doc gravado so com `run`/`agent`/`app` tem `scope == ""` (o legado espelha
+`user`) e NAO e global: o recall global o filtra por null-scoping. Antes do
+v1.1.26 ele era contado como global (`global_memory_count` mentia), ficava fora
+ de `scope_labels`/`scopes_to_probe`, e nao havia rota ate ele — a funcao que o
+enxergava (`scope_distribution_dims`) nao era exposta. Agora `Sgdb::scope_probes`
+devolve `legacy` (por label) e `dims_only` (so por filtro multi-dim), o
+`nsgdb://session` publica `scopes_to_probe_dims`, e o `recall` do MCP roteia para
+as variantes `_dims` quando qualquer dim e passada. Regra de ouro: **a label nao
+identifica a rota** (um `scope` legado pode conter `/`), entao a procedencia vem
+do core, nao de parse.
 
 **`ScopeDims` é autoritativo; o `scope` legado é o espelho de `user`**
 ([ADR-0013](../adr/0013-scope-dims-is-authoritative.md)). Os dois mecanismos já

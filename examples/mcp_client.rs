@@ -190,8 +190,8 @@ fn main() {
     rep.check("initialize responde", !r.get("error").is_some(), r.to_string());
     rep.check("protocolVersion 2025-11-25",
         r["result"]["protocolVersion"] == "2025-11-25", r.to_string());
-    rep.check("serverInfo version 1.1.24",
-        r["result"]["serverInfo"]["version"] == "1.1.24", r.to_string());
+    rep.check("serverInfo version 1.1.26",
+        r["result"]["serverInfo"]["version"] == "1.1.26", r.to_string());
     rep.check("serverInfo mcp_tool_count 4",
         r["result"]["serverInfo"]["mcp_tool_count"] == 4, r.to_string());
     let instr = r["result"]["instructions"].as_str().unwrap_or("");
@@ -649,6 +649,101 @@ fn main() {
         "recall scoped encontra memoria",
         !scoped_recall_err && scoped_recall.contains("md/L3/"),
         scoped_recall.clone(),
+    );
+    // v1.1.26 — PONTO CEGO DE ESCOPO (ADR-0015). Descoberto USANDO o DB no
+    // flush do harness: `remember(scope_run=...)` gravava; `recall(scope_run=...)`
+    // IGNORAVA a dim (o schema a anunciava desde o v1.1.14) e respondia
+    // `isError:false` com 0 hits; `recall(scope=...)` tambem dava 0; o global
+    // filtra por null-scoping. Ou seja: a memoria recem-escrita NAO era
+    // alcancavel por NENHUMA rota documentada, e `global_memory_count` a
+    // contava como global. Guard comportamental: o param anunciado tem de
+    // SERVIDO.
+    let hr_before = srv.rpc("tools/call", json!({"name": "health", "arguments": {}}));
+    let global_before = hr_before["result"]["structuredContent"]["global_memory_count"].clone();
+    let run_r = srv.rpc(
+        "tools/call",
+        json!({"name": "remember", "arguments": {
+            "text": "hot-run-scope probe fact alpha", "scope_run": "hot-run-1"}}),
+    );
+    let run_key = run_r["result"]["structuredContent"]["storage_key"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    rep.check(
+        "remember com scope_run devolve storage key",
+        run_key.starts_with("md/"),
+        run_r.to_string(),
+    );
+    let (txt, is_err) = srv.tool(
+        "recall",
+        json!({"query": "hot-run-scope probe fact alpha", "k": 3, "scope_run": "hot-run-1"}),
+    );
+    rep.check(
+        "recall honra scope_run anunciado no schema (era no-op silencioso)",
+        !is_err && txt.contains("md/L3/"),
+        txt.clone(),
+    );
+    let (txt, _) = srv.tool(
+        "recall",
+        json!({"query": "hot-run-scope probe fact alpha", "k": 3, "scope_run": "hot-run-OUTRO"}),
+    );
+    rep.check(
+        "recall com run errado nao vaza a memoria",
+        txt.starts_with("0 hits") || txt.contains("0 hits"),
+        txt.clone(),
+    );
+    // O BM25 casa por sobreposicao PARCIAL, entao "0 hits" nao prova nada:
+    // a assercao tem de ser sobre a KEY exata do doc escopado.
+    let (txt, _) = srv.tool("recall", json!({"query": "hot-run-scope probe fact alpha", "k": 5}));
+    rep.check(
+        "null-scoping preservado: recall global nao ve dims escopadas",
+        !run_key.is_empty() && !txt.contains(&run_key),
+        format!("key={run_key} global={txt}"),
+    );
+    let (txt, is_err) = srv.tool(
+        "recall",
+        json!({"query": "x", "mode": "hybrid", "embedding": [1.0, 0.0, 0.0, 0.0],
+               "scope_run": "hot-run-1"}),
+    );
+    rep.check(
+        "hybrid + dims recusa em voz alta (nao devolve pool global)",
+        is_err && txt.contains("nao suportados"),
+        txt.clone(),
+    );
+    let hr = srv.rpc("tools/call", json!({"name": "health", "arguments": {}}));
+    rep.check(
+        "global_memory_count nao conta dim nao-user como global (nao mudou)",
+        hr["result"]["structuredContent"]["global_memory_count"] == global_before,
+        format!(
+            "antes={global_before} depois={}",
+            hr["result"]["structuredContent"]["global_memory_count"]
+        ),
+    );
+    let r = srv.rpc("resources/read", json!({"uri": "nsgdb://session"}));
+    let session_txt = r["result"]["contents"][0]["text"].as_str().unwrap_or("");
+    rep.check(
+        "cold_start publica scopes_to_probe_dims (a rota que faltava)",
+        session_txt.contains("scopes_to_probe_dims") && session_txt.contains("hot-run-1"),
+        session_txt.to_string(),
+    );
+    // Invariante do ADR-0013: `scope` legado e ESPELHO de `dims.user`. Escrever
+    // com AMBOS quebrava (set_scope write-through + set_scope_dims clobber) e o
+    // `effective_scope_dims` perdia a dimensao user.
+    let (txt, _) = srv.tool(
+        "remember",
+        json!({"text": "hot both scopeand dims fact beta", "scope": "hot-test/both",
+               "scope_run": "hot-run-2"}),
+    );
+    rep.check("remember com scope= E scope_run= aceito", txt.contains("md/"), txt.clone());
+    let (txt, is_err) = srv.tool(
+        "recall",
+        json!({"query": "hot both scopeand dims fact beta", "k": 3,
+               "scope_user": "hot-test/both", "scope_run": "hot-run-2"}),
+    );
+    rep.check(
+        "legado e dims.user concordam (ADR-0013) — user+run acha",
+        !is_err && txt.contains("md/L3/"),
+        txt.clone(),
     );
     let (txt, is_err) = srv.tool("validate", json!({}));
     rep.check("validate: banco saudÃ¡vel", !is_err && txt.contains("saudavel"), txt.clone());
