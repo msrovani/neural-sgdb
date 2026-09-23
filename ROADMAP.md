@@ -9,6 +9,17 @@ Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
 
 ## Next (honest gaps — not this release)
 
+✅ **v1.1.27 — aquisição Jev-Mem (2026-09-23)** — mapeamento mecanismo a
+   mecanismo do arXiv 2609.23986 em `docs/jev-mem-adoption.md`: o core JÁ É o
+   plano de dados System-One (RRF κ=60, adaptive stopping, ADD-only,
+   relações multi-view, bi-temporalidade — e o ledger de negativos que o
+   paper NÃO tem). `TypeScores` (ADR-0016) fecha o memory typing sobreposto.
+   Gaps adquiríveis priorizados: `recall_candidates` com sinais decompostos
+   (P0), decide em lote `𝒥(S,𝒬)` (P0/P1), stop enriquecido com
+   contradição/evidência obrigatória (P1), budget por relação (P2 — só com
+   multi-hop no core). O controlador aprendido fica SEMPRE host-side
+   (doutrina: o core não decide).
+
 ✅ **v1.1.23 — revisão de documentação + fix do schema anunciado (2026-09-21)** —
    auditoria dos docs de raiz e `docs/`: versões paradas em `1.1.20`/`1.1.17`
    (README, VERSIONING, api, architecture, CLAUDE), números de matriz dois
