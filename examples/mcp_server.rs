@@ -820,15 +820,17 @@ fn health_payload(db: &mut Sgdb, db_path: &str, embedder: &str) -> Value {
         "doctrine_scope": neural_sgdb::DOCTRINE_SCOPE,
         "doctrine_key": format!("md/L4/{}", neural_sgdb::DOCTRINE_KEY),
         "doctrine_entities": neural_sgdb::DOCTRINE_ENTITIES,
+        // v1.1.28 (D4): onboarding TIPADO — {step, text}; o ordinal estava
+        // dentro da string (duplicando o índice do array, podia divergir).
         "onboarding": [
-            "0. cold-start: resource nsgdb://session (campo cold_start) + nsgdb://doctrine; recall CADA scope em health.scope_labels / cold_start.scopes_to_probe — default_scope NAO ve outros scopes",
-            "1. remember(text=...) is lexical L3; recall(query=...) default mode=lexical (same words). Cosine: pass embedding= on both, or NEURAL_SGDB_EMBEDDER=demo / embedder_http / nsgdb-embed (host, ADR-0008)",
-            "2. multi-agente: scope por agente/tarefa (agent/<id>, project/<repo>); 1 processo mcp_server writer por ficheiro DB — partilhar ficheiro != telepatia CRDT",
-            "3. recall(format=json) for typed machine hits",
-            "4. remember(type=json|code|embedding|binary) to declare payload type (MDM1 v6)",
-            "5. health(view=era) after dim/era Invalid; health(view=tensions) for conflicts/unseen scopes; health(view=staleness) for TTL/Decay/contradicts",
-            "6. 2+ nos/DBs separados: feature p2p (examples/p2p_telepathy) — conflito preservado, arbitragem na leitura",
-            "7. MOM entities on write: mom/constraint|decision|fact|pattern|anti-pattern|learning|pref — identical strings on recall_entities; fim de tarefa: curate(op=commit_run) (ADR-0010)"
+            {"step": 0, "text": "cold-start: resource nsgdb://session (campo cold_start) + nsgdb://doctrine; recall CADA scope em health.scope_labels / cold_start.scopes_to_probe — default_scope NAO ve outros scopes"},
+            {"step": 1, "text": "remember(text=...) is lexical L3; recall(query=...) default mode=lexical (same words). Cosine: pass embedding= on both, or NEURAL_SGDB_EMBEDDER=demo / embedder_http / nsgdb-embed (host, ADR-0008)"},
+            {"step": 2, "text": "multi-agente: scope por agente/tarefa (agent/<id>, project/<repo>); 1 processo mcp_server writer por ficheiro DB — partilhar ficheiro != telepatia CRDT"},
+            {"step": 3, "text": "recall(format=json) for typed machine hits"},
+            {"step": 4, "text": "remember(type=json|code|embedding|binary) to declare payload type (MDM1 v6)"},
+            {"step": 5, "text": "health(view=era) after dim/era Invalid; health(view=tensions) for conflicts/unseen scopes; health(view=staleness) for TTL/Decay/contradicts"},
+            {"step": 6, "text": "2+ nos/DBs separados: feature p2p (examples/p2p_telepathy) — conflito preservado, arbitragem na leitura"},
+            {"step": 7, "text": "MOM entities on write: mom/constraint|decision|fact|pattern|anti-pattern|learning|pref — identical strings on recall_entities; fim de tarefa: curate(op=commit_run) (ADR-0010)"}
         ]
     })
 }
@@ -845,13 +847,16 @@ fn tensions_payload(db: &mut Sgdb) -> Value {
                 .collect()
         })
         .unwrap_or_default();
-    let unseen_scopes: Vec<String> = dist
+    // v1.1.28 (D5): tupla TIPADA (label, count) — era `"scope(count)"`,
+    // uma string que o consumidor reparseia. Os dois campos já estavam
+    // separados em `scope_labels`; aqui era o único lugar que achatava.
+    let unseen_scopes: Vec<Value> = dist
         .as_ref()
         .map(|d| {
             d.scoped
                 .iter()
                 .filter(|(s, _)| s.as_str() != default)
-                .map(|(s, c)| format!("{s}({c})"))
+                .map(|(s, c)| json!({"label": s, "count": c}))
                 .collect()
         })
         .unwrap_or_default();
@@ -942,14 +947,16 @@ fn session_payload(db: &mut Sgdb, db_path: &str, embedder: &str) -> Value {
         .collect();
     let cold_start = json!({
         "protocol": "gather-then-act",
+        // v1.1.28 (D5): {step, text} tipado — o ordinal NÃO está mais dentro
+        // da string; a ordem do array é a única fonte de sequência.
         "steps": [
-            "1. Ler este resource (nsgdb://session) e nsgdb://doctrine",
-            "2. Para cada scope em scopes_to_probe: recall(mode=lexical, scope=..., k=5) OU recall(entities=[...], scope=...)",
-            "2b. Para cada entrada de scopes_to_probe_dims: recall(mode=lexical, k=5, scope_user/agent/app/run=os campos dela) — estas NAO sao alcancaveis por scope= (nem hybrid/temporal: eles recusam dims)",
-            "3. Preferencias IDE: entities pref/idioma, pref/memoria, nsgdb/usage, mom/pref no default_scope",
-            "4. Constraints de projeto: entities mom/constraint, adr/index, roadmap/non-goals, docs/telepathy no scope do repo (constraints primeiro)",
-            "5. health(view=staleness) — classifica aging/TTL/contradicts; curate manual (nao auto-forget)",
-            "6. So entao remember — MOM roles mom/*; fato identico → reinforce; nao hoarde; 1 writer por DB file"
+            {"step": "1", "text": "Ler este resource (nsgdb://session) e nsgdb://doctrine"},
+            {"step": "2", "text": "Para cada scope em scopes_to_probe: recall(mode=lexical, scope=..., k=5) OU recall(entities=[...], scope=...)"},
+            {"step": "2b", "text": "Para cada entrada de scopes_to_probe_dims: recall(mode=lexical, k=5, scope_user/agent/app/run=os campos dela) — estas NAO sao alcancaveis por scope= (nem hybrid/temporal: eles recusam dims)"},
+            {"step": "3", "text": "Preferencias IDE: entities pref/idioma, pref/memoria, nsgdb/usage, mom/pref no default_scope"},
+            {"step": "4", "text": "Constraints de projeto: entities mom/constraint, adr/index, roadmap/non-goals, docs/telepathy no scope do repo (constraints primeiro)"},
+            {"step": "5", "text": "health(view=staleness) — classifica aging/TTL/contradicts; curate manual (nao auto-forget)"},
+            {"step": "6", "text": "So entao remember — MOM roles mom/*; fato identico → reinforce; nao hoarde; 1 writer por DB file"}
         ],
         "default_scope": default_scope,
         "scopes_to_probe": scopes_to_probe,

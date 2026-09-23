@@ -16,8 +16,16 @@ All notable changes to this project. Format based on
 - **`recall_candidates`** (Movimento 3, Eq. 8/23): prefetch com sinais
   DECOMPOSTOS (`sim_vec`, `lex_overlap`, `shared_entities`, `recency`, `rrf`).
 - **validate com gêmeo tipado** (D3): `structuredContent{healthy,issues[]}`.
-- **k=0 é erro tipado** (D6). Matrix **346+1 / 392+1 / 290+1**; hot test
-  **130/0** (+11 asserções); contrato MCP → **1.1.28**.
+- **k=0 é erro tipado** (D6).
+- **D4/D5 fechados**: onboarding e cold_start.steps viram `{step,text}`
+  tipados (ordinal fora da string); `unseen_scopes` virou tupla
+  `{label,count}` (não mais `"scope(count)"` achatada).
+- **D9 — calibração exposta**: `set_tie_margin(Some(m))/tie_margin_of()` —
+  a margem de empate do state-first deixou de ser constante interna; o host
+  calibra ao próprio corpus (`None` = default 50; `0` = state-first só em
+  score exato). Teste prova que a calibração muda o ranking.
+  Matrix **347+1 / 393+1 / 291+1**; hot test **133/0** (+14 asserções);
+  contrato MCP → **1.1.28**.
 
 ## [1.1.27] — 2026-09-23 (scores de tipo sobrepostos, ADR-0016)
 

@@ -35,6 +35,17 @@ vivem dela); o consumidor de máquina para de pagar o pedágio do modo.
    issues[]}` — a view mais acionável deixa de ser só prosa.
    + **D6**: `k=0` é erro `-32602` tipado, não sucesso vazio.
 
+## Fechamentos posteriores no mesmo release
+
+- **D4/D5**: onboarding e `cold_start.steps` viram `{step,text}` tipados
+  (o ordinal estava dentro da string, duplicando o índice do array);
+  `unseen_scopes` virou tupla `{label,count}` — era `"scope(count)"`, uma
+  string que o consumidor reparseia.
+- **D9**: `Sgdb::set_tie_margin(Some(m))` / `tie_margin_of()` — a margem
+  de empate do state-first (`SCORE_TIE_MARGIN=50`) vira calibrável pelo
+  host; `None` restaura o default, `0` desliga o state-first aproximado
+  (só score exato empata). Seam de PROCESSO (ranking, não estado do banco).
+
 ## Consequências de contrato
 
 - `MCP_CONTRACT_VERSION` → **1.1.28**: 5º tool listado (`EXPECTED_MCP_TOOL_COUNT=5`),

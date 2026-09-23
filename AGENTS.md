@@ -441,7 +441,9 @@ turno, exact vs paraphrase, isolamento de scope). Paraphrase MISSA no lexical
 
 Release 1/3 do plano de melhorias (itens 1, 2, 3, 6) — **tudo aditivo, nada muda
 comportamento de recall**. Sem mudança de formato. Contrato MCP → **1.1.21**.
-Matrix corrente (pós-v1.1.28): **346+1 / 392+1 / 290+1**..
+Matrix corrente (pós-v1.1.28): **347+1 / 393+1 / 291+1**. D4/D5/D9 fechados
+(`set_tie_margin` calibra o state-first; onboarding/steps `{step,text}`;
+unseen_scopes `{label,count}`)..
 
 - **`index_fingerprint` (ADR-0011)** — oráculo canônico do estado derivado;
   invariante `fp(open) == fp(rebuild_indices())`. **Três exclusões que são o

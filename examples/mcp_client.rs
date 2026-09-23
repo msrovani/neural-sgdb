@@ -898,6 +898,36 @@ fn main() {
         tool_names.len() == 5 && tool_names.contains(&"decide".to_string()),
         format!("{:?}", tool_names),
     );
+    // D4/D5 (v1.1.28): compostos TIPADOS — sem ordinal dentro de string,
+    // sem tupla achatada "scope(count)".
+    let r = srv.rpc("tools/call", json!({"name": "health", "arguments": {}}));
+    let sc = &r["result"]["structuredContent"];
+    rep.check(
+        "onboarding tipado: {step,text} sem ordinal na string",
+        sc["onboarding"].as_array().is_some_and(|a| {
+            !a.is_empty() && a[0]["step"].is_number() && !a[0]["text"].as_str().unwrap_or("x").starts_with(char::is_numeric)
+        }),
+        sc["onboarding"].to_string(),
+    );
+    let r = srv.rpc("resources/read", json!({"uri": "nsgdb://session"}));
+    let sess: Value = serde_json::from_str(r["result"]["contents"][0]["text"].as_str().unwrap_or("null")).unwrap_or(Value::Null);
+    rep.check(
+        "cold_start.steps tipados {step,text} (ordinal fora da string)",
+        sess["cold_start"]["steps"].as_array().is_some_and(|a| {
+            !a.is_empty() && a[0]["step"].is_string() && !a[0]["text"].as_str().unwrap_or("1").starts_with(char::is_numeric)
+        }),
+        sess["cold_start"]["steps"].to_string(),
+    );
+    let r = srv.rpc("tools/call", json!({"name": "health", "arguments": {"view": "tensions"}}));
+    let tsc = &r["result"]["structuredContent"];
+    let unseen_ok = tsc["unseen_scopes"].as_array().is_none_or(|a| {
+        a.iter().all(|u| u["label"].is_string() && u["count"].is_number())
+    });
+    rep.check(
+        "unseen_scopes tupla tipada {label,count} (não \"scope(count)\")",
+        unseen_ok,
+        tsc["unseen_scopes"].to_string(),
+    );
     rep.phase("linguagem de máquina (ADR-0017)", &t);
 
     // ---------- fase 8: resources + paginaÃ§Ã£o ----------

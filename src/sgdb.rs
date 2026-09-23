@@ -55,6 +55,20 @@ fn resolve_content_type(
 /// resposta certa, longe o bastante para nunca mascarar conteúdo distinto.
 const SCORE_TIE_MARGIN: u32 = 50;
 
+/// Margem de empate POR INSTÂNCIA (v1.1.28, D9): `SCORE_TIE_MARGIN` é o
+/// default; o host calibra a própria via `set_tie_margin` (0 = sempre
+/// state-first puro; alto = quase tudo é empate). `None` = usar o default.
+static TIE_MARGIN_OVERRIDE: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(u32::MAX);
+
+/// Lê a margem efetiva (override se setado, senão o default).
+fn tie_margin() -> u32 {
+    match TIE_MARGIN_OVERRIDE.load(core::sync::atomic::Ordering::Relaxed) {
+        u32::MAX => SCORE_TIE_MARGIN,
+        v => v,
+    }
+}
+
 /// Quantos `open` este PROCESSO já fez (v1.1.21, ADR-0009 §4, dor #2 — hosts
 /// que reabrem a DB por chat/reload). Contador de processo, NÃO durável: o
 /// histórico entre restarts é do HOST (o ADR atribui `opens_per_hour` a ele).
@@ -90,9 +104,10 @@ fn hit_tick(h: &Hit) -> u64 {
 /// memória mais recente (sucessora de `supersede`) vence; entre grupos o
 /// conteúdo (score) continua dominando.
 fn rank_hits_by_score_state(ranked: &mut [(u32, Hit)]) {
+    let margin = tie_margin();
     ranked.sort_by(|a, b| {
-        let ga = a.0 / (SCORE_TIE_MARGIN + 1);
-        let gb = b.0 / (SCORE_TIE_MARGIN + 1);
+        let ga = a.0 / (margin + 1);
+        let gb = b.0 / (margin + 1);
         ga.cmp(&gb)
             .then_with(|| hit_tick(&b.1).cmp(&hit_tick(&a.1)))
             .then_with(|| a.0.cmp(&b.0))
@@ -735,6 +750,25 @@ impl Sgdb {
     /// Escopo default configurado (`None` = sem default).
     pub fn default_scope(&self) -> Option<&str> {
         self.default_scope.as_deref()
+    }
+
+    /// v1.1.28 (D9): calibração da margem de empate do state-first pelo
+    /// host — o `SCORE_TIE_MARGIN` era constante interna e o controlador
+    /// não podia ajustá-la ao próprio corpus. `None` = volta ao default
+    /// (50 ≈ 0.005 de cosseno). Processo-inteiro (é seam de ranking, não
+    /// estado do banco — a doutrina de seams proíbne global por DB here).
+    /// `0` = NENHUM empate: state-first só vence em score EXATAMENTE igual.
+    pub fn set_tie_margin(&self, margin: Option<u32>) {
+        let v = margin.unwrap_or(u32::MAX);
+        TIE_MARGIN_OVERRIDE.store(v, core::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Margem de empate efetiva (`None` = default 50 em uso).
+    pub fn tie_margin_of(&self) -> Option<u32> {
+        match TIE_MARGIN_OVERRIDE.load(core::sync::atomic::Ordering::Relaxed) {
+            u32::MAX => None,
+            v => Some(v),
+        }
     }
 
     /// Resolve escopo: explícito não-vazio vence; senão default; senão global (`""`).
@@ -2693,7 +2727,7 @@ impl Sgdb {
                 // `abs_diff` cobre os dois sentidos (o state-first pode adiantar
                 // uma versão corrente de score levemente pior).
                 score_u32_of(&hits[k - 1]).abs_diff(score_u32_of(&hits[k]))
-                    > SCORE_TIE_MARGIN
+                    > tie_margin()
             };
             hits.truncate(k);
             out = AdaptiveRecall {
@@ -5737,6 +5771,31 @@ mod tests {
         // na primeira asserção. Este assert é o que prova que o campo NÃO é
         // decorativo: sem a regra, preference não seria 1.0.
         assert!(ts.fields().iter().any(|(_, v)| *v > 0.0));
+    }
+
+    #[test]
+    fn tie_margin_calibration_changes_state_first_ranking() {
+        // D9: a margem era constante interna; o host calibra via set_tie_margin.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        // duas memórias quase idênticas em score, criadas em ticks distintos
+        let e = [1.0f32, 0.0, 0.0, 0.0];
+        db.remember_semantic("v1", "fato antigo", &e).unwrap();
+        let e2 = [0.999f32, 0.018, 0.0, 0.0]; // dist ≈ 0.003 < margem default 0.005
+        db.remember_semantic("v2", "fato corrente", &e2).unwrap();
+        let q = [1.0f32, 0.0, 0.0, 0.0];
+        // default: v2 vence (state-first dentro da margem)
+        let hits = db.recall(&q, 2).unwrap();
+        assert_eq!(hits[0].key, "md/L4/v2", "default: corrente primeiro");
+        // calibração 0 = NENHUM empate: conteúdo domina, v1 (score melhor) vence
+        db.set_tie_margin(Some(0));
+        assert_eq!(db.tie_margin_of(), Some(0));
+        let hits = db.recall(&q, 2).unwrap();
+        assert_eq!(hits[0].key, "md/L4/v1", "margem 0: score domina (v1 é mais próximo)");
+        // None = volta ao default
+        db.set_tie_margin(None);
+        assert_eq!(db.tie_margin_of(), None);
+        let hits = db.recall(&q, 2).unwrap();
+        assert_eq!(hits[0].key, "md/L4/v2");
     }
 
     #[test]
