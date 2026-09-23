@@ -46,6 +46,12 @@ vivem dela); o consumidor de máquina para de pagar o pedágio do modo.
   host; `None` restaura o default, `0` desliga o state-first aproximado
   (só score exato empata). Seam de PROCESSO (ranking, não estado do banco).
 
+- **v1.1.28.1**: `temporal_relation` aceita `a_key/b_key` (resolve
+  `created_tick_of` + janelas de validade) e devolve os 7 valores do paper
+  (`during`/`contains`/`overlaps` por interseção de janelas); o stop de
+  `evidence_sufficient` incorpora `c_d` (contradição não-resolvida) e `m_d`
+  (`required_keys` faltando) — Eq. 21 completa do Jev-Mem.
+
 ## Consequências de contrato
 
 - `MCP_CONTRACT_VERSION` → **1.1.28**: 5º tool listado (`EXPECTED_MCP_TOOL_COUNT=5`),

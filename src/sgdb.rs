@@ -3768,6 +3768,14 @@ impl Sgdb {
         self.engine.validity_window(&sk)
     }
 
+    /// v1.1.28.1: `created_tick` de uma chave (resolução crua incluída) —
+    /// o instante de criação da VERSÃO corrente, para a pergunta "A antes
+    /// de B?" sem passar pelo recall. `None` sem meta.
+    pub fn created_tick_of(&mut self, key: &str) -> Option<u64> {
+        let sk = self.resolve_known_key(key);
+        self.engine.meta(&sk).ok().flatten().map(|m| m.created_tick)
+    }
+
     /// v1.1.28 (ADR-0017, Eq. 21 do paper): suficiência de evidência no
     /// caminho LEXICAL — o adaptive stopping do ADR-0012 aplicado ao BM25
     /// (a mesma escala de degraus; o pool vem do índice invertido).

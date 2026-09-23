@@ -865,6 +865,33 @@ fn main() {
             && answers[2]["answer"]["relation"] == "same_time",
         r.to_string(),
     );
+    // v1.1.28.1: vocabulário temporal COMPLETO (7 valores do paper) e stop
+    // ENRIQUECIDO (c_d/m_d da Eq. 21). A key do 1º hit do recall JSON lá em
+    // cima (mesma memória nas duas pontas → same_time).
+    let first_key = js.as_array()
+        .and_then(|a| a.first())
+        .and_then(|h| h["key"].as_str())
+        .unwrap_or("")
+        .to_string();
+    let r = srv.rpc("tools/call", json!({"name": "decide", "arguments": {"questions": [
+        {"ask": "temporal_relation", "a_key": first_key, "b_key": first_key},
+        {"ask": "evidence_sufficient", "query": "hot test alpha",
+         "required_keys": ["md/L3/inexistente-xyz"]}
+    ]}}));
+    let answers = r["result"]["structuredContent"]["answers"].as_array().cloned().unwrap_or_default();
+    rep.check(
+        "temporal_relation por KEY resolve created_tick (before/after/same_time)",
+        answers.len() == 2 && answers[0]["answer"]["relation"] == "same_time",
+        r.to_string(),
+    );
+    let ea = &answers[1]["answer"];
+    rep.check(
+        "stop enriquecido: m_d = evidência obrigatória faltando derruba sufficient",
+        ea["sufficient"] == false
+            && ea["missing_required"].as_array().map(|a| a.len()) == Some(1)
+            && ea["unresolved_contradictions"].is_number(),
+        answers[1].to_string(),
+    );
     // ask desconhecida → erro POR ITEM (não falha o lote).
     let r = srv.rpc("tools/call", json!({"name": "decide", "arguments": {"questions": [
         {"ask": "pergunta_loca"}

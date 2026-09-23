@@ -42,12 +42,12 @@ por ele (doutrina: "the core does not decide").
 
 ## Gaps reais adquiríveis (priorizados)
 
-1. **`recall_candidates` — prefetch de candidatos com sinais DECOMPOSTOS**
+1. ✅ **FECHADO (v1.1.28)** — `recall_candidates` no core + MCP. Original: **`recall_candidates` — prefetch de candidatos com sinais DECOMPOSTOS**
    (Eq. 8/23 do paper). Dado um fato novo, devolver top-K pares
    `(candidato, {similaridade, overlap lexical, entidades compartilhadas,
    Δtemporal})` numa chamada. É o input exato de `𝒥` para julgar relação —
    hoje o agente precisa de N chamadas para compor esses sinais. **P0**.
-2. **Decide em lote (`𝒥(S,𝒬)`)**: N perguntas com espaços de resposta
+2. ✅ **FECHADO (v1.1.28/28.1)** — tool `decide` (5º tool listado), lote, espaços fechados; `temporal_relation` com os 7 valores; stop com c_d/m_d. Original: **Decide em lote (`𝒥(S,𝒬)`)**: N perguntas com espaços de resposta
    fechados → probabilidades, num round trip. As perguntas respondíveis
    deterministamente hoje: suficiência de evidência (o probe do ADR-0012
    vira resposta tipada), relevância relativa de candidatos, relação temporal
@@ -57,7 +57,7 @@ por ele (doutrina: "the core does not decide").
    global; o paper aloca por view ativa. Só compensa quando houver
    multi-hop de verdade no core (hoje as relações são consultadas por
    superfícies próprias). **P2** — registrar, não implementar agora.
-4. **Critério de stop enriquecido** (Eq. 21): `saturated()` cobre u_d
+4. ✅ **FECHADO (v1.1.28.1)** — c_d/m_d no `evidence_sufficient`. Original: **Critério de stop enriquecido** (Eq. 21): `saturated()` cobre u_d
    (utilidade marginal); falta modelar m_d (evidência obrigatória faltando)
    e c_d (contradição não-resolvida) como sinais de stop — o core JÁ tem
    `contradicts`/conflicts, falta alimentar o stop com eles. **P1**.

@@ -2248,36 +2248,97 @@ fn main() {
                             };
                             let ans = match ask {
                                 // Suficiência de evidência (Eq. 21 do paper): o
-                                // probe do ADR-0012 vira resposta tipada.
+                                // probe do ADR-0012 vira resposta tipada, e o
+                                // stop é ENRIQUECIDO com os dois sinais que o
+                                // paper exige e o core já tem: c_d = contradição
+                                // não-resolvida (conflicts open) e m_d = evidência
+                                // obrigatória faltando (keys exigidas que não
+                                // vieram nos hits).
                                 "evidence_sufficient" => {
                                     let query = q["query"].as_str().unwrap_or("");
                                     if query.is_empty() {
                                         answers.push(fail("query obrigatoria")); continue 'outer;
                                     }
                                     match db.recall_adaptive_lexical(query, 5) {
-                                        Ok(ar) => json!({
-                                            "index": qi, "ask": ask,
-                                            "answer": {
-                                                "sufficient": ar.boundary_decisive,
-                                                "hits": ar.hits.len(),
-                                                "escalations": ar.escalations,
-                                                "oversample_used": ar.oversample_used,
-                                                "boundary_decisive": ar.boundary_decisive,
-                                                "top_keys": ar.hits.iter().take(3).map(|h| h.key.clone()).collect::<Vec<_>>(),
-                                            }
-                                        }),
+                                        Ok(ar) => {
+                                            let top_keys: Vec<String> = ar.hits.iter().take(3).map(|h| h.key.clone()).collect();
+                                            // c_d: contradição não-resolvida no corpus
+                                            let unresolved: usize = db.conflicts().iter()
+                                                .filter(|c| matches!(c.status, neural_sgdb::ConflictStatus::Open))
+                                                .count();
+                                            // m_d: evidência OBRIGATÓRIA faltando — o
+                                            // caller lista keys que PRECISAM estar no
+                                            // resultado (ex.: a memory do turno anterior).
+                                            let required: Vec<String> = q["required_keys"].as_array()
+                                                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                                                .unwrap_or_default();
+                                            let missing: Vec<String> = required.iter()
+                                                .filter(|rk| {
+                                                    let canon = db.resolve_known_key(rk);
+                                                    !top_keys.contains(&canon)
+                                                        && !ar.hits.iter().any(|h| h.key == canon)
+                                                })
+                                                .cloned()
+                                                .collect();
+                                            // Eq. 21: s_d ≥ θ ∧ m_d < θ_cont ∧ c_d < θ_cont
+                                            let sufficient = ar.boundary_decisive
+                                                && missing.is_empty()
+                                                && unresolved == 0;
+                                            json!({
+                                                "index": qi, "ask": ask,
+                                                "answer": {
+                                                    "sufficient": sufficient,
+                                                    "boundary_decisive": ar.boundary_decisive,
+                                                    "unresolved_contradictions": unresolved,
+                                                    "missing_required": missing,
+                                                    "hits": ar.hits.len(),
+                                                    "escalations": ar.escalations,
+                                                    "oversample_used": ar.oversample_used,
+                                                    "top_keys": top_keys,
+                                                }
+                                            })
+                                        }
                                         Err(e) => fail(&mcp_actionable_error(e)),
                                     }
                                 }
-                                // Relação temporal (vocabulário de 7 valores do
-                                // paper): respondida por timestamps do core.
+                                // Relação temporal — vocabulário COMPLETO de 7
+                                // valores do paper (v1.1.28.1): os timestamps de
+                                // criação dão before/after/same_time; as janelas
+                                // de validade bi-temporal dão during/contains/
+                                // overlaps; sem informação → unknown.
                                 "temporal_relation" => {
-                                    let a = q["a_created"].as_u64().unwrap_or(0);
-                                    let b = q["b_created"].as_u64().unwrap_or(0);
-                                    if a == 0 || b == 0 {
-                                        answers.push(fail("a_created e b_created obrigatorios")); continue 'outer;
-                                    }
-                                    let rel = if a == b { "same_time" } else if a < b { "before" } else { "after" };
+                                    let a_key = q["a_key"].as_str().unwrap_or("");
+                                    let b_key = q["b_key"].as_str().unwrap_or("");
+                                    let (a, b, wa, wb) = if !a_key.is_empty() && !b_key.is_empty() {
+                                        // por KEY: resolve e lê janelas reais
+                                        let wa = db.validity_window_of(a_key);
+                                        let wb = db.validity_window_of(b_key);
+                                        match (db.created_tick_of(a_key), db.created_tick_of(b_key)) {
+                                            (Some(x), Some(y)) => (x, y, wa, wb),
+                                            _ => {
+                                                answers.push(fail("key sem meta (created_tick desconhecido)")); continue 'outer;
+                                            }
+                                        }
+                                    } else {
+                                        let a = q["a_created"].as_u64().unwrap_or(0);
+                                        let b = q["b_created"].as_u64().unwrap_or(0);
+                                        if a == 0 || b == 0 {
+                                            answers.push(fail("a_created e b_created obrigatorios (ou a_key+b_key)")); continue 'outer;
+                                        }
+                                        (a, b, None, None)
+                                    };
+                                    // pontos: before/after/same_time (criação)
+                                    let point_rel = if a == b { "same_time" } else if a < b { "before" } else { "after" };
+                                    // intervalos: only com janelas de validade
+                                    let rel = match (wa, wb) {
+                                        (Some((fa, ua)), Some((fb, ub))) => {
+                                            if fa >= fb && ua <= ub { "during" }             // A dentro de B
+                                            else if fa <= fb && ua >= ub { "contains" }      // A contém B
+                                            else if fa < ub && fb < ua { "overlaps" }        // interseção sem contenção
+                                            else { point_rel }
+                                        }
+                                        _ => point_rel,
+                                    };
                                     json!({"index": qi, "ask": ask, "answer": {"relation": rel}})
                                 }
                                 // Vigência bi-temporal de um hit no instante `at`.

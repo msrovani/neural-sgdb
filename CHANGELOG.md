@@ -24,8 +24,16 @@ All notable changes to this project. Format based on
   a margem de empate do state-first deixou de ser constante interna; o host
   calibra ao próprio corpus (`None` = default 50; `0` = state-first só em
   score exato). Teste prova que a calibração muda o ranking.
-  Matrix **347+1 / 393+1 / 291+1**; hot test **133/0** (+14 asserções);
+  Matrix **347+1 / 393+1 / 291+1**; hot test **135/0** (+16 asserções);
   contrato MCP → **1.1.28**.
+- **v1.1.28.1 — gaps do Jev-Mem fechados**: `temporal_relation` com o
+  vocabulário COMPLETO de 7 valores (before/after/same_time por timestamp;
+  during/contains/overlaps por janelas de validade bi-temporal; aceita
+  `a_key/b_key` e resolve `created_tick` via `created_tick_of`); stop de
+  `evidence_sufficient` ENRIQUECIDO com `c_d` (contradições não-resolvidas
+  de `conflicts()`) e `m_d` (`required_keys` ausentes) — Eq. 21 completa.
+  Os 4 gaps de `docs/jev-mem-adoption.md` estão fechados (P2 segue
+  deliberadamente registrado).
 
 ## [1.1.27] — 2026-09-23 (scores de tipo sobrepostos, ADR-0016)
 
