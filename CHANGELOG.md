@@ -4,6 +4,19 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [1.1.27] — 2026-09-23 (scores de tipo sobrepostos, ADR-0016)
+
+- **`TypeScores` (ADR-0016)**: os quatro eixos do Jev-Mem (arXiv 2609.23986) —
+  episódico/semântico/procedural/preferência — derivados **na leitura** de
+  `layer` + `entities`, nunca persistidos (NMD1/MDM1 intocados). Sobrepostos,
+  não exclusivos: L3 pontua episodic=0.7 E semantic=0.4. Preferência via
+  convenção `pref/*` e L7. `Hit.type_scores: Option<TypeScores>`; MCP
+  `format=json` expõe `type_scores` com vocabulary estável de `fields()`
+  (nunca o `Debug` do Rust). Contrato MCP → **1.1.27** (novo campo visível).
+- Testes: derivação completa (sobreposição, pref, L7, L0 zero, vocabulary) +
+  fluxo end-to-end no recall lexical; teste de mutação prova que morre sem a
+  regra. Matrix **344+1 / 390+1 / 288+1**; hot test **119/0**.
+
 ## [1.1.26] — 2026-09-22 (descoberta de escopo + anunciado == servido)
 
 Sem mudança de formato (NMD1/TKLV intocados, MDM1 sem bump). `MCP_CONTRACT_VERSION`

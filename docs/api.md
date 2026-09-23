@@ -1,7 +1,7 @@
 ﻿# neural-sgdb — API Contract
 
 > Contract document for the extraction of the SGDB core from neural-os-core.
-> Status: **current public contract (crate v1.1.26)** —
+> Status: **current public contract (crate v1.1.27)** —
 > this document is the current public contract; roadmap items are explicitly
 > marked as such. The internal API lives in `crates/k_ai/src/sgdb/` of the
 > parent OS; this doc defines the public surface the community crate exposes
@@ -258,6 +258,11 @@ pub struct Hit {
     /// (`md/L4|L5|L3/<id>`) — follow-ups miram o primário. `None` para docs
     /// primários.
     pub rel: Option<String>,
+    /// Scores de tipo SOBREPOSTOS (v1.1.27, ADR-0016) — episódico/semântico/
+    /// procedural/preferência derivados na leitura de layer+entities, nunca
+    /// persistidos. `None` sem meta. Consumidores System-One (Jev/Laya)
+    /// re-ponderam os eixos; o core não decide.
+    pub type_scores: Option<TypeScores>,
 }
 
 pub struct HitProvenance {
@@ -362,7 +367,7 @@ código, binários). Duas regras tornam o consumo determinístico:
 ## Additive public surface (v1.1.2–v1.1.26)
 
 Everything below is **additive** (MINOR per VERSIONING.md) — no signature of a
-v1.0 method changed; crate version **1.1.26** in `Cargo.toml`. Key additions since the contract above:
+v1.0 method changed; crate version **1.1.27** in `Cargo.toml`. Key additions since the contract above:
 
 ```rust
 // ---- S1: recall is LOUD on dimension mismatch (v1.1.3) ----

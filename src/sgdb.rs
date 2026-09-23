@@ -214,6 +214,85 @@ pub struct HitProvenance {
     pub model_id: String,
 }
 
+/// Scores de tipo de memória SOBREPOSTOS (v1.1.27, ADR-0016 — Jev-Mem
+/// arXiv 2609.23986): o controlador tipado pontua o nó em 4 eixos
+/// simultâneos; a camada L0–L7 é uma decisão única tomada na ESCRITA por
+/// heurística, então aqui ela é re-expressa na leitura como evidência
+/// probabilística, não categoria exclusiva. Derivado PURO (layer +
+/// entities) — nunca persistido, NMD1/MDM1 intocados; o mesmo corpus
+/// derivando sempre os mesmos scores.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TypeScores {
+    /// Quanto o datum é registro de evento/experiência (L2/L3).
+    pub episodic: f32,
+    /// Quanto o datum é fato declarativo sobre o mundo (L4/L3).
+    pub semantic: f32,
+    /// Quanto o datum é know-how / como fazer (L5).
+    pub procedural: f32,
+    /// Quanto o datum é preferência/parâmetro do usuário (entidade `pref/*`, L7).
+    pub preference: f32,
+}
+
+impl TypeScores {
+    /// Ponto ÚNICO da regra de derivação (lição v1.1.25: regra em N lugares
+    /// diverge no N-ésimo). Puro, determinístico, determina 0.0 por padrão.
+    pub fn derive(layer: MemoryLayer, entities: &[String]) -> Self {
+        let l = match layer {
+            MemoryLayer::L2EpisodicShort => 2,
+            MemoryLayer::L3EpisodicLong => 3,
+            MemoryLayer::L4Semantic => 4,
+            MemoryLayer::L5Procedural => 5,
+            MemoryLayer::L7Identity => 7,
+            _ => 0,
+        };
+        let is_pref = entities.iter().any(|e| e.starts_with("pref/"));
+        Self {
+            // episódico: evento curto > episódico longo > working
+            episodic: match l {
+                2 => 1.0,
+                3 => 0.7,
+                1 => 0.3,
+                _ => 0.0,
+            },
+            // semântico: fato declarativo; L3 carrega parte (verbatims
+            // consolidados são fatos), L5 levemente (procedimento implica
+            // conhecimento)
+            semantic: match l {
+                4 => 1.0,
+                3 => 0.4,
+                5 => 0.2,
+                _ => 0.0,
+            },
+            // procedural: know-how quase exclusivo de L5
+            procedural: match l {
+                5 => 1.0,
+                4 => 0.1,
+                _ => 0.0,
+            },
+            // preferência: convenção declarada `pref/*` (ex.: `pref/theme`),
+            // ou identidade L7
+            preference: if is_pref {
+                1.0
+            } else if l == 7 {
+                0.8
+            } else {
+                0.0
+            },
+        }
+    }
+
+    /// Rótulos estáveis e ordem fixa — a tabela única que o serializador
+    /// MCP consome (vocabulary de máquina, não `Debug` do Rust).
+    pub fn fields(&self) -> [(&'static str, f32); 4] {
+        [
+            ("episodic", self.episodic),
+            ("semantic", self.semantic),
+            ("procedural", self.procedural),
+            ("preference", self.preference),
+        ]
+    }
+}
+
 /// Estado observável de uma instância `Sgdb` (P2-3, substitui o `ready()`
 /// de baixo valor). `no_std`-safe — só inteiros/str/vec.
 #[derive(Clone, Debug, PartialEq)]
@@ -546,6 +625,9 @@ pub struct Hit {
     /// `recall_weighted_full` (cada sinal em penalidade + total). `None` nos
     /// demais paths (score bruto em `score`/`dist` já cobre).
     pub score_breakdown: Option<ScoreBreakdown>,
+    /// Scores de tipo SOBREPOSTOS (v1.1.27, ADR-0016) — derivados na leitura
+    /// de layer+entities (nunca persistidos). `None` quando não há meta.
+    pub type_scores: Option<TypeScores>,
 }
 
 /// Explicação ESTRUTURADA do estado corrente de uma memória (v0.9,
@@ -907,6 +989,10 @@ impl Sgdb {
             });
             let dist = sqrt_f32(d2.max(0.0) / (query.len() as f32 * 4.0)).min(1.0);
             let validity = self.engine.validity_window(&sk);
+            let type_scores = doc
+                .meta
+                .as_ref()
+                .map(|m| TypeScores::derive(doc.layer, &m.entities));
             out.push(Hit {
                 key: sk,
                 text,
@@ -920,6 +1006,7 @@ impl Sgdb {
                 validity,
                 rel: None,
                 score_breakdown: None,
+                type_scores,
             });
             if out.len() >= k.max(1) {
                 break;
@@ -1616,7 +1703,7 @@ impl Sgdb {
             // dist = fração de entidades NÃO cobertas (0 = casa todas)
             let dist = 1.0 - (overlap as f32 / n_ents as f32);
             // provenance: layer do doc + estado + meta (v1.1.6: + reinforce/scope/entities)
-            let (prov, ct_fallback, declared) = match self.engine.get_by_storage_key(&sk) {
+            let (prov, ct_fallback, declared, type_scores) = match self.engine.get_by_storage_key(&sk) {
                 Ok(Some(doc)) => {
                     let st = self.engine.get_state(&sk);
                     // v1.1.25: a camada decide se o payload é vetor — um L3 de
@@ -1627,6 +1714,10 @@ impl Sgdb {
                         .as_ref()
                         .and_then(|m| m.content_type.as_deref())
                         .and_then(parse_stable_label);
+                    let ts = doc
+                        .meta
+                        .as_ref()
+                        .map(|m| TypeScores::derive(doc.layer, &m.entities));
                     (
                         doc.meta.as_ref().map(|m| HitProvenance {
                             memory_id: m.memory_id.clone(),
@@ -1646,17 +1737,17 @@ impl Sgdb {
                         }),
                         ct,
                         declared,
+                        ts,
                     )
                 }
-                _ => (None, ContentType::Binary, None),
+                _ => (None, ContentType::Binary, None, None),
             };
             let text = texts.get(&companion_keys[i]).cloned().unwrap_or_default();
             let content_type = resolve_content_type(declared, &text, ct_fallback);
-            let text = if renders_prose(content_type) { text } else { String::new() };
-            let validity = self.engine.validity_window(&sk);
-            // item 3 — primário L4/L5/L3: payload_type = Embedding(dim);
-            // companion `/L2/` (raro no índice de entidades): tipo do primário.
-            let (rel, payload_type) = if sk.starts_with("md/L2/") {
+            let text = if renders_prose(content_type) { text } else { String::new() };                let validity = self.engine.validity_window(&sk);
+                // item 3 — primário L4/L5/L3: payload_type = Embedding(dim);
+                // companion `/L2/` (raro no índice de entidades): tipo do primário.
+                let (rel, payload_type) = if sk.starts_with("md/L2/") {
                 match self.primary_of(&sk) {
                     Some((pk, pct)) => (Some(pk), pct),
                     None => (None, ct_fallback),
@@ -1677,6 +1768,7 @@ impl Sgdb {
                 validity,
                 rel,
                 score_breakdown: None,
+                type_scores,
             });
         }
         Ok(out)
@@ -2681,8 +2773,9 @@ impl Sgdb {
                 continue;
             };
             // score bruto u32: fp32 rescore OU hamming (mesma escala de ordenação do OS)
-            let (score, dist, provenance, ct_fallback, declared) = match self.engine.get_by_storage_key(&sk) {
-                Ok(Some(doc)) => {
+            let (score, dist, provenance, ct_fallback, declared, type_scores) =
+                match self.engine.get_by_storage_key(&sk) {
+                    Ok(Some(doc)) => {
                     let (score, dist) = match Self::fp32_dist_u32(query, &doc.payload) {
                         Some(d) => (d, d as f32 / 10_000.0),
                         None => (ham, (ham as f32 / ham_max).min(1.0)),
@@ -2735,7 +2828,11 @@ impl Sgdb {
                         .as_ref()
                         .and_then(|m| m.content_type.as_deref())
                         .and_then(parse_stable_label);
-                    (score, dist, prov, ct_fallback, declared)
+                    let ts = doc
+                        .meta
+                        .as_ref()
+                        .map(|m| TypeScores::derive(doc.layer, &m.entities));
+                    (score, dist, prov, ct_fallback, declared, ts)
                 }
                 // doc sumiu (delete físico) ou corrompeu: o BQ é índice
                 // DERIVADO — candidato sem doc vivo NUNCA vira hit (não
@@ -2763,6 +2860,7 @@ impl Sgdb {
                     validity,
                     rel: None,
                     score_breakdown: None,
+                    type_scores,
                 },
                 declared,
             ));
@@ -3706,6 +3804,10 @@ impl Sgdb {
                     None => (None, own_ct),
                 };
                 let validity = self.engine.validity_window(&sk);
+                let type_scores = doc
+                    .meta
+                    .as_ref()
+                    .map(|m| TypeScores::derive(doc.layer, &m.entities));
                 out.push(Hit {
                     key: sk,
                     text,
@@ -3719,6 +3821,7 @@ impl Sgdb {
                     validity,
                     rel,
                     score_breakdown: None,
+                    type_scores,
                 });
             }
         }
@@ -4070,6 +4173,10 @@ impl Sgdb {
                 validity,
                 rel: None,
                 score_breakdown: None,
+                type_scores: doc
+                    .meta
+                    .as_ref()
+                    .map(|m| TypeScores::derive(doc.layer, &m.entities)),
             });
         }
         let _ = companion_keys.len();
@@ -5374,6 +5481,64 @@ mod tests {
         // escopo hostil é rejeitado na escrita (regra do write-path)
         assert!(db.note_absence("x", "user/../etc", 1).is_err());
         assert!(db.note_absence("x", "a#b", 1).is_err());
+    }
+
+    // ---- v1.1.27 (ADR-0016): scores de tipo sobrepostos, derivados na leitura ----
+
+    #[test]
+    fn type_scores_derive_is_overlapping_not_exclusive() {
+        use super::TypeScores;
+        // A DECISÃO central: um mesmo datum pontua em VÁRIOS eixos. Um L3
+        // episódico-long é TAMBM semântico parcial (verbatims consolidados
+        // são fatos) — categoria exclusiva destruiria essa informação.
+        let l3 = TypeScores::derive(MemoryLayer::L3EpisodicLong, &[]);
+        assert!(l3.episodic > 0.0 && l3.semantic > 0.0, "L3 pontua em 2 eixos: {:?}", l3);
+        // L2 puro episódico; L4 semântico com leve procedural (um fato
+        // declarativo embute know-how mínimo); L5 procedural com leve
+        // semântico.
+        let l2 = TypeScores::derive(MemoryLayer::L2EpisodicShort, &[]);
+        assert_eq!(l2.episodic, 1.0);
+        assert_eq!(l2.semantic, 0.0);
+        let l4 = TypeScores::derive(MemoryLayer::L4Semantic, &[]);
+        assert_eq!(l4.semantic, 1.0);
+        assert_eq!(l4.procedural, 0.1);
+        let l5 = TypeScores::derive(MemoryLayer::L5Procedural, &[]);
+        assert_eq!(l5.procedural, 1.0);
+        assert_eq!(l5.semantic, 0.2);
+        // preferência: convenção `pref/*` na entidade (independe da camada)
+        let pref = TypeScores::derive(MemoryLayer::L4Semantic, &["pref/theme".into()]);
+        assert_eq!(pref.preference, 1.0);
+        // L7 identidade é preferência forte mesmo sem entidade pref/
+        let l7 = TypeScores::derive(MemoryLayer::L7Identity, &[]);
+        assert_eq!(l7.preference, 0.8);
+        // camadas não cognitivas: tudo zero (determinístico, nunca NaN)
+        let l0 = TypeScores::derive(MemoryLayer::L0Sensory, &[]);
+        assert_eq!(l0, TypeScores { episodic: 0.0, semantic: 0.0, procedural: 0.0, preference: 0.0 });
+        // vocabulary estável: ordem e nomes são o contrato do serializador
+        let names: Vec<&str> = l4.fields().iter().map(|(n, _)| *n).collect();
+        assert_eq!(names, ["episodic", "semantic", "procedural", "preference"]);
+    }
+
+    #[test]
+    fn type_scores_flow_to_recall_hits_and_die_without_the_rule() {
+        // regra de casa: o teste de contrato MORRE sem a derivação.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_text_with(
+            "fato do projeto",
+            "o deploy roda no ring",
+            RememberOptions { scope: None, entities: &["pref/lang"], content_type: None, scope_dims: None, model_id: None },
+        )
+        .unwrap();
+        let hits = db.recall_lexical("deploy ring", 3).unwrap();
+        assert!(!hits.is_empty());
+        let ts = hits[0].type_scores.as_ref().expect("type_scores presente com meta");
+        assert_eq!(ts.preference, 1.0, "entidade pref/* => preference=1.0");
+        assert_eq!(ts.semantic, 0.4, "L3 => semantic parcial (0.4)");
+        assert!(ts.episodic > 0.0, "L3 também é episódico — sobreposto, não exclusivo");
+        // MUTAÇÃO: se a derivação sumir (todos zeros), o teste acima falha
+        // na primeira asserção. Este assert é o que prova que o campo NÃO é
+        // decorativo: sem a regra, preference não seria 1.0.
+        assert!(ts.fields().iter().any(|(_, v)| *v > 0.0));
     }
 
     #[test]

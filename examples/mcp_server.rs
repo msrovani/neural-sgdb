@@ -260,6 +260,18 @@ fn hit_json(h: &neural_sgdb::Hit) -> Value {
         }),
         None => Value::Null,
     };
+    // v1.1.27 — scores de tipo SOBREPOSTOS (ADR-0016): derivados na leitura,
+    // vocabulary estável (fields() é a tabela única — nunca Debug do Rust).
+    obj["type_scores"] = match h.type_scores.as_ref() {
+        Some(ts) => {
+            let mut m = serde_json::Map::new();
+            for (name, v) in ts.fields() {
+                m.insert(name.into(), json!(v));
+            }
+            Value::Object(m)
+        }
+        None => Value::Null,
+    };
     obj
 }
 
@@ -275,7 +287,7 @@ fn error_response(id: &Value, code: i64, message: &str) -> Value {
 
 /// NÃºmero de tools em `tools/list` (aliases antigos ainda funcionam em tools/call).
 const EXPECTED_MCP_TOOL_COUNT: usize = 4;
-const MCP_CONTRACT_VERSION: &str = "1.1.26";
+const MCP_CONTRACT_VERSION: &str = "1.1.27";
 const BUILD_GIT: &str = env!("NEURAL_SGDB_BUILD_GIT");
 
 /// Lista pÃºblica: 4 tools. Os 23 nomes antigos continuam vÃ¡lidos em `tools/call`.

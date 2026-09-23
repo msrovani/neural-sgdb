@@ -191,7 +191,7 @@ fn main() {
     rep.check("protocolVersion 2025-11-25",
         r["result"]["protocolVersion"] == "2025-11-25", r.to_string());
     rep.check("serverInfo version 1.1.26",
-        r["result"]["serverInfo"]["version"] == "1.1.26", r.to_string());
+        r["result"]["serverInfo"]["version"] == "1.1.27", r.to_string());
     rep.check("serverInfo mcp_tool_count 4",
         r["result"]["serverInfo"]["mcp_tool_count"] == 4, r.to_string());
     let instr = r["result"]["instructions"].as_str().unwrap_or("");
