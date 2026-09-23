@@ -4,6 +4,21 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [1.1.28] — 2026-09-23 (linguagem de máquina, ADR-0017)
+
+- **Vocabulário ÚNICO prosa/JSON**: `state_label`/`path_label`/`layer_label`
+  tabelas únicas em `ctype.rs`; o `{:?}` do Rust SAIU do wire (D1/D8). Prosa
+  agora diz `state=active`/`path=lexical`/`type=text` — idêntico ao JSON.
+- **`dist: null` no lexical** (D2): campo distância constante 0.0 enganava.
+- **Tool `decide` (5º tool listado)** — 𝒥(S,𝒬) do Jev-Mem: N perguntas com
+  espaços fechados → respostas tipadas em 1 round trip (suficiência de
+  evidência, relação temporal, vigência, relevância de candidatos).
+- **`recall_candidates`** (Movimento 3, Eq. 8/23): prefetch com sinais
+  DECOMPOSTOS (`sim_vec`, `lex_overlap`, `shared_entities`, `recency`, `rrf`).
+- **validate com gêmeo tipado** (D3): `structuredContent{healthy,issues[]}`.
+- **k=0 é erro tipado** (D6). Matrix **346+1 / 392+1 / 290+1**; hot test
+  **130/0** (+11 asserções); contrato MCP → **1.1.28**.
+
 ## [1.1.27] — 2026-09-23 (scores de tipo sobrepostos, ADR-0016)
 
 - **`TypeScores` (ADR-0016)**: os quatro eixos do Jev-Mem (arXiv 2609.23986) —

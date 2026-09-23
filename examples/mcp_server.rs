@@ -21,6 +21,9 @@ use neural_sgdb::{
     CommitFact, CommitRunPlan, CommitSupersede, ContentType, DemoEmbedder, Embedder, MemoryState,
     RecallPath, ScopeDims, ScopeFilter, Sgdb, DOCTRINE, DOCTRINE_SCOPE,
 };
+// v1.1.28 (ADR-0017): vocabulário ÚNICO prosa/JSON — os dois serializadores
+// consomem as mesmas tabelas; o `{:?}` do Rust sai do wire de vez (D1/D8).
+use neural_sgdb::{layer_label, path_label, state_label, stable_label};
 #[cfg(feature = "file-storage")]
 use neural_sgdb::FileStorage;
 #[cfg(not(feature = "file-storage"))]
@@ -165,8 +168,8 @@ fn fmt_hit(h: &neural_sgdb::Hit) -> String {
     let mut tags = Vec::new();
     if let Some(p) = h.provenance.as_ref() {
         tags.push(format!(
-            "state={:?} imp={:.2} conf={:.2} src={}",
-            p.state, p.importance, p.confidence, p.source
+            "state={} imp={:.2} conf={:.2} src={}",
+            state_label(p.state), p.importance, p.confidence, p.source
         ));
         if !p.scope.is_empty() {
             tags.push(format!("scope={}", p.scope));
@@ -180,11 +183,15 @@ fn fmt_hit(h: &neural_sgdb::Hit) -> String {
     } else {
         tags.push("state=none".into());
     }
-    tags.push(format!("path={:?}", h.path));
-    tags.push(format!("type={:?}", h.content_type));
+    tags.push(format!("path={}", path_label(h.path)));
+    tags.push(format!("type={}", stable_label(h.content_type)));
     if h.payload_type != h.content_type {
-        // datum real do primÃ¡rio (Embedding(dim) p/ L4/L5) vs projeÃ§Ã£o
-        tags.push(format!("payload={:?}", h.payload_type));
+        // datum real do primário (Embedding(dim) p/ L4/L5) vs projeção
+        let dim_suf = match h.payload_type {
+            ContentType::Embedding(d) => format!("({d})"),
+            _ => String::new(),
+        };
+        tags.push(format!("payload={}{}", stable_label(h.payload_type), dim_suf));
     }
     if !h.matched_terms.is_empty() {
         tags.push(format!(
@@ -203,14 +210,6 @@ fn fmt_hit(h: &neural_sgdb::Hit) -> String {
 
 /// Strings ESTÃVEIS (machine-parseable) para o `format=json` â€” o consumidor
 /// casa por valor, nÃ£o por `Debug` (que pode mudar entre versÃµes).
-fn path_str(p: RecallPath) -> &'static str {
-    match p {
-        RecallPath::Semantic => "semantic",
-        RecallPath::Lexical => "lexical",
-        RecallPath::Entities => "entities",
-    }
-}
-
 fn content_type_json(ct: ContentType) -> Value {
     match ct {
         ContentType::Text => json!({"type": "text"}),
@@ -226,12 +225,19 @@ fn content_type_json(ct: ContentType) -> Value {
 /// (`path`), o grounding (`matched_terms`) e a proveniÃªncia, sem depender
 /// da projeÃ§Ã£o prosa.
 fn hit_json(h: &neural_sgdb::Hit) -> Value {
+    // v1.1.28 (D2): `dist` só carrega informação onde a distância existe —
+    // no lexical é constante 0.0 (a armadilha do "match perfeito"). O
+    // consumidor usa `score` (BM25) e `path` como discriminante.
+    let dist_val = match h.path {
+        RecallPath::Semantic | RecallPath::Entities => json!(h.dist),
+        RecallPath::Lexical => Value::Null,
+    };
     let mut obj = json!({
         "key": h.key,
         "text": h.text,
-        "dist": h.dist,
+        "dist": dist_val,
         "score": h.score,
-        "path": path_str(h.path),
+        "path": path_label(h.path),
         "matched_terms": h.matched_terms,
         "validity": h.validity.map(|(f, u)| json!([f, u])),
         "rel": h.rel,
@@ -247,8 +253,8 @@ fn hit_json(h: &neural_sgdb::Hit) -> Value {
         Some(p) => json!({
             "memory_id": p.memory_id,
             "version_id": p.version_id,
-            "layer": format!("{:?}", p.layer),
-            "state": format!("{:?}", p.state),
+            "layer": layer_label(p.layer),
+            "state": state_label(p.state),
             "source": p.source,
             "confidence": p.confidence,
             "importance": p.importance,
@@ -286,13 +292,13 @@ fn error_response(id: &Value, code: i64, message: &str) -> Value {
 }
 
 /// NÃºmero de tools em `tools/list` (aliases antigos ainda funcionam em tools/call).
-const EXPECTED_MCP_TOOL_COUNT: usize = 4;
-const MCP_CONTRACT_VERSION: &str = "1.1.27";
+const EXPECTED_MCP_TOOL_COUNT: usize = 5;
+const MCP_CONTRACT_VERSION: &str = "1.1.28";
 const BUILD_GIT: &str = env!("NEURAL_SGDB_BUILD_GIT");
 
 /// Lista pÃºblica: 4 tools. Os 23 nomes antigos continuam vÃ¡lidos em `tools/call`.
 /// As 4 tools LISTADAS no contrato `tools/list` (v1.1.21).
-const LISTED_TOOLS: &[&str] = &["remember", "recall", "health", "curate"];
+const LISTED_TOOLS: &[&str] = &["remember", "recall", "health", "curate", "decide"];
 
 /// Superfície de ALIAS (v1.1.21): nomes aceitos em `tools/call` que NAO
 /// aparecem em `tools/list`.
@@ -303,6 +309,7 @@ const LISTED_TOOLS: &[&str] = &["remember", "recall", "health", "curate"];
 /// `alias_surface_is_consistent` pina a lista, e `did_you_mean` procura aqui
 /// para sugerir o nome certo a quem errou.
 const ALIAS_SURFACE: &[&str] = &[
+    "recall_candidates",
     "associate",
     "audit_checkpoint",
     "audit_verify",
@@ -541,7 +548,21 @@ fn mcp_listed_tools() -> Value {
            "close_event_key":{"type":"string"},
            "audit":{"type":"boolean"},
            "archive_episodic":{"type":"boolean"}
-         },"required":["op"]}}
+         },"required":["op"]}},
+        {"name":"decide",
+         "description":"System-One control (ADR-0017): N perguntas com espacos de resposta FECHADOS -> respostas tipadas num round trip (Jev-Mem J(S,Q)). ask=evidence_sufficient (adaptive stop do ADR-0012 como resposta), temporal_relation (before/after/same_time por timestamp), valid_at (janela bi-temporal), candidate_relevance (sinais DECOMPOSTOS: sim_vec, lex_overlap, shared_entities, recency, rrf). Deterministico — o core responde, nunca gera texto.",
+         "inputSchema":{"type":"object","properties":{
+           "questions":{"type":"array","items":{"type":"object","properties":{
+             "ask":{"type":"string","enum":["evidence_sufficient","temporal_relation","valid_at","candidate_relevance"]},
+             "query":{"type":"string"},
+             "key":{"type":"string"},
+             "at":{"type":"integer"},
+             "a_created":{"type":"integer"},
+             "b_created":{"type":"integer"},
+             "entities":{"type":"array","items":{"type":"string"}}
+           },"required":["ask"]}}
+         },"required":["questions"]},
+         "annotations":{"readOnlyHint":true}}
     ])
 }
 
@@ -1266,6 +1287,14 @@ fn main() {
                             send(&error_response(&id, -32602, "parametro 'query' obrigatorio"));
                             continue;
                         }
+                        // v1.1.28 (D6): k=0 é erro tipado, não "sucesso vazio" —
+                        // o consumidor precisa distinguir "não havia nada" de
+                        // "pediu nada".
+                        if k == 0 {
+                            send(&error_response(&id, -32602,
+                                "k=0 é inválido: para sondar existência use k=1 e leia hits[] (vazio = não havia nada)"));
+                            continue;
+                        }
                         let mode = match resolve_retrieval_mode(args, embedder.is_some()) {
                             Ok(m) => m,
                             Err(e) => {
@@ -1684,8 +1713,8 @@ fn main() {
                         match db.explain(key) {
                             Ok(ex) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":serde_json::to_string_pretty(&json!({
-                                    "key": ex.key, "layer": format!("{:?}", ex.layer),
-                                    "state": format!("{:?}", ex.state),
+                                    "key": ex.key, "layer": layer_label(ex.layer),
+                                    "state": state_label(ex.state),
                                     "memory_id": ex.memory_id, "version_id": ex.version_id,
                                     "source": ex.source, "confidence": ex.confidence,
                                     "importance": ex.importance, "created_tick": ex.created_tick,
@@ -2169,15 +2198,168 @@ fn main() {
                         }
                     }
                     "validate" => {
+                        // v1.1.28 (D3): gêmeo TIPADO — códigos estáveis e campos
+                        // nomeados; a prosa continua para o consumidor humano.
                         let issues = db.validate();
+                        let structured = json!({
+                            "healthy": issues.is_empty(),
+                            "issue_count": issues.len(),
+                            "issues": issues.iter().map(|i| json!({
+                                "key": i.key,
+                                "message": i.message,
+                            })).collect::<Vec<_>>(),
+                        });
                         let text = if issues.is_empty() {
                             "banco saudavel (nenhum issue de integridade)".into()
                         } else {
                             issues.iter().map(|i| format!("[{}] {}", i.key, i.message))
                                 .collect::<Vec<_>>().join("\n")
                         };
-                        send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                            "content":[{"type":"text","text":text}],"isError":false}}));
+                        send(&json!({"jsonrpc":"2.0","id":id,"result":
+                            mcp_tool_result(&text, structured, false)}));
+                    }
+                    // v1.1.28 (ADR-0017, Movimento 2): 𝒥(S,𝒬) — decisões de
+                    // controle em LOTE com espaços de resposta FECHADOS, num
+                    // round trip. Determinístico: o core responde com sinais
+                    // e probabilidades, nunca gera texto.
+                    "decide" => {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as u64)
+                            .unwrap_or(0);
+                        let mut answers: Vec<Value> = Vec::new();
+                        let questions = args["questions"].as_array().cloned().unwrap_or_default();
+                        if questions.is_empty() {
+                            send(&error_response(&id, -32602,
+                                "decide requer questions[] (perguntas com espaços fechados)"));
+                            continue;
+                        }
+                        'outer: for (qi, q) in questions.iter().enumerate() {
+                            let ask = q["ask"].as_str().unwrap_or("");
+                            let fail = |m: &str| -> Value {
+                                json!({"index": qi, "ask": ask, "error": m})
+                            };
+                            let ans = match ask {
+                                // Suficiência de evidência (Eq. 21 do paper): o
+                                // probe do ADR-0012 vira resposta tipada.
+                                "evidence_sufficient" => {
+                                    let query = q["query"].as_str().unwrap_or("");
+                                    if query.is_empty() {
+                                        answers.push(fail("query obrigatoria")); continue 'outer;
+                                    }
+                                    match db.recall_adaptive_lexical(query, 5) {
+                                        Ok(ar) => json!({
+                                            "index": qi, "ask": ask,
+                                            "answer": {
+                                                "sufficient": ar.boundary_decisive,
+                                                "hits": ar.hits.len(),
+                                                "escalations": ar.escalations,
+                                                "oversample_used": ar.oversample_used,
+                                                "boundary_decisive": ar.boundary_decisive,
+                                                "top_keys": ar.hits.iter().take(3).map(|h| h.key.clone()).collect::<Vec<_>>(),
+                                            }
+                                        }),
+                                        Err(e) => fail(&mcp_actionable_error(e)),
+                                    }
+                                }
+                                // Relação temporal (vocabulário de 7 valores do
+                                // paper): respondida por timestamps do core.
+                                "temporal_relation" => {
+                                    let a = q["a_created"].as_u64().unwrap_or(0);
+                                    let b = q["b_created"].as_u64().unwrap_or(0);
+                                    if a == 0 || b == 0 {
+                                        answers.push(fail("a_created e b_created obrigatorios")); continue 'outer;
+                                    }
+                                    let rel = if a == b { "same_time" } else if a < b { "before" } else { "after" };
+                                    json!({"index": qi, "ask": ask, "answer": {"relation": rel}})
+                                }
+                                // Vigência bi-temporal de um hit no instante `at`.
+                                "valid_at" => {
+                                    let key = q["key"].as_str().unwrap_or("");
+                                    let at = q["at"].as_u64().unwrap_or(now);
+                                    if key.is_empty() {
+                                        answers.push(fail("key obrigatoria")); continue 'outer;
+                                    }
+                                    let valid = match db.validity_window_of(key) {
+                                        Some((f, u)) => f <= at && at < u,
+                                        None => true, // sem janela = sempre válido
+                                    };
+                                    json!({"index": qi, "ask": ask, "answer": {"valid": valid}})
+                                }
+                                // Relevância relativa: candidatos com sinais
+                                // decompostos (Eq. 8/23) — o controlador pondera.
+                                "candidate_relevance" => {
+                                    let query = q["query"].as_str().unwrap_or("");
+                                    if query.is_empty() {
+                                        answers.push(fail("query obrigatoria")); continue 'outer;
+                                    }
+                                    let ents: Vec<String> = q["entities"].as_array()
+                                        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                                        .unwrap_or_default();
+                                    let ent_refs: Vec<&str> = ents.iter().map(|s| s.as_str()).collect();
+                                    let at = q["at"].as_u64().unwrap_or(now);
+                                    match db.recall_candidates(&[], query, &ent_refs, 5, at) {
+                                        Ok(cands) => json!({
+                                            "index": qi, "ask": ask,
+                                            "answer": {
+                                                "candidates": cands.iter().map(|c| json!({
+                                                    "key": c.key,
+                                                    "sim_vec": c.sim_vec,
+                                                    "lex_overlap": c.lex_overlap,
+                                                    "shared_entities": c.shared_entities,
+                                                    "recency": c.recency,
+                                                    "rrf": c.rrf,
+                                                })).collect::<Vec<_>>(),
+                                            }
+                                        }),
+                                        Err(e) => fail(&mcp_actionable_error(e)),
+                                    }
+                                }
+                                other => fail(&format!(
+                                    "ask desconhecida: {other} (validas: evidence_sufficient, temporal_relation, valid_at, candidate_relevance)")),
+                            };
+                            answers.push(ans);
+                        }
+                        let text = format!("decide: {} respostas", answers.len());
+                        send(&json!({"jsonrpc":"2.0","id":id,"result":
+                            mcp_tool_result(&text, json!({"answers": answers}), false)}));
+                    }
+                    // v1.1.28 (Movimento 3): prefetch de candidatos com sinais
+                    // decompostos — o write path do paper, direto no MCP.
+                    "recall_candidates" => {
+                        let query = args["query"].as_str().unwrap_or("");
+                        let ents: Vec<String> = args["entities"].as_array()
+                            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                            .unwrap_or_default();
+                        let ent_refs: Vec<&str> = ents.iter().map(|s| s.as_str()).collect();
+                        let at = args["at"].as_u64().unwrap_or_else(|| {
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis() as u64)
+                                .unwrap_or(0)
+                        });
+                        match db.recall_candidates(&[], query, &ent_refs, 8, at) {
+                            Ok(cands) => {
+                                let structured = json!({ "candidates": cands.iter().map(|c| json!({
+                                    "key": c.key, "text": c.text,
+                                    "sim_vec": c.sim_vec, "lex_overlap": c.lex_overlap,
+                                    "shared_entities": c.shared_entities,
+                                    "validity": c.validity.map(|(f,u)| json!([f,u])),
+                                    "recency": c.recency, "rrf": c.rrf,
+                                })).collect::<Vec<_>>() });
+                                let text = if cands.is_empty() {
+                                    "nenhum candidato".into()
+                                } else {
+                                    cands.iter().map(|c| format!("- {} | lex={:.2} ents={} rrf={:.4}",
+                                        c.key, c.lex_overlap, c.shared_entities.join(","), c.rrf))
+                                        .collect::<Vec<_>>().join("\n")
+                                };
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":
+                                    mcp_tool_result(&text, structured, false)}));
+                            }
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
+                        }
                     }
                     "era_report" => {
                         match db.era_report_lines() {

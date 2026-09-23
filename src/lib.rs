@@ -116,7 +116,10 @@ pub use conflict::{generate_conflict_id, ConflictRecord, ConflictStatus};
 pub use doctrine::{DOCTRINE, DOCTRINE_ENTITIES, DOCTRINE_KEY, DOCTRINE_SCOPE};
 pub use embedder::{demo_embed, DemoEmbedder, Embedder, DEMO_EMBED_DIM, DEMO_EMBED_NOTE};
 pub use era::{estimate_era_migration, EraEstimate, EraReport};
-pub use ctype::{detect_content_type, ContentType, RecallPath};
+pub use ctype::{
+    detect_content_type, layer_label, path_label, state_label, stable_label, ContentType,
+    RecallPath,
+};
 pub use hamming_dispatch::{
     cpu_caps, cpu_has_avx2, cpu_has_avx512, path_name as hamming_kernel_name,
     select_best_hamming_kernel, CpuCaps,
@@ -132,11 +135,10 @@ pub use harness::{
     MOM_ANTI_PATTERN,
 };
 pub use sgdb::{
-    AdaptiveRecall, AuditReport, ConsolidateConfig, DecayConfig, GcConfig, GcReport, HealthReport,
-    Hit, HitProvenance, LexicalAnchorReranker, RecallLedger, RecallProbe, RecallWeights,
-    RememberOptions, RememberOutcome, Reranker, ScoreBreakdown, ScopeDistribution, ScopeProbes,
-    Sgdb,
-    ValidateIssue,
+    AdaptiveRecall, AuditReport, CandidateSignals, ConsolidateConfig, DecayConfig, GcConfig,
+    GcReport, HealthReport, Hit, HitProvenance, LexicalAnchorReranker, RecallLedger, RecallProbe,
+    RecallWeights, RememberOptions, RememberOutcome, Reranker, ScoreBreakdown, ScopeDistribution,
+    ScopeProbes, Sgdb, ValidateIssue,
 };
 pub use storage::{InMemory, SnapshotStorage, Storage, SgdbError};
 pub use staleness::{StalenessConfig, StalenessHit, StalenessLevel, StalenessReason};

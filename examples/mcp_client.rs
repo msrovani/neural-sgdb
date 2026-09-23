@@ -191,9 +191,9 @@ fn main() {
     rep.check("protocolVersion 2025-11-25",
         r["result"]["protocolVersion"] == "2025-11-25", r.to_string());
     rep.check("serverInfo version 1.1.26",
-        r["result"]["serverInfo"]["version"] == "1.1.27", r.to_string());
-    rep.check("serverInfo mcp_tool_count 4",
-        r["result"]["serverInfo"]["mcp_tool_count"] == 4, r.to_string());
+        r["result"]["serverInfo"]["version"] == "1.1.28", r.to_string());
+    rep.check("serverInfo mcp_tool_count 5",
+        r["result"]["serverInfo"]["mcp_tool_count"] == 5, r.to_string());
     let instr = r["result"]["instructions"].as_str().unwrap_or("");
     rep.check("initialize.instructions injects doctrine",
         instr.to_ascii_lowercase().contains("null-scoping") && instr.contains("nsgdb/doctrine"), instr.to_string());
@@ -204,7 +204,7 @@ fn main() {
     let r = srv.rpc("tools/list", json!({}));
     let tools = r["result"]["tools"].as_array().cloned().unwrap_or_default();
     let names: Vec<&str> = tools.iter().filter_map(|x| x["name"].as_str()).collect();
-    rep.check("tools/list retorna 4 tools", names.len() == 4,
+    rep.check("tools/list retorna 5 tools", names.len() == 5,
         format!("{} tools: {names:?}", names.len()));
     for want in ["remember", "recall", "health", "curate"] {
         rep.check(&format!("tool '{want}' presente"), names.contains(&want), "".into());
@@ -265,7 +265,7 @@ fn main() {
     rep.check("recall mode=lexical acha beta sem embedding",
         !is_err && txt.contains("hot test beta"), txt.clone());
     rep.check("hits lexicais sÃ£o TIPADOS (v1.1.6): path/type/terms",
-        !is_err && txt.contains("path=Lexical") && txt.contains("type=Text") && txt.contains("terms="), txt.clone());
+        !is_err && txt.contains("path=lexical") && txt.contains("type=text") && txt.contains("terms="), txt.clone());
     let (txt, is_err) = srv.tool("recall", json!({"query": "telepatia converge", "k": 3, "mode": "hybrid"}));
     rep.check("recall mode=hybrid sem embedding â†’ ADR-0008",
         is_err && txt.contains("ADR-0008"), txt.clone());
@@ -285,7 +285,7 @@ fn main() {
             && arr.is_some_and(|a| a[0]["key"].as_str().is_some())
             && arr.is_some_and(|a| a[0]["path"].as_str().is_some())
             && arr.is_some_and(|a| a[0]["type"].as_str().is_some())
-            && arr.is_some_and(|a| a[0]["dist"].is_number()),
+            && arr.is_some_and(|a| a[0]["dist"].is_number() || a[0]["dist"].is_null()),
         txt.clone());
     // v1.1.6 item 3: payload_type/payload_dim â€” o datum REAL do primÃ¡rio
     // (Embedding(dim)) vs a projeÃ§Ã£o (type=Text do companion). A linha 206
@@ -461,7 +461,7 @@ fn main() {
     // TIPADOS â€” o caminho lexical funciona no contexto tambÃ©m.
     let (txt, is_err) = srv.tool("rag_context", json!({"query": "telepatia converge", "k": 2, "mode": "lexical"}));
     rep.check("rag_context mode=lexical acha beta sem embedding",
-        !is_err && txt.contains("hot test beta") && txt.contains("path=Lexical"), txt.clone());
+        !is_err && txt.contains("hot test beta") && txt.contains("path=lexical"), txt.clone());
     // v1.1.6 item 1: rag_context format=json devolve hits estruturados.
     let (txt, is_err) = srv.tool("rag_context", json!({"query": "telepatia converge", "k": 2, "mode": "lexical", "format": "json"}));
     let parsed: Value = serde_json::from_str(&txt).unwrap_or(Value::Null);
@@ -625,7 +625,7 @@ fn main() {
     let hr = srv.rpc("tools/call", json!({"name": "health", "arguments": {}}));
     rep.check(
         "health structuredContent onboarding + mcp_tool_count",
-        hr["result"]["structuredContent"]["mcp_tool_count"] == 4
+        hr["result"]["structuredContent"]["mcp_tool_count"] == 5
             && hr["result"]["structuredContent"]["onboarding"].is_array(),
         hr.to_string(),
     );
@@ -798,6 +798,108 @@ fn main() {
             && session_txt.contains("scopes_to_probe"), session_txt.to_string());
     rep.phase("health/validate", &t);
 
+    // ---------- fase 7b: v1.1.28 — linguagem de máquina (ADR-0017) ----------
+    let t = Instant::now();
+    // D1/D8: prosa e JSON compartilham o vocabulário — o mesmo hit não pode
+    // dizer `state=Active` na prosa e "superseded" no JSON.
+    let (prose, _) = srv.tool(
+        "recall",
+        json!({"query": "hot test alpha", "k": 3}),
+    );
+    let r = srv.rpc(
+        "tools/call",
+        json!({"name": "recall", "arguments": {"query": "hot test alpha", "k": 3, "format": "json"}}),
+    );
+    let js = r["result"]["structuredContent"]["hits"].clone();
+    let js_s = js.to_string();
+    // Toda label na prosa deve existir no JSON com o MESMO valor:
+    for label in ["active", "lexical", "semantic"] {
+        let prose_has = prose.to_lowercase().contains(&format!("state={label}"))
+            || prose.to_lowercase().contains(&format!("path={label}"));
+        let json_has = js_s.contains(&format!("\"{label}\""));
+        rep.check(
+            &format!("vocabulário único: label '{label}' coerente prosa↔json"),
+            !prose_has || json_has,
+            format!("prosa={} json={}", prose_has, json_has),
+        );
+    }
+    // D8: o `{:?}` do Rust SAIU do wire (não há "Lexical"/"Text" capitalizados).
+    rep.check(
+        "Debug do Rust fora do wire (sem path=Lexical/state=Active)",
+        !prose.contains("path=Lexical") && !prose.contains("state=Active"),
+        prose.clone(),
+    );
+    // D2: dist=null no lexical (a armadilha do "match perfeito" 0.0).
+    let lex_null = js.as_array()
+        .and_then(|a| a.first())
+        .map(|h| h["dist"].is_null() || h["path"] != "lexical")
+        .unwrap_or(false);
+    rep.check("dist=null no caminho lexical (D2)", lex_null, js_s.clone());
+    // D3: validate tem gêmeo tipado.
+    let r = srv.rpc("tools/call", json!({"name": "health", "arguments": {"view": "validate"}}));
+    let sc = r["result"]["structuredContent"].clone();
+    rep.check(
+        "validate structuredContent tipado (healthy/issues[])",
+        sc["healthy"].is_boolean() && sc["issues"].is_array(),
+        sc.to_string(),
+    );
+    // D6: k=0 é erro tipado, não sucesso vazio.
+    let (txt, is_err) = srv.tool("recall", json!({"query": "x", "k": 0}));
+    rep.check(
+        "k=0 → erro tipado (não sucesso vazio)",
+        is_err && txt.contains("k=0"),
+        txt.clone(),
+    );
+    // Movimento 2: decide em lote (𝒥(S,𝒬)) — 3 perguntas, 1 round trip.
+    let r = srv.rpc("tools/call", json!({"name": "decide", "arguments": {"questions": [
+        {"ask": "evidence_sufficient", "query": "hot test alpha"},
+        {"ask": "temporal_relation", "a_created": 100, "b_created": 200},
+        {"ask": "temporal_relation", "a_created": 500, "b_created": 500}
+    ]}}));
+    let answers = r["result"]["structuredContent"]["answers"].as_array().cloned().unwrap_or_default();
+    rep.check(
+        "decide: 3 perguntas → 3 respostas tipadas num round trip",
+        answers.len() == 3
+            && answers[0]["answer"]["sufficient"].is_boolean()
+            && answers[1]["answer"]["relation"] == "before"
+            && answers[2]["answer"]["relation"] == "same_time",
+        r.to_string(),
+    );
+    // ask desconhecida → erro POR ITEM (não falha o lote).
+    let r = srv.rpc("tools/call", json!({"name": "decide", "arguments": {"questions": [
+        {"ask": "pergunta_loca"}
+    ]}}));
+    rep.check(
+        "decide: ask desconhecida vira erro por item",
+        r["result"]["structuredContent"]["answers"][0]["error"].as_str().is_some(),
+        r.to_string(),
+    );
+    // Movimento 3: prefetch de candidatos com sinais decompostos (Eq. 8/23).
+    let r = srv.rpc("tools/call", json!({"name": "recall_candidates", "arguments": {
+        "query": "hot test alpha", "at": 1
+    }}));
+    let cands = r["result"]["structuredContent"]["candidates"].as_array().cloned().unwrap_or_default();
+    rep.check(
+        "recall_candidates: sinais decompostos (lex_overlap, rrf, recency)",
+        !cands.is_empty()
+            && cands[0]["lex_overlap"].is_number()
+            && cands[0]["rrf"].is_number()
+            && cands[0]["recency"].is_number(),
+        r.to_string(),
+    );
+    // O 5º tool está ANUNCIADO (announced == served, lição v1.1.23/26).
+    let srv_tools = srv.rpc("tools/list", json!({}));
+    let tool_names: Vec<String> = srv_tools["result"]["tools"]
+        .as_array()
+        .map(|ts| ts.iter().filter_map(|t| t["name"].as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    rep.check(
+        "tools/list anuncia 5 tools (inclui decide)",
+        tool_names.len() == 5 && tool_names.contains(&"decide".to_string()),
+        format!("{:?}", tool_names),
+    );
+    rep.phase("linguagem de máquina (ADR-0017)", &t);
+
     // ---------- fase 8: resources + paginaÃ§Ã£o ----------
     let t = Instant::now();
     let r = srv.rpc("resources/list", json!({"pageSize": 4}));
@@ -827,8 +929,8 @@ fn main() {
     let r = srv.rpc("tools/call", json!({"name": "tool_inexistente"}));
     rep.check("tool desconhecida -> data com listed_tools/alias_count",
         r["error"]["code"] == -32602
-            && r["error"]["data"]["listed_tools"].as_array().map(|a| a.len()) == Some(4)
-            && r["error"]["data"]["alias_count"] == 38,
+            && r["error"]["data"]["listed_tools"].as_array().map(|a| a.len()) == Some(5)
+            && r["error"]["data"]["alias_count"] == 39,
         r.to_string());
     let r = srv.rpc("tools/call", json!({"name": "remember"}));
     rep.check("parametro faltando â†’ -32602", r["error"]["code"] == -32602, r.to_string());

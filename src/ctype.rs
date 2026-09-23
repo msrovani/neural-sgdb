@@ -163,9 +163,80 @@ pub fn renders_prose(ct: ContentType) -> bool {
     matches!(ct, ContentType::Text | ContentType::Json | ContentType::Code)
 }
 
+/// ---- v1.1.28 (ADR-0017): VOCABULÁRIO ÚNICO prosa/JSON ----
+///
+/// Prosa e JSON eram dois renders paralelos do mesmo struct e JÁ divergiam
+/// (capitalização): prosa dizia `type=Text`/`path=Lexical` (o `{:?}` do Rust
+/// no contrato publicado — ninguém assinou isso), JSON dizia "text"/
+/// "lexical". Um consumidor que aceita os dois precisa de duas tabelas de
+/// símbolos. Agora UMA tabela por enum; ambos os serializadores consomem
+/// ela (o `{:?}` sai do wire de vez). Renomear variante Rust NÃO muda mais
+/// o wire; mudar aqui é bump de contrato, visível e testado.
+/// Rótulo estável do ESTADO lógico — tabela única prosa (`state=`) e JSON
+/// (`"state"`). Nunca o `{:?}` do `MemoryState`.
+pub fn state_label(s: crate::memory_doc::MemoryState) -> &'static str {
+    use crate::memory_doc::MemoryState;
+    match s {
+        MemoryState::Active => "active",
+        MemoryState::Superseded => "superseded",
+        MemoryState::Archived => "archived",
+        MemoryState::Invalidated => "invalidated",
+        MemoryState::Decayed => "decayed",
+    }
+}
+
+/// Rótulo estável do CAMINHO de retrieval — tabela única prosa (`path=`) e
+/// JSON (`"path"`). Nunca o `{:?}` do `RecallPath`.
+pub fn path_label(p: RecallPath) -> &'static str {
+    use self::RecallPath;
+    match p {
+        RecallPath::Semantic => "semantic",
+        RecallPath::Lexical => "lexical",
+        RecallPath::Entities => "entities",
+    }
+}
+
+/// Rótulo estável da CAMADA — tabela única prosa e JSON. `"l3"` minúsculo
+/// (o JSON já usava `format!("{:?}")` = `"L3"`; a prosa não expunha layer).
+pub fn layer_label(l: crate::memory_doc::MemoryLayer) -> &'static str {
+    use crate::memory_doc::MemoryLayer;
+    match l {
+        MemoryLayer::L0Sensory => "l0",
+        MemoryLayer::L1Working => "l1",
+        MemoryLayer::L2EpisodicShort => "l2",
+        MemoryLayer::L3EpisodicLong => "l3",
+        MemoryLayer::L4Semantic => "l4",
+        MemoryLayer::L5Procedural => "l5",
+        MemoryLayer::L6Reserved => "l6",
+        MemoryLayer::L7Identity => "l7",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::memory_doc::{MemoryLayer, MemoryState};
+
+    #[test]
+    fn vocabulary_tables_are_the_single_source() {
+        // ADR-0017: prosa e JSON compartilham ESTAS tabelas — se alguém
+        // reintroduz `{:?}` num serializador, a prosa volta a divergir do
+        // JSON e este teste não pega; o teste do MCP (prosa vs json) sim.
+        // Aqui pino os valores: mudar é bump de contrato.
+        assert_eq!(state_label(MemoryState::Active), "active");
+        assert_eq!(state_label(MemoryState::Superseded), "superseded");
+        assert_eq!(state_label(MemoryState::Archived), "archived");
+        assert_eq!(state_label(MemoryState::Invalidated), "invalidated");
+        assert_eq!(state_label(MemoryState::Decayed), "decayed");
+        assert_eq!(path_label(RecallPath::Semantic), "semantic");
+        assert_eq!(path_label(RecallPath::Lexical), "lexical");
+        assert_eq!(path_label(RecallPath::Entities), "entities");
+        assert_eq!(layer_label(MemoryLayer::L3EpisodicLong), "l3");
+        assert_eq!(layer_label(MemoryLayer::L7Identity), "l7");
+        // coerência interna: o rótulo de tipo é o mesmo do seam de WRITE
+        assert_eq!(stable_label(ContentType::Embedding(4)), "embedding");
+        assert_eq!(parse_stable_label("embedding"), Some(ContentType::Embedding(0)));
+    }
 
     #[test]
     fn detects_prose_verbatim() {

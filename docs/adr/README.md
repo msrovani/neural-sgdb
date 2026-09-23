@@ -34,9 +34,11 @@ decisions MUST add an ADR in the same commit as the code.
 | 0013 | `ScopeDims` is authoritative; legacy `scope` mirrors `user` | `set_scope` faz write-through nos dois campos (bytes canônicos); decode-compat preservado; `validate` §6 sinaliza divergência; sem bump de MDM1 (**v1.1.24**) |
 | 0014 | Negative ledger: remember what was searched and absent | Side-table `sys/negative/<fnv1a64(scope‖0x1f‖query)>`; identidade = tokens do BM25; escopado; reforça (não duplica); `recall_with_ledger` registra/auto-cura; MCP 4 aliases com JSON próprio (**v1.1.24**) |
 | 0015 | Descoberta de escopo: probes com procedência, e o anunciado é servido | Global = `scope==""` **e** dims globais; `scan_scope_metas` classifica uma vez; `scope_probes{legacy,dims_only}`; `scopes_to_probe_dims` no `nsgdb://session`; `recall` honra `scope_user/agent/app/run` (hybrid/temporal recusam em voz alta); `scope` ↔ `dims.user` restaurado na escrita (**v1.1.26**) |
+| 0017 | Estrutura tipada é o contrato, prosa é projeção | Vocabulário único (state/path/layer/stable), `{:?}` fora do wire, `dist:null` no lexical, tool `decide` 𝒥(S,𝒬) 5º tool, `recall_candidates` sinais decompostos, validate tipado, k=0 erro (**v1.1.28**) |
 | 0016 | Scores de tipo sobrepostos derivados na leitura | `TypeScores` (episódico/semântico/procedural/preferência) derivado de layer+entities, nunca persistido; sobreposto, não exclusivo; `fields()` é o vocabulary único; MCP `format=json` expõe `type_scores` (**v1.1.27**) |
 
-## Retrospective history
+## Retrospective history
+
 
 The core was extracted from `neural-os-core` (`k_ai::sgdb`, ADR-0063 in the
 OS project) — that project's ADR numbering is independent of this one.

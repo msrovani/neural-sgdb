@@ -665,6 +665,30 @@ pub struct Sgdb {
     default_scope: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct CandidateSignals {
+    /// Storage key do candidato.
+    pub key: String,
+    /// Texto de projeção (companion L2/L3) — vazio para não-prosa.
+    pub text: String,
+    /// Similaridade vetorial cosseno (0..1; `None` sem embedding de
+    /// query ou sem vetor). 1 = idêntico.
+    pub sim_vec: Option<f32>,
+    /// Overlap lexical: fração dos TOKENS da query presentes no texto
+    /// (0..1; BM25 casa por sobreposição parcial — 0 = nenhum token).
+    pub lex_overlap: f32,
+    /// Entidades compartilhadas (interseção de strings EXATAS — mesmo
+    /// contrato 1-hop).
+    pub shared_entities: Vec<String>,
+    /// Janela de validade vigente (`None` = sem marcação bi-temporal).
+    pub validity: Option<(u64, u64)>,
+    /// Proximidade temporal (Eq. 24 do paper): `1/(1+Δt/dia)` com Δt =
+    /// |as_of − created_tick|; `None` quando `as_of == 0`. 1 = agora.
+    pub recency: Option<f32>,
+    /// RRF score do pool (rank-fusion dos caminhos que o alcançaram).
+    pub rrf: f32,
+}
+
 impl Sgdb {
     /// Opens with a storage backend (`InMemory` for tests, `FileStorage`
     /// for file persistence, or your own `Storage` impl).
@@ -1967,7 +1991,10 @@ impl Sgdb {
     /// primeiro — o caso mais comum do agente), devolvendo a canônica
     /// encontrada. Se nada existe, devolve `md/{key}` puro (o caller decide —
     /// preserva a semântica de `None`/ghost). Determinístico; nunca inventa.
-    fn resolve_known_key(&self, key: &str) -> String {
+    ///
+    /// v1.1.28: público — a superfície `decide` do MCP precisa resolver a
+    /// mesma chave crua que o agente passou antes de consultar side-tables.
+    pub fn resolve_known_key(&self, key: &str) -> String {
         let sk = self.resolve_storage_key(key);
         if sk.starts_with("sys/") || self.engine.art.get(&sk).is_some() {
             return sk;
@@ -3700,6 +3727,46 @@ impl Sgdb {
     /// `dist` = 1 − score normalizado (0 = melhor hit lexical). Default =
     /// memórias ATIVAS (paridade com `recall`); `recall_lexical_historical`
     /// inclui as inativas com `provenance.state` exposto.
+    /// v1.1.28 (ADR-0017): janela de validade de uma chave (resolução crua
+    /// incluída) — a pergunta "vigora em T?" sem passar pelo recall.
+    pub fn validity_window_of(&mut self, key: &str) -> Option<(u64, u64)> {
+        let sk = self.resolve_known_key(key);
+        self.engine.validity_window(&sk)
+    }
+
+    /// v1.1.28 (ADR-0017, Eq. 21 do paper): suficiência de evidência no
+    /// caminho LEXICAL — o adaptive stopping do ADR-0012 aplicado ao BM25
+    /// (a mesma escala de degraus; o pool vem do índice invertido).
+    pub fn recall_adaptive_lexical(
+        &mut self,
+        query_text: &str,
+        k: usize,
+    ) -> Result<AdaptiveRecall, SgdbError> {
+        let k = k.max(1);
+        let mut escalations: u8 = 0;
+        let mut used = 1usize;
+        let mut final_hits = Vec::new();
+        let mut decisive = false;
+        for (step, &oversample) in ADAPTIVE_LADDER.iter().enumerate() {
+            let hits = self.recall_lexical(query_text, k * oversample + 1)?; // sentinela
+            let boundary_decisive = hits.len() <= k; // menos que k+1 = fronteira nítida
+            used = oversample;
+            escalations = step as u8;
+            final_hits = hits.into_iter().take(k).collect();
+            decisive = boundary_decisive;
+            if boundary_decisive {
+                break;
+            }
+        }
+        Ok(AdaptiveRecall {
+            hits: final_hits,
+            oversample_used: used,
+            escalations,
+            boundary_decisive: decisive,
+            probe: RecallProbe::default(),
+        })
+    }
+
     pub fn recall_lexical(&mut self, query_text: &str, k: usize) -> Result<Vec<Hit>, SgdbError> {
         self.recall_lexical_impl(query_text, k, true, None, true)
     }
@@ -3951,6 +4018,137 @@ impl Sgdb {
             .recall_lexical_scoped(query_text, k.max(1) * 4, scope)
             .unwrap_or_default();
         Ok(Self::rrf_fuse(sem, lex, k, 60.0))
+    }
+
+    /// ---- v1.1.28 (ADR-0017, Movimento 3): PREFETCH DE CANDIDATOS ----
+    ///
+    /// Eq. 8/23 do Jev-Mem (arXiv 2609.23986): descoberta de candidatos
+    /// DETERMINÍSTICA com os sinais DECOMPOSTOS — o input exato de 𝒥(S,𝒬)
+    /// para julgar relação de um fato novo contra o corpus. O core não
+    /// decide: devolve cada sinal separado e a camada superior pondera.
+    ///
+    /// Pool = híbrido RRF (semântico ∪ lexical) ∪ entidades 1-hop — os três
+    /// caminhos de entrada do corpus, deduplicados por storage key.
+    /// `as_of` = instante de referência temporal (0 = sem sinal temporal).
+    /// Ver doc de `CandidateSignals`. `k` = tamanho do prefetch (top-k por
+    /// rrf). Determinístico: mesma DB + mesma query ⇒ mesma ordem.
+    pub fn recall_candidates(
+        &mut self,
+        query_emb: &[f32],
+        query_text: &str,
+        query_entities: &[&str],
+        k: usize,
+        as_of: u64,
+    ) -> Result<Vec<CandidateSignals>, SgdbError> {
+        let k = k.max(1);
+        // 3 caminhos de entrada, pool 4× para o fuse ter material.
+        let sem = self
+            .recall_oversampled(query_emb, k.max(1) * 4, 4)
+            .unwrap_or_default();
+        let lex = self
+            .recall_lexical(query_text, k.max(1) * 4)
+            .unwrap_or_default();
+        let q_tokens = crate::lexical::tokenize_for_rerank(query_text);
+        // 1-hop: strings EXATAS fornecidas pelo caller (mesmo contrato de
+        // `recall_entities` — o core não extrai entidade de texto).
+        let ents: Vec<String> = query_entities.iter().map(|s| s.to_string()).collect();
+        let ent_pool = if ents.is_empty() {
+            Vec::new()
+        } else {
+            self.recall_entities(
+                &ents.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                k.max(1) * 4,
+            ).unwrap_or_default()
+        };
+        // RRF sobre os 3 rankings (mesmo κ=60 do hybrid).
+        let mut acc: alloc::collections::BTreeMap<String, (f32, Hit)> =
+            alloc::collections::BTreeMap::new();
+        for (rank, h) in sem.into_iter().enumerate() {
+            let s = 1.0 / (60.0 + (rank as f32 + 1.0));
+            acc.insert(h.key.clone(), (s, h));
+        }
+        for (rank, h) in lex.into_iter().enumerate() {
+            let s = 1.0 / (60.0 + (rank as f32 + 1.0));
+            acc.entry(h.key.clone()).and_modify(|e| e.0 += s).or_insert((s, h));
+        }
+        for (rank, h) in ent_pool.into_iter().enumerate() {
+            let s = 1.0 / (60.0 + (rank as f32 + 1.0));
+            acc.entry(h.key.clone()).and_modify(|e| e.0 += s).or_insert((s, h));
+        }
+        let mut ranked: Vec<(f32, Hit)> = acc.into_values().collect();
+        ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
+        ranked.truncate(k);
+        // Decompor sinais por candidato.
+        let mut out = Vec::with_capacity(ranked.len());
+        for (rrf, h) in ranked {
+            let sim_vec = if query_emb.is_empty() {
+                None
+            } else {
+                match self.engine.get_by_storage_key(&h.key) {
+                    Ok(Some(doc)) if doc.payload.len() >= 4 => {
+                        let docv: Vec<f32> = doc
+                            .payload
+                            .chunks(4)
+                            .filter(|c| c.len() == 4)
+                            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                            .collect();
+                        let dot: f32 = query_emb
+                            .iter()
+                            .zip(docv.iter())
+                            .map(|(a, b)| a * b)
+                            .sum();
+                        let nq: f32 = query_emb.iter().map(|a| a * a).sum::<f32>();
+                        let nd: f32 = docv.iter().map(|b| b * b).sum::<f32>();
+                        if nq > 0.0 && nd > 0.0 {
+                            Some((dot / (nq * nd)).max(0.0))
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                }
+            };
+            let lex_overlap = if q_tokens.is_empty() || h.text.is_empty() {
+                0.0
+            } else {
+                let hay = h.text.to_lowercase();
+                let hit = q_tokens
+                    .iter()
+                    .filter(|t| hay.contains(t.as_str()))
+                    .count();
+                hit as f32 / q_tokens.len() as f32
+            };
+            let shared_entities = match self.engine.meta(&h.key) {
+                Ok(Some(m)) => m
+                    .entities
+                    .into_iter()
+                    .filter(|e| ents.contains(e))
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let recency = if as_of == 0 {
+                None
+            } else {
+                match self.engine.meta(&h.key) {
+                    Ok(Some(m)) => {
+                        let dt = as_of.saturating_sub(m.created_tick) as f32;
+                        Some(1.0 / (1.0 + dt / 86_400_000.0)) // dia em ms
+                    }
+                    _ => None,
+                }
+            };
+            out.push(CandidateSignals {
+                key: h.key,
+                text: h.text,
+                sim_vec,
+                lex_overlap,
+                shared_entities,
+                validity: h.validity,
+                recency,
+                rrf,
+            });
+        }
+        Ok(out)
     }
 
     /// Recall multi-dim (v1.1.14): filtro `ScopeFilter` dentro do pool.
@@ -5539,6 +5737,49 @@ mod tests {
         // na primeira asserção. Este assert é o que prova que o campo NÃO é
         // decorativo: sem a regra, preference não seria 1.0.
         assert!(ts.fields().iter().any(|(_, v)| *v > 0.0));
+    }
+
+    #[test]
+    fn recall_candidates_decomposes_signals() {
+        // ADR-0017 Movimento 3 (Eq. 8/23 do Jev-Mem): o prefetch devolve os
+        // sinais SEPARADOS — o controlador pondera, o core não decide.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_text_with(
+            "deploy do ring",
+            "o deploy do ring roda na segunda",
+            RememberOptions {
+                scope: None,
+                entities: &["pref/lang"],
+                content_type: None,
+                scope_dims: None,
+                model_id: None,
+            },
+        )
+        .unwrap();
+        let q = crate::demo_embed("deploy ring");
+        let cands = db.recall_candidates(&q, "deploy ring", &["pref/lang"], 5, 0).unwrap();
+        assert!(!cands.is_empty(), "pool híbrido acha o fato");
+        let c = &cands[0];
+        assert!(c.lex_overlap > 0.0, "overlap lexical decomposto");
+        assert!(c.sim_vec.is_some(), "similaridade vetorial decomposta");
+        assert!(!c.shared_entities.is_empty(), "entidades compartilhadas decompostas");
+        assert!(c.rrf > 0.0);
+        // as_of = 0 → sem sinal temporal (None, não fake 0)
+        assert!(c.recency.is_none());
+        // com as_of, o recency é (0,1] e decai com o tempo
+        let c2 = db.recall_candidates(&q, "deploy ring", &["pref/lang"], 5, 100).unwrap();
+        let r = c2[0].recency.unwrap();
+        assert!(r > 0.0 && r <= 1.0);
+        let c3 = db
+            .recall_candidates(&q, "deploy ring", &["pref/lang"], 5, 100 + 86_400_000 * 365)
+            .unwrap();
+        assert!(c3[0].recency.unwrap() < r, "recency decai com a idade");
+        // determinismo: mesma query ⇒ mesma ordem de keys
+        let again = db.recall_candidates(&q, "deploy ring", &["pref/lang"], 5, 0).unwrap();
+        assert_eq!(
+            cands.iter().map(|c| c.key.clone()).collect::<Vec<_>>(),
+            again.iter().map(|c| c.key.clone()).collect::<Vec<_>>()
+        );
     }
 
     #[test]

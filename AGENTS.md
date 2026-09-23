@@ -6,9 +6,11 @@ repo. **Read `codemap.md` (atlas), `docs/api.md` (contract) and
 Storage, Cognitive API; typed hits from v1.1.6; current crate = `Cargo.toml`) and
 `docs/implementation-status.md` before editing code.**
 
-**Shipped crate is 1.1.27 (agentic MCP contract 1.1.27):** `Hit.type_scores`
+**Shipped crate is 1.1.28 (agentic MCP contract 1.1.28):** Vocabulário ÚNICO
+prosa/JSON (ADR-0017: `{:?}` fora do wire; tool `decide` 𝒥(S,𝒬) = 5º tool;
+`recall_candidates` sinais decompostos; validate tipado; k=0 erro). `Hit.type_scores`
 = **ADR-0016** (episódico/semântico/procedural/preferência sobrepostos,
-derivados na leitura de layer+entities, nunca persistidos — Jev-Mem). MCP lists **4 tools**
+derivados na leitura de layer+entities, nunca persistidos — Jev-Mem). MCP lists **5 tools**
 (`remember`/`recall`/`health`/`curate`; **38** alias names live in
 `ALIAS_SURFACE` em `examples/mcp_server.rs` — tabela pinada por teste, não prosa).
 `curate` ganhou ops de metadado cognitivo (decay/consolidate/audit_checkpoint/
@@ -439,7 +441,7 @@ turno, exact vs paraphrase, isolamento de scope). Paraphrase MISSA no lexical
 
 Release 1/3 do plano de melhorias (itens 1, 2, 3, 6) — **tudo aditivo, nada muda
 comportamento de recall**. Sem mudança de formato. Contrato MCP → **1.1.21**.
-Matrix corrente (pós-v1.1.27): **344+1 / 390+1 / 288+1**.
+Matrix corrente (pós-v1.1.28): **346+1 / 392+1 / 290+1**..
 
 - **`index_fingerprint` (ADR-0011)** — oráculo canônico do estado derivado;
   invariante `fp(open) == fp(rebuild_indices())`. **Três exclusões que são o

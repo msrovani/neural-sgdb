@@ -74,7 +74,7 @@ material for the agent/LLM above.
 ## 6. MCP surface (implemented — 4 tools + aliases)
 
 `cargo run --release --example mcp_server` — JSON-RPC 2.0 stdio, handshake
-`2025-11-25`. `serverInfo.version` = `MCP_CONTRACT_VERSION` = **1.1.27**, e o
+`2025-11-25`. `serverInfo.version` = `MCP_CONTRACT_VERSION` = **1.1.28**, e o
 `examples/mcp_client.rs` é pinado no MESMO commit — o hot test falha alto se
 divergirem.
 

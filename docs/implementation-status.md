@@ -122,7 +122,7 @@ topologies; **content** does.
 without vector → L3. Resources `nsgdb://doctrine` + `nsgdb://session`.
 `health(view=tensions|staleness|era)`. Harness ADR-0010:
 `curate(op=commit_run|deprecate_run)`. Hot test **119/0**. MCP contract
-**1.1.27**.
+**1.1.28**.
 
 ### Host connectors
 `connectors/` is host-side (not crate SemVer). Hermes `MemoryProvider` is
