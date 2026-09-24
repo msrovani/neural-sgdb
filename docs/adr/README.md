@@ -36,6 +36,7 @@ decisions MUST add an ADR in the same commit as the code.
 | 0015 | Descoberta de escopo: probes com procedência, e o anunciado é servido | Global = `scope==""` **e** dims globais; `scan_scope_metas` classifica uma vez; `scope_probes{legacy,dims_only}`; `scopes_to_probe_dims` no `nsgdb://session`; `recall` honra `scope_user/agent/app/run` (hybrid/temporal recusam em voz alta); `scope` ↔ `dims.user` restaurado na escrita (**v1.1.26**) |
 | 0017 | Estrutura tipada é o contrato, prosa é projeção | Vocabulário único (state/path/layer/stable), `{:?}` fora do wire, `dist:null` no lexical, tool `decide` 𝒥(S,𝒬) 5º tool, `recall_candidates` sinais decompostos, validate tipado, k=0 erro (**v1.1.28**) |
 | 0016 | Scores de tipo sobrepostos derivados na leitura | `TypeScores` (episódico/semântico/procedural/preferência) derivado de layer+entities, nunca persistido; sobreposto, não exclusivo; `fields()` é o vocabulary único; MCP `format=json` expõe `type_scores` (**v1.1.27**) |
+| 0018 | Budget allocation per view: deferred (Jev-Mem P2) | `recall_adaptive` permanece GLOBAL; alocação por view (Eq. 13–14) só quando o core tiver multi-hop real (`recall_graph`) + evidência medida de profundidade por relação; o core reporta probe/custo, nunca decide (**deferred**) |
 
 ## Retrospective history
 

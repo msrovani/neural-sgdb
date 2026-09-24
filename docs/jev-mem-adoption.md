@@ -56,7 +56,8 @@ por ele (doutrina: "the core does not decide").
 3. **Budget por relação** (Eq. 13–14): o escalonamento do recall_adaptive é
    global; o paper aloca por view ativa. Só compensa quando houver
    multi-hop de verdade no core (hoje as relações são consultadas por
-   superfícies próprias). **P2** — registrar, não implementar agora.
+   superfícies próprias). **P2** — registrado como ADR-0018 (deferred, com
+   critério de reativação).
 4. ✅ **FECHADO (v1.1.28.1)** — c_d/m_d no `evidence_sufficient`. Original: **Critério de stop enriquecido** (Eq. 21): `saturated()` cobre u_d
    (utilidade marginal); falta modelar m_d (evidência obrigatória faltando)
    e c_d (contradição não-resolvida) como sinais de stop — o core JÁ tem
