@@ -197,6 +197,43 @@ Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
   lower `k`, never hard-fail).
 - Benchmark-driven ART/batch improvements — no premature redesign.
 
+### Auditoria dos projetos base (2026-09-24) — o que seguir, o que não
+
+Os "projetos base" do crate não são dependências (regra zero-dep, ADR-0001)
+— são PORTAS com proveniência explícita: TickvLite (`src/tickv.rs`), layout
+NoProto-inspired do NMD1 (`src/memory_doc.rs`), ART de Leis 2013
+(`src/art.rs`), sign-BQ/MIH (`src/bq.rs`). Auditoria do upstream em 2026-09:
+
+- 🔜 **bq → RaBitQ (única atualização com ganho plausível, com critério de
+  entrada)**: RaBitQ (Gao & Long, SIGMOD'24; Extended-RaBitQ 2024-25;
+  adotado por LanceDB/Milvus/Elastic) dá estimador NÃO-biasado de distância
+  sobre 1-bit + normalização/rotação — ataca exatamente o recall@k residual
+  do filtro (medido: 24–40% com ADC-lite). ADERENTE porque é só matemática
+  no `bq.rs` (zero-dep, `no_std`-safe com `math.rs`), o BQ flat existente
+  não muda (estimador é um SEGUNDO caminho sobre os mesmos bits + escala
+  por vetor) e o rescore FP32 final permanece. **Critério de entrada
+  (ambos obrigatórios):** (1) bench A/B contra o ADC-lite nos corpora do
+  `bench.rs` (clusters densos + espalhado) mostrar recall@5 do filtro
+  **≥ +10 pp**; (2) custo por query **≤ +10%**. Rotação/matriz precisa ser
+  determinística por era (mesmo contrato de seeds do LCG). Caso não passe,
+  registrado como avaliado-e-rejeitado-com-números.
+- ✅ **tickv → nada a portar, problema mapeado para o dono certo**: o
+  TickvLite é do repo privado do OS (não há upstream público a seguir).
+  O custo real medido é NOSSO: volume append-only domina o open com churn
+  (~60 ms @ 101 docs no stress) — mesma família da paginação do snapshot
+  IDX1 (teto `MAX_VLEN`, BENCHMARKS §Fast-mount). Acompanha esse item, não
+  é "atualização do tickv".
+- 💤 **noproto → deliberadamente NÃO seguir**: upstream congelado em 0.9.x
+  (refactor 0.10 abandonado pelo autor). O NMD1 não é "noproto melhorado" —
+  é layout próprio de 72B fixos pinado byte-exato com o OS (ADR-0004);
+  portar features quebraria interop por zero ganho. A menção
+  "NoProto-inspired" no doc comment é histórico, não dependência viva.
+- 💤 **art → sem avanço aderente**: o que há de novo em 2025–26 (ALT-Index
+  ICDE'25, PermART, ART concorrente com optimistic locking) ataca
+  concorrência (somos single-writer), NVM e hot reads massivos — problemas
+  que não temos (P50 200 ns, O(k), fora do gargalo). Regra vigente:
+  "Benchmark-driven ART/batch improvements — no premature redesign".
+
 🔜 **Distributed maturity**:
 - Overlay routing / partial-mesh anti-entropy (currently edge-directed pull).
 - Signed transport reference impl (see P2-3).
