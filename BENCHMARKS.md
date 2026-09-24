@@ -9,6 +9,7 @@ that aren't reproduced here.
 ```bash
 cargo run --release --example bench
 cargo run --release --example era_migration_bench   # ADR-0007 era migration
+cargo run --release --example bench_index_snapshot  # ADR-0009 §3 fast-mount
 ```
 
 - All inputs are **deterministic** (LCG-seeded pseudo-random; same run on the
@@ -165,6 +166,39 @@ agora medido pelo core em vez de estimado.
 
 Gap conhecido, sem acao agendada: `stress` mostra ~60 ms por `open` mesmo com
 101 docs vivos, porque o volume append-only domina o custo quando ha muito churn.
+
+## Fast-mount IDX1 — open() vs open_with_snapshot() (v1.1.29)
+
+`cargo run --release --example bench_index_snapshot`. Mesmo corpus do agente
+(`remember_semantic` → L4 no BQ + companion L2), embeddings 64-dim LCG. Três
+fases por N: build + `persist_index_snapshot`; `open()` legado (full rebuild);
+`open_with_snapshot()` (fast-mount). O bench valida `fp(fast-mount) ==
+fp(rebuild) == fp(coleta)` e sai 1 se algum divergir.
+
+| N writes | docs | `open` legado | fast-mount | speedup | persist idx |
+|---|---|---|---|---|---|
+| 400 | 800 | 15–17 ms | 12–20 ms | ~1.2x | 1 ms |
+| 1 600 | 3 200 | 43–47 ms | 28–31 ms | ~1.5x | 4–5 ms |
+| 4 000 | 8 000 | 102–109 ms | 65–75 ms | ~1.5x | 12–14 ms |
+
+(3 rodadas; intervalos = variação observada.)
+
+Leitura honesta:
+
+- O ganho do fast-mount é **~1.5×**, não 10×: o mount ainda paga a
+  **recuperação do volume** (`FileStorage` append-log), que o TKCK fast-mount
+  já ataca separadamente — o snapshot só elimina a parte de REBUILD de
+  índices (~76% do open no §Open cost acima, mas só no regime sem churn).
+- O speedup CRESC com N (1.2× → 1.5×) porque o rebuild é linear em docs e o
+  mount é proporcional ao deserialize do snapshot.
+- O custo de `persist_index_snapshot` é ~1/7 do open legado no mesmo N (14 ms
+  @ 8k docs) — pago uma vez no checkpoint, recuperado no próximo open.
+- **Teto do V1**: o snapshot é UM valor no storage (`MAX_VLEN` = 1 MiB);
+  ~7k writes (14k docs, dim 64) encostam no teto e a escrita falha com
+  `Storage("limits")`. Paginação do snapshot em múltiplos valores é o
+  próximo passo quando houver demanda medida.
+- O mount é opt-in (`NEURAL_SGDB_INDEX_SNAPSHOT=auto|always` no MCP host,
+  `open_with_snapshot` no core): o `open()` default NUNCA mudou.
 
 ## Recall adaptativo — o custo de decidir pelo boundary (v1.1.22)
 

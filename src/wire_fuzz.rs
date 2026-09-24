@@ -12,17 +12,18 @@
 //! - **magic/versão corrompidos**: mutação do magic/version → `Err`, nunca
 //!   panic.
 //!
-//! Wire types cobertos (**9** — a contagem é pinada pelo que os testes
-//! efetivamente chamam; a lista já esteve em 8 depois do `AUD1` existir):
+//! Wire types cobertos (**10** — a contagem é pinada pelo que os testes
+//! efetivamente chamam; a lista já esteve em 9 depois do `AUD1` e em 8 antes):
 //! 1. NMD1 — `MemoryDoc` (doc)
 //! 2. MDR1 — `MemoryRecord` (doc + estado + validade + meta)
 //! 3. MDM1 — `MemoryMeta`
 //! 4. CFL1 — `ConflictRecord`
 //! 5. AUD1 — `AuditEntry` (hash-chain ledger)
-//! 6. MDLT — `MemoryDelta` (p2p)
-//! 7. MSNP — `MemorySnapshot` (p2p)
-//! 8. `SignedEnvelope` (p2p)
-//! 9. `CrdtState` (p2p)
+//! 6. IDX1 — `IndexSnapshot` (fast-mount do índice derivado, v1.1.29)
+//! 7. MDLT — `MemoryDelta` (p2p)
+//! 8. MSNP — `MemorySnapshot` (p2p)
+//! 9. `SignedEnvelope` (p2p)
+//! 10. `CrdtState` (p2p)
 //!
 //! no_std-safe: só `alloc`. p2p-gated apenas nos wire types p2p.
 
@@ -35,6 +36,7 @@ use alloc::vec::Vec;
 
 use crate::audit::{AuditEntry, AuditSnapshotItem, AUDIT_OP_CHECKPOINT, AUDIT_OP_ROLLBACK};
 use crate::conflict::{ConflictRecord, ConflictStatus};
+use crate::idx_snapshot::IndexSnapshot;
 use crate::memory_doc::{MemoryDoc, MemoryLayer, MemoryMeta, MemoryRecord, MemoryState};
 
 #[cfg(feature = "p2p")]
@@ -63,6 +65,7 @@ fn all_wire_decoders_never_panic_on_lcg_bytes() {
             let _ = MemoryMeta::decode(&b);
             let _ = ConflictRecord::decode(&b);
             let _ = AuditEntry::decode(&b);
+            let _ = IndexSnapshot::decode(&b);
             #[cfg(feature = "p2p")]
             {
                 let _ = MemoryDelta::decode(&b);
@@ -163,6 +166,78 @@ fn sample_audit(state: &mut u64) -> AuditEntry {
         },
         digest: lcg(state),
         snapshot,
+    }
+}
+
+/// Strings LCG minúsculas (o codec rejeita klen > MAX_KLEN — sample fica
+/// dentro; os testes de bounds cobrem o resto).
+fn lcg_str(state: &mut u64, max: usize) -> String {
+    let n = 1 + (lcg(state) % max as u64) as usize;
+    (0..n).map(|_| (b'a' + (lcg(state) % 26) as u8) as char).collect()
+}
+
+fn sample_idx(state: &mut u64) -> IndexSnapshot {
+    let nkeys = (lcg(state) % 6) as usize;
+    let mut art_keys = Vec::with_capacity(nkeys);
+    for _ in 0..nkeys {
+        art_keys.push(lcg_str(state, 12));
+    }
+    let nents = (lcg(state) % 4) as usize;
+    let mut entity_index = Vec::with_capacity(nents);
+    for _ in 0..nents {
+        let nsk = (lcg(state) % 3) as usize;
+        let mut skeys = Vec::with_capacity(nsk);
+        for _ in 0..nsk {
+            skeys.push(lcg_str(state, 12));
+        }
+        entity_index.push((lcg_str(state, 8), skeys));
+    }
+    let ndims = (lcg(state) % 3) as usize;
+    let mut indexed_dims = Vec::with_capacity(ndims);
+    let mut corpus_counts = Vec::with_capacity(ndims);
+    for _ in 0..ndims {
+        let d = (1 + (lcg(state) % 64)) as usize;
+        indexed_dims.push(d);
+        corpus_counts.push((d, lcg(state) % 100));
+    }
+    let nt = (lcg(state) % 3) as usize;
+    let mut lexical_postings = Vec::with_capacity(nt);
+    for _ in 0..nt {
+        let nd = (lcg(state) % 3) as usize;
+        let mut docs = Vec::with_capacity(nd);
+        for _ in 0..nd {
+            docs.push((lcg_str(state, 12), (1 + lcg(state) % 8) as u32));
+        }
+        lexical_postings.push((lcg_str(state, 8), docs));
+    }
+    let ndl = (lcg(state) % 3) as usize;
+    let mut lexical_doc_len = Vec::with_capacity(ndl);
+    for _ in 0..ndl {
+        lexical_doc_len.push((lcg_str(state, 12), (1 + lcg(state) % 20) as u32));
+    }
+    let nbq = (lcg(state) % 3) as usize;
+    let mut bq_entries = Vec::with_capacity(nbq);
+    for _ in 0..nbq {
+        let nw = (1 + lcg(state) % 4) as usize;
+        let mut words = Vec::with_capacity(nw);
+        for _ in 0..nw {
+            words.push(lcg(state));
+        }
+        bq_entries.push((lcg_str(state, 12), words));
+    }
+    IndexSnapshot {
+        art_keys,
+        entity_index,
+        indexed_dims,
+        corpus_counts,
+        bq_words_per_vec: (lcg(state) % 64) as u32,
+        bq_live: lcg(state) % 1000,
+        fingerprint: lcg(state),
+        written_at: lcg(state),
+        lexical_postings,
+        lexical_doc_len,
+        lexical_n_docs: (lcg(state) % 10) as u32,
+        bq_entries,
     }
 }
 
@@ -272,6 +347,8 @@ fn all_wire_types_roundtrip_lcg() {
         assert_eq!(ConflictRecord::decode(&c.encode()).unwrap(), c);
         let a = sample_audit(&mut s);
         assert_eq!(AuditEntry::decode(&a.encode()).unwrap(), a);
+        let ix = sample_idx(&mut s);
+        assert_eq!(IndexSnapshot::decode(&ix.encode()).unwrap(), ix);
     }
 }
 
@@ -303,6 +380,7 @@ fn all_wire_decoders_safe_on_truncated_prefixes() {
         sample_meta(&mut s).encode(),
         sample_conflict(&mut s).encode(),
         sample_audit(&mut s).encode(),
+        sample_idx(&mut s).encode(),
     ];
     #[cfg(feature = "p2p")]
     let mut encs_p2p: Vec<Vec<u8>> = vec![
@@ -319,6 +397,7 @@ fn all_wire_decoders_safe_on_truncated_prefixes() {
             let _ = MemoryMeta::decode(&enc[..cut]);
             let _ = ConflictRecord::decode(&enc[..cut]);
             let _ = AuditEntry::decode(&enc[..cut]);
+            let _ = IndexSnapshot::decode(&enc[..cut]);
         }
     }
     #[cfg(feature = "p2p")]
@@ -344,6 +423,7 @@ fn all_wire_decoders_reject_corrupt_magic_and_version() {
     let meta = sample_meta(&mut s).encode();
     let cfl = sample_conflict(&mut s).encode();
     let aud = sample_audit(&mut s).encode();
+    let idx = sample_idx(&mut s).encode();
 
     // primeiro byte corrompido
     let mut bad = enc.clone();
@@ -361,6 +441,9 @@ fn all_wire_decoders_reject_corrupt_magic_and_version() {
     let mut bad = aud.clone();
     bad[0] ^= 0xFF;
     assert!(AuditEntry::decode(&bad).is_err());
+    let mut bad = idx.clone();
+    bad[0] ^= 0xFF;
+    assert!(IndexSnapshot::decode(&bad).is_err());
 
     // versão desconhecida (byte 4)
     let mut bad = enc;
@@ -378,6 +461,9 @@ fn all_wire_decoders_reject_corrupt_magic_and_version() {
     let mut bad = aud;
     bad[4] = 0xFE;
     assert!(AuditEntry::decode(&bad).is_err());
+    let mut bad = idx;
+    bad[4] = 0xFE;
+    assert!(IndexSnapshot::decode(&bad).is_err());
 
     #[cfg(feature = "p2p")]
     {

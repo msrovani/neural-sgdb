@@ -79,6 +79,7 @@ pub mod embedder;
 pub mod era;
 pub mod harness;
 pub mod hamming_dispatch;
+pub mod idx_snapshot;
 pub mod lexical;
 pub mod limits;
 pub mod memory_doc;

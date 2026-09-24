@@ -807,6 +807,174 @@ impl AiosDatabaseEngine {
         Ok(n)
     }
 
+    // ── Fast-mount por snapshot IDX1 (v1.1.29, ADR-0009 §3) ─────────────
+
+    /// Chave canônica do snapshot de índice (side-table derivada).
+    pub const IDX_SNAPSHOT_KEY: &'static str = "sys/idx/snapshot";
+
+    /// Coleta o estado derivado ATUAL como `IndexSnapshot` (sem tocar storage).
+    /// O fingerprint vai dentro — é o oráculo do mount (ADR-0011).
+    pub fn collect_index_snapshot(&self) -> crate::idx_snapshot::IndexSnapshot {
+        use crate::idx_snapshot::IndexSnapshot;
+        IndexSnapshot {
+            art_keys: self
+                .art
+                .scan_prefix("")
+                .into_iter()
+                .map(|(k, _)| k)
+                .collect(),
+            entity_index: self
+                .entity_index
+                .iter()
+                .map(|(e, ks)| {
+                    let mut sorted: Vec<String> = ks.clone();
+                    sorted.sort();
+                    (e.clone(), sorted)
+                })
+                .collect(),
+            indexed_dims: self.indexed_dims.iter().copied().collect(),
+            corpus_counts: self
+                .corpus_sums
+                .iter()
+                .map(|(&d, &(_, c))| (d, c))
+                .collect(),
+            bq_words_per_vec: self.bq.words_per_vec as u32,
+            bq_live: self
+                .bq
+                .ids
+                .iter()
+                .filter(|id| self.id_to_sk.contains_key(id))
+                .count() as u64,
+            fingerprint: self.index_fingerprint(),
+            written_at: 0, // caller preenche com o clock do host
+            lexical_postings: self.lexical.snapshot_postings(),
+            lexical_doc_len: self.lexical.snapshot_doc_len(),
+            lexical_n_docs: self.lexical.len() as u32,
+            bq_entries: {
+                let w = self.bq.words_per_vec;
+                self.bq
+                    .ids
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, id)| {
+                        let sk = self.id_to_sk.get(id)?;
+                        let off = (i * w).min(self.bq.flat.len());
+                        let end = (off + w).min(self.bq.flat.len());
+                        Some((sk.clone(), self.bq.flat[off..end].to_vec()))
+                    })
+                    .collect()
+            },
+        }
+    }
+
+    /// Persiste o snapshot ATUAL em `sys/idx/snapshot` (IDX1). Chamado depois
+    /// de um rebuild/put/checkout que deixou o índice canônico. `now` entra no
+    /// blob para o host medir staleness (não é usado para validação — o
+    /// fingerprint é).
+    pub fn persist_index_snapshot(&mut self, now: u64) -> Result<(), SgdbError> {
+        let mut snap = self.collect_index_snapshot();
+        snap.written_at = now;
+        self.storage
+            .put(Self::IDX_SNAPSHOT_KEY.as_bytes(), &snap.encode())
+    }
+
+    /// Tenta montar os índices a partir do snapshot persistido. Retorna
+    /// `Ok(Some(n))` = montado (n docs no ART), `Ok(None)` = snapshot
+    /// ausente/stale/corrupto → caller faz o full rebuild (storage = verdade).
+    ///
+    /// Validação (ADR-0009 §1): o snapshot NUNCA é autoridade. Após montar,
+    /// o fingerprint do índice montado tem de ser igual ao fingerprint
+    /// gravado no snapshot (consistência interna) — e o CALLER compara contra
+    /// o fingerprint do rebuild de referência quando houver dúvida (o caminho
+    /// do `open` faz exatamente isso: monta, valida contra o rebuild barato
+    /// de ART keys via storage scan quando as contagens divergem).
+    pub fn try_mount_index_snapshot(&mut self) -> Result<Option<usize>, SgdbError> {
+        use crate::idx_snapshot::IndexSnapshot;
+        let raw = match self.storage.get(Self::IDX_SNAPSHOT_KEY.as_bytes())? {
+            Some(b) => b,
+            None => return Ok(None),
+        };
+        let snap = match IndexSnapshot::decode(&raw) {
+            Ok(s) => s,
+            Err(_) => return Ok(None), // corrupto → rebuild
+        };
+        // Coerência básica: dims declaradas vs counts já validadas no decode.
+        // Monta o estado derivado SEM ler os docs (o ganho do fast-mount):
+        self.art.clear();
+        self.bq.clear();
+        self.entity_index.clear();
+        self.id_to_sk.clear();
+        self.clock_index.clear();
+        self.indexed_dims.clear();
+        self.corpus_sums.clear();
+        self.lexical = LexicalIndex::new();
+
+        // ART + id map: ids são NOVOS (contador de processo) — o snapshot não
+        // carrega ids por design (ADR-0011).
+        let mut n = 0usize;
+        for sk in &snap.art_keys {
+            let id = NEXT_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            self.art.insert(sk, id);
+            self.id_to_sk.insert(id, sk.clone());
+            n += 1;
+        }
+        // Entidades (listas já ordenadas no collect).
+        for (ent, skeys) in &snap.entity_index {
+            self.entity_index.insert(ent.clone(), skeys.clone());
+        }
+        // Era + corpus.
+        for d in &snap.indexed_dims {
+            self.indexed_dims.insert(*d);
+        }
+        for (d, c) in &snap.corpus_counts {
+            self.corpus_sums.insert(*d, (Vec::new(), *c));
+        }
+        // BQ: geometria sem bitvecs — os vetores efetivos viriam dos docs, e
+        // lê-los seria o rebuild. O fast-mount V1 monta o BQ VAZIO com a
+        // largura de era correta: o recall semântico devolve pool vazio até o
+        // primeiro reinforce/recompaction, MAS o fp validado abaixo garante
+        // que o bitvec-morto é detectado. VER ADR-0009: "wrong invalidation →
+        // silent recall bugs até o fallback ser provado" — por isso o caminho
+        // do `open` SÓ usa fast-mount quando o caller pedir explicitamente;
+        // o default segue full rebuild (política honesta antes de rápida).
+        self.bq.words_per_vec = snap.bq_words_per_vec as usize;
+        // Bitvecs: pares (sk, words) do snapshot → BQ com ids NOVOS. O fp
+        // resolve id→sk, então a pareamento preserva o fingerprint — e o
+        // pool semântico funciona COMPLETO no mount (sem leitura de docs).
+        for (sk, words) in &snap.bq_entries {
+            let id = NEXT_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            self.bq.insert(id, words.clone());
+            self.id_to_sk.entry(id).or_insert_with(|| sk.clone());
+        }
+        let _ = snap.bq_live;
+        // Lexical: postings/doc_len/n_docs vem do snapshot — o fp cobre o
+        // lexical (ADR-0011), então sem isto o mount nunca validaria.
+        for (term, docs) in &snap.lexical_postings {
+            let mut plist: BTreeMap<String, u32> = BTreeMap::new();
+            for (doc, tf) in docs {
+                plist.insert(doc.clone(), *tf);
+            }
+            self.lexical.restore_postings(term.clone(), plist);
+        }
+        for (doc, l) in &snap.lexical_doc_len {
+            self.lexical.restore_doc_len(doc.clone(), *l);
+        }
+        self.lexical.restore_n_docs(snap.lexical_n_docs);
+        // Fingerprint interno: o índice montado tem de bater com o snapshot
+        // (o fp não cobre bitvecs dos docs, só keys/geometry/counts — ver
+        // ADR-0011), então um mount consistente reproduz o fp gravado.
+        if self.index_fingerprint() != snap.fingerprint {
+            // inconsistente → limpa e manda rebuild
+            self.art.clear();
+            self.entity_index.clear();
+            self.id_to_sk.clear();
+            self.indexed_dims.clear();
+            self.corpus_sums.clear();
+            return Ok(None);
+        }
+        Ok(Some(n))
+    }
+
     pub fn get(&mut self, layer: MemoryLayer, key: &str) -> Result<Option<MemoryDoc>, SgdbError> {
         let sk = alloc::format!("md/{}/{}", layer.as_str(), key);
         self.get_by_storage_key(&sk)

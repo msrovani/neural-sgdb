@@ -2089,6 +2089,72 @@ impl Sgdb {
         self.engine.index_fingerprint()
     }
 
+    // ── Fast-mount por snapshot IDX1 (v1.1.29, ADR-0009 §3) ─────────────
+
+    /// Persiste um snapshot do índice derivado ATUAL em `sys/idx/snapshot`
+    /// (IDX1, ADR-0009 §3). Chamado pelo host depois de um checkpoint ou de
+    /// um lote de escritas — o ganho aparece no PRÓXIMO `open_with_snapshot`,
+    /// nunca mid-query (ADR-0009 §2).
+    pub fn persist_index_snapshot(&mut self, now: u64) -> Result<(), SgdbError> {
+        self.engine.persist_index_snapshot(now)
+    }
+
+    /// Abre com fast-mount do snapshot IDX1 persistido (`persist_index_
+    /// snapshot`): monta ART/entidades/era/counts SEM ler os docs, valida o
+    /// fingerprint interno e cai para o full rebuild em qualquer inconsistência
+    /// (storage = fonte da verdade, ADR-0009 §1).
+    ///
+    /// **Semântica honesta do V1** (documentada no `try_mount_index_snapshot`):
+    /// o snapshot não carrega bitvecs (ler os docs para eles é o rebuild),
+    /// então o pool semântico (BQ) fica VAZIO até o próximo `rebuild_indices`
+    /// ou reinforce — lexical/entities/scan funcionam completos. O host que
+    /// usa esta API deve rodar `rebuild_indices()` quando precisar do pool
+    /// semântico (ou aguardar o V2, que pareia key→bitvec lendo só os docs
+    /// L4/L5 com bitvec). O default `open()` NÃO muda comportamento.
+    ///
+    /// Métricas: `open_rebuild_ms_last` mede o MOUNT (o custo que o host vê);
+    /// `index_rebuilds` NÃO incrementa (não houve rebuild).
+    pub fn open_with_snapshot(node_id: u8, backend: impl Storage + 'static) -> Result<Self, SgdbError> {
+        let mut engine = AiosDatabaseEngine::new(node_id, Box::new(backend));
+        let (mounted, ms) = timed_ms(|| engine.try_mount_index_snapshot());
+        let metrics = match mounted? {
+            Some(n) => {
+                crate::sgdb_log!(
+                    "Sgdb fast-mount: {n} keys do snapshot IDX1 em {ms} ms (BQ vazio até rebuild)"
+                );
+                crate::metrics::Metrics {
+                    storage_recoveries: 1,
+                    index_rebuilds: 0,
+                    open_rebuild_ms_last: ms,
+                    open_rebuild_ms_max: ms,
+                    opens: OPEN_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed) + 1,
+                    ..crate::metrics::Metrics::default()
+                }
+            }
+            // snapshot ausente/stale/corrupto → caminho legado completo
+            None => {
+                let (rebuild, ms) = timed_ms(|| engine.rebuild_indices_from_storage());
+                let recovered = rebuild?;
+                crate::sgdb_log!(
+                    "Sgdb open (fallback rebuild): {recovered} docs em {ms} ms"
+                );
+                crate::metrics::Metrics {
+                    storage_recoveries: 1,
+                    index_rebuilds: 1,
+                    open_rebuild_ms_last: ms,
+                    open_rebuild_ms_max: ms,
+                    opens: OPEN_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed) + 1,
+                    ..crate::metrics::Metrics::default()
+                }
+            }
+        };
+        Ok(Sgdb {
+            engine,
+            metrics,
+            default_scope: None,
+        })
+    }
+
     /// Pós-turno: L1 working (user) + L2 episódico curto (assistant).
     pub fn remember_exchange(&mut self, user: &str, response: &str) -> Result<(), SgdbError> {
         let u = MemoryDoc::new(
@@ -9592,6 +9658,184 @@ mod tests {
             "o fingerprint não pode depender dos ids do processo"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CARACTERIZATION (v1.1.29, ADR-0009 §3 — pré-IDX1): o open atual
+    /// rebuilda SEMPRE os índices derivados do storage e o resultado é
+    /// equivalente ao índice da sessão anterior (o fingerprint é estável
+    /// entre opens — pré-requisito do snapshot). Este teste pina o
+    /// comportamento a substituir:
+    ///
+    /// 1. NENHUM snapshot de índice persiste (side-table `sys/idx/` vazia) —
+    ///    o open não tem fast-mount de índice (o snapshot IDX1 vai povoar);
+    /// 2. `fp(open 2) == fp(sessão 1)` — a invariante que o snapshot tem de
+    ///    preservar (senão fast-mount diverge do rebuild);
+    /// 3. o rebuild pós-open reproduz o fingerprint do open (ADR-0011).
+    ///
+    /// Fix do v1.1.29 (IDX1): (1) muda — o fast-mount persiste/usa snapshot;
+    /// (2) e (3) NÃO podem mudar nunca.
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn characterization_open_rebuilds_indices_fingerprint_stable() {
+        let dir = std::env::temp_dir()
+            .join("neural_sgdb_test")
+            .join("idx1_char");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("mem.db");
+
+        let fp_first = {
+            let mut db = Sgdb::open(crate::FileStorage::open(&path).unwrap()).unwrap();
+            // n=9: keys fp/0..fp/8 single-digit — fp/10 colidiria como
+            // prefixo de fp/1 na ART (regra 4).
+            fp_corpus(&mut db, 9);
+            db.set_entities("md/L4/fp/3", &["ent/idx1"]).unwrap();
+            db.remember_text_with(
+                "idx1/nota",
+                "nota lexical para o snapshot do indice",
+                RememberOptions::default(),
+            )
+            .unwrap();
+            db.index_fingerprint()
+        };
+
+        // Open 2: hoje REBUILDA tudo — nenhum snapshot persistido e fingerprint igual.
+        let mut db2 = Sgdb::open(crate::FileStorage::open(&path).unwrap()).unwrap();
+        assert!(
+            db2.scan_prefix("sys/idx/").unwrap().is_empty(),
+            "CARACTERIZAÇÃO QUEBRADA: snapshot de índice já persiste — atualize este teste no commit do IDX1"
+        );
+        assert_eq!(
+            db2.index_fingerprint(),
+            fp_first,
+            "rebuild do open reproduz o índice da sessão anterior"
+        );
+
+        // Invariante ADR-0011 que o fast-mount também terá de cumprir.
+        let fp_before = db2.index_fingerprint();
+        db2.rebuild_indices().unwrap();
+        assert_eq!(db2.index_fingerprint(), fp_before);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ── v1.1.29 / ADR-0009 §3 — fast-mount IDX1 ─────────────────────────
+    /// O ciclo completo: persist snapshot → open_with_snapshot monta SEM
+    /// rebuild (`index_rebuilds == 0`) e o fingerprint do mount é IDÊNTICO ao
+    /// da sessão que gravou (invariante que o snapshot tem de preservar).
+    /// Nota honesta V1: o BQ não carrega bitvecs — o pool semântico fica
+    /// vazio (assertion explícita abaixo).
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn idx1_fast_mount_rebuilds_fingerprint_and_falls_back() {
+        let dir = std::env::temp_dir()
+            .join("neural_sgdb_test")
+            .join("idx1_fastmount");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("mem.db");
+
+        let fp_first = {
+            let mut db = Sgdb::open(crate::FileStorage::open(&path).unwrap()).unwrap();
+            fp_corpus(&mut db, 9);
+            db.set_entities("md/L4/fp/3", &["ent/idx1"]).unwrap();
+            db.remember_text_with(
+                "idx1/nota",
+                "nota lexical para o snapshot do indice",
+                RememberOptions::default(),
+            )
+            .unwrap();
+            let fp = db.index_fingerprint();
+            db.persist_index_snapshot(100).unwrap();
+            fp
+        };
+
+        // Fast-mount: monta do snapshot, SEM rebuild (métrica honesta).
+        let mut db2 =
+            Sgdb::open_with_snapshot(1, crate::FileStorage::open(&path).unwrap()).unwrap();
+        assert_eq!(
+            db2.metrics.index_rebuilds, 0,
+            "fast-mount não pode contar como rebuild"
+        );
+        assert_eq!(
+            db2.index_fingerprint(),
+            fp_first,
+            "mount do snapshot reproduz o fingerprint da sessão anterior"
+        );
+        // Recall lexical e ENTIDADES funcionam COMPLETOS no mount (o
+        // snapshot carrega postings + bitvecs — o fp só bate com eles).
+        assert!(
+            !db2.recall_lexical("nota lexical", 3).unwrap().is_empty(),
+            "lexical completo no fast-mount"
+        );
+        let ent_hits = db2.recall_entities(&["ent/idx1"], 3).unwrap();
+        assert_eq!(ent_hits.len(), 1, "entity_index montado do snapshot");
+
+        // Pool semântico: bitvecs viajaram no snapshot — o BQ responde.
+        let q = [1.0f32, 0.0, 0.0, 0.0];
+        assert!(
+            !db2.recall(&q, 3).unwrap().is_empty(),
+            "pool semântico completo no fast-mount (bitvecs no snapshot)"
+        );
+
+        // E o rebuild pós-mount é idempotente (ADR-0011).
+        db2.rebuild_indices().unwrap();
+        assert_eq!(db2.index_fingerprint(), fp_first);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Snapshot corrompido (bytes lixo na side-table) → open_with_snapshot
+    /// cai para o full rebuild e o DB fica saudável (storage = verdade).
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn idx1_corrupt_snapshot_falls_back_to_full_rebuild() {
+        let dir = std::env::temp_dir()
+            .join("neural_sgdb_test")
+            .join("idx1_corrupt");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("mem.db");
+
+        {
+            let mut db = Sgdb::open(crate::FileStorage::open(&path).unwrap()).unwrap();
+            fp_corpus(&mut db, 9);
+            db.persist_index_snapshot(5).unwrap();
+        }
+
+        // Corrompe o snapshot DIRETO no storage: truncamento no meio — decode
+        // falha com certeza (bounds-checked), caindo no rebuild.
+        {
+            let mut raw = crate::FileStorage::open(&path).unwrap();
+            let mut blob = raw
+                .get(crate::engine::AiosDatabaseEngine::IDX_SNAPSHOT_KEY.as_bytes())
+                .ok()
+                .flatten()
+                .expect("snapshot existe");
+            blob.truncate(blob.len() / 2);
+            let _ = raw.put(
+                crate::engine::AiosDatabaseEngine::IDX_SNAPSHOT_KEY.as_bytes(),
+                &blob,
+            );
+        }
+
+        let mut db =
+            Sgdb::open_with_snapshot(1, crate::FileStorage::open(&path).unwrap()).unwrap();
+        assert_eq!(
+            db.metrics.index_rebuilds, 1,
+            "snapshot corrompido → full rebuild"
+        );
+        assert!(db.validate().is_empty(), "DB saudável após fallback");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Snapshot AUSENTE (DB nunca persistiu) → fallback legado, zero mudança
+    /// de comportamento para quem chama open_with_snapshot num DB novo.
+    #[test]
+    fn idx1_missing_snapshot_uses_rebuild_path() {
+        let mut db =
+            Sgdb::open_with_snapshot(1, InMemory::new()).unwrap();
+        fp_corpus(&mut db, 3);
+        assert_eq!(db.metrics.index_rebuilds, 1, "sem snapshot → rebuild");
+        assert_eq!(db.recovered_records(), 6, "3 L4 + 3 companions");
     }
 
     /// DB vazio tem um fingerprint canônico fixo (o hash do estado vazio).

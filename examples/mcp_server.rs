@@ -56,6 +56,29 @@ fn load_embedder() -> Option<Box<dyn Embedder>> {
     }
 }
 
+/// Política do fast-mount do índice (v1.1.29, ADR-0009 §5) — seam de HOST
+/// (o core fica livre de env-globals):
+/// - `off` (default): `open()` legado, sempre full rebuild.
+/// - `auto`: fast-mount quando existir snapshot persistido; o host persiste
+///   no `audit_checkpoint` e no encerramento do processo.
+/// - `always`: idem auto (o snapshot é opt-in por existência — sem snapshot
+///   persistido o open cai para o rebuild de qualquer forma).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum IndexSnapshotPolicy {
+    Off,
+    Auto,
+    Always,
+}
+
+fn load_index_snapshot_policy() -> IndexSnapshotPolicy {
+    match std::env::var("NEURAL_SGDB_INDEX_SNAPSHOT").as_deref() {
+        Ok("off") => IndexSnapshotPolicy::Off,
+        Ok("always") => IndexSnapshotPolicy::Always,
+        Ok("auto") => IndexSnapshotPolicy::Auto,
+        _ => IndexSnapshotPolicy::Off,
+    }
+}
+
 fn has_caller_embedding(payload: &Value) -> bool {
     payload["embedding"]
         .as_array()
@@ -1044,6 +1067,29 @@ fn main() {
         InMemory::new()
     };
 
+    let snapshot_policy = load_index_snapshot_policy();
+    #[cfg(feature = "file-storage")]
+    let mut db = match snapshot_policy {
+        // Fast-mount: monta do snapshot IDX1 se existir e validar; senão
+        // rebuild completo (mesma garantia, ADR-0009 §1).
+        IndexSnapshotPolicy::Auto | IndexSnapshotPolicy::Always => {
+            match Sgdb::open_with_snapshot(1, FileStorage::open(&db_path).expect("db")) {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!("[neural-sgdb] erro ao iniciar Sgdb: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        IndexSnapshotPolicy::Off => match Sgdb::open(storage) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("[neural-sgdb] erro ao iniciar Sgdb: {e}");
+                std::process::exit(1);
+            }
+        },
+    };
+    #[cfg(not(feature = "file-storage"))]
     let mut db = match Sgdb::open(storage) {
         Ok(d) => d,
         Err(e) => {
@@ -1070,7 +1116,7 @@ fn main() {
     let (bin_path, bin_mtime) = binary_runtime_info();
     eprintln!(
         "[neural-sgdb] mcp={MCP_CONTRACT_VERSION} tools={EXPECTED_MCP_TOOL_COUNT} git={BUILD_GIT} \
-         binary={bin_path} mtime={bin_mtime:?} db={db_path} backend={} default_scope={:?}",
+         binary={bin_path} mtime={bin_mtime:?} db={db_path} backend={} default_scope={:?} idx_snapshot={snapshot_policy:?}",
         db.backend(),
         db.default_scope()
     );
@@ -2031,8 +2077,23 @@ fn main() {
                     "audit_checkpoint" => {
                         let now = args["now"].as_u64().unwrap_or(0);
                         match db.audit_checkpoint(now) {
-                            Ok(seq) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("checkpoint seq={seq} anexado ao ledger de auditoria")}],"isError":false}})),
+                            Ok(seq) => {
+                                // ADR-0009 §3: checkpoint é o gancho natural de
+                                // persistência do snapshot (política != off).
+                                let snap_note = if snapshot_policy != IndexSnapshotPolicy::Off {
+                                    match db.persist_index_snapshot(now) {
+                                        Ok(()) => " + snapshot idx persistido",
+                                        Err(e) => {
+                                            eprintln!("[neural-sgdb] snapshot persist falhou: {e}");
+                                            ""
+                                        }
+                                    }
+                                } else {
+                                    ""
+                                };
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                    "content":[{"type":"text","text":format!("checkpoint seq={seq} anexado ao ledger de auditoria{snap_note}")}],"isError":false}}))
+                            }
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
                         }

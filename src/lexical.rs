@@ -94,6 +94,22 @@ impl LexicalIndex {
         self.n_docs as usize
     }
 
+    /// Snapshot das postings em ordem canônica (fast-mount IDX1, v1.1.29).
+    pub(crate) fn snapshot_postings(&self) -> Vec<(String, Vec<(String, u32)>)> {
+        self.postings
+            .iter()
+            .map(|(t, docs)| (t.clone(), docs.iter().map(|(d, f)| (d.clone(), *f)).collect()))
+            .collect()
+    }
+
+    /// Snapshot do doc_len em ordem canônica.
+    pub(crate) fn snapshot_doc_len(&self) -> Vec<(String, u32)> {
+        self.doc_len
+            .iter()
+            .map(|(d, l)| (d.clone(), *l))
+            .collect()
+    }
+
     /// Mistura o estado canônico do índice num hash FNV-1a (v1.1.21, ADR-0011).
     ///
     /// Ordem canônica por construção: `postings` é `BTreeMap<term, BTreeMap<doc,
@@ -116,6 +132,26 @@ impl LexicalIndex {
 
     pub fn is_empty(&self) -> bool {
         self.n_docs == 0
+    }
+
+    // ── restore (fast-mount IDX1, v1.1.29) — só para o caminho do snapshot ──
+
+    /// Restaura UMA posting list (termo → doc→tf) do snapshot. Coletor grava
+    /// em ordem canônica; caller deve usar somente no mount pré-rebuild.
+    pub(crate) fn restore_postings(&mut self, term: String, docs: BTreeMap<String, u32>) {
+        if !docs.is_empty() {
+            self.postings.insert(term, docs);
+        }
+    }
+
+    /// Restaura UMA entrada de doc_len do snapshot.
+    pub(crate) fn restore_doc_len(&mut self, doc: String, len: u32) {
+        self.doc_len.insert(doc, len);
+    }
+
+    /// Restaura o n_docs do snapshot (contrato do idf do BM25).
+    pub(crate) fn restore_n_docs(&mut self, n: u32) {
+        self.n_docs = n;
     }
 
     /// BM25-ish: log-tf × idf, soma por termo da query. Retorna (key, score,
