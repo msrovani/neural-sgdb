@@ -212,11 +212,27 @@ NoProto-inspired do NMD1 (`src/memory_doc.rs`), ART de Leis 2013
   no `bq.rs` (zero-dep, `no_std`-safe com `math.rs`), o BQ flat existente
   não muda (estimador é um SEGUNDO caminho sobre os mesmos bits + escala
   por vetor) e o rescore FP32 final permanece. **Critério de entrada
-  (ambos obrigatórios):** (1) bench A/B contra o ADC-lite nos corpora do
+  (ambos obrigatórios):**  (1) bench A/B contra o ADC-lite nos corpora do
   `bench.rs` (clusters densos + espalhado) mostrar recall@5 do filtro
   **≥ +10 pp**; (2) custo por query **≤ +10%**. Rotação/matriz precisa ser
   determinística por era (mesmo contrato de seeds do LCG). Caso não passe,
   registrado como avaliado-e-rejeitado-com-números.
+  **VEREDITO MEDIDO (2026-09-24, protótipo `src/rabitq.rs` +
+  `examples/bench_rabitq_ab.rs`): REJEITADO — falhou nos DOIS critérios.**
+  No corpus de clusters densos, recall@5 RaBitQ 22–40/78–80% vs ADC-lite
+  35–57/93% (Pior em TODOS os oversamples: −13 pp @ ov=1, −17 @ ov=4,
+  −13..−15 @ ov=16); no espalhado, empate técnico (±1 pp). Custo: ~1.3
+  ms/query vs 27–60 µs do ADC-lite (**~25–45× MAIS LENTO** — o estimador
+  per-bit com clamp/branching não vetORIZA como o Hamming AVX2, e a
+  reconstrução int8 por dim é O(d) em escalar). A correção de bias `proj`
+  não mudou nada (±1 pp). Nota honesta: o protótipo NÃO inclui a rotação
+  aleatória do paper (matriz de Householder por era) — parte do gap de
+  recall pode vir daí; mas o gap de CUSTO (~25×) é estrutural no design
+  escalar sem SIMD dedicado, e implementar kernel SIMD próprio viola o
+  esforço/risco aceitável para o ganho incerto. Protótipo mantido em
+  `src/rabitq.rs` com testes (3) para o registro; não integrado ao core.
+  Reabrir somente com evidência de kernel SIMD barato (popcount-assisted
+  int8) ou dataset onde sign-BQ comprovadamente degrada.
 - ✅ **tickv → nada a portar, problema mapeado para o dono certo**: o
   TickvLite é do repo privado do OS (não há upstream público a seguir).
   O custo real medido é NOSSO: volume append-only domina o open com churn

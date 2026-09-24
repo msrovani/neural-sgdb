@@ -85,6 +85,7 @@ pub mod limits;
 pub mod memory_doc;
 pub mod metrics;
 pub mod negative;
+pub mod rabitq;
 pub mod staleness;
 pub mod storage;
 pub mod tickv;
