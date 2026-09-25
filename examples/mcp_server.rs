@@ -63,11 +63,25 @@ fn load_embedder() -> Option<Box<dyn Embedder>> {
 ///   no `audit_checkpoint` e no encerramento do processo.
 /// - `always`: idem auto (o snapshot é opt-in por existência — sem snapshot
 ///   persistido o open cai para o rebuild de qualquer forma).
+///
+/// v1.2.0 (d) — §5 completo: `auto` agora é METRICS-GATED. O gatilho de
+/// persistência deixa de ser só o checkpoint e passa a considerar o custo
+/// medido: `open_rebuild_ms_last` (o que o próximo restart pagaria) e o nº
+/// de writes desde o último persist (o quão stale o snapshot ficaria).
+/// Regra: persiste quando writes_stale >= MAX(8, open_ms) — com open barato
+/// (< 8 ms) não compensa escrever a cada put; com open caro (>= 100 ms)
+/// persiste a cada ~100 writes. O core NÃO decide: o host mede e age.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum IndexSnapshotPolicy {
     Off,
     Auto,
     Always,
+}
+
+/// Limiar de writes stale desde o último persist, em função do custo medido
+/// de open (ms). Auto-persist do ADR-0009 §5.
+fn idx_snapshot_stale_threshold(open_rebuild_ms: u64) -> u64 {
+    8u64.max(open_rebuild_ms)
 }
 
 fn load_index_snapshot_policy() -> IndexSnapshotPolicy {
@@ -1169,6 +1183,10 @@ fn main() {
     );
 
     let stdin = io::stdin();
+    // v1.2.0 (d): contador de writes desde o último persist do snapshot —
+    // o gatilho metrics-gated do ADR-0009 §5.
+    let mut writes_since_idx_persist: u64 = 0;
+    let open_ms_at_start = db.metrics().open_rebuild_ms_last;
     for line in stdin.lock().lines() {
         let line = match line {
             Ok(l) => l,
@@ -2684,6 +2702,34 @@ fn main() {
                         }
                     }
                     _ => send(&unknown_tool_error(&id, &name)),
+                }
+                // v1.2.0 (d) — ADR-0009 §5: gatilho metrics-gated de
+                // auto-persist do snapshot. Depois de QUALQUER tool que
+                // escreveu (contagem via metrics), se o nº de writes desde o
+                // último persist passou o limiar (função do custo medido de
+                // open), persiste. Falha é log-only: o snapshot é derivado e
+                // o rebuild de fallback é a garantia — nunca quebra o round
+                // trip da tool que só queria escrever.
+                if snapshot_policy != IndexSnapshotPolicy::Off {
+                    let writes_now = db.metrics().memory_writes;
+                    let stale = writes_now.saturating_sub(writes_since_idx_persist);
+                    let threshold =
+                        idx_snapshot_stale_threshold(db.metrics().open_rebuild_ms_last.max(open_ms_at_start));
+                    if stale >= threshold {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as u64)
+                            .unwrap_or(0);
+                        match db.persist_index_snapshot(now) {
+                            Ok(()) => {
+                                writes_since_idx_persist = writes_now;
+                                eprintln!("[neural-sgdb] idx snapshot auto-persist (writes={writes_now}, stale={stale}, threshold={threshold})");
+                            }
+                            Err(e) => {
+                                eprintln!("[neural-sgdb] idx snapshot auto-persist falhou (log-only): {e}");
+                            }
+                        }
+                    }
                 }
             }
             "" => {
