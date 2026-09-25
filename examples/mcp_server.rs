@@ -18,8 +18,9 @@
 use std::io::{self, BufRead, Write};
 
 use neural_sgdb::{
-    CommitFact, CommitRunPlan, CommitSupersede, ContentType, DemoEmbedder, Embedder, MemoryState,
-    RecallPath, ScopeDims, ScopeFilter, Sgdb, DOCTRINE, DOCTRINE_SCOPE,
+    CommitFact, CommitRunPlan, CommitSupersede, ContentType, DemoEmbedder, Embedder,
+    MergeStrategy, MemoryState, RecallPath, ScopeDims, ScopeFilter, Sgdb, TickvFile,
+    DOCTRINE, DOCTRINE_SCOPE,
 };
 // v1.1.28 (ADR-0017): vocabulário ÚNICO prosa/JSON — os dois serializadores
 // consomem as mesmas tabelas; o `{:?}` do Rust sai do wire de vez (D1/D8).
@@ -163,13 +164,20 @@ fn remember_one(
     host: Option<&dyn Embedder>,
 ) -> Result<(neural_sgdb::RememberOutcome, bool), String> {
     let text = params["text"].as_str().unwrap_or("");
-    let key = format!("mcp/{:06}", {
-        let ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0);
-        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        ms * 1000 + seq as u128
+    // v1.2.0 (fork/merge): key EXPLÍCITA opt-in — o host nomeia a memória
+    // (ex.: prefixo do sandbox run p/ promote_run). Default segue gerando.
+    let key = params["key"].as_str().map(String::from).unwrap_or_else(|| {
+        format!(
+            "mcp/{:06}",
+            {
+                let ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0);
+                let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                ms * 1000 + seq as u128
+            }
+        )
     });
     let entities: Vec<&str> = params["entities"]
         .as_array()
@@ -393,7 +401,7 @@ fn error_response(id: &Value, code: i64, message: &str) -> Value {
 
 /// NÃºmero de tools em `tools/list` (aliases antigos ainda funcionam em tools/call).
 const EXPECTED_MCP_TOOL_COUNT: usize = 5;
-const MCP_CONTRACT_VERSION: &str = "1.2.0";
+const MCP_CONTRACT_VERSION: &str = "1.2.1";
 const BUILD_GIT: &str = env!("NEURAL_SGDB_BUILD_GIT");
 
 /// Lista pÃºblica: 4 tools. Os 23 nomes antigos continuam vÃ¡lidos em `tools/call`.
@@ -432,6 +440,7 @@ const ALIAS_SURFACE: &[&str] = &[
     "merge_memories",
     "note_absence",
     "profile",
+    "promote_run",
     "rag_context",
     "recall_absences",
     "recall_ann",
@@ -562,6 +571,7 @@ fn mcp_listed_tools() -> Value {
          "description":"Write. Sem embedding= grava L3 lexical (ADR-0008, nao abre era BQ). embedding= ou NEURAL_SGDB_EMBEDDER=demo → L4. user+response= episodico L2. scope/scope_user/agent/app/run nao vaza no recall global. Devolve storage key + recall_hint.",
          "inputSchema":{"type":"object","properties":{
            "text":{"type":"string"},
+           "key":{"type":"string","description":"key explicita opt-in (ex.: prefixo do sandbox run p/ promote_run). Default: gerada"},
            "user":{"type":"string","description":"Com `response`: episodio L2 verbatim"},
            "response":{"type":"string"},
            "now":{"type":"integer"},
@@ -613,9 +623,9 @@ fn mcp_listed_tools() -> Value {
          }},
          "annotations":{"readOnlyHint":true}},
         {"name":"curate",
-         "description":"Mutacao pontual / grafo L6 + metadado cognitivo. op= explain|reinforce|feedback|forget|expire_old|decay|consolidate|diary|profile|associate|related_to|contradicts|supersede|conflicts|resolve_conflict|merge_memories|audit_checkpoint|audit_verify|rollback_to|set_ttl|expire_ttl|set_event|close_event|timeline|gc|recall_ann|commit_run|deprecate_run. ADR-0010: commit_run/deprecate_run usam scope_run (+ facts/anti_patterns). Use a storage key completa md/L4/.... Nao hoarde: so depois de evidencia.",
+         "description":"Mutacao pontual / grafo L6 + metadado cognitivo. op= explain|reinforce|feedback|forget|expire_old|decay|consolidate|diary|profile|associate|related_to|contradicts|supersede|conflicts|resolve_conflict|merge_memories|audit_checkpoint|audit_verify|rollback_to|set_ttl|expire_ttl|set_event|close_event|timeline|gc|recall_ann|commit_run|deprecate_run|promote_run. ADR-0010: commit_run/deprecate_run usam scope_run (+ facts/anti_patterns). promote_run: merge do sandbox run no escopo base (keys do run com prefixo <run>/; estrategias fail|ours|theirs via merge_strategy; base_dims via base_user/base_agent/base_app). Use a storage key completa md/L4/.... Nao hoarde: so depois de evidencia.",
          "inputSchema":{"type":"object","properties":{
-           "op":{"type":"string","enum":["explain","reinforce","feedback","forget","expire_old","decay","consolidate","diary","profile","associate","related_to","contradicts","supersede","conflicts","resolve_conflict","merge_memories","audit_checkpoint","audit_verify","rollback_to","set_ttl","expire_ttl","set_event","close_event","timeline","gc","recall_ann","commit_run","deprecate_run"]},
+           "op":{"type":"string","enum":["explain","reinforce","feedback","forget","expire_old","decay","consolidate","diary","profile","associate","related_to","contradicts","supersede","conflicts","resolve_conflict","merge_memories","audit_checkpoint","audit_verify","rollback_to","set_ttl","expire_ttl","set_event","close_event","timeline","gc","recall_ann","commit_run","deprecate_run","promote_run"]},
            "key":{"type":"string"},
            "delta":{"type":"number"},
            "positive":{"type":"boolean"},
@@ -650,7 +660,11 @@ fn mcp_listed_tools() -> Value {
            "ttl_episodic_ms":{"type":"integer"},
            "close_event_key":{"type":"string"},
            "audit":{"type":"boolean"},
-           "archive_episodic":{"type":"boolean"}
+           "archive_episodic":{"type":"boolean"},
+           "merge_strategy":{"type":"string","enum":["fail","ours","theirs"]},
+           "base_user":{"type":"string"},
+           "base_agent":{"type":"string"},
+           "base_app":{"type":"string"}
          },"required":["op"]}},
         {"name":"decide",
          "description":"System-One control (ADR-0017): N perguntas com espacos de resposta FECHADOS -> respostas tipadas num round trip (Jev-Mem J(S,Q)). ask=evidence_sufficient (adaptive stop do ADR-0012 como resposta), temporal_relation (before/after/same_time por timestamp), valid_at (janela bi-temporal), candidate_relevance (sinais DECOMPOSTOS: sim_vec, lex_overlap, shared_entities, recency, rrf). Deterministico — o core responde, nunca gera texto.",
@@ -1197,15 +1211,30 @@ fn recall_for_mcp(
 fn main() {
     let db_path = std::env::var("NEURAL_SGDB_DB").unwrap_or_else(|_| "sgdb_memory.db".into());
 
+    // v1.2.1 (passo 1 do plano de otimizações): TickvFile BUFFERED opt-in —
+    // `NEURAL_SGDB_TICKV_BUFFERED=1` + backend tickv. Handle de append
+    // persistente (~23× no write medido no bench_tickv_buffered); flush no
+    // checkpoint/sync_durable. Janela de crash maior (Durability::Buffered
+    // reportado honestamente) — a decisão é do deployment, não do core.
+    #[cfg(feature = "file-storage")]
+    let tickv_buffered = std::env::var("NEURAL_SGDB_TICKV_BUFFERED")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
     // Backend concreto por feature: `FileStorage` (persistente) ou `InMemory`
     // (demo volÃ¡til) â€” `Sgdb::open(impl Storage)` aceita ambos sem boxing.
     #[cfg(feature = "file-storage")]
-    let storage = match FileStorage::open(&db_path) {
-        Ok(s) => s,
-        Err(e) => {
+    let storage: Box<dyn neural_sgdb::Storage> = if db_path.ends_with(".tk") || db_path.ends_with(".tickv") {
+        if tickv_buffered {
+            Box::new(TickvFile::open_buffered(&db_path).expect("open tickv buffered"))
+        } else {
+            Box::new(TickvFile::open(&db_path).expect("open tickv"))
+        }
+    } else {
+        Box::new(FileStorage::open(&db_path).unwrap_or_else(|e| {
             eprintln!("[neural-sgdb] erro ao abrir {db_path}: {e}");
             std::process::exit(1);
-        }
+        }))
     };
 
     #[cfg(not(feature = "file-storage"))]
@@ -1520,47 +1549,10 @@ fn main() {
                             send(&error_response(&id, -32602, "parametro 'text' obrigatorio"));
                             continue;
                         }
-                        let key = format!("mcp/{:06}", {
-                            let ms = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map(|d| d.as_millis())
-                                .unwrap_or(0);
-                            let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            ms * 1000 + seq as u128
-                        });
-                        let entities: Vec<&str> = args["entities"]
-                            .as_array()
-                            .map(|a| a.iter().filter_map(|e| e.as_str()).collect())
-                            .unwrap_or_default();
-                        let scope_explicit = args["scope"].as_str();
-                        let scope_resolved = db.resolve_scope_param(scope_explicit);
-                        let opts = neural_sgdb::RememberOptions {
-                            scope: Some(scope_resolved.as_str()),
-                            entities: &entities,
-                            content_type: args["type"].as_str(),
-                            scope_dims: neural_sgdb::ScopeDims::from_args(
-                                args["scope_user"].as_str(),
-                                args["scope_agent"].as_str(),
-                                args["scope_app"].as_str(),
-                                args["scope_run"].as_str(),
-                            ),
-                            model_id: args["model_id"].as_str(),
-                        };
-                        let semantic = has_caller_embedding(args) || embedder.is_some();
-                        let written = if semantic {
-                            match embed_for(embedder.as_deref(), text, args) {
-                                Ok(emb) => db.remember_semantic_with(&key, text, &emb, opts),
-                                Err(e) => {
-                                    send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                        "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}}));
-                                    continue;
-                                }
-                            }
-                        } else {
-                            db.remember_text_with(&key, text, opts)
-                        };
-                        match written {
-                            Ok(out) => {
+                        // v1.2.0: single remember delega ao MESMO remember_one
+                        // do batch (regra copiada diverge — lição v1.1.25).
+                        match remember_one(&mut db, args, embedder.as_deref()) {
+                            Ok((out, semantic)) => {
                                 let indexed = if semantic { "semantic" } else { "lexical" };
                                 let structured = json!({
                                     "storage_key": out.storage_key,
@@ -1579,7 +1571,7 @@ fn main() {
                                     mcp_tool_result(&prose, structured, false)}));
                             }
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
+                                "content":[{"type":"text","text":e}],"isError":true}})),
                         }
                     }
                     "remember_episodic" => {
@@ -2543,6 +2535,46 @@ fn main() {
                                     mcp_tool_result(&text, json!({
                                         "archived": r.archived,
                                         "ttl_set": r.ttl_set
+                                    }), false)}));
+                            }
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
+                        }
+                    }
+                    "promote_run" => {
+                        // fork/merge de memória (seekdb-analysis item 1): o
+                        // sandbox run é promovido ao escopo base. O core
+                        // reporta; o host escolhe a estratégia de conflito.
+                        let filter = mcp_scope_filter(args);
+                        let base_dims = ScopeDims::from_args(
+                            args["base_user"].as_str(),
+                            args["base_agent"].as_str(),
+                            args["base_app"].as_str(),
+                            args["scope_run"].as_str(),
+                        )
+                        .unwrap_or_default();
+                        let strategy = match args["merge_strategy"].as_str() {
+                            Some("ours") => MergeStrategy::Ours,
+                            Some("theirs") => MergeStrategy::Theirs,
+                            _ => MergeStrategy::Fail,
+                        };
+                        match db.promote_run(&filter, &base_dims, strategy) {
+                            Ok(r) => {
+                                let text = format!(
+                                    "promote_run: promoted={} deduped={} conflicts={} kept={} (strategy={})\n{}",
+                                    r.promoted.len(),
+                                    r.deduped,
+                                    r.conflicts.len(),
+                                    r.conflicts_kept.len(),
+                                    args["merge_strategy"].as_str().unwrap_or("fail"),
+                                    r.promoted.iter().map(|k| format!("- {k}")).collect::<Vec<_>>().join("\n")
+                                );
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":
+                                    mcp_tool_result(&text, json!({
+                                        "promoted": r.promoted,
+                                        "deduped": r.deduped,
+                                        "conflicts": r.conflicts,
+                                        "conflicts_kept": r.conflicts_kept
                                     }), false)}));
                             }
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{

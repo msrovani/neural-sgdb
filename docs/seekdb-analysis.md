@@ -112,3 +112,111 @@ commit_run + DAG) e só precisa de um harness de merge. Prioridade:
 Fontes: github.com/oceanbase/seekdb (README), en.oceanbase.com/blog/23848834048
 (lançamento), zread.ai/oceanbase/seekdb (arquitetura: Change Stream,
 two-level HNSW, FORK DATABASE).
+
+## Plano priorizado — ideias de maior valor (pós-v1.2.0)
+
+Ordenação por valor/custo, respeitando a lição da casa: **mede antes de
+construir o instrumento**.
+
+### Gap 0 — P99 write+search concorrente (o gap exposto, primeiro) — **MEDIDO (2026-09-25)**
+
+Implementado: `examples/bench_concurrent.rs` (TickvFile, engine único sob
+Mutex, writers `remember_text_with` + readers `recall_lexical`, 8s).
+
+| fase | ops/s | P50 | P90 | P99 | P99.9 | jitter (P99/P50) |
+|---|---|---|---|---|---|---|
+| write  | ~210 | ~0.5 ms | ~0.7 ms | ~20 ms | ~1.2 s | ~38× |
+| recall | ~160 | ~0.9 ms | ~1.5 ms | ~92 ms | ~1.0 s | ~108× |
+
+**Veredito: o nsgdb NÃO tem P99 flat** — a mediana é ótima (sub-ms), mas o
+tail paga o Mutex contencioso + flush do TickvFile (spikes de 20–100 ms e
+cola de ~1 s). O claim do seekdb (P99 21,7 ms @ 1.523 QPS, jitter 1,1×)
+soa hoje como distantíssimo — eles têm throughput ~8× maior com tail 5×
+menor. Causas candidatas, a medir antes de qualquer fix: (a) lock global
+serializa tudo (o single-writer é arquitetural, não incidental); (b)
+fsync/append do TKLV no caminho de write; (c) auto-persist metrics-gated
+do v1.2.0 pisando no tail. Isto é o achado honesto que o "mede antes de
+construir" pedia: **a arquitetura ADD-only não compra P99 flat de graça**
+— o que ela compra é simplicidade e write→search imediato, que a medição
+confirma (P50 sub-ms em ambas as fases).
+
+Nota metodológica: o bench compartilha UM engine sob Mutex (modelo MCP
+real). O comparável do seekdb é server multi-session; um pool de engines
+só seria possível com sharding por scope — não existe hoje.
+
+O claim central do seekdb é P99 flat (21,7 ms @ 1.523 QPS). O nsgdb nunca
+mediu o seu — e a matriz de testes toda é single-thread/single-writer.
+Sem esse número, qualquer comparação com seekdb é retórica. **Ação:**
+`examples/bench_concurrent.rs` — pool de writers (remember_exchange/
+remember_text_with) + readers (recall_lexical/recall) sobre TickvFile,
+P50/P99 de recall sob write contínuo. Estimativa **S**, risco baixo.
+**Resultado possível:** o single-writer do MCP provavelmente NÃO tem P99
+flat sob escrita concorrente — e isso é um achado honesto que define se
+os itens seguintes valem o custo. Medir antes de construir.
+
+### 1. Fork/merge de memória por scope run (valor alto, ~80% construído) — **FEITO (v1.2.1)**
+
+Implementado: `Sgdb::promote_run(filter, base_dims, MergeStrategy)` + MCP
+`curate op=promote_run` (`merge_strategy=fail|ours|theirs`) + `remember(key=)`
+explícita (o host nomeia a key do run). 6 testes de lib; hot test fase 6e
+(150/0). Aderência preservada: ADD-only intacta, core reporta / host decide.
+
+A feature-assinatura do seekdb (FORK DATABASE / MERGE TABLE / DROP)
+mapéa no nsgdb com primitivos que já existem: `ScopeDims.run` = branch,
+`curate op=commit_run` = merge (hoje só arquiva episódicos),
+`scopes_to_probe_dims` = descoberta, `scan_prefix`+`delete` = drop.
+**Falta:** (a) modo "promover" no commit_run — replay dos L3/L4 do run
+no escopo base com estratégia THEIRS/OURS/FAIL como POLÍTICA do host
+(outra coisa: o core reporta o veredito do clock, nunca decide);
+(b) bootstrap documentado do fluxo sandbox→merge no MCP. Estimativa
+**S–M**, risco baixo (ADD-only intacta, formato intacto). É o item que
+fecha o único diferencial genuíno do seekdb contra nós.
+
+### 2. P2 — levar o resultado do Gap 0 ao BENCHMARKS.md e ao landscape
+
+Com o número medido: atualizar `BENCHMARKS.md` com a seção de
+concorrência e `docs/memory-landscape.md` com a linha do seekdb (ele
+entra como primeiro competidor banco-nativo, não camada). Estimativa
+**S** (docs), condicionada ao Gap 0.
+
+### 3. Delta BQ two-level (valor médio, condicionado a medição) — **MEDIDO: NÃO VALE**
+
+**Veredito medido (2026-09-25, `examples/bench_long_db.rs`, 256-dim,
+FileStorage, 50% deletes):** os órfãos do BQ custam ~0 no recall —
+com-órfãos ≈ pos-reclaim ≈ pos-rebuild dentro do ruído em N=2k, 20k e
+60k (ex.: 60k: P50 697µs vs 694µs vs 701µs; os órfãos foram só 48 porque
+o reclaim de threshold 64 dispara sozinho no caminho do `delete`). O
+`reclaim_bq_orphans(0)` completo custou 2,3 ms em 60k. **O delta BQ
+two-level está REJEITADO por medição** — o recall pula órfão em O(1)
+como o design prometia; não há scan de inertes a amortizar.
+
+**Achado REAL da medição (mais valioso que o item 3): o DELETE é O(N)**
+(`examples/bench_delete_cost.rs`): 0,31 → 0,67 → 1,86 ms/delete com
+N=5k/10k/20k (linear em N, constante no D). Causa: `engine::delete`
+varre o `clock_index` INTEIRO por delete
+(`clock_index.iter().filter(...)` procurando a sk morta). O
+bench_long_db mediu 30k deletes em 265 s (8,8 ms/delete @ N=60k) — o
+delete é ~240× mais caro que o write (~37 µs/doc) e DOMINA workloads de
+churn, não os órfãos do BQ. **Fix proposto (M, aditivo, sem quebrar
+formato): índice reverso `sk → Vec<(u8, u64)>` preenchido no
+`index_doc` (o relógio já está em mãos lá), consultado no `delete`;
+drop/rebuild segue igual.** Substitui o item 3 na fila.
+**FEITO ainda em v1.2.1** — e a implementação achou DOIS outros O(N) no
+mesmo delete (`entity_index` scan e `id_to_sk` scan), os três trocados por
+reversos. Resultado: 30k deletes @ 60k docs caíram de 265 s para 43 s
+(~6×); por delete 1,86→0,72 ms @ 20k. Ver BENCHMARKS.md.
+
+### Ordem de execução
+
+```
+Gap 0 (bench_concurrent, S)   — FEITO: P99 NÃO flat (BENCHMARKS.md)
+  ├─ item 1 (fork/merge, S–M) — FEITO: v1.2.1
+  ├─ item 2 (docs)            — FEITO: landscape + README
+  └─ item 3 (delta BQ, M)     — REJEITADO por medição; o achado real é
+                                o delete O(N) via clock_index (bench
+                                delete_cost) — índice reverso é o novo item
+```
+
+Total do lote: **~1 sprint (S–M)**. Nada muda formato (NMD1/TKLV
+intactos); o bump de contrato esperado é minor (nova superfície no
+`curate`, pin no mcp_client no mesmo commit).

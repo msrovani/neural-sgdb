@@ -1,7 +1,7 @@
 ﻿# neural-sgdb — API Contract
 
 > Contract document for the extraction of the SGDB core from neural-os-core.
-> Status: **current public contract (crate v1.2.0)** —
+> Status: **current public contract (crate v1.2.1)** —
 > this document is the current public contract; roadmap items are explicitly
 > marked as such. The internal API lives in `crates/k_ai/src/sgdb/` of the
 > parent OS; this doc defines the public surface the community crate exposes
@@ -367,7 +367,30 @@ código, binários). Duas regras tornam o consumo determinístico:
 ## Additive public surface (v1.1.2–v1.1.26)
 
 Everything below is **additive** (MINOR per VERSIONING.md) — no signature of a
-v1.0 method changed; crate version **1.2.0** in `Cargo.toml`. Key additions since the contract above:
+v1.0 method changed; crate version **1.2.1** in `Cargo.toml`. Key additions since the contract above:
+
+```rust
+// ---- fork/merge de memória (v1.2.1, seekdb item 1; src/harness.rs) ----
+pub enum MergeStrategy { Fail, Ours, Theirs }
+pub struct PromoteRunReport {
+    pub promoted: Vec<String>,   // storage keys promovidas (re-escopadas p/ base)
+    pub deduped: usize,          // texto idêntico no base: no-op sem version bump
+    pub conflicts: Vec<String>,  // resolvidos com a estratégia (Ours)
+    pub conflicts_kept: Vec<String>, // THEIRS: ficaram no run
+}
+impl Sgdb {
+    /// Promove memórias ATIVAS do run (sandbox) ao escopo base. Convenção:
+    /// keys do run = `<run>/<base>` (prefixo revertido no merge). Episódicos
+    /// L2 `/ts/` nunca são promovidos. Requer filter e base_dims não-globais.
+    pub fn promote_run(
+        &mut self,
+        filter: &ScopeFilter,
+        base_dims: &ScopeDims,
+        strategy: MergeStrategy,
+    ) -> Result<PromoteRunReport, SgdbError>;
+}
+// MCP: curate op=promote_run (merge_strategy=fail|ours|theirs; base_user/agent/app)
+// remember aceita key= explícita opt-in (ex.: prefixo do sandbox run).
 
 ```rust
 // ---- S1: recall is LOUD on dimension mismatch (v1.1.3) ----

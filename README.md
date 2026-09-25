@@ -36,17 +36,24 @@ filesystem, no external runtime.
 
 ## Status
 
-**v1.1.26** — substrate **agêntico** (MCP 5 tools contract **1.2.0**, doutrina,
+**v1.2.1** — substrate **agêntico** (MCP 5 tools contract **1.2.1**, doutrina,
 hits tipados, TTL/GC, timeline, ANN) + **ADC-lite** + telepatia **2-DB** +
 **host harvest** + **ADR-0010 harness** (`commit_run` / `deprecate_run` /
-`mom/anti-pattern`) + **null-scoping `ScopeDims`** + **integridade do índice
+**`promote_run`** — fork/merge de memória por scope run, `mom/anti-pattern`) +
+**null-scoping `ScopeDims`** + **integridade do índice
 derivado** (`index_fingerprint`, ADR-0011) + **recall adaptativo** (ADR-0012) +
-**`ScopeDims` autoritativo** (ADR-0013) e **ledger de negativos** (ADR-0014).
-Extensão de browser / Store **estacionadas**. Crate em `Cargo.toml`: **1.2.0**. 
+**`ScopeDims` autoritativo** (ADR-0013), **ledger de negativos** (ADR-0014),
+**batch write + dedup guard** (`memories[]`, `if_exists`) e **write path
+agêntico** (v1.2.0). Extensão de browser / Store **estacionadas**. Crate em
+`Cargo.toml`: **1.2.1**. 
 
-- `cargo test --lib` on host: **339** (p2p **385**, no_std **283**)
-- hot test MCP: **119/0**; `agent_protocol`: **25/0**
+- `cargo test --lib` on host: **368** (p2p **414**, no_std **306**)
+- hot test MCP: **150/0**; `agent_protocol`: **25/0**
 - `cargo check --no-default-features --target x86_64-unknown-none`: **clean**
+- **Concorrência** (`bench_concurrent`, Gap 0 do seekdb): mediana sub-ms em
+  write E recall (write→search imediato confirmado), P50 write ~0.5 ms /
+  recall ~0.9 ms; P99 não-flat (Mutex global + flush TKLV) — honesto e
+  instrumentado, ver [`BENCHMARKS.md`](BENCHMARKS.md)
 - Playbooks: [`docs/agent-self-program.md`](docs/agent-self-program.md),
   [`docs/harness-prompts.md`](docs/harness-prompts.md),
   [`docs/interop-os.md`](docs/interop-os.md) (NMD1/TKLV ↔ neural-os-core)
@@ -201,7 +208,7 @@ lists conflicts / superseded / unseen scopes.
 
 Host adapters for claw-like apps (Hermes provider, OpenClaw skeleton, shared
 MCP client) live in [`connectors/`](connectors/README.md) — **outside** crate
-SemVer; `crates/nsgdb-embed` (LocalEmbedder 384-dim, `cargo run --manifest-path crates/nsgdb-embed/Cargo.toml --example demo`) and `crates/nsgdb-wasm` (`Storage` stub) are host crates — core SemVer = `Cargo.toml` (**1.2.0**).
+SemVer; `crates/nsgdb-embed` (LocalEmbedder 384-dim, `cargo run --manifest-path crates/nsgdb-embed/Cargo.toml --example demo`) and `crates/nsgdb-wasm` (`Storage` stub) are host crates — core SemVer = `Cargo.toml` (**1.2.1**).
 Protocolo do agente: `examples/agent_protocol.rs` (25 checks), `two_ai_protocol.rs` (16), `memory_arena_eval.rs`. Fim de tarefa: `curate(op=commit_run)` (ADR-0010).
 
 ### Cursor (Windows)
@@ -245,6 +252,18 @@ or see [`examples/embedder_http.rs`](examples/embedder_http.rs).
 See **[`BENCHMARKS.md`](BENCHMARKS.md)** for methodology, measured environment,
 per-run tables and honest caveats (this README no longer embeds raw numbers to
 avoid stale/unreproducible claims).
+
+Concurrent write+search (`cargo run --release --example bench_concurrent`):
+median sub-ms on both write and recall (write→search immediacy, confirmed);
+the P99 is **not** flat (global Mutex + TKLV flush) — numbers and honest
+verdict in BENCHMARKS.md.
+
+Positioning: the first **database-native** competitor targeting the same
+"state store for AI agents" audience is [seekdb](https://github.com/oceanbase/seekdb)
+(OceanBase). Comparison, measured gaps and what was adopted (fork/merge of
+memory → `promote_run`, v1.2.1) in
+[`docs/memory-landscape.md`](docs/memory-landscape.md) and
+[`docs/seekdb-analysis.md`](docs/seekdb-analysis.md).
 
 ## Docs
 

@@ -10420,4 +10420,45 @@ mod tests {
         let auto = db.recall_oversampled(&q, 5, 16).unwrap();
         assert_eq!(keys_of(&d1), keys_of(&auto));
     }
+
+
+    #[test]
+    fn delete_is_o1_via_reverse_clock_index() {
+        // v1.2.1 (achado bench_delete_cost): o delete era O(clock_index) por
+        // operação. MUTAÇÃO: removido o sk_clocks, o teste falha por custo
+        // (300 deletes sobre clock_index de 300+ entries = varredura O(N·D))
+        // e pela asserção de invariante abaixo.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let mut keys = alloc::vec::Vec::new();
+        for i in 0..300u64 {
+            let k = alloc::format!("del-test/{i:06}");
+            db.remember_text_with(&k, &alloc::format!("doc {i} x"), RememberOptions::default()).unwrap();
+            keys.push(alloc::format!("md/L3/{}", k));
+        }
+        // Invariante: o reverso enxerga as MESMAS entries que o clock_index.
+        {
+            let eng = &db.engine;
+            for (sk, entries) in eng.sk_clocks.iter() {
+                for &(n, c) in entries {
+                    assert!(
+                        eng.clock_index.get(&(n, c)).map(|v| v.iter().any(|k| k == sk)).unwrap_or(false),
+                        "reverso tem ({n},{c}) p/ {sk} mas clock_index não"
+                    );
+                }
+            }
+        }
+        // keys_for_clock funciona (anti-entropy não quebrou).
+        assert!(!db.keys_for_clock(1, 1).is_empty() || !db.keys_for_clock(1, 2).is_empty());
+        // Deleta TODOS os docs; ao final o clock_index deve ficar vazio.
+        for k in &keys {
+            assert!(db.delete(k).unwrap());
+        }
+        {
+            let eng = &db.engine;
+            assert!(eng.sk_clocks.is_empty(), "reverso deve esvaziar");
+            assert!(eng.clock_index.is_empty(), "clock_index deve esvaziar (sem entradas órfas)");
+        }
+        // E o delete continua funcionando no banco vazio (idempotente).
+        assert!(!db.delete(&keys[0]).unwrap());
+    }
 }

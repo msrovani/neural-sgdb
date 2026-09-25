@@ -6,19 +6,20 @@ repo. **Read `codemap.md` (atlas), `docs/api.md` (contract) and
 Storage, Cognitive API; typed hits from v1.1.6; current crate = `Cargo.toml`) and
 `docs/implementation-status.md` before editing code.**
 
-**Shipped crate is 1.2.0 (agentic MCP contract 1.2.0, hot test 146/0):** Vocabulário ÚNICO
+**Shipped crate is 1.2.1 (agentic MCP contract 1.2.1, hot test 150/0):** Vocabulário ÚNICO
 prosa/JSON (ADR-0017: `{:?}` fora do wire; tool `decide` 𝒥(S,𝒬) = 5º tool;
 `recall_candidates` sinais decompostos; validate tipado; k=0 erro). `Hit.type_scores`
 = **ADR-0016** (episódico/semântico/procedural/preferência sobrepostos,
 derivados na leitura de layer+entities, nunca persistidos — Jev-Mem). MCP lists **5 tools**
-(`remember`/`recall`/`health`/`curate`; **38** alias names live in
+(`remember`/`recall`/`health`/`curate`; **40** alias names live in
 `ALIAS_SURFACE` em `examples/mcp_server.rs` — tabela pinada por teste, não prosa).
 `curate` ganhou ops de metadado cognitivo (decay/consolidate/audit_checkpoint/
-audit_verify/rollback_to) e harness ADR-0010 (`commit_run`/`deprecate_run`).
+audit_verify/rollback_to) e harness ADR-0010 (`commit_run`/`deprecate_run`/
+`promote_run` — fork/merge de memória por scope run, v1.2.1).
 Default retrieval is **lexical**. Unset `NEURAL_SGDB_EMBEDDER` = none;
 `=demo` only if requested (não setar no `mcp.json` global). `remember(text=)`
 without a vector → L3 (`remember_text_with`). Resources: `nsgdb://doctrine` +
-`nsgdb://session`. Hot test **119/0**. Lib tests **342+1 / 388+1 / 286+1**
+`nsgdb://session`. Hot test **150/0**. Lib tests **370+1 / 416+1 / 307+1**
 (default / p2p / no_std). Bump `MCP_CONTRACT_VERSION` ⇒ pin `mcp_client`
 `serverInfo.version` no mesmo commit (senão hot test falha). **v1.1.17:**
 ADC-lite dual-path + state-first ranking (`corpus_mean`, `bq_top_k_f32_dual`);
@@ -617,6 +618,57 @@ um campo visível mudou).
   asserção exata; restaurada, passa. Regra de casa: teste de fix de tipo/contrato
   só vale depois de provar que ele morre sem o fix.
 - Matrix: **339+1 / 385+1 / 283+1**; hot test **110/0**.
+
+## Post-release v1.2.1 (fork/merge de memória — seekdb item 1, 2026-09-25)
+
+Item 1 do plano seekdb (`docs/seekdb-analysis.md`). Contrato MCP → **1.2.1**.
+Matriz **370+1 / 416+1 / 307+1**; hot test **150/0** (fase 6e fork/merge).
+
+## Post-v1.2.1 batch (otimizações medidas, 2026-09-25)
+
+Após o fork/merge, o lote de otimizações apontado pelos benches (tudo
+medido, nada especulativo):
+
+- **Delete O(1) — três índices reversos** (o achado maior da sessão):
+  `engine::delete` varria `clock_index` + `entity_index` + `id_to_sk`
+  INTEIROS por delete (3 × O(N)). Reversos: `sk_clocks` (sk → clock
+  entries, preenchido no `index_doc` junto do forward),
+  `remove_entities_exact` (entidades da própria meta — ela já é lida no
+  delete) e `sk_ids` (sk → ids; overwrites podem ter >1 id). 30k deletes
+  @ 60k docs: **265 s → 43 s (~6×)**. Teste
+  `delete_is_o1_via_reverse_clock_index` (invariante reverso ⊆ forward +
+  índices esvaziam após delete total). `keys_for_clock` intocado.
+- **`impl Storage for Box<dyn Storage>`** — forward impl (hosts que
+  escolhem backend em runtime; o MCP agora usa `Box<dyn Storage>`).
+- **TickvFile buffered no MCP** — `NEURAL_SGDB_TICKV_BUFFERED=1` +
+  db `.tk`/`.tickv` = `open_buffered` (~23× no write). Default `.db` =
+  FileStorage inalterado.
+- **bench_concurrent passo 0** — lock-wait vs op-time: tail P99 é
+  OP-TIME (lock-wait ~0,2 µs); refactor de lock seria esforço perdido.
+- Lição de sessão: um bench que "não vale" (delta BQ rejeitado) pode
+  esconder o achado real (delete O(N)) — medir SEMPRE antes de descartar.
+
+- **`Sgdb::promote_run(filter, base_dims, strategy)`** — o MERGE do
+  fork/merge: promove memórias ATIVAS do run (sandbox) ao escopo base.
+  Convenção de identidade: keys do run derivam da base por prefixo
+  `<run>/` (`base_key_of` reverte; keys sem o prefixo NÃO são
+  promovidas). Key nova → escreve re-escopada (run vazio); texto igual →
+  dedup sem version bump; texto diferente → estratégia do host
+  (`Fail` recusa em voz alta / `Ours` run vence, overwrite preserva
+  memory_id / `Theirs` base vence, fica no run em `conflicts_kept`).
+  ADD-only preservada; core reporta, nunca decide.
+- **Gotchas pegos**: (1) `doc.key` é a key CRUA (sem `md/L{N}/`) — o
+  `engine.put` monta o storage key sozinho; passar o sk completo gerava
+  `md/L3/md/L3/...`; (2) companion copy: L3 não tem companion — copiar o
+  próprio doc com layer L2 não trocada gravava em cima do primário;
+  agora só L4/L5 copiam companion (com `cd.layer` setado); (3) o handler
+  single do `remember` duplicava a lógica do batch — delegou ao
+  `remember_one` (lição v1.1.25); (4) `SgdbError::Invalid` é
+  `&'static str` — mensagens estáticas, sem format!.
+- **Gap 0 (bench_concurrent)** fechado antes: P50 sub-ms, **P99 NÃO é
+  flat** (Mutex global + flush TKLV). Números no BENCHMARKS.md.
+- **`remember` aceita `key=` explícita** (opt-in; default gera `mcp/…`).
+- **`Storage: Send`** (1 linha) — exigido pelo bench concorrente.
 
 ## Post-release v1.2.0 (agentic write path + fast-mount sem teto, 2026-09-25)
 

@@ -69,6 +69,49 @@ pub struct DeprecateRunReport {
     pub ttl_set: usize,
 }
 
+/// Estratégia de conflito do [`Sgdb::promote_run`] (seekdb FORK/MERGE,
+/// mapeada para scopes — o core reporta, o host escolhe via este enum).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MergeStrategy {
+    /// Base já tem memória com a MESMA key e texto DIFERENTE → erro (nada é
+    /// escrito; o host decide manualmente).
+    #[default]
+    Fail,
+    /// Run vence: o texto do run SOBRESCREVE o payload do primário do base
+    /// (overwrite preserva memory_id — identidade estável).
+    Ours,
+    /// Base vence: memória conflitante do run fica no run (não promovida),
+    /// listada em `report.conflicts_kept`.
+    Theirs,
+}
+
+/// Relatório de [`Sgdb::promote_run`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PromoteRunReport {
+    /// Storage keys promovidas (re-escopadas para o base).
+    pub promoted: Vec<String>,
+    /// Memórias idênticas no base — dedup, sem version bump.
+    pub deduped: usize,
+    /// Conflitos resolvidos com a estratégia (Ours/THEIRS), por key.
+    pub conflicts: Vec<String>,
+    /// THEIRS: keys que ficaram no run (base vence).
+    pub conflicts_kept: Vec<String>,
+}
+
+/// Extrai a key BASE (a parte da chave, SEM `md/L{N}/`) de um sk do run:
+/// o layout comum é `md/L{N}/<run>/<base>`; remove o prefixo do run. O host
+/// escreve no run com keys derivadas da base por convenção — o promote
+/// reverte. (O sk base completo é `md/{layer}/{base}`.)
+fn base_key_of(sk: &str, run: &str) -> Option<String> {
+    let rest = sk.strip_prefix("md/")?;
+    let (_layer, key) = rest.split_once('/')?;
+    let base = key.strip_prefix(run)?.strip_prefix('/')?;
+    if base.is_empty() {
+        return None;
+    }
+    Some(String::from(base))
+}
+
 /// Null-scoping-aware filter match (same rule as recall_*_dims).
 pub(crate) fn dims_pass_filter(dims: &ScopeDims, filter: &ScopeFilter) -> bool {
     if filter.is_global_only() {
@@ -185,6 +228,154 @@ impl Sgdb {
             report.audit_seq = Some(seq);
         }
 
+        Ok(report)
+    }
+
+    /// ADR-0010 + seekdb-analysis item 1: PROMOVE as memórias ATIVAS de um
+    /// run (sandbox) para o escopo base — o MERGE do fork/merge de memória.
+    ///
+    /// Regras (ADD-only preservada; o core reporta, nunca inventa):
+    /// - Só memórias ATIVAS do filter (L3 fatos e primários L4/L5; companions
+    ///   L2 `/ts/` episódicos NÃO são promovidos — são ruído do sandbox).
+    /// - Mesma key + texto igual no base → dedup (no-op).
+    /// - Mesma key + texto diferente → estratégia (`Fail`/`Ours`/`Theirs`).
+    /// - Key nova → re-escope dims para o base e promove.
+    ///
+    /// Convenção de identidade: as keys do run derivam da base por prefixo
+    /// `<run>/` (ex.: base `md/L3/adr-0001` ⇒ run `md/L3/r-42/adr-0001`);
+    /// `base_key_of` reverte. Keys sem o prefixo são promovidas verbatim.
+    ///
+    /// Requer filter não-global (nunca "promove" o universo inteiro).
+    pub fn promote_run(
+        &mut self,
+        filter: &ScopeFilter,
+        base_dims: &ScopeDims,
+        strategy: MergeStrategy,
+    ) -> Result<PromoteRunReport, SgdbError> {
+        if filter.is_global_only() {
+            return Err(SgdbError::Invalid(
+                "promote_run requires a non-empty ScopeFilter (typically run=...)",
+            ));
+        }
+        // O run não pode ser o próprio base (dims vazias = global).
+        if base_dims.is_global() {
+            return Err(SgdbError::Invalid(
+                "promote_run requires non-empty base_dims (the sandbox must differ from the base)",
+            ));
+        }
+        let run = base_dims.run.as_str();
+        if run.is_empty() {
+            return Err(SgdbError::Invalid(
+                "promote_run: base_dims.run identifies the sandbox run",
+            ));
+        }
+
+        // Fonte: scan de L3 + L4 + L5, filtra por dims e estado Active.
+        let mut source: Vec<String> = Vec::new();
+        for prefix in ["md/L3/", "md/L4/", "md/L5/"] {
+            let rows = self.engine.scan_prefix_storage(prefix.as_bytes())?;
+            for (k, _) in rows {
+                let sk = String::from_utf8_lossy(&k).into_owned();
+                if base_key_of(&sk, run).is_none() {
+                    continue; // convenção: só keys com prefixo do run
+                }
+                if self.engine.get_state(&sk) != MemoryState::Active {
+                    continue;
+                }
+                let dims = self.engine.effective_scope_dims(&sk);
+                if dims_pass_filter(&dims, filter) {
+                    source.push(sk);
+                }
+            }
+        }
+        source.sort();
+
+        // Base dims do merge: mesmas dims SEM o run (sandbox → base).
+        let mut target_dims = base_dims.clone();
+        target_dims.run = alloc::string::String::new();
+
+        let mut report = PromoteRunReport::default();
+        for sk in source {
+            // bk = key crua do base (sem md/L{N}/); bsk = storage key completa.
+            let Some(bk) = base_key_of(&sk, run) else { continue };
+            let layer = sk
+                .strip_prefix("md/")
+                .and_then(|r| r.split_once('/'))
+                .map(|(l, _)| String::from(l))
+                .unwrap_or_default();
+            let bsk = alloc::format!("md/{layer}/{bk}");
+            let run_text = self.text_of(&sk)?;
+            // Companion do run acompanha a promoção (identidade de texto).
+            let run_companion = sk
+                .replacen("/L4/", "/L2/", 1)
+                .replacen("/L5/", "/L2/", 1);
+            let base_companion = alloc::format!("md/L2/{bk}");
+
+            match self.engine.get_by_storage_key(&bsk) {
+                Ok(Some(_)) => {
+                    let base_text = self.text_of(&bsk)?;
+                    if base_text == run_text {
+                        report.deduped += 1;
+                        continue;
+                    }
+                    match strategy {
+                        MergeStrategy::Fail => {
+                        return Err(SgdbError::Invalid(
+                            "promote_run conflict: base and run texts differ (strategy=fail; resolve manually or use ours/theirs)",
+                        ));
+                        }
+                        MergeStrategy::Ours => {
+                            // Run vence: copia payload+layer do doc do run
+                            // por cima do primário do base (overwrite preserva
+                            // memory_id e a identidade do criador).
+                            let mut doc = self
+                                .engine
+                                .get_by_storage_key(&sk)?
+                                .ok_or(SgdbError::Invalid("promote_run: source vanished"))?;
+                            doc.key = bk.clone();
+                            self.engine.put(doc)?;
+                            self.set_scope_dims(&bsk, &target_dims)?;
+                            report.conflicts.push(bsk.clone());
+                            report.promoted.push(bsk.clone());
+                        }
+                        MergeStrategy::Theirs => {
+                            // Base vence: fica no run.
+                            report.conflicts_kept.push(bsk.clone());
+                        }
+                    }
+                }
+                Ok(None) => {
+                    // Key nova no base: escreve o doc do run sob a base key e
+                    // re-escope. O companion L2 é copiado para o texto
+                    // permanecer legível no base.
+                    let mut doc = self
+                        .engine
+                        .get_by_storage_key(&sk)?
+                        .ok_or(SgdbError::Invalid("promote_run: source vanished"))?;
+                    doc.key = bk.clone();
+                    self.engine.put(doc)?;
+                    self.set_scope_dims(&bsk, &target_dims)?;
+                    // Companion L2 só existe para primários L4/L5 (payload de
+                    // embedding): copia para o texto permanecer legível no
+                    // base. L3 é texto direto — sem companion.
+                    if (sk.contains("/L4/") || sk.contains("/L5/"))
+                        && self.engine.get_by_storage_key(&run_companion)?.is_some()
+                        && self.engine.get_by_storage_key(&base_companion)?.is_none()
+                    {
+                        let mut cd = self
+                            .engine
+                            .get_by_storage_key(&run_companion)?
+                            .ok_or(SgdbError::Invalid("promote_run: companion vanished"))?;
+                        cd.layer = crate::memory_doc::MemoryLayer::L2EpisodicShort;
+                        cd.key = bk.clone();
+                        self.engine.put(cd)?;
+                        self.set_scope_dims(&base_companion, &target_dims)?;
+                    }
+                    report.promoted.push(bsk.clone());
+                }
+                Err(e) => return Err(e),
+            }
+        }
         Ok(report)
     }
 
@@ -699,6 +890,146 @@ mod tests {
             .recall_lexical_dims("xyzzy-harness-unique-token", 5, &run_filter("null-s"))
             .unwrap();
         assert_eq!(s.len(), 1);
+    }
+
+    // ── promote_run (fork/merge de memória, seekdb-analysis item 1) ────
+
+    const BASE_DIMS: fn(&str) -> ScopeDims = |run: &str| ScopeDims {
+        run: alloc::string::String::from(run),
+        ..ScopeDims::new()
+    };
+
+    fn write_run_fact(db: &mut Sgdb, run: &str, key: &str, text: &str) -> String {
+        let dims = BASE_DIMS(run);
+        let out = db
+            .remember_text_with(
+                &alloc::format!("{run}/{key}"),
+                text,
+                RememberOptions {
+                    scope_dims: Some(dims),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        out.storage_key
+    }
+
+    fn write_base_fact(db: &mut Sgdb, key: &str, text: &str) -> String {
+        let out = db
+            .remember_text_with(key, text, RememberOptions::default())
+            .unwrap();
+        out.storage_key
+    }
+
+    #[test]
+    fn promote_run_promotes_new_keys_to_base_scope() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let sk = write_run_fact(&mut db, "r-42", "adr-0001", "decisao do sandbox");
+        assert_eq!(db.get_state(&sk).unwrap(), MemoryState::Active);
+
+        let r = db
+            .promote_run(&run_filter("r-42"), &BASE_DIMS("r-42"), MergeStrategy::Fail)
+            .unwrap();
+        assert_eq!(r.promoted.len(), 1);
+        assert_eq!(r.promoted[0], "md/L3/adr-0001");
+        // No base (run vazio): recall global enxerga; escopo do run não.
+        let base = db.recall_lexical("decisao do sandbox", 5).unwrap();
+        assert_eq!(base.len(), 1);
+        assert_eq!(base[0].key, "md/L3/adr-0001");
+        let dims = db.scope_dims_of("md/L3/adr-0001").unwrap();
+        assert!(dims.run.is_empty(), "promovida deve ficar SEM run");
+    }
+
+    #[test]
+    fn promote_run_dedups_identical_text() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let _ = write_base_fact(&mut db, "fact-x", "texto igual");
+        let _ = write_run_fact(&mut db, "r-1", "fact-x", "texto igual");
+        let r = db
+            .promote_run(&run_filter("r-1"), &BASE_DIMS("r-1"), MergeStrategy::Fail)
+            .unwrap();
+        assert_eq!(r.deduped, 1);
+        assert!(r.promoted.is_empty());
+        // Sem version bump: só uma memória com o texto no base.
+        let hits = db.recall_lexical("texto igual", 10).unwrap();
+        assert_eq!(hits.len(), 1, "dedup não deve criar segunda memória");
+    }
+
+    #[test]
+    fn promote_run_fail_strategy_refuses_and_writes_nothing() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let _ = write_base_fact(&mut db, "adr-9", "versao base");
+        let _ = write_run_fact(&mut db, "r-2", "adr-9", "versao run");
+        let err = db
+            .promote_run(&run_filter("r-2"), &BASE_DIMS("r-2"), MergeStrategy::Fail)
+            .unwrap_err();
+        assert!(matches!(err, SgdbError::Invalid(_)));
+        // Nada escrito: base preserva o texto.
+        assert_eq!(db.text_of("md/L3/adr-9").unwrap(), "versao base");
+    }
+
+    #[test]
+    fn promote_run_ours_strategy_run_wins_overwrite() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let base_sk = write_base_fact(&mut db, "adr-7", "versao base");
+        let base_id = db.meta(&base_sk).unwrap().unwrap().memory_id.clone();
+        let _ = write_run_fact(&mut db, "r-3", "adr-7", "versao run vence");
+        let r = db
+            .promote_run(&run_filter("r-3"), &BASE_DIMS("r-3"), MergeStrategy::Ours)
+            .unwrap();
+        assert_eq!(r.conflicts.len(), 1);
+        assert_eq!(db.text_of("md/L3/adr-7").unwrap(), "versao run vence");
+        // Identidade estável: overwrite preserva memory_id.
+        assert_eq!(db.meta(&base_sk).unwrap().unwrap().memory_id, base_id);
+        // Re-escopada para o base.
+        assert!(db.scope_dims_of("md/L3/adr-7").unwrap().run.is_empty());
+    }
+
+    #[test]
+    fn promote_run_theirs_strategy_base_wins_stays_in_run() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let _ = write_base_fact(&mut db, "adr-8", "versao base vence");
+        let sk = write_run_fact(&mut db, "r-4", "adr-8", "versao run");
+        let r = db
+            .promote_run(&run_filter("r-4"), &BASE_DIMS("r-4"), MergeStrategy::Theirs)
+            .unwrap();
+        assert_eq!(r.conflicts_kept.len(), 1);
+        assert!(r.promoted.is_empty());
+        assert_eq!(db.text_of("md/L3/adr-8").unwrap(), "versao base vence");
+        // A memória do run permanece no run, intacta.
+        assert_eq!(db.get_state(&sk).unwrap(), MemoryState::Active);
+        assert_eq!(db.scope_dims_of(&sk).unwrap().run, "r-4");
+    }
+
+    #[test]
+    fn promote_run_ignores_other_runs_and_episodics_and_rejects_global() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        // Run alvo
+        let _ = write_run_fact(&mut db, "r-5", "k1", "fato alvo");
+        // Outro run — não deve ser promovido.
+        let _ = write_run_fact(&mut db, "r-outro", "k2", "fato de outro run");
+        // Episódico /ts/ do run — ruído do sandbox, nunca promovido.
+        let dims = BASE_DIMS("r-5");
+        let (ep, _) = db
+            .remember_episodic_scoped("q", "a", 10, &dims)
+            .unwrap();
+        let r = db
+            .promote_run(&run_filter("r-5"), &BASE_DIMS("r-5"), MergeStrategy::Fail)
+            .unwrap();
+        assert_eq!(r.promoted.len(), 1);
+        assert!(!r.promoted[0].contains("r-outro"));
+        assert!(r.promoted[0].ends_with("k1"));
+        // Episódico permanece no run.
+        assert_eq!(db.scope_dims_of(&ep).unwrap().run, "r-5");
+        // Guardas.
+        assert!(matches!(
+            db.promote_run(&ScopeFilter::global(), &BASE_DIMS("r-5"), MergeStrategy::Fail),
+            Err(SgdbError::Invalid(_))
+        ));
+        assert!(matches!(
+            db.promote_run(&run_filter("r-5"), &ScopeDims::new(), MergeStrategy::Fail),
+            Err(SgdbError::Invalid(_))
+        ));
     }
 
     #[test]

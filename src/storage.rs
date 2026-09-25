@@ -2,6 +2,7 @@
 //! Implemente 4 métodos = integrado. Entregues: `InMemory` (RAM, testes) e
 //! `FileStorage` (append-log com CRC32 por registro, crash-safe, `std`).
 
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
@@ -58,7 +59,34 @@ pub enum Durability {
 /// Alias evita `type_complexity` no trait público (API estável).
 pub type ScanResult = Vec<(Vec<u8>, Vec<u8>)>;
 
-pub trait Storage {
+/// v1.2.1: forward impl p/ `Box<dyn Storage>` — hosts que escolhem o backend
+/// em runtime (ex.: MCP server com TickvFile buffered opt-in) passam o box
+/// para `Sgdb::open(impl Storage)`; o trait object despacha os métodos.
+impl Storage for Box<dyn Storage> {
+    fn name(&self) -> &'static str {
+        (**self).name()
+    }
+    fn put(&mut self, key: &[u8], val: &[u8]) -> Result<(), SgdbError> {
+        (**self).put(key, val)
+    }
+    fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, SgdbError> {
+        (**self).get(key)
+    }
+    fn scan_prefix(&mut self, prefix: &[u8]) -> Result<ScanResult, SgdbError> {
+        (**self).scan_prefix(prefix)
+    }
+    fn delete(&mut self, key: &[u8]) -> Result<(), SgdbError> {
+        (**self).delete(key)
+    }
+    fn durability(&self) -> Durability {
+        (**self).durability()
+    }
+    fn sync_durable(&mut self) -> Result<(), SgdbError> {
+        (**self).sync_durable()
+    }
+}
+
+pub trait Storage: Send {
     fn name(&self) -> &'static str;
     fn put(&mut self, key: &[u8], val: &[u8]) -> Result<(), SgdbError>;
     fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, SgdbError>;

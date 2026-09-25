@@ -185,11 +185,24 @@ pub struct AiosDatabaseEngine {
     pub ram_puts: u64,
     /// id lógico → storage_key (recall BQ → doc).
     id_to_sk: BTreeMap<u64, String>,
+    /// v1.2.1: reverso sk → ids (mesma família do sk_clocks). O delete
+    /// precisava varrer o id_to_sk INTEIRO para achar os ids da sk morta —
+    /// O(N) por delete. Com o reverso: O(ids do doc) (1 no caso comum;
+    /// overwrites reusam a sk com id novo, então pode haver mais de um).
+    sk_ids: BTreeMap<String, Vec<u64>>,
     /// (nó, contador do relógio) → storage keys: o vínculo versão CRDT ↔ doc
     /// (a versão N de um nó corresponde aos docs com counter_of(nó) == N).
     /// Base do pull DIRECIONADO por versões faltantes (anti-entropy, P0-7).
     /// Derivado (index_doc/rebuild) — storage = fonte da verdade.
-    clock_index: BTreeMap<(u8, u64), Vec<String>>,
+    pub(crate) clock_index: BTreeMap<(u8, u64), Vec<String>>,
+    /// v1.2.1 (achado do bench_delete_cost): índice REVERSO sk → clock
+    /// entries. O `delete` precisava varrer o `clock_index` INTEIRO para
+    /// achar os pares (nó, contador) da sk morta — O(N) por delete, medido
+    /// 0,31→1,86 ms/delete com N=5k→20k (linear), ~240× o custo do write.
+    /// Com o reverso, o delete consulta O(entries do próprio doc) e remove
+    /// do clock_index diretamente. Derivado (index_doc/rebuild/delete) —
+    /// invariante: mesmas chaves que o clock_index, direção trocada.
+    pub(crate) sk_clocks: BTreeMap<String, Vec<(u8, u64)>>,
     /// Watermark do contador próprio (node_id): máximo contador deste nó em
     /// docs + overflow de metas. Garante `created_tick`/memory_id monotônicos
     /// através de restarts (o NMD1 72B perde o overflow >8 nós).
@@ -210,7 +223,9 @@ impl AiosDatabaseEngine {
             ram_l0l1: BTreeMap::new(),
             ram_puts: 0,
             id_to_sk: BTreeMap::new(),
+            sk_ids: BTreeMap::new(),
             clock_index: BTreeMap::new(),
+            sk_clocks: BTreeMap::new(),
             own_clock_watermark: 0,
             indexed_dims: BTreeSet::new(),
             corpus_sums: BTreeMap::new(),
@@ -465,12 +480,20 @@ impl AiosDatabaseEngine {
         }
     }
 
-    /// Remove `sk` de todas as listas do `entity_index` (delete de memória).
-    pub fn remove_entities(&mut self, sk: &str) {
-        for keys in self.entity_index.values_mut() {
-            keys.retain(|k| k != sk);
+    /// v1.2.1 (delete O(1)): remove `sk` SÓ das entradas declaradas em
+    /// `entities` (a meta da própria memória — fonte exata). O caminho antigo
+    /// varria TODAS as entidades do índice por delete; com a lista exata o
+    /// custo é O(entities da sk). Entidades vindo de reindex/migração que
+    /// não estão na lista são cobertas pelo rebuild (índice derivado).
+    pub(crate) fn remove_entities_exact(&mut self, sk: &str, entities: &[String]) {
+        for e in entities {
+            if let Some(keys) = self.entity_index.get_mut(e) {
+                keys.retain(|k| k != sk);
+                if keys.is_empty() {
+                    self.entity_index.remove(e);
+                }
+            }
         }
-        self.entity_index.retain(|_, keys| !keys.is_empty());
     }
 
     /// Lê `sys/meta/<sk>` (None = sem metadados: registro pré-v0.6).
@@ -676,8 +699,12 @@ impl AiosDatabaseEngine {
 
     fn index_doc(&mut self, id: u64, doc: &MemoryDoc, sk: &str) {
         self.id_to_sk.insert(id, String::from(sk));
-        // vínculo versão CRDT ↔ doc: para cada (nó, contador) do relógio
-        for (n, c) in doc.clock.entries() {
+        self.sk_ids.entry(String::from(sk)).or_default().push(id);
+        // vínculo versão CRDT ↔ doc: para cada (nó, contador) do relógio.
+        // O REVERSO (sk → entries) é preenchido junto — delete O(1).
+        let entries = doc.clock.entries();
+        self.sk_clocks.insert(String::from(sk), entries.clone());
+        for (n, c) in entries {
             let e = self.clock_index.entry((n, c)).or_default();
             if !e.iter().any(|k| k == sk) {
                 e.push(String::from(sk));
@@ -737,6 +764,8 @@ impl AiosDatabaseEngine {
         self.entity_index.clear();
         self.id_to_sk.clear();
         self.clock_index.clear();
+        self.sk_clocks.clear();
+        self.sk_ids.clear();
         self.indexed_dims.clear();
         self.corpus_sums.clear();
         // watermark reconstruído do storage (docs = fonte da verdade)
@@ -936,6 +965,8 @@ impl AiosDatabaseEngine {
         self.entity_index.clear();
         self.id_to_sk.clear();
         self.clock_index.clear();
+        self.sk_clocks.clear();
+        self.sk_ids.clear();
         self.indexed_dims.clear();
         self.corpus_sums.clear();
         self.lexical = LexicalIndex::new();
@@ -1825,39 +1856,39 @@ impl AiosDatabaseEngine {
         self.storage.delete(&ttl_key(sk))?;
         self.storage.delete(&event_key(sk))?;
         // índice reverso da versão morre com a memória (DAG causal)
+        let mut dead_entities: Vec<String> = Vec::new();
         if let Ok(Some(b)) = self.storage.get(&meta_key(sk)) {
             if let Ok(m) = MemoryMeta::decode(&b) {
                 self.storage.delete(&version_key(&m.version_id))?;
+                dead_entities = m.entities.clone();
             }
         }
-        self.remove_entities(sk);
+        // v1.2.1: remove SÓ as entidades declaradas por esta sk (a meta foi
+        // lida acima) — o remove_entities() antigo varria o entity_index
+        // INTEIRO por delete (segundo achado O(N) do bench_delete_cost).
+        self.remove_entities_exact(sk, &dead_entities);
         self.storage.delete(&meta_key(sk))?;
         self.art.delete(sk);
         self.lexical.remove(sk);
         // relações L6 envolvendo a memória morta somem com ela (topologia)
         self.remove_relations_for(sk)?;
-        // desliga o mapeamento id → sk: candidatos BQ desses ids são pulados
-        let dead: Vec<u64> = self
-            .id_to_sk
-            .iter()
-            .filter(|(_, v)| v.as_str() == sk)
-            .map(|(id, _)| *id)
-            .collect();
+        // desliga o mapeamento id → sk: candidatos BQ desses ids são pulados.
+        // v1.2.1: via reverso sk_ids — O(ids do doc), não O(id_to_sk).
+        let dead: Vec<u64> = self.sk_ids.remove(sk).unwrap_or_default();
         for id in dead {
             self.id_to_sk.remove(&id);
         }
-        // e o vínculo (nó, contador) → sk morre com o doc (anti-entropy)
-        let dead_clock: Vec<(u8, u64)> = self
-            .clock_index
-            .iter()
-            .filter(|(_, keys)| keys.iter().any(|k| k == sk))
-            .map(|((n, c), _)| (*n, *c))
-            .collect();
-        for key in dead_clock {
-            if let Some(v) = self.clock_index.get_mut(&key) {
-                v.retain(|k| k != sk);
-                if v.is_empty() {
-                    self.clock_index.remove(&key);
+        // e o vínculo (nó, contador) → sk morre com o doc (anti-entropy).
+        // v1.2.1: via índice REVERSO (sk → entries) — O(entries do doc), não
+        // O(clock_index inteiro). Sem o reverso: 0,31→1,86 ms/delete com
+        // N=5k→20k (linear, ~240× o write); com ele, consulta direta.
+        if let Some(entries) = self.sk_clocks.remove(sk) {
+            for key in entries {
+                if let Some(v) = self.clock_index.get_mut(&key) {
+                    v.retain(|k| k != sk);
+                    if v.is_empty() {
+                        self.clock_index.remove(&key);
+                    }
                 }
             }
         }

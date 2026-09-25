@@ -240,3 +240,113 @@ geometricamente espaçados.
   `recall_weighted`) — the earlier "µs/put" figures in the changelog were
   measured on a different toolchain/OS and are not reproduced here; treat
   them as historical only.
+## Concurrent write+search (Gap 0, 2026-09-25)
+
+`cargo run --release --example bench_concurrent` (BENCH_WRITERS=4
+BENCH_READERS=4 BENCH_SECS=8; TickvFile, ONE engine under a Mutex — the
+real MCP usage model). Writers do `remember_text_with` (L3 + lexical
+index), readers do `recall_lexical` (default MCP path). Seed: 1k docs.
+
+| phase  | ops/s | P50      | P90     | P99     | P99.9  | jitter (P99/P50) |
+|--------|-------|----------|---------|---------|--------|------------------|
+| write  | ~210  | ~0.5 ms  | ~0.7 ms | ~20 ms  | ~1.2 s | ~38× |
+| recall | ~160  | ~0.9 ms  | ~1.5 ms | ~92 ms  | ~1.0 s | ~108× |
+
+**Honest verdict: the P99 is NOT flat.** The median is excellent
+(sub-ms both phases), but the tail pays for (a) the global Mutex (the
+single-writer model is architectural), (b) TickvFile append/flush on the
+write path, and (c) the v1.2.0 metrics-gated auto-persist stepping on the
+tail. For context, seekdb (OceanBase) claims P99 21.7 ms @ 1.523 QPS with
+1.1× jitter — ~8× higher throughput with a ~5× smaller tail. What the
+ADD-only architecture DOES buy (and this bench confirms): write→search
+immediacy with sub-ms medians and zero errors, at zero-extra-engineering
+simplicity. Any claim of tail parity must start by instrumenting the
+Mutex hold time and the flush path; multi-engine sharding by scope does
+not exist today.
+
+## Long-lived DB: BQ orphans vs delete cost (item 3, 2026-09-25)
+
+`cargo run --release --example bench_long_db` (256-dim L4, FileStorage,
+50% deletes) and `--example bench_delete_cost` (isolates per-delete cost
+vs DB size).
+
+**Verdict: the delta-BQ two-level index (seekdb item 3) is REJECTED by
+measurement.** Recall latency with orphans ≈ after-reclaim ≈ after-rebuild
+within noise at N=2k/20k/60k (60k: P50 697µs vs 694µs vs 701µs). The
+recall skips orphans in O(1) as designed; there is no orphan scan to
+amortize. Reclaim(0) itself cost 2.3 ms at 60k entries.
+
+**The real finding: delete is O(N) in DB size.** Per-delete cost grows
+linearly with N (5k→0.31 ms, 10k→0.67 ms, 20k→1.86 ms), because
+`engine::delete` scans the ENTIRE `clock_index` looking for the dead
+storage key. At N=60k, 30k deletes took 265 s (~8.8 ms/delete) — ~240×
+the write cost (~37 µs/doc). Churn-heavy workloads are delete-dominated,
+not orphan-dominated.
+
+**Proposed fix (M, additive, no format change):** reverse index
+`sk → Vec<(node, counter)>` filled in `index_doc` (the clock is already
+in hand there), consulted in `delete`; rebuild path unchanged. Replaces
+seekdb item 3 in the queue.
+
+### FIXED in v1.2.1 (same day) — delete is now O(entries of the doc)
+
+Three O(N) scans were found in `engine::delete` and all three are gone:
+1. `clock_index` full scan → reverse index `sk_clocks: sk → Vec<(u8,u64)>`
+   (filled in `index_doc`; the clock is already in hand there);
+2. `entity_index` full scan (`remove_entities`) → `remove_entities_exact`
+   using the meta's OWN entity list (the meta was already read for the
+   version-key delete);
+3. `id_to_sk` full scan → reverse index `sk_ids: sk → Vec<u64>`
+   (overwrites can hold >1 id per sk, so it is a Vec).
+
+Results (`bench_delete_cost`, 200 deletes):
+
+| N      | before      | after       |
+|--------|-------------|-------------|
+| 5k     | 0.31 ms/del | 0.19 ms/del |
+| 10k    | 0.67 ms/del | 0.36 ms/del |
+| 20k    | 1.86 ms/del | 0.72 ms/del |
+
+The residual per-delete cost no longer grows with N in its O(N) component
+(it is now the FileStorage flush-per-op guarantee + side-table appends,
+both contractual). End-to-end (`bench_long_db`, N=60k, 30k deletes):
+**265 s → 43 s (~6×)**. Invariant asserted by test: after deleting every
+doc, `sk_clocks`/`clock_index` are both empty (no orphaned entries), and
+the reverse always agrees with the forward index (mutation-style check in
+`delete_is_o1_via_reverse_clock_index`). Anti-entropy
+(`keys_for_clock`) unchanged.
+
+## Passo 0+1 — tail decomposition + TickvFile buffered (2026-09-25)
+
+**Passo 0 (instrumentação)** — `bench_concurrent` agora separa
+lock-wait (Instant antes/depois do lock) vs op-time (trabalho dentro do
+lock), 4 writers + 4 readers, 8 s, TickvFile legacy:
+
+| fase   | lock-wait P50 | lock-wait P99 | op-time P50 | op-time P99 |
+|--------|---------------|---------------|-------------|-------------|
+| write  | ~0 ns         | ~0.2 µs       | 486 µs      | 791 µs      |
+| recall | ~0 ns         | ~0.1 µs       | 925 µs      | 2.2 ms      |
+
+**Verdict: the P99 tail is op-time, NOT lock-wait** — the Mutex queue is
+negligible; the work inside the lock dominates. The P99.9 spikes
+(~1–2 s) are the rare events crossing the lock (idx-snapshot persist,
+BQ reclaim). Remedies that follow from the numbers: shorten the op
+itself (passo 1), move rare events out of the hot path — NOT a
+lock refactor.
+
+**Passo 1 (TickvFile buffered opt-in)** — `TickvFile::open_buffered`:
+persistent append handle (the FileStorage lazy-handle pattern), flush on
+`checkpoint()`/`sync_durable()`/`compact()`. Same TKLV bytes, same order;
+reports `Durability::Buffered` honestly (legacy mode still `Flushed`).
+Micro-bench (`bench_tickv_buffered`, 5k writes, TickvFile):
+
+| mode     | write     | recall   | delete   |
+|----------|-----------|----------|----------|
+| legacy   | 491.6 µs  | 6.52 ms  | 27.6 ms  |
+| buffered | **21.0 µs** | 6.44 ms | 27.3 ms |
+
+**~23× on writes.** (The high absolute delete/recall numbers here are
+the O(N) delete finding — reverse clock index is the next fix — and the
+10-term lexical scan over a small corpus, respectively.) The MCP server
+can opt in per deployment; default `open()` unchanged (minimal crash
+window preserved).

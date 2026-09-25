@@ -16,6 +16,7 @@ v1.1.5–v1.1.6 acrescentaram era guard e hits tipados — ver `CHANGELOG.md`.
 | **Letta (MemGPT)** | Apache-2.0 | Memória como OS: contexto=RAM, memória em blocos editáveis | Postgres + vector |
 | **Supermemory** | MIT | Grafo de fatos + perfis de usuário + esquecimento automático | Engine próprio |
 | **cognee** | Apache-2.0 | Ciclo `remember/recall/forget/improve` + grafo+vector híbrido | Kuzu+LanceDB+SQLite |
+| **seekdb (OceanBase)** | Apache-2.0 | "State store for AI agents" — banco nativo: vector+FT num plano SQL, FORK/MERGE de estado | Motor SQL OceanBase + HNSW |
 
 ## O que cada um faz de melhor
 
@@ -79,27 +80,41 @@ v1.1.5–v1.1.6 acrescentaram era guard e hits tipados — ver `CHANGELOG.md`.
 O primeiro banco (não camada) do landscape mirando o MESMO público:
 "state store for AI agents", MySQL-compatible, COW sandbox FORK/MERGE,
 two-level HNSW sobre Change Stream. Análise completa em
-[`seekdb-analysis.md`](seekdb-analysis.md). Resumo do veredito:
+[`seekdb-analysis.md`](seekdb-analysis.md). Veredito e estado (atualizado
+2026-09-25, v1.2.1):
 
 - Write→search imediato: o nsgdb já resolve **por formato** (BQ/lexical
   append-only indexam no put) o que eles resolvem por infra (pipeline
-  assíncrono). Sem ação.
-- **Ideia exportável #1: fork/merge de estado** — no nsgdb é ~80%
-  construído (ScopeDims.run + commit_run + DAG causal); falta só o
-  harness de merge com estratégia do host. S–M, risco baixo.
-- **Gap de MEDIÇÃO**: eles publicam P99 de write+search concorrente;
-  o nsgdb nunca mediu. Bench de concorrência (S) antes de qualquer claim.
+  assíncrono). Sem ação — e confirmado pelo bench abaixo.
+- **Ideia exportável #1: fork/merge de estado** → **ENTREGUE (v1.2.1)**:
+  `promote_run` + `MergeStrategy` (Fail/Ours/Theirs) + MCP
+  `curate op=promote_run` + `remember(key=)`. Sandbox por scope run com
+  merge de estratégia do host, ADD-only intacta.
+- **Gap de MEDIÇÃO → FECHADO (v1.2.1)**: `examples/bench_concurrent.rs`
+  (TickvFile, 1 engine sob Mutex, 4 writers + 4 readers, 8 s):
+
+| fase | ops/s | P50 | P90 | P99 | P99.9 | jitter (P99/P50) |
+|---|---|---|---|---|---|---|
+| write | ~210 | ~0.5 ms | ~0.7 ms | ~20 ms | ~1.2 s | ~38× |
+| recall | ~160 | ~0.9 ms | ~1.5 ms | ~92 ms | ~1.0 s | ~108× |
+
+  vs claim do seekdb: P99 21,7 ms @ 1.523 QPS, jitter 1,1×. Leitura
+  honesta: mediana excelente (sub-ms, write→search imediato confirmado,
+  zero erros), mas **o P99 NÃO é flat** — tail paga Mutex global +
+  flush TKLV; seekdb tem ~8× throughput com tail ~5× menor.
+  Próximos passos instrumentados (lock-wait vs op-time, auto-persist
+  fora do round trip, TickvFile buffered) em `seekdb-analysis.md` §Plano.
 - Rejeitados: SQL/MySQL protocol, ACID multi-op, GIS, async index infra
   (incompatíveis com doutrina MCP/memórias/no_std).
 
 ## Roadmap por complexidade (aprovado 2026-08)
 
 Status: itens **1–10 entregues em v1.1.4** (2026-08-14, commits por item com
-regressão; na época: matriz 210+1 / 256+1 / 162+1; hot test 22 tools).
-**Estado corrente (v1.1.24):** crate 1.1.24; MCP 4 tools + aliases; default
-recall lexical (ADR-0008); hot test **103/0**; matriz **330+1 / 376+1 / 274+1**.
-Typed hits (v1.1.6), doutrina (v1.1.8), oráculo do índice derivado (ADR-0011) e
-recall adaptativo (ADR-0012) permanecem.
+regressão). **Estado corrente (v1.2.1):** crate 1.2.1; MCP 5 tools + 40
+aliases; default recall lexical (ADR-0008); hot test **150/0**; matriz
+**368+1 / 414+1 / 306+1**. Do seekdb entrou no roadmap e foi entregue: o
+fork/merge de memória (`promote_run`, v1.2.1) e a medição de concorrência
+(`bench_concurrent`, ver seção acima).
 Item 10 foi entregue no modo **custo baixo + risco baixo** (1-hop de
 entidades): o multi-hop (grafo semântico completo) permanece fora de escopo.
 

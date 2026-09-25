@@ -9,7 +9,7 @@ Guia de instalação, contrato e troubleshooting do servidor MCP
 |-------|-------|
 | Protocolo | JSON-RPC 2.0 over **stdio** (uma linha JSON por mensagem) |
 | Handshake | `initialize` → `protocolVersion: 2025-11-25` |
-| `serverInfo.version` | `1.2.0` (`MCP_CONTRACT_VERSION` em `examples/mcp_server.rs`) |
+| `serverInfo.version` | `1.2.1` (`MCP_CONTRACT_VERSION` em `examples/mcp_server.rs`) |
 | Tools | **4** (`remember`, `recall`, `health`, `curate`) — 38 nomes antigos/alias ainda funcionam em `tools/call` (`ALIAS_SURFACE`) |
 | Batch write (v1.2.0) | `remember(memories=[...])` até 64 itens num round trip; `if_exists=add\|reinforce\|supersede\|reject` (default `add` — ADD-only intacta) |
 | Preview (v1.2.0) | `recall(max_payload_bytes=N)` corta o text de cada hit em N bytes (marca `…`); default full |

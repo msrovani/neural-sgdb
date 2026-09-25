@@ -197,7 +197,7 @@ fn main() {
     rep.check("protocolVersion 2025-11-25",
         r["result"]["protocolVersion"] == "2025-11-25", r.to_string());
     rep.check("serverInfo version 1.1.26",
-        r["result"]["serverInfo"]["version"] == "1.2.0", r.to_string());
+        r["result"]["serverInfo"]["version"] == "1.2.1", r.to_string());
     rep.check("serverInfo mcp_tool_count 5",
         r["result"]["serverInfo"]["mcp_tool_count"] == 5, r.to_string());
     let instr = r["result"]["instructions"].as_str().unwrap_or("");
@@ -559,7 +559,39 @@ fn main() {
         "archive_episodic": true
     }));
     rep.check("deprecate_run run vazio e no-op seguro", !is_err && txt.contains("archived=0"), txt.clone());
-    rep.phase("harness commit_run", &t);
+
+    // ---------- fase 6e: fork/merge — promote_run (seekdb item 1) ----------
+    // Sandbox: memórias escritas com keys prefixadas pelo run. O merge
+    // promove ao escopo base (run vazio) conforme a estratégia.
+    let (txt, is_err) = srv.tool("remember", json!({
+        "text": "decisao do sandbox promote hot test",
+        "key": "hot-promote-1/fato-sandbox",
+        "scope_run": "hot-promote-1"
+    }));
+    rep.check("remember no sandbox run", !is_err && txt.contains("md/L3/hot-promote-1/"), txt.clone());
+    let (txt, is_err) = srv.tool("curate", json!({
+        "op": "promote_run",
+        "scope_run": "hot-promote-1",
+        "merge_strategy": "ours"
+    }));
+    rep.check(
+        "promote_run promove key do sandbox ao base",
+        !is_err && txt.contains("promoted=1") && txt.contains("md/L3/fato-sandbox"),
+        txt.clone(),
+    );
+    let (txt, is_err) = srv.tool("recall", json!({"query": "decisao do sandbox promote", "k": 5}));
+    rep.check(
+        "memoria promovida visivel no recall global (null-scoping: run vazio = base)",
+        !is_err && txt.contains("md/L3/fato-sandbox"),
+        txt.clone(),
+    );
+    let (txt, is_err) = srv.tool("curate", json!({
+        "op": "promote_run",
+        "scope_run": "hot-promote-1",
+        "merge_strategy": "ours"
+    }));
+    rep.check("promote_run re-execucao e dedup", !is_err && txt.contains("deduped=1"), txt.clone());
+    rep.phase("fork/merge promote_run", &t);
 
     // ---------- fase 6d: ledger de negativos (v1.1.24, item 7) ----------
     // A memória guarda o que foi DITO; o ledger guarda o que foi PROCURADO e
@@ -1052,7 +1084,7 @@ fn main() {
     rep.check("tool desconhecida -> data com listed_tools/alias_count",
         r["error"]["code"] == -32602
             && r["error"]["data"]["listed_tools"].as_array().map(|a| a.len()) == Some(5)
-            && r["error"]["data"]["alias_count"] == 39,
+            && r["error"]["data"]["alias_count"] == 40,
         r.to_string());
     let r = srv.rpc("tools/call", json!({"name": "remember"}));
     rep.check("parametro faltando â†’ -32602", r["error"]["code"] == -32602, r.to_string());

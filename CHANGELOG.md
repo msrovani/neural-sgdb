@@ -4,6 +4,58 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [1.2.1] — 2026-09-25 (fork/merge de memória — seekdb item 1)
+
+- **`Sgdb::promote_run(filter, base_dims, strategy)`** (`src/harness.rs`,
+  ADR-0010 + seekdb-analysis item 1): PROMOVE as memórias ATIVAS de um
+  run (sandbox) para o escopo base — o MERGE do fork/merge de memória que
+  o seekdb (OceanBase) traz como feature-assinatura (FORK DATABASE /
+  MERGE TABLE / DROP). ~80% já existia (scopes/dims + commit_run + DAG);
+  faltava o merge. Regras: key nova no base → escreve (re-escopada, run
+  vazio); texto igual → dedup sem version bump; texto diferente →
+  estratégia do host (`MergeStrategy::Fail` recusa em voz alta / `Ours`
+  run vence com overwrite preservando memory_id / `Theirs` base vence e
+  a memória fica no run, listada em `conflicts_kept`). ADD-only
+  preservada; o core reporta, nunca decide. Convenção de identidade:
+  keys do run derivam da base por prefixo `<run>/` (`base_key_of`
+  reverte). Companion L2 copiado para primários L4/L5. 6 testes de lib
+  (incl. guarda de episódicos /ts/ fora do merge e guardas de
+  global/base-global).
+- **MCP `curate op=promote_run`** (superfície anunciada == servida): o
+  schema anuncia `merge_strategy` (`fail|ours|theirs`) + `base_user/`
+  `base_agent`/`base_app` + alias `promote_run` na `ALIAS_SURFACE` (40).
+- **`remember` aceita `key=` explícita opt-in** — o host nomeia a memória
+  (ex.: prefixo do sandbox run); default segue gerando `mcp/…`. O handler
+  single delega ao MESMO `remember_one` do batch (regra copiada divergia
+  — a lição v1.1.25 de novo).
+- **`Storage: Send`** (`src/storage.rs`): o trait agora exige `Send` —
+  exigido por `Arc<Mutex<Sgdb>>` no bench concorrente; semântica
+  inalterada.
+- **Delete O(1) — três índices reversos** (achado do
+  `bench_delete_cost`): `engine::delete` varria TRÊS índices inteiros por
+  delete (`clock_index`, `entity_index`, `id_to_sk`) — 0,31→1,86
+  ms/delete com N=5k→20k (linear, ~240× o write). Trocados por
+  `sk_clocks` (sk → clock entries), `remove_entities_exact` (usa as
+  entidades da PRÓPRIA meta, já lida no delete) e `sk_ids` (sk → ids;
+  overwrites podem ter >1 id). 30k deletes @ 60k docs: **265 s → 43 s
+  (~6×)**. Teste de invariante/mutação
+  `delete_is_o1_via_reverse_clock_index`; anti-entropy
+  (`keys_for_clock`) intocado; rebuild limpa os reversos.
+- **`impl Storage for Box<dyn Storage>`** — forward impl p/ hosts que
+  escolhem o backend em runtime (o MCP com TickvFile buffered).
+- **TickvFile buffered opt-in no MCP** — `NEURAL_SGDB_TICKV_BUFFERED=1`
+  + db com extensão `.tk`/`.tickv` = `TickvFile::open_buffered` (handle
+  persistente, ~23× no write); default (`.db` = FileStorage) inalterado.
+- **`bench_concurrent` instrumentado (passo 0)** — separa lock-wait vs
+  op-time: o tail P99 é OP-TIME (lock-wait P99 ~0,2 µs) — a fila do
+  Mutex é desprezível; o remédio é encurtar o próprio op, não refactor
+  de lock.
+- **Gap 0 medido** (`examples/bench_concurrent.rs`, Gap 0 do
+  seekdb-analysis): P50 sub-ms nas duas fases, mas **P99 NÃO é flat**
+  (Mutex global + flush TKLV). Ver BENCHMARKS.md.
+- Contrato MCP → **1.2.1**; hot test **150/0**; matriz
+  **370+1 / 416+1 / 307+1**.
+
 ## [1.2.0] — 2026-09-25 (agentic write path + fast-mount sem teto)
 
 - **Batch write (`memories[]`)**: `remember` aceita até 64 memórias num

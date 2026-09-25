@@ -134,7 +134,7 @@ pub use memory_doc::{
 };
 pub use harness::{
     CommitFact, CommitRunPlan, CommitRunReport, CommitSupersede, DeprecateRunReport,
-    MOM_ANTI_PATTERN,
+    MergeStrategy, MOM_ANTI_PATTERN, PromoteRunReport,
 };
 pub use sgdb::{
     AdaptiveRecall, AuditReport, CandidateSignals, ConsolidateConfig, DecayConfig, GcConfig,

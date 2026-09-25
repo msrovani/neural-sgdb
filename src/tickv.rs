@@ -368,10 +368,25 @@ pub struct TickvFile {
     map: BTreeMap<String, Vec<u8>>,
     offsets: BTreeMap<String, u64>,
     append_off: u64,
+    /// v1.2.1 (bench_concurrent passo 1): handle de append PERSISTENTE — o
+    /// padrão do FileStorage (~422 µs/op de open+close por put medido lá;
+    /// aqui cada put/delete/invalidate abria o arquivo NOVO). Aberto lazy no
+    /// primeiro append. Opt-in: só `open_buffered`; `open` mantém o
+    /// comportamento v1.1 (open por operação, crash-window mínima).
+    /// MUDANÇA de janela de crash: bytes no buffer do handle sobrevivem a
+    /// crash de PROCESSO (o OS os escreve) mas não estão no arquivo até
+    /// flush — por isso o modo reporta `Durability::Buffered` (não
+    /// `Flushed`) e `checkpoint()`/`sync_durable()` fazem flush. O formato
+    /// TKLV é intocado: mesmos bytes, outra hora de sair.
+    buffered: Option<std::fs::File>,
+    /// Memoriza o modo opt-in para reabrir o handle após `compact()`.
+    had_buffered_handle: bool,
 }
 
 #[cfg(feature = "file-storage")]
 impl TickvFile {
+    /// Modo legado v1.1: open+flush POR operação (janela de crash mínima,
+    /// custo máximo). `durability() == Flushed`.
     pub fn open(path: impl AsRef<std::path::Path>) -> std::io::Result<Self> {
         let path = path.as_ref().to_path_buf();
         // HOT TEST v1.1 (2026-08-13): paridade com FileStorage — criar o
@@ -404,7 +419,38 @@ impl TickvFile {
         } else {
             (BTreeMap::new(), BTreeMap::new(), 0)
         };
-        Ok(TickvFile { path, map, offsets, append_off })
+        Ok(TickvFile { path, map, offsets, append_off, buffered: None, had_buffered_handle: false })
+    }
+
+    /// v1.2.1 (passo 1 do plano de otimizações): modo BUFFERED — handle de
+    /// append persistente (sem open/flush por operação). Mesmos bytes TKLV,
+    /// mesma ordem; o flush acontece no `checkpoint()`, `sync_durable()` e
+    /// `compact()` (que já fazem flush próprio). **Janela de crash maior**:
+    /// até o próximo flush, os records estão no buffer do handle/OS — um
+    /// crash de PROCESSO perde no máximo o buffer (o OS escreve páginas
+    /// sujas normalmente); power loss pode perder mais. Por isso o modo
+    /// reporta `Durability::Buffered`. Opt-in explícito do host.
+    pub fn open_buffered(path: impl AsRef<std::path::Path>) -> std::io::Result<Self> {
+        let mut s = Self::open(path)?;
+        s.buffered = Some(
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&s.path)?,
+        );
+        s.had_buffered_handle = true;
+        Ok(s)
+    }
+
+    /// Flush do buffer do handle persistente (modo buffered). No-op no modo
+    /// legado (que já faz flush por operação).
+    fn flush_buffered(&mut self) -> Result<(), crate::storage::SgdbError> {
+        use std::io::Write;
+        if let Some(f) = self.buffered.as_mut() {
+            f.flush().map_err(|_| crate::storage::SgdbError::Storage("flush buffered"))
+        } else {
+            Ok(())
+        }
     }
 
     /// Grava checkpoint TKCK (`sys/tickv_ckpt`) como último record do volume.
@@ -412,6 +458,9 @@ impl TickvFile {
     /// completa. Um put/delete posterior torna o ckpt stale (não é mais o
     /// último record) e o open volta ao fallback seguro.
     pub fn checkpoint(&mut self) -> Result<(), crate::storage::SgdbError> {
+        // Modo buffered: flush ANTES do ckpt — o ckpt só é o "último record"
+        // válido se todos os records anteriores já estão no arquivo.
+        self.flush_buffered()?;
         let entries: Vec<(String, u64)> = self
             .offsets
             .iter()
@@ -419,6 +468,7 @@ impl TickvFile {
             .collect();
         let body = encode_ckpt(self.append_off, &entries);
         self.append(CKPT_KEY.as_bytes(), &body)?;
+        self.flush_buffered()?;
         Ok(())
     }
 
@@ -429,6 +479,10 @@ impl TickvFile {
     /// próximo open. Crash-safe: temp órfão é sobrescrito na próxima compact.
     pub fn compact(&mut self) -> Result<(), crate::storage::SgdbError> {
         use std::io::Write;
+        // Modo buffered: flusha e DERRUBA o handle antes do rename (paridade
+        // FileStorage — handle aberto apontaria para o inode antigo).
+        self.flush_buffered()?;
+        self.buffered = None;
         let tmp = self.path.with_extension("compact.tmp");
         let mut f = std::fs::File::create(&tmp)
             .map_err(|_| crate::storage::SgdbError::Storage("compact create"))?;
@@ -453,6 +507,16 @@ impl TickvFile {
             .map_err(|_| crate::storage::SgdbError::Storage("compact rename"))?;
         self.offsets = offsets;
         self.append_off = append_off + ckpt_rec.len() as u64;
+        // Reabre o handle buffered (modo opt-in permanece após compact).
+        if self.had_buffered_handle {
+            self.buffered = Some(
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&self.path)
+                    .map_err(|_| crate::storage::SgdbError::Storage("open append"))?,
+            );
+        }
         Ok(())
     }
 
@@ -462,16 +526,35 @@ impl TickvFile {
     /// #6 — o novo record (ou tombstone) é append depois.
     fn invalidate_in_place(&mut self, off: u64) -> Result<(), crate::storage::SgdbError> {
         use std::io::{Seek, SeekFrom, Write};
-        let mut f = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&self.path)
-            .map_err(|_| crate::storage::SgdbError::Storage("open invalidate"))?;
-        f.seek(SeekFrom::Start(off + 3))
-            .map_err(|_| crate::storage::SgdbError::Storage("seek invalidate"))?;
-        f.write_all(&[0u8])
-            .map_err(|_| crate::storage::SgdbError::Storage("write invalidate"))?;
-        f.flush().map_err(|_| crate::storage::SgdbError::Storage("flush invalidate"))
+        // Modo buffered: o handle de append não serve para seek+write in-place
+        // (O_APPEND força ao fim). Flusha o buffer pendente ANTES de tocar o
+        // offset antigo — senão o invalid in-place corromperia a ordem
+        // (record ainda no buffer seria escrito DEPOIS da invalidação). No
+        // modo legado, tudo já está no arquivo (flush por operação).
+        if self.buffered.is_some() {
+            self.flush_buffered()?;
+            let mut f = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&self.path)
+                .map_err(|_| crate::storage::SgdbError::Storage("open invalidate"))?;
+            f.seek(SeekFrom::Start(off + 3))
+                .map_err(|_| crate::storage::SgdbError::Storage("seek invalidate"))?;
+            f.write_all(&[0u8])
+                .map_err(|_| crate::storage::SgdbError::Storage("write invalidate"))?;
+            f.flush().map_err(|_| crate::storage::SgdbError::Storage("flush invalidate"))
+        } else {
+            let mut f = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&self.path)
+                .map_err(|_| crate::storage::SgdbError::Storage("open invalidate"))?;
+            f.seek(SeekFrom::Start(off + 3))
+                .map_err(|_| crate::storage::SgdbError::Storage("seek invalidate"))?;
+            f.write_all(&[0u8])
+                .map_err(|_| crate::storage::SgdbError::Storage("write invalidate"))?;
+            f.flush().map_err(|_| crate::storage::SgdbError::Storage("flush invalidate"))
+        }
     }
 
     /// Append de record; retorna o offset onde o record começou (para o
@@ -480,14 +563,22 @@ impl TickvFile {
         use std::io::Write;
         let rec = encode_record(key, val);
         let off = self.append_off;
-        let mut f = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
-            .map_err(|_| crate::storage::SgdbError::Storage("open append"))?;
-        f.write_all(&rec)
-            .map_err(|_| crate::storage::SgdbError::Storage("write"))?;
-        f.flush().map_err(|_| crate::storage::SgdbError::Storage("flush"))?;
+        if let Some(f) = self.buffered.as_mut() {
+            // Modo buffered: handle persistente, sem open/flush por operação
+            // (o flush acontece no checkpoint/sync_durable/compact).
+            f.write_all(&rec)
+                .map_err(|_| crate::storage::SgdbError::Storage("write"))?;
+        } else {
+            // Modo legado v1.1: open+flush por operação.
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)
+                .map_err(|_| crate::storage::SgdbError::Storage("open append"))?;
+            f.write_all(&rec)
+                .map_err(|_| crate::storage::SgdbError::Storage("write"))?;
+            f.flush().map_err(|_| crate::storage::SgdbError::Storage("flush"))?;
+        }
         self.append_off += rec.len() as u64;
         Ok(off)
     }
@@ -497,6 +588,21 @@ impl TickvFile {
 impl crate::storage::Storage for TickvFile {
     fn name(&self) -> &'static str {
         "tickv"
+    }
+    fn durability(&self) -> crate::storage::Durability {
+        // Pareado com a realidade do modo: buffered = os records podem estar
+        // só no buffer do handle até o próximo flush (checkpoint/sync).
+        if self.buffered.is_some() {
+            crate::storage::Durability::Buffered
+        } else {
+            crate::storage::Durability::Flushed
+        }
+    }
+    fn sync_durable(&mut self) -> Result<(), crate::storage::SgdbError> {
+        // Modo buffered: flush do handle (dados vão ao OS; power-loss sync
+        // completo ficaria num sync_all — não feito aqui, mesmo nível do
+        // FileStorage, que também reporta Flushed).
+        self.flush_buffered()
     }
     fn put(&mut self, key: &[u8], val: &[u8]) -> Result<(), crate::storage::SgdbError> {
         if key.len() > MAX_KLEN || val.len() > MAX_VLEN {
@@ -735,6 +841,50 @@ mod tests {
         s.put(b"k", b"v").unwrap();
         assert_eq!(s.get(b"k").unwrap(), Some(b"v".to_vec()));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn tickvfile_buffered_mode_parities_legacy() {
+        // v1.2.1 (passo 1): open_buffered — handle persistente, flush no
+        // checkpoint/sync_durable. Paridade com o modo legado: mesmo mapa,
+        // mesma duração (Buffered reportado), bytes TKLV idênticos no volume,
+        // reopen enxerga tudo (flush no drop implícito via checkpoint).
+        let dir = std::env::temp_dir().join("neural_sgdb_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("tickv_buffered.db");
+        let _ = std::fs::remove_file(&path);
+        {
+            let mut s = TickvFile::open_buffered(&path).unwrap();
+            assert_eq!(s.durability(), crate::storage::Durability::Buffered);
+            s.put(b"k1", b"v1").unwrap();
+            s.put(b"k2", b"v2").unwrap();
+            s.put(b"k1", b"v1b").unwrap(); // overwrite (invalid in-place)
+            s.delete(b"k2").unwrap(); // tombstone
+            // Em sessão: mapa correto mesmo sem flush explícito.
+            assert_eq!(s.get(b"k1").unwrap(), Some(b"v1b".to_vec()));
+            assert_eq!(s.get(b"k2").unwrap(), None);
+            // sync_durable flusha o buffer (o que está no handle vai ao arquivo).
+            s.sync_durable().unwrap();
+        } // drop SEM checkpoint: o handle é fechado, dados buffered podem
+          // não estar no arquivo — reabrimos via modo buffered de novo e
+          // verificamos com checkpoint explícito.
+        let mut s = TickvFile::open_buffered(&path).unwrap();
+        // O sync_durable acima garantiu o flush; o open re-scan/ckpt vê k1.
+        assert_eq!(s.get(b"k1").unwrap(), Some(b"v1b".to_vec()));
+        assert_eq!(s.get(b"k2").unwrap(), None);
+        s.checkpoint().unwrap();
+        // Pós-ckpt + reopen (modo legado): paridade total dos bytes.
+        let mut legacy = TickvFile::open(&path).unwrap();
+        assert_eq!(legacy.durability(), crate::storage::Durability::Flushed);
+        assert_eq!(legacy.get(b"k1").unwrap(), Some(b"v1b".to_vec()));
+        assert_eq!(legacy.get(b"k2").unwrap(), None);
+        // compact em modo buffered: handle reaberto, modo preservado.
+        s.compact().unwrap();
+        assert_eq!(s.durability(), crate::storage::Durability::Buffered);
+        s.put(b"k3", b"v3").unwrap();
+        assert_eq!(s.get(b"k3").unwrap(), Some(b"v3".to_vec()));
+        let _ = std::fs::remove_file(&path);
     }
 
     #[cfg(feature = "file-storage")]

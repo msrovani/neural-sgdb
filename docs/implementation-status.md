@@ -1,6 +1,6 @@
 ﻿# neural-sgdb — Implementation Status
 
-> **Current snapshot (2026-09-22, v1.1.26).** Capability matrix vs the shipped
+> **Current snapshot (2026-09-25, v1.2.1).** Capability matrix vs the shipped
 > codebase. For the public contract see [`docs/api.md`](api.md); for architecture
 > narrative see [`docs/architecture/README.md`](architecture/README.md).
 
@@ -17,11 +17,11 @@
 
 | Check | Command | Result |
 |---|---|---|
-| Default tests | `cargo test --lib` | **339** |
-| P2P tests | `cargo test --features p2p --lib` | **385** |
-| no_std tests | `cargo test --no-default-features --lib` | **283** |
+| Default tests | `cargo test --lib` | **370** |
+| P2P tests | `cargo test --features p2p --lib` | **416** |
+| no_std tests | `cargo test --no-default-features --lib` | **307** |
 | no_std target | `cargo check --no-default-features --target x86_64-unknown-none` | **ok** |
-| Hot test (MCP) | `cargo run --release --example mcp_client` | **119/0 exit 0** |
+| Hot test (MCP) | `cargo run --release --example mcp_client` | **150/0 exit 0** |
 | AI-user sim | `cargo run --release --example agent_sim` | loop real, scope isolado |
 | Machine protocol | `cargo run --release --example two_ai_protocol` | **16/16 exit 0** |
 | Agent protocol | `cargo run --release --example agent_protocol` | **23/23 exit 0** |
@@ -35,6 +35,8 @@
 | MDM1 v6 side-table meta | IMPLEMENTED | scope, entities, content_type, version_id, … |
 | MDM1 v7 scope_dims+model_id (v1.1.14/15) | IMPLEMENTED | `ScopeDims{user,agent,app,run}`, `model_id`, `mixed_models` verdict |
 | Harness commit_run (ADR-0010, v1.1.19) | IMPLEMENTED | `src/harness.rs`: `commit_run`/`deprecate_run`/`consolidate_recurrences_scoped`/`remember_episodic_scoped`; MCP `curate` ops; `mom/anti-pattern` |
+| Fork/merge de memória (v1.2.1, seekdb item 1) | IMPLEMENTED | `promote_run` + `MergeStrategy` (Fail/Ours/Theirs): promove memórias ativas do run (sandbox) ao escopo base; dedup sem version bump; keys `<run>/<base>`; MCP `curate op=promote_run` + `remember(key=)` |
+| Delete O(1) — reversos (v1.2.1, bench_delete_cost) | IMPLEMENTED | `sk_clocks` + `sk_ids` + `remove_entities_exact` (3 scans O(N) eliminados do delete); 30k deletes @ 60k docs 265s→43s; teste de invariante+mutação |
 | Null-scoping ScopeDims (v1.1.20) | IMPLEMENTED | `allows_scope_filter`; `recall_*_dims` pool; consolidate herda dims; 14 harness tests |
 | ScopeDims autoritativo (ADR-0013, v1.1.24) | IMPLEMENTED | `set_scope` write-through (`scope == scope_dims.user`); `validate` §6 sinaliza divergência; characterization test com o "antes" no cabeçalho |
 | Ledger de negativos (ADR-0014, v1.1.24) | IMPLEMENTED | `src/negative.rs` (`NDG1`), `sys/negative/`; `note_absence`/`forget_absence`/`recall_absences`/`recall_with_ledger` (self-healing)/`prune_absences`; 4 aliases MCP com JSON próprio |
@@ -127,8 +129,10 @@ v1.1.29) paginado IDX2 (v1.2.0, teto 16 MiB): seam
 `curate op=audit_checkpoint` + auto-persist metrics-gated (§5: writes ≥
 MAX(8, open_rebuild_ms_last)). Batch write `memories[]` + dedup
 `if_exists` + decide inline + recall `max_payload_bytes` + stale_candidates
-report no tensions (v1.2.0). Hot test **146/0**. MCP contract
-**1.2.0**.
+report no tensions (v1.2.0). Fork/merge: `curate op=promote_run`
+(`merge_strategy=fail|ours|theirs`) + `remember(key=)` (v1.2.1). Hot test
+**150/0**. MCP contract
+**1.2.1**.
 
 ### Host connectors
 `connectors/` is host-side (not crate SemVer). Hermes `MemoryProvider` is

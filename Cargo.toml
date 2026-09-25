@@ -1,6 +1,6 @@
 [package]
 name = "neural-sgdb"
-version = "1.2.0"
+version = "1.2.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Persistent, transferable memory substrate for AI agents (no_std + std)"
@@ -46,6 +46,23 @@ required-features = ["file-storage"]
 
 [[example]]
 name = "stress"
+required-features = ["file-storage"]
+
+# Concurrent write+search bench (Gap 0, seekdb-analysis.md) — P50/P99 do
+# recall sob escrita contínua; fecha o gap de MEDIÇÃO vs o claim P99 do seekdb.
+[[example]]
+name = "bench_concurrent"
+required-features = ["file-storage"]
+
+# Long-lived DB bench (item 3, seekdb-analysis.md) — 100k writes + 50k deletes:
+# os órfãos do BQ flat dominam o recall? Decide se o delta BQ two-level vale.
+[[example]]
+name = "bench_long_db"
+required-features = ["file-storage"]
+
+# Micro-bench do custo POR delete vs tamanho do DB (clock_index scan?).
+[[example]]
+name = "bench_delete_cost"
 required-features = ["file-storage"]
 
 # Hot SGDB Test (Via 3) — client cru que dirige o mcp_server como um IDE faria.
