@@ -177,14 +177,12 @@ fn remember_one(
     };
     let semantic = has_caller_embedding(params) || host.is_some();
     let written = if semantic {
-        match embed_for(host, text, params) {
-            Ok(emb) => db.remember_semantic_with(&key, text, &emb, opts),
-            Err(e) => return Err(e),
-        }
+        let emb = embed_for(host, text, params)?;
+        db.remember_semantic_with(&key, text, &emb, opts)
     } else {
         db.remember_text_with(&key, text, opts)
     };
-    written.map(|out| (out, semantic)).map_err(|e| mcp_actionable_error(e))
+    written.map(|out| (out, semantic)).map_err(mcp_actionable_error)
 }
 
 /// #8 â€” parse do URI de resource `memory://{layer}/{key}` (ex: memory://L2/ts/0000).

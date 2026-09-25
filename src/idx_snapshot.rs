@@ -368,6 +368,138 @@ fn rd_u64(data: &[u8], off: usize) -> Option<u64> {
     Some(u64::from_le_bytes(data.get(off..off + 8)?.try_into().ok()?))
 }
 
+// ---- v1.2.0 (c): PAGINAÇÃO do snapshot ----
+//
+// O teto MAX_VLEN (1 MiB) do storage trava o snapshot ÚNICO em ~7k writes
+// (medido no BENCHMARKS §Fast-mount IDX1). O IDX2 fatia o blob em chunks:
+//
+//   sys/idx/snapshot        → header (32B): "IDX2" + ver + fp + written_at
+//                             + total_len + chunk_len + n_parts
+//   sys/idx/snapshot/p/<NN> → chunk NN (4 hex dígitos, largura fixa —
+//                             regra 4 do AGENTS: ART não aceita prefix keys)
+//
+// O header carrega fp/written_at NOVAMENTE para o mount validar a integridade
+// SEM decodificar os chunks (chunk faltando/truncado → rebuild imediato).
+// O payload dos chunks é o mesmo blob IDX1 (v1) — o decodificador do
+// IndexSnapshot não muda; só a camada de persistência.
+
+pub const IDX2_MAGIC: &[u8; 4] = b"IDX2";
+pub const IDX2_VERSION: u8 = 1;
+/// Tamanho do chunk default (256 KiB — 4 chunks até o antigo teto de 1 MiB).
+pub const IDX2_CHUNK_LEN: usize = 256 * 1024;
+/// Teto de partes: 64 KiB de keys reservadas bastam (16 MiB de snapshot).
+pub const IDX2_MAX_PARTS: usize = 64 * 1024;
+
+/// Chave de storage do chunk NN (formato fixo `p/%04x`).
+pub fn idx2_part_key(part: usize) -> String {
+    alloc::format!("sys/idx/snapshot/p/{:04x}", part)
+}
+
+/// Erro de decodificação/reconstrução IDX2 (header ou chunks inválidos).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Idx2Error;
+
+/// Header paginado do snapshot (wire próprio, NÃO é o blob IDX1).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Idx2Header {
+    pub fingerprint: u64,
+    pub written_at: u64,
+    /// Tamanho total do blob IDX1 fatiado.
+    pub total_len: u32,
+    /// Tamanho de cada chunk (o último pode ser menor).
+    pub chunk_len: u32,
+    pub n_parts: u32,
+}
+
+impl Idx2Header {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(32);
+        out.extend_from_slice(IDX2_MAGIC);
+        out.push(IDX2_VERSION);
+        out.extend_from_slice(&self.fingerprint.to_le_bytes());
+        out.extend_from_slice(&self.written_at.to_le_bytes());
+        out.extend_from_slice(&self.total_len.to_le_bytes());
+        out.extend_from_slice(&self.chunk_len.to_le_bytes());
+        out.extend_from_slice(&self.n_parts.to_le_bytes());
+        out
+    }
+
+    /// Bounds-checked; nunca panica.
+    pub fn decode(data: &[u8]) -> Result<Self, Idx2Error> {
+        if data.len() < 32 || &data[0..4] != IDX2_MAGIC || data[4] != IDX2_VERSION {
+            return Err(Idx2Error);
+        }
+        let fp = rd_u64(data, 5).ok_or(Idx2Error)?;
+        let wa = rd_u64(data, 13).ok_or(Idx2Error)?;
+        let total = rd_u32(data, 21).ok_or(Idx2Error)?;
+        let chunk = rd_u32(data, 25).ok_or(Idx2Error)?;
+        let parts = rd_u32(data, 29).ok_or(Idx2Error)?;
+        if chunk == 0 || parts == 0 || parts as usize > IDX2_MAX_PARTS {
+            return Err(Idx2Error);
+        }
+        // coerência: n_parts cobre total_len com chunks de chunk_len
+        let expect = total.div_ceil(chunk) ;
+        if expect != parts {
+            return Err(Idx2Error);
+        }
+        Ok(Self {
+            fingerprint: fp,
+            written_at: wa,
+            total_len: total,
+            chunk_len: chunk,
+            n_parts: parts,
+        })
+    }
+}
+
+/// Fatia o blob IDX1 em chunks + header (v1.2.0 c).
+pub fn idx2_split(blob: &[u8], written_at: u64, chunk_len: usize) -> (Idx2Header, Vec<Vec<u8>>) {
+    let chunk_len = if chunk_len == 0 { IDX2_CHUNK_LEN } else { chunk_len };
+    let n_parts = blob.len().div_ceil(chunk_len).max(1);
+    let header = Idx2Header {
+        fingerprint: {
+            // fp vai no header para validação rápida; extraído do blob IDX1
+            // (offset 5..13 = campo fingerprint do IDX1).
+            rd_u64(blob, 5).unwrap_or(0)
+        },
+        written_at,
+        total_len: blob.len() as u32,
+        chunk_len: chunk_len as u32,
+        n_parts: n_parts as u32,
+    };
+    let mut parts = Vec::with_capacity(n_parts);
+    let mut off = 0usize;
+    for _ in 0..n_parts {
+        let end = (off + chunk_len).min(blob.len());
+        parts.push(blob[off..end].to_vec());
+        off = end;
+    }
+    (header, parts)
+}
+
+/// Reconstroi o blob IDX1 dos chunks (valida contra o header).
+pub fn idx2_join(header: &Idx2Header, parts: &[Option<Vec<u8>>]) -> Result<Vec<u8>, Idx2Error> {
+    if parts.len() != header.n_parts as usize {
+        return Err(Idx2Error);
+    }
+    let mut out = Vec::with_capacity(header.total_len as usize);
+    for (i, p) in parts.iter().enumerate() {
+        let bytes = p.as_ref().ok_or(Idx2Error)?;
+        let expect = {
+            let start = i * header.chunk_len as usize;
+            (header.total_len as usize).saturating_sub(start).min(header.chunk_len as usize)
+        };
+        if bytes.len() != expect {
+            return Err(Idx2Error);
+        }
+        out.extend_from_slice(bytes);
+    }
+    if out.len() != header.total_len as usize {
+        return Err(Idx2Error);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -470,11 +602,84 @@ mod tests {
         });
     }
 
+
+    // ---- v1.2.0 (c): paginação IDX2 ----
+
+    #[test]
+    fn idx2_header_roundtrip_and_coherence() {
+        let h = Idx2Header { fingerprint: 9, written_at: 10, total_len: 700, chunk_len: 256, n_parts: 3 };
+        let d = Idx2Header::decode(&h.encode()).unwrap();
+        assert_eq!(d, h);
+        // coerência: total 700 / chunk 256 = 3 partes (ceil)
+        assert_eq!(700usize.div_ceil(256), 3);
+        // n_parts errado → erro
+        let mut bad = h.clone();
+        bad.n_parts = 2;
+        assert!(Idx2Header::decode(&bad.encode()).is_err());
+        // chunk=0 / parts=0 / parts acima do teto → erro
+        for (c, p) in [(0u32, 1u32), (256, 0), (256, (IDX2_MAX_PARTS + 1) as u32)] {
+            let bad = Idx2Header { fingerprint: 0, written_at: 0, total_len: 256, chunk_len: c, n_parts: p };
+            assert!(Idx2Header::decode(&bad.encode()).is_err());
+        }
+        // truncado/hostil → erro, nunca panica
+        let enc = h.encode();
+        for cut in 0..enc.len() {
+            let _ = Idx2Header::decode(&enc[..cut]);
+        }
+        let _ = Idx2Header::decode(&b"XXXX                           "[..]);
+    }
+
+    #[test]
+    fn idx2_split_join_roundtrip_multichunk() {
+        // blob maior que 1 chunk (força 3+ partes)
+        let mut blob = Vec::new();
+        blob.extend_from_slice(IDX_MAGIC);
+        blob.push(IDX_VERSION);
+        blob.extend_from_slice(&0xfeedu64.to_le_bytes()); // fp em 5..13
+        blob.resize(700, 0xAB);
+        let (h, parts) = idx2_split(&blob, 42, 256);
+        assert_eq!(h.fingerprint, 0xfeed);
+        assert_eq!(h.n_parts, 3);
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[2].len(), 700 - 512); // último chunk parcial
+        let owned: Vec<Option<Vec<u8>>> = parts.iter().cloned().map(Some).collect();
+        assert_eq!(idx2_join(&h, &owned).unwrap(), blob);
+        // chunk faltando → erro (nunca blob parcial)
+        let mut missing = owned.clone();
+        missing[1] = None;
+        assert!(idx2_join(&h, &missing).is_err());
+        // chunk truncado → erro
+        let mut short = owned.clone();
+        short[0] = Some(short[0].clone().unwrap()[..10].to_vec());
+        assert!(idx2_join(&h, &short).is_err());
+        // parts.len() divergente → erro
+        assert!(idx2_join(&h, &owned[..2]).is_err());
+        // blob vazio → 1 parte vazia? não: n_parts mínima 1, chunk vazio ok
+        let (h0, p0) = idx2_split(&[], 1, 256);
+        assert_eq!(h0.n_parts, 1);
+        let owned0: Vec<Option<Vec<u8>>> = p0.iter().cloned().map(Some).collect();
+        assert_eq!(idx2_join(&h0, &owned0).unwrap(), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn idx2_part_key_is_fixed_width_no_prefix_conflict() {
+        // largura fixa 4 hex — regra 4 do AGENTS (ART prefix keys)
+        let a = idx2_part_key(1);
+        let b = idx2_part_key(0x10);
+        let c = idx2_part_key(0x1000);
+        assert!(a.ends_with("/0001"));
+        assert!(b.ends_with("/0010"));
+        assert!(c.ends_with("/1000"));
+        assert_eq!(a.len(), b.len());
+        assert_eq!(b.len(), c.len());
+        // nenhum é prefixo de outro (mesmo comprimento ⇒ impossível)
+        assert_ne!(a, b);
+    }
+
     /// Chave acima do MAX_KLEN no wire → erro, nunca alocação gigante
     /// (mesma disciplina de bounds de `limits.rs`).
     #[test]
-    fn idx1_oversized_key_rejected() {
-        // encoda manualmente um klen maior que MAX_KLEN
+    fn idx1_oversized_key_rejected() {        // encoda manualmente um klen maior que MAX_KLEN
         let mut enc = Vec::new();
         enc.extend_from_slice(IDX_MAGIC);
         enc.push(IDX_VERSION);

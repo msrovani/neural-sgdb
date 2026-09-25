@@ -874,8 +874,20 @@ impl AiosDatabaseEngine {
     pub fn persist_index_snapshot(&mut self, now: u64) -> Result<(), SgdbError> {
         let mut snap = self.collect_index_snapshot();
         snap.written_at = now;
+        let blob = snap.encode();
+        // v1.2.0 (c): blob único estourava o MAX_VLEN (1 MiB) em ~7k writes.
+        // IDX2: header em `sys/idx/snapshot` + chunks em `sys/idx/snapshot/p/
+        // <NNNN>` (largura fixa, regra ART prefix-key). O blob IDX1 (v1) é o
+        // mesmo — só a camada de persistência paginou.
+        let (header, parts) =
+            crate::idx_snapshot::idx2_split(&blob, now, crate::idx_snapshot::IDX2_CHUNK_LEN);
         self.storage
-            .put(Self::IDX_SNAPSHOT_KEY.as_bytes(), &snap.encode())
+            .put(Self::IDX_SNAPSHOT_KEY.as_bytes(), &header.encode())?;
+        for (i, p) in parts.iter().enumerate() {
+            let key = crate::idx_snapshot::idx2_part_key(i);
+            self.storage.put(key.as_bytes(), p)?;
+        }
+        Ok(())
     }
 
     /// Tenta montar os índices a partir do snapshot persistido. Retorna
@@ -893,6 +905,25 @@ impl AiosDatabaseEngine {
         let raw = match self.storage.get(Self::IDX_SNAPSHOT_KEY.as_bytes())? {
             Some(b) => b,
             None => return Ok(None),
+        };
+        // v1.2.0 (c): a key primária pode ser um blob IDX1 (v1.1.29, legado)
+        // ou um header IDX2 paginado. Detecta pelo magic e junta os chunks.
+        let raw: Vec<u8> = if raw.len() >= 4 && &raw[0..4] == crate::idx_snapshot::IDX2_MAGIC {
+            let header = match crate::idx_snapshot::Idx2Header::decode(&raw) {
+                Ok(h) => h,
+                Err(_) => return Ok(None),
+            };
+            let mut parts: Vec<Option<Vec<u8>>> = Vec::with_capacity(header.n_parts as usize);
+            for i in 0..header.n_parts as usize {
+                let key = crate::idx_snapshot::idx2_part_key(i);
+                parts.push(self.storage.get(key.as_bytes()).ok().flatten());
+            }
+            match crate::idx_snapshot::idx2_join(&header, &parts) {
+                Ok(b) => b,
+                Err(_) => return Ok(None), // chunk faltando/truncado → rebuild
+            }
+        } else {
+            raw
         };
         let snap = match IndexSnapshot::decode(&raw) {
             Ok(s) => s,
