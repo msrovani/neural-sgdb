@@ -1,6 +1,6 @@
 [package]
 name = "neural-sgdb"
-version = "1.1.28"
+version = "1.1.29"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Persistent, transferable memory substrate for AI agents (no_std + std)"
@@ -38,6 +38,10 @@ required-features = ["p2p"]
 # compilados (nem em `cargo test --no-default-features`).
 [[example]]
 name = "bench"
+required-features = ["file-storage"]
+
+[[example]]
+name = "bench_index_snapshot"
 required-features = ["file-storage"]
 
 [[example]]

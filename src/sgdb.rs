@@ -9780,6 +9780,18 @@ mod tests {
         db2.rebuild_indices().unwrap();
         assert_eq!(db2.index_fingerprint(), fp_first);
 
+        // BUG (hot test v1.1.29): somas f64 não viajam no snapshot — montar o
+        // corpus_sums com vetores VAZIOS fazia o validate acusar drift
+        // fantasma. Regressão: mount → validate sem issue de corpus_sums.
+        db2.rebuild_indices().unwrap(); // garante pool semântico antes de medir
+        let mut db3 =
+            Sgdb::open_with_snapshot(1, crate::FileStorage::open(&path).unwrap()).unwrap();
+        let issues = db3.validate();
+        assert!(
+            !issues.iter().any(|i| i.key.starts_with("corpus_sums/")),
+            "validate pós-fast-mount não pode acusar drift fantasma de corpus_sums"
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

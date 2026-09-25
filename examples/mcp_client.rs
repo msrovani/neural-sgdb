@@ -43,14 +43,20 @@ struct Mcp {
 
 impl Mcp {
     fn spawn(bin: &str, db: &str) -> Mcp {
+        Self::spawn_env(bin, db, &[])
+    }
+
+    fn spawn_env(bin: &str, db: &str, extra: &[(&str, &str)]) -> Mcp {
         let t = Instant::now();
-        let mut child = Command::new(bin)
-            .stdin(Stdio::piped())
+        let mut cmd = Command::new(bin);
+        cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit()) // logs do server visÃ­veis (stderr)
-            .env("NEURAL_SGDB_DB", db)
-            .spawn()
-            .expect("spawn do mcp_server falhou");
+            .stderr(Stdio::inherit()) // logs do server visíveis (stderr)
+            .env("NEURAL_SGDB_DB", db);
+        for (k, v) in extra {
+            cmd.env(k, v);
+        }
+        let mut child = cmd.spawn().expect("spawn do mcp_server falhou");
         let stdin = child.stdin.take().expect("stdin do server");
         let stdout = BufReader::new(child.stdout.take().expect("stdout do server"));
         Mcp { child, stdin, stdout, id: 0, startup_ms: t.elapsed().as_millis() }
@@ -191,7 +197,7 @@ fn main() {
     rep.check("protocolVersion 2025-11-25",
         r["result"]["protocolVersion"] == "2025-11-25", r.to_string());
     rep.check("serverInfo version 1.1.26",
-        r["result"]["serverInfo"]["version"] == "1.1.28", r.to_string());
+        r["result"]["serverInfo"]["version"] == "1.1.29", r.to_string());
     rep.check("serverInfo mcp_tool_count 5",
         r["result"]["serverInfo"]["mcp_tool_count"] == 5, r.to_string());
     let instr = r["result"]["instructions"].as_str().unwrap_or("");
@@ -992,6 +998,28 @@ fn main() {
     let r = srv.rpc("tools/call", json!({"name": "remember"}));
     rep.check("parametro faltando â†’ -32602", r["error"]["code"] == -32602, r.to_string());
     rep.phase("erros", &t);
+
+    // ---------- fase 9b: fast-mount IDX1 (v1.1.29, ADR-0009 §5) ----------
+    let t = Instant::now();
+    let mut srv_idx = Mcp::spawn_env(&bin, &db, &[("NEURAL_SGDB_INDEX_SNAPSHOT", "auto")]);
+    // 1º open com snapshot=auto num db NOVO: sem snapshot → rebuild normal;
+    // escreve um fato para o 2º open montar do índice persistido.
+    let (txt, is_err) = srv_idx.tool("remember", json!({"text": "hot idx mount fact"}));
+    rep.check("idx: remember com snapshot=auto", !is_err && txt.contains("md/L3/"), txt.clone());
+    let (txt, is_err) = srv_idx.tool("curate", json!({"op": "audit_checkpoint", "now": 2000}));
+    rep.check("idx: audit_checkpoint persiste snapshot (nota na resposta)",
+        !is_err && txt.contains("snapshot idx persistido"), txt.clone());
+    srv_idx.stop();
+    // 2º open: monta do IDX1 (banner do server no stderr: "Sgdb fast-mount")
+    let mut srv_idx2 = Mcp::spawn_env(&bin, &db, &[("NEURAL_SGDB_INDEX_SNAPSHOT", "auto")]);
+    let (txt, _) = srv_idx2.tool("recall", json!({"query": "hot idx mount fact", "k": 3}));
+    rep.check("idx: fast-mount pós-restart recupera o fato (lexical)",
+        txt.contains("hot idx mount fact"), txt.clone());
+    let (txt, is_err) = srv_idx2.tool("validate", json!({}));
+    rep.check("idx: validate pós-fast-mount saudável", !is_err && txt.contains("saudavel"), txt.clone());
+    // (corrupção do blob IDX1 → fallback rebuild é coberto pelos testes de lib em sgdb.rs)
+    srv_idx2.stop();
+    rep.phase("fast-mount IDX1", &t);
 
     // ---------- fase 10: PERSISTÃŠNCIA (o teste a quente de verdade) ----------
     let t = Instant::now();

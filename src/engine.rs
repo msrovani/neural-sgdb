@@ -929,6 +929,17 @@ impl AiosDatabaseEngine {
         for (d, c) in &snap.corpus_counts {
             self.corpus_sums.insert(*d, (Vec::new(), *c));
         }
+        // BUG (hot test v1.1.29): somas f64 NÃO viajam no snapshot (não são
+        // associativas — ADR-0011), mas deixar o vetor VAZIO com o count do
+        // snapshot faz o `validate` acusar `corpus_sums/<dim>` drift fantasma
+        // logo após o mount. Recompute das somas a partir dos docs: scan
+        // barato (decode + floats, SEM indexar ART/BQ/lexical) — o fp não
+        // muda (só counts entram, ADR-0011 §exclusões).
+        if !snap.corpus_counts.is_empty() {
+            if let Ok(rec) = self.recompute_corpus_sums() {
+                self.corpus_sums = rec;
+            }
+        }
         // BQ: geometria sem bitvecs — os vetores efetivos viriam dos docs, e
         // lê-los seria o rebuild. O fast-mount V1 monta o BQ VAZIO com a
         // largura de era correta: o recall semântico devolve pool vazio até o

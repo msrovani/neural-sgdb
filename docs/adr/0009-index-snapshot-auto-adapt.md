@@ -1,7 +1,10 @@
 # ADR-0009 — Index snapshot on open; metrics-gated auto-adapt (not mid-query)
 
-Status: Accepted *(design contract — implementation is ROADMAP Next; no
-format shipped yet)*
+Status: Accepted *(design contract — §3 fast-mount IDX1 **implementado em
+v1.1.29**: wire `IDX1`, `open_with_snapshot`, seam MCP
+`NEURAL_SGDB_INDEX_SNAPSHOT`; §4 métricas de open desde v1.1.21; §5
+auto-persist metrics-gated ainda ROADMAP — o seam atual é política
+explícita do host, não adaptativa)*
 
 ## Context
 

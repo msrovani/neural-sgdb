@@ -121,8 +121,10 @@ topologies; **content** does.
 `NEURAL_SGDB_EMBEDDER` = none (`=demo` explicit only). `remember(text=)`
 without vector → L3. Resources `nsgdb://doctrine` + `nsgdb://session`.
 `health(view=tensions|staleness|era)`. Harness ADR-0010:
-`curate(op=commit_run|deprecate_run)`. Hot test **119/0**. MCP contract
-**1.1.28**.
+`curate(op=commit_run|deprecate_run)`. Fast-mount IDX1 (ADR-0009 §3,
+v1.1.29): seam `NEURAL_SGDB_INDEX_SNAPSHOT=off|auto|always` (default off);
+persist no `curate op=audit_checkpoint`. Hot test **139/0**. MCP contract
+**1.1.29**.
 
 ### Host connectors
 `connectors/` is host-side (not crate SemVer). Hermes `MemoryProvider` is

@@ -4,6 +4,36 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [1.1.29] — 2026-09-25 (fast-mount IDX1, ADR-0009 §3)
+
+- **Fast-mount do índice derivado (IDX1)**: novo wire type (10º do fuzz
+  harness) em `src/idx_snapshot.rs` — snapshot do estado derivado (art_keys
+  sem ids — NEXT_ID é de processo, entity_index, indexed_dims,
+  corpus_counts — somas f64 FORA, não-associativas — e são recomputadas no
+  mount; bug do hot test: corpus_sums vazio → drift fantasma no `validate`),
+  `bq_entries` (sk→bitvec, pareado por storage key) e lexical COMPLETO
+  (postings/doc_len/n_docs), com `fingerprint` como oráculo do mount.
+  `Sgdb::open_with_snapshot(node_id, backend)` monta SEM ler docs; qualquer
+  divergência/corrupção/ausência → full rebuild (mesma garantia). `open()`
+  default inalterado.
+- **MCP seam**: `NEURAL_SGDB_INDEX_SNAPSHOT=off|auto|always` (default off);
+  auto/always → `open_with_snapshot`; persist do snapshot no
+  `curate op=audit_checkpoint` ("+ snapshot idx persistido" na resposta).
+- **Bench** (`examples/bench_index_snapshot.rs`, BENCHMARKS.md §Fast-mount
+  IDX1): ~1.2×@800 docs, ~1.5×@8k (102–109 ms → 65–75 ms); persist do idx
+  12–14 ms @ 8k docs. Teto MAX_VLEN (1 MiB): ~7k writes estouram o snapshot
+  único — paginação é próximo passo se houver demanda.
+- **RaBitQ A/B: REJEITADO nos dois critérios** (`src/rabitq.rs` mantido como
+  registro; `examples/bench_rabitq_ab.rs` reproduzível): clusters densos
+  −13..−17 pp recall@5 vs ADC-lite em todos os oversamples; custo ~25–45×
+  pior (~1.3 ms vs 27–60 µs/query). ADC-lite permanece o caminho oficial.
+- **ADR-0018**: budget allocation per view (Jev-Mem Eq. 13–14) DEFERRED —
+  reativação só com multi-hop real + evidência medida.
+- **Auditoria dos projetos base** (ROADMAP): tickv = port byte-exato do
+  TickvLite (nada a portar); noproto congelado 0.9.x (NMD1 é layout próprio);
+  art 2025–26 ataca concorrência/NVM que não temos. Todos 💤.
+- Hot test: fase 9b (fast-mount IDX1) — **139/0**.
+
 ## [1.1.28] — 2026-09-23 (linguagem de máquina, ADR-0017)
 
 - **Vocabulário ÚNICO prosa/JSON**: `state_label`/`path_label`/`layer_label`
