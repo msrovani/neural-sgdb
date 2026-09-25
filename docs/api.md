@@ -1,7 +1,7 @@
 ﻿# neural-sgdb — API Contract
 
 > Contract document for the extraction of the SGDB core from neural-os-core.
-> Status: **current public contract (crate v1.1.29)** —
+> Status: **current public contract (crate v1.2.0)** —
 > this document is the current public contract; roadmap items are explicitly
 > marked as such. The internal API lives in `crates/k_ai/src/sgdb/` of the
 > parent OS; this doc defines the public surface the community crate exposes
@@ -367,7 +367,7 @@ código, binários). Duas regras tornam o consumo determinístico:
 ## Additive public surface (v1.1.2–v1.1.26)
 
 Everything below is **additive** (MINOR per VERSIONING.md) — no signature of a
-v1.0 method changed; crate version **1.1.29** in `Cargo.toml`. Key additions since the contract above:
+v1.0 method changed; crate version **1.2.0** in `Cargo.toml`. Key additions since the contract above:
 
 ```rust
 // ---- S1: recall is LOUD on dimension mismatch (v1.1.3) ----
@@ -565,10 +565,15 @@ pub struct HealthReport { /* + opens, open_rebuild_ms_last, open_rebuild_ms_max 
 pub fn open_with_snapshot(node_id: u8, backend: impl Storage + 'static)
     -> Result<Sgdb, SgdbError>;
 pub fn persist_index_snapshot(&mut self, now: u64) -> Result<(), SgdbError>; // sys/idx/snapshot
+// ---- v1.2.0 (b): texto de uma memória sem N consultas de recall ----
+// L3/L2/L1 → payload direto; L4/L5 → companion /L2/. Vazio se não há texto.
+pub fn text_of(&mut self, key: &str) -> Result<String, SgdbError>;
 // MCP: NEURAL_SGDB_INDEX_SNAPSHOT=off|auto|always (default off; auto/always →
-// open_with_snapshot; persist no curate op=audit_checkpoint). Teto MAX_VLEN:
-// snapshot é UM valor no storage — ~7k writes estouram 1 MiB (paginação =
-// próximo passo se houver demanda).
+// open_with_snapshot; persist no curate op=audit_checkpoint E auto-persist
+// metrics-gated: writes desde o último persist >= MAX(8, open_rebuild_ms_last)).
+// v1.2.0 (c) IDX2: snapshot PAGINADO — header 32B na key primária + chunks de
+// 256 KiB em sys/idx/snapshot/p/%04x; blob IDX1 intocado; chunk faltando →
+// rebuild. Teto novo: 16 MiB (64 KiB partes).
 
 // ---- Recall adaptativo (v1.1.22, ADR-0012) ----
 // O esforço é consequência da AMBIGUIDADE da fronteira do top-k, não de uma

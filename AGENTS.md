@@ -6,7 +6,7 @@ repo. **Read `codemap.md` (atlas), `docs/api.md` (contract) and
 Storage, Cognitive API; typed hits from v1.1.6; current crate = `Cargo.toml`) and
 `docs/implementation-status.md` before editing code.**
 
-**Shipped crate is 1.1.29 (agentic MCP contract 1.1.29):** Vocabulário ÚNICO
+**Shipped crate is 1.2.0 (agentic MCP contract 1.2.0, hot test 146/0):** Vocabulário ÚNICO
 prosa/JSON (ADR-0017: `{:?}` fora do wire; tool `decide` 𝒥(S,𝒬) = 5º tool;
 `recall_candidates` sinais decompostos; validate tipado; k=0 erro). `Hit.type_scores`
 = **ADR-0016** (episódico/semântico/procedural/preferência sobrepostos,
@@ -441,7 +441,7 @@ turno, exact vs paraphrase, isolamento de scope). Paraphrase MISSA no lexical
 
 Release 1/3 do plano de melhorias (itens 1, 2, 3, 6) — **tudo aditivo, nada muda
 comportamento de recall**. Sem mudança de formato. Contrato MCP → **1.1.21**.
-Matrix corrente (pós-v1.1.29): **358+1 / 404+1 / 296+1**. D4/D5/D9 fechados
+Matrix corrente (pós-v1.2.0): **362+1 / 408+1 / 300+1**. D4/D5/D9 fechados
 (`set_tie_margin` calibra o state-first; onboarding/steps `{step,text}`;
 unseen_scopes `{label,count}`)..
 

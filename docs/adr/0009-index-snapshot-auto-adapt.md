@@ -3,8 +3,10 @@
 Status: Accepted *(design contract — §3 fast-mount IDX1 **implementado em
 v1.1.29**: wire `IDX1`, `open_with_snapshot`, seam MCP
 `NEURAL_SGDB_INDEX_SNAPSHOT`; §4 métricas de open desde v1.1.21; §5
-auto-persist metrics-gated ainda ROADMAP — o seam atual é política
-explícita do host, não adaptativa)*
+auto-persist metrics-gated **implementado em v1.2.0**: o host persiste
+quando os writes desde o último persist atingem
+`MAX(8, open_rebuild_ms_last)` — falha log-only; snapshot paginado IDX2
+(v1.2.0) elimina o teto MAX_VLEN)*
 
 ## Context
 

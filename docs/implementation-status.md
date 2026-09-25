@@ -122,9 +122,13 @@ topologies; **content** does.
 without vector → L3. Resources `nsgdb://doctrine` + `nsgdb://session`.
 `health(view=tensions|staleness|era)`. Harness ADR-0010:
 `curate(op=commit_run|deprecate_run)`. Fast-mount IDX1 (ADR-0009 §3,
-v1.1.29): seam `NEURAL_SGDB_INDEX_SNAPSHOT=off|auto|always` (default off);
-persist no `curate op=audit_checkpoint`. Hot test **139/0**. MCP contract
-**1.1.29**.
+v1.1.29) paginado IDX2 (v1.2.0, teto 16 MiB): seam
+`NEURAL_SGDB_INDEX_SNAPSHOT=off|auto|always` (default off); persist no
+`curate op=audit_checkpoint` + auto-persist metrics-gated (§5: writes ≥
+MAX(8, open_rebuild_ms_last)). Batch write `memories[]` + dedup
+`if_exists` + decide inline + recall `max_payload_bytes` + stale_candidates
+report no tensions (v1.2.0). Hot test **146/0**. MCP contract
+**1.2.0**.
 
 ### Host connectors
 `connectors/` is host-side (not crate SemVer). Hermes `MemoryProvider` is

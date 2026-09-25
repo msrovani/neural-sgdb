@@ -4,6 +4,37 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [1.2.0] — 2026-09-25 (agentic write path + fast-mount sem teto)
+
+- **Batch write (`memories[]`)**: `remember` aceita até 64 memórias num
+  round trip; cada item herda scope/dims/entities/type do topo com override.
+  Helper `remember_one` fatora a lógica single — batch reusa, sem duplicação.
+- **Dedup guard (`if_exists=add|reinforce|supersede|reject`)**: probe de
+  equivalência por 1-hop de entidades (ou tokens + texto igual sem
+  entidades). Default `add` — a doutrina ADD-only fica intacta; `supersede`
+  usa a API oficial (DAG causal), não `set_state` cru.
+- **decide inline**: as respostas tipadas agora TAMBÉM no `content[0].text`
+  (JSON na 2ª linha) — o consumidor que lê só o text não perde o payload.
+- **Preview de payload**: `recall` aceita `max_payload_bytes` (opt-in,
+  default full) — corta o text de cada hit em N bytes com marca `…`.
+- **Stale candidates (REPORT)**: `health(view=tensions)` lista pares de
+  memórias ativas com mesma entidade + jaccard ≥ 0.7 (teto 20). O host
+  decide: desatualização ou conteúdo distinto — o core nunca decide.
+- **`Sgdb::text_of(key)`**: texto do L3 direto, do L4/L5 via companion
+  `/L2/` (o report não faz N consultas de recall).
+- **IDX2 — snapshot paginado (c)**: o teto MAX_VLEN (1 MiB, ~7k writes)
+  sai. Header de 32B em `sys/idx/snapshot` (magic+fp+total/chunk/parts,
+  coerência validada) + chunks de 256 KiB em `sys/idx/snapshot/p/%04x`
+  (largura fixa — regra ART prefix-key). Blob IDX1 intocado; mount junta
+  os chunks e qualquer chunk faltando/truncado → rebuild. Teto novo: 16 MiB.
+- **Auto-persist metrics-gated (d, ADR-0009 §5 completo)**: política ≠ off
+  persiste o snapshot quando os writes desde o último persist atingem
+  `MAX(8, open_rebuild_ms_last)` — open barato não paga persist por put;
+  open caro persiste proporcional ao custo do próximo restart. Falha é
+  log-only (o rebuild de fallback é a garantia).
+- Hot test: fases 7c (batch/dedup/decide) + 7d (preview/stale) — **146/0**.
+- Matriz: **362+1 / 408+1 / 300+1**; gates clippy/doc/bare-metal verdes.
+
 ## [1.1.29] — 2026-09-25 (fast-mount IDX1, ADR-0009 §3)
 
 - **Fast-mount do índice derivado (IDX1)**: novo wire type (10º do fuzz
