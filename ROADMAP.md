@@ -9,6 +9,17 @@ Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
 
 ## Next (honest gaps — not this release)
 
+⏳ **seekdb import (2026-09-25)** — auditoria do competidor direto
+   (OceanBase, "state store for AI agents") em `docs/seekdb-analysis.md`.
+   Três itens priorizados: (1) **bench de write+search concorrente** (S) —
+   eles publicam P99 flat, nós nunca medimos; fechar o gap de medição antes
+   de qualquer comparação; (2) **harness fork/merge por scope run** (S–M) —
+   sandbox de exploração para o agente; ~80% já existe (`ScopeDims.run` +
+   `commit_run` + DAG causal), falta o merge com estratégia THEIRS/OURS
+   decidida pelo host; (3) delta BQ (M) — condicionado a medição mostrando
+   que órfãos dominam o scan em DBs velhos. Rejeitados: SQL/MySQL protocol,
+   ACID multi-op, GIS, async index infra (doutrina MCP/memórias/no_std).
+
 ✅ **v1.1.27 — aquisição Jev-Mem (2026-09-23)** — mapeamento mecanismo a
    mecanismo do arXiv 2609.23986 em `docs/jev-mem-adoption.md`: o core JÁ É o
    plano de dados System-One (RRF κ=60, adaptive stopping, ADD-only,

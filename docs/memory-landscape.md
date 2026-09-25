@@ -73,6 +73,25 @@ v1.1.5–v1.1.6 acrescentaram era guard e hits tipados — ver `CHANGELOG.md`.
 - CRDT/mesh (≈ Letta shared blocks).
 - Lifecycle de promoção L3→L4 (≈ mem0/letta).
 
+
+### seekdb (OceanBase) — competidor direto (2026-09-25)
+
+O primeiro banco (não camada) do landscape mirando o MESMO público:
+"state store for AI agents", MySQL-compatible, COW sandbox FORK/MERGE,
+two-level HNSW sobre Change Stream. Análise completa em
+[`seekdb-analysis.md`](seekdb-analysis.md). Resumo do veredito:
+
+- Write→search imediato: o nsgdb já resolve **por formato** (BQ/lexical
+  append-only indexam no put) o que eles resolvem por infra (pipeline
+  assíncrono). Sem ação.
+- **Ideia exportável #1: fork/merge de estado** — no nsgdb é ~80%
+  construído (ScopeDims.run + commit_run + DAG causal); falta só o
+  harness de merge com estratégia do host. S–M, risco baixo.
+- **Gap de MEDIÇÃO**: eles publicam P99 de write+search concorrente;
+  o nsgdb nunca mediu. Bench de concorrência (S) antes de qualquer claim.
+- Rejeitados: SQL/MySQL protocol, ACID multi-op, GIS, async index infra
+  (incompatíveis com doutrina MCP/memórias/no_std).
+
 ## Roadmap por complexidade (aprovado 2026-08)
 
 Status: itens **1–10 entregues em v1.1.4** (2026-08-14, commits por item com
