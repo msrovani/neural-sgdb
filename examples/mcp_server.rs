@@ -140,6 +140,53 @@ fn embed_for(host: Option<&dyn Embedder>, text: &str, payload: &Value) -> Result
     }
 }
 
+/// v1.2.0 (a): write de UMA memoria a partir de params JSON - a MESMA logica
+/// do handler single, fatorada para o batch (`memories[]`) reusar sem
+/// duplicacao. Devolve o `RememberOutput` + se o path foi semantico.
+fn remember_one(
+    db: &mut Sgdb,
+    params: &Value,
+    host: Option<&dyn Embedder>,
+) -> Result<(neural_sgdb::RememberOutcome, bool), String> {
+    let text = params["text"].as_str().unwrap_or("");
+    let key = format!("mcp/{:06}", {
+        let ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        ms * 1000 + seq as u128
+    });
+    let entities: Vec<&str> = params["entities"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|e| e.as_str()).collect())
+        .unwrap_or_default();
+    let scope_explicit = params["scope"].as_str();
+    let scope_resolved = db.resolve_scope_param(scope_explicit);
+    let opts = neural_sgdb::RememberOptions {
+        scope: Some(scope_resolved.as_str()),
+        entities: &entities,
+        content_type: params["type"].as_str(),
+        scope_dims: neural_sgdb::ScopeDims::from_args(
+            params["scope_user"].as_str(),
+            params["scope_agent"].as_str(),
+            params["scope_app"].as_str(),
+            params["scope_run"].as_str(),
+        ),
+        model_id: params["model_id"].as_str(),
+    };
+    let semantic = has_caller_embedding(params) || host.is_some();
+    let written = if semantic {
+        match embed_for(host, text, params) {
+            Ok(emb) => db.remember_semantic_with(&key, text, &emb, opts),
+            Err(e) => return Err(e),
+        }
+    } else {
+        db.remember_text_with(&key, text, opts)
+    };
+    written.map(|out| (out, semantic)).map_err(|e| mcp_actionable_error(e))
+}
+
 /// #8 â€” parse do URI de resource `memory://{layer}/{key}` (ex: memory://L2/ts/0000).
 fn parse_resource_uri(uri: &str) -> Option<(neural_sgdb::MemoryLayer, String)> {
     let rest = uri.strip_prefix("memory://")?;
@@ -496,7 +543,9 @@ fn mcp_listed_tools() -> Value {
            "scope_run":{"type":"string"},
            "model_id":{"type":"string","description":"Era do vetor (MDM1 v7)"},
            "entities":{"type":"array","items":{"type":"string"}},
-           "type":{"type":"string","enum":["text","json","code","embedding","binary"]}
+           "type":{"type":"string","enum":["text","json","code","embedding","binary"]},
+           "memories":{"type":"array","items":{"type":"object"},"description":"Batch (v1.2.0): N memórias num round trip (teto 64). Cada item aceita text/entities/scope/type/embedding — override sobre os params do topo."},
+           "if_exists":{"type":"string","enum":["add","reinforce","supersede","reject"],"description":"v1.2.0: quando o probe acha memória equivalente (mesma entity 1-hop ou tokens + texto igual). Default add = doutrina ADD-only intacta."}
          }},
          "annotations":{"destructiveHint":true,"idempotentHint":true}},
         {"name":"recall",
@@ -1235,6 +1284,135 @@ fn main() {
                 let name = expand_tool(msg["params"]["name"].as_str().unwrap_or(""), args);
                 match name.as_str() {
                     "remember" => {
+                        // v1.2.0 (a): batch — `memories: [...]` escreve N
+                        // memórias num round trip (o lote de 45 calls vira 1).
+                        // Cada item herda scope/dims/entities/type do topo
+                        // (override por item) e roda a MESMA lógica do single.
+                        if let Some(items) = args["memories"].as_array() {
+                            if items.is_empty() {
+                                send(&error_response(&id, -32602,
+                                    "memories[] vazio: para sondar existência use if_exists=reject com memories de 1 item"));
+                                continue;
+                            }
+                            if items.len() > 64 {
+                                send(&error_response(&id, -32602,
+                                    "memories[] acima do teto (64): quebre em lotes — batch gigante trava o round trip"));
+                                continue;
+                            }
+                            let if_exists = args["if_exists"].as_str().unwrap_or("add");
+                            if !matches!(if_exists, "add" | "reinforce" | "supersede" | "reject") {
+                                send(&error_response(&id, -32602,
+                                    "if_exists inválido (validos: add, reinforce, supersede, reject)"));
+                                continue;
+                            }
+                            let mut results: Vec<Value> = Vec::new();
+                            let mut wrote = 0usize;
+                            let mut skipped = 0usize;
+                            let mut failed = 0usize;
+                            for (mi, item) in items.iter().enumerate() {
+                                let itext = item["text"].as_str().unwrap_or("");
+                                if itext.is_empty() {
+                                    results.push(json!({"index": mi, "error": "text obrigatório"}));
+                                    failed += 1;
+                                    continue;
+                                }
+                                // resolve single-remember com os parâmetros
+                                // MERGED (topo < item) — helper local abaixo.
+                                let merged = {
+                                    let mut m = args.clone();
+                                    if let Some(obj) = m.as_object_mut() {
+                                        for (k, v) in item.as_object().unwrap_or(&serde_json::Map::new()) {
+                                            obj.insert(k.clone(), v.clone());
+                                        }
+                                        obj.remove("memories");
+                                    }
+                                    m
+                                };
+                                // probe de existência (v1.2.0 #2): a MESMA
+                                // memória sob key diferente é achada por
+                                // entidade (1-hop) ou token exato do texto.
+                                let existing = if if_exists == "add" {
+                                    None
+                                } else {
+                                    let ents: Vec<String> = merged["entities"].as_array()
+                                        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                                        .unwrap_or_default();
+                                    if ents.is_empty() {
+                                        // sem entidades: probe lexical com os
+                                        // 3 primeiros tokens do texto
+                                        let probe: String = {
+                                            let toks = neural_sgdb::tokenize_for_rerank(itext);
+                                            toks.iter().take(3).cloned().collect::<Vec<_>>().join(" ")
+                                        };
+                                        if probe.is_empty() { None }
+                                        else {
+                                            db.recall_lexical(&probe, 1).ok()
+                                              .and_then(|h| h.into_iter().next())
+                                              .filter(|h| h.text == itext)
+                                              .map(|h| h.key)
+                                        }
+                                    } else {
+                                        let refs: Vec<&str> = ents.iter().map(|s| s.as_str()).collect();
+                                        db.recall_entities(&refs, 1).ok()
+                                          .and_then(|h| h.into_iter().next())
+                                          .filter(|h| h.text == itext)
+                                          .map(|h| h.key)
+                                    }
+                                };
+                                if let Some(ek) = existing.clone() {
+                                    match if_exists {
+                                        "reject" => {
+                                            results.push(json!({"index": mi, "skipped": true, "existing_key": ek,
+                                                "reason": "memória equivalente já existe (if_exists=reject)"}));
+                                            skipped += 1;
+                                            continue;
+                                        }
+                                        "reinforce" => {
+                                            match db.reinforce(&ek, 0.1) {
+                                                Ok(_) => {
+                                                    results.push(json!({"index": mi, "reinforced": true, "existing_key": ek}));
+                                                    wrote += 1;
+                                                    continue;
+                                                }
+                                                Err(e) => {
+                                                    results.push(json!({"index": mi, "error": mcp_actionable_error(e)}));
+                                                    failed += 1;
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                        _ => {} // supersede cai no write normal abaixo
+                                    }
+                                }
+                                // dispatch recursivo: roda o handler single
+                                // com os params merged (reuso da MESMA lógica).
+                                match remember_one(&mut db, &merged, embedder.as_deref()) {
+                                    Ok((out, semantic)) => {
+                                        let indexed = if semantic { "semantic" } else { "lexical" };
+                                        let sk = out.storage_key.clone();
+                                        results.push(json!({"index": mi, "storage_key": sk, "indexed": indexed}));
+                                        wrote += 1;
+                                        // supersede explícito: se o probe achou
+                                        // equivalente e o modo é supersede,
+                                        // marca o velho Superseded apontando p/ o novo.
+                                        if if_exists == "supersede" {
+                                            if let Some(ek) = existing {
+                                                let _ = db.supersede(&ek, &sk);
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        results.push(json!({"index": mi, "error": mcp_actionable_error(e)}));
+                                        failed += 1;
+                                    }
+                                }
+                            }
+                            let structured = json!({"wrote": wrote, "skipped": skipped, "failed": failed, "results": results});
+                            let prose = format!("batch remember: {} gravadas, {} puladas, {} falhas", wrote, skipped, failed);
+                            send(&json!({"jsonrpc":"2.0","id":id,"result":
+                                mcp_tool_result(&prose, structured, false)}));
+                            continue;
+                        }
                         let text = args["text"].as_str().unwrap_or("");
                         if text.is_empty() {
                             send(&error_response(&id, -32602, "parametro 'text' obrigatorio"));
@@ -2449,7 +2627,16 @@ fn main() {
                             };
                             answers.push(ans);
                         }
-                        let text = format!("decide: {} respostas", answers.len());
+                        // v1.2.0 (a): o text carrega as respostas TIPADAS em
+                        // JSON — o consumidor que lê só content[0].text (o
+                        // padrão) não perde mais as respostas para o
+                        // structuredContent (lição do ADR-0017: o modelo lê o
+                        // schema, mas o canal padrão é o text).
+                        let text = format!(
+                            "decide: {} respostas\n{}",
+                            answers.len(),
+                            serde_json::to_string(&json!({"answers": answers})).unwrap_or_default()
+                        );
                         send(&json!({"jsonrpc":"2.0","id":id,"result":
                             mcp_tool_result(&text, json!({"answers": answers}), false)}));
                     }

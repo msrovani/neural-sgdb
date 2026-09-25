@@ -963,6 +963,41 @@ fn main() {
     );
     rep.phase("linguagem de máquina (ADR-0017)", &t);
 
+    // ---------- fase 7c: batch + dedup + decide-inline (v1.2.0) ----------
+    let t = Instant::now();
+    // batch write: 3 memórias num round trip
+    let r = srv.rpc("tools/call", json!({"name": "remember", "arguments": {
+        "memories": [
+            {"text": "batch fact alpha v120", "entities": ["fact/batch-alpha"]},
+            {"text": "batch fact beta v120"},
+            {"text": "batch fact gamma v120"}
+        ]
+    }}));
+    let sc = &r["result"]["structuredContent"];
+    rep.check("batch memories[]: 3 gravadas num round trip",
+        sc["wrote"] == 3 && sc["failed"] == 0 && sc["results"].as_array().map(|a| a.len()) == Some(3),
+        r.to_string());
+    // dedup: mesma entity + MESMO texto → reject não escreve de novo
+    let r = srv.rpc("tools/call", json!({"name": "remember", "arguments": {
+        "memories": [{"text": "batch fact alpha v120", "entities": ["fact/batch-alpha"]}],
+        "if_exists": "reject"
+    }}));
+    let sc = &r["result"]["structuredContent"];
+    rep.check("if_exists=reject: memória equivalente é pulada (sem novo key)",
+        sc["skipped"] == 1 && sc["wrote"] == 0, r.to_string());
+    // decide-inline: as respostas tipadas agora vêm no content[0].text
+    let r = srv.rpc("tools/call", json!({"name": "decide", "arguments": {
+        "questions": [{"ask": "candidate_relevance", "query": "batch fact alpha"}]
+    }}));
+    let txt = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+    let inline: Value = serde_json::from_str(
+        txt.split_once('\n').map(|(_, j)| j).unwrap_or(""))
+        .unwrap_or(Value::Null);
+    rep.check("decide-inline: respostas TIPADAS no content[0].text (JSON parseável)",
+        txt.starts_with("decide: ") && inline["answers"].as_array().is_some_and(|a| !a.is_empty()),
+        txt.to_string());
+    rep.phase("batch+dedup+decide-inline (v1.2.0)", &t);
+
     // ---------- fase 8: resources + paginaÃ§Ã£o ----------
     let t = Instant::now();
     let r = srv.rpc("resources/list", json!({"pageSize": 4}));
