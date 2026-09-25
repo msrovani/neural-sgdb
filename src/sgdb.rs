@@ -1548,6 +1548,32 @@ impl Sgdb {
         Ok(self.engine.meta(&sk)?.map(|m| m.scope).unwrap_or_default())
     }
 
+    /// Texto legível de uma memória: o payload se for L2/L3 texto, ou o
+    /// companion `/L2/` se o primário for L4/L5 embedding (v1.2.0, b —
+    /// stale candidates precisam do texto SEM N consultas de recall).
+    /// Vazio quando não há texto (binário/embedding sem companion).
+    pub fn text_of(&mut self, key: &str) -> Result<String, SgdbError> {
+        let sk = self.resolve_known_key(key);
+        if let Some(doc) = self.engine.get_by_storage_key(&sk)? {
+            if matches!(
+                doc.layer,
+                MemoryLayer::L2EpisodicShort
+                    | MemoryLayer::L3EpisodicLong
+                    | MemoryLayer::L1Working
+            ) {
+                return Ok(String::from_utf8_lossy(&doc.payload).into_owned());
+            }
+        }
+        // companion do primário L4/L5
+        let csk = sk.replacen("/L4/", "/L2/", 1).replacen("/L5/", "/L2/", 1);
+        if csk != sk {
+            if let Some(doc) = self.engine.get_by_storage_key(&csk)? {
+                return Ok(String::from_utf8_lossy(&doc.payload).into_owned());
+            }
+        }
+        Ok(String::new())
+    }
+
     /// Escopo multi-dimensional (v1.1.14, MDM1 v7): `user/agent/app/run`.
     /// Vazio em todas = global. Valida cada dimensão como path (`..`, NUL,
     /// control, `#`, `MAX_KLEN` rejeitados). Sincroniza o legado `scope`
@@ -9837,6 +9863,26 @@ mod tests {
         assert!(db.validate().is_empty(), "DB saudável após fallback");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v1.2.0 (b): `text_of` — texto do L3 direto e do L4 via companion /L2/.
+    #[test]
+    fn text_of_reads_l3_direct_and_l4_via_companion() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_text_with("t/1", "texto l3 direto", RememberOptions::default())
+            .unwrap();
+        assert_eq!(db.text_of("md/L3/t/1").unwrap(), "texto l3 direto");
+        let emb = [1.0f32, 0.0, 0.0, 0.0];
+        db.remember_semantic_with(
+            "s/1",
+            "texto companion do l4",
+            &emb,
+            RememberOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(db.text_of("md/L4/s/1").unwrap(), "texto companion do l4");
+        // key inexistente → vazio, não erro (report-friendly)
+        assert_eq!(db.text_of("md/L3/nada").unwrap(), "");
     }
 
     /// Snapshot AUSENTE (DB nunca persistiu) → fallback legado, zero mudança

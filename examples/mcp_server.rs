@@ -369,6 +369,24 @@ fn hits_json(hits: &[neural_sgdb::Hit]) -> String {
     serde_json::to_string(&arr).unwrap_or_else(|_| "[]".into())
 }
 
+/// v1.2.0 (b): preview de payload — corta o `text` de cada hit em N bytes
+/// (char-boundary safe; o clamp do core está em sgdb.rs e é privado).
+/// `None` = full (default, compat). O texto cortado carrega a marca `…`;
+/// o tamanho TOTAL continua auditável via `payload_type`/`text` original
+/// do recurso (`resources/read` na key).
+fn preview_text(hits: &mut [neural_sgdb::Hit], max_bytes: usize) {
+    for h in hits.iter_mut() {
+        if h.text.len() > max_bytes {
+            let mut cut = max_bytes;
+            while cut > 0 && !h.text.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            h.text.truncate(cut);
+            h.text.push('…');
+        }
+    }
+}
+
 fn error_response(id: &Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
 }
@@ -566,6 +584,7 @@ fn mcp_listed_tools() -> Value {
            "query":{"type":"string"},
            "mode":{"type":"string","enum":["semantic","lexical","hybrid"],"default":"lexical"},
            "format":{"type":"string","enum":["json"]},
+           "max_payload_bytes":{"type":"integer","description":"v1.2.0: preview opt-in — corta o text de cada hit em N bytes (marca …). Default = full."},
            "embedding":{"type":"array","items":{"type":"number"}},
            "k":{"type":"integer","minimum":1,"maximum":20,"default":5},
            "scope":{"type":"string"},
@@ -975,12 +994,79 @@ fn tensions_payload(db: &mut Sgdb) -> Value {
         }
     }
     let empty_hint = db.recall_empty_hint(&default, "lexical");
+    // v1.2.0 (b) — stale candidates: pares de memórias ativas com MESMA
+    // entidade e alto overlap lexical, onde só uma deveria estar viva
+    // (a mesma ADR subida 2×). REPORT, não decisão: o ADD-only torna
+    // "múltiplas memórias por entity" legítimo (IDEA_BANK etc.), então o
+    // host decide se é desatualização ou conteúdo distinto. Alimentado do
+    // ledger de negativos? Não — o ledger é "procurei e não achei"; aqui o
+    // sinal é o INVERSO (achei demais), então o probe é direto:
+    // entidade → memórias ativas → overlap de tokens.
+    let mut stale_candidates: Vec<Value> = Vec::new();
+    if let Ok(dist) = db.scope_distribution() {
+        let _ = dist;
+    }
+    if let Ok(items) = db.scan_prefix("md/") {
+        // coleta memórias ATIVAS com entidades (provenance)
+        let mut by_entity: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+        for (k, _) in items.iter().take(400) {
+            if stale_candidates.len() >= 20 {
+                break;
+            }
+            if let Ok(Some(meta)) = db.meta(k) {
+                if !matches!(db.get_state(k), Ok(MemoryState::Active)) {
+                    continue;
+                }
+                for e in &meta.entities {
+                    by_entity.entry(e.clone()).or_default().push(k.clone());
+                }
+            }
+        }
+        for (_, keys) in by_entity {
+            if keys.len() < 2 || stale_candidates.len() >= 20 {
+                continue;
+            }
+            // tokens de cada memória (via recall_lexical? não — via explain
+            // seria N consultas; usamos o texto do scan de baixo custo)
+            for i in 0..keys.len() {
+                for j in (i + 1)..keys.len() {
+                    if stale_candidates.len() >= 20 {
+                        break;
+                    }
+                    let (a, b) = (&keys[i], &keys[j]);
+                    let ta = db.text_of(a).unwrap_or_default();
+                    let tb = db.text_of(b).unwrap_or_default();
+                    if ta.is_empty() || tb.is_empty() {
+                        continue;
+                    }
+                    let toks_a: std::collections::BTreeSet<String> =
+                        neural_sgdb::tokenize_for_rerank(&ta).into_iter().collect();
+                    let toks_b: std::collections::BTreeSet<String> =
+                        neural_sgdb::tokenize_for_rerank(&tb).into_iter().collect();
+                    if toks_a.is_empty() || toks_b.is_empty() {
+                        continue;
+                    }
+                    let inter = toks_a.intersection(&toks_b).count();
+                    let union = toks_a.union(&toks_b).count();
+                    let jaccard = inter as f32 / union as f32;
+                    if jaccard >= 0.7 {
+                        stale_candidates.push(json!({
+                            "a": a, "b": b, "jaccard": jaccard,
+                            "entity_overlap": true,
+                            "reason": "mesma entidade + alto overlap lexical — host decide: stale ou conteúdo distinto"
+                        }));
+                    }
+                }
+            }
+        }
+    }
     json!({
         "view": "tensions",
         "default_scope": default,
         "open_conflicts": open_n,
         "conflicts": conflicts,
         "superseded": superseded,
+        "stale_candidates": stale_candidates,
         "scope_labels": scope_labels,
         "unseen_scopes": unseen_scopes,
         "empty_hint": empty_hint
@@ -1598,8 +1684,12 @@ fn main() {
                                 continue;
                             }
                         };
-                        let (page, next) = paginate(&all, args["cursor"].as_str(), size);
+                        let (mut page, next) = paginate(&all, args["cursor"].as_str(), size);
                         let json_fmt = args["format"].as_str().unwrap_or("") == "json";
+                        // v1.2.0 (b): preview opt-in — default = full (compat).
+                        if let Some(mb) = args["max_payload_bytes"].as_u64() {
+                            preview_text(&mut page, mb as usize);
+                        }
                         let text = if json_fmt {
                             hits_json(&page)
                         } else if page.is_empty() {

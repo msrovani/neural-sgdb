@@ -998,6 +998,30 @@ fn main() {
         txt.to_string());
     rep.phase("batch+dedup+decide-inline (v1.2.0)", &t);
 
+    // ---------- fase 7d: preview + stale candidates (v1.2.0 b) ----------
+    let t = Instant::now();
+    // grava texto longo e pede preview de 20 bytes
+    let (txt, is_err) = srv.tool("remember", json!({"text": "preview longo para testar o corte de payload no recall do mcp"}));
+    rep.check("preview setup: texto longo gravado", !is_err && txt.contains("md/L3/"), txt.clone());
+    let r = srv.rpc("tools/call", json!({"name": "recall", "arguments": {
+        "query": "preview longo", "k": 3, "max_payload_bytes": 20
+    }}));
+    let txt = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+    rep.check("preview: text cortado em 20 bytes com marca …",
+        txt.contains("…") && !txt.contains("preview longo para testar"), txt.to_string());
+    // sem o param: full (compat)
+    let (txt, _) = srv.tool("recall", json!({"query": "preview longo", "k": 3}));
+    rep.check("preview: sem max_payload_bytes = full", txt.contains("para testar o corte"), txt.clone());
+    // stale candidates: mesma entity + texto quase igual → par candidato
+    let _ = srv.tool("remember", json!({"text": "adr 0020 decide sobre o budget do snapshot do indice", "entities": ["adr/0020"]}));
+    let _ = srv.tool("remember", json!({"text": "adr 0020 decide sobre o budget do snapshot do indice", "entities": ["adr/0020"]}));
+    let r = srv.rpc("tools/call", json!({"name": "health", "arguments": {"view": "tensions"}}));
+    let sc = &r["result"]["structuredContent"];
+    rep.check("tensions: stale_candidates reporta o par duplicado (report, não decisão)",
+        sc["stale_candidates"].as_array().is_some_and(|a| !a.is_empty()),
+        sc["stale_candidates"].to_string());
+    rep.phase("preview+stale (v1.2.0 b)", &t);
+
     // ---------- fase 8: resources + paginaÃ§Ã£o ----------
     let t = Instant::now();
     let r = srv.rpc("resources/list", json!({"pageSize": 4}));
