@@ -49,6 +49,17 @@ The OS interop contract. NMD1 NEVER changes without a joint bump in
 | `sys/event/` | evento temporal (start/close) → timeline `recall_timeline` | v1.1.15 |
 | `sys/negative/` | ledger de negativos: `NDG1` (probes/first/last/scope/query) por `fnv1a64(scope‖0x1f‖query)` — "o que já procurei e não estava lá" | v1.1.24 |
 
+## v1.2.1 — sem bump de formato (otimizações + fork/merge)
+
+O v1.2.1 **não muda nenhum formato**: NMD1/TKLV/MDM1 intocados.
+- `promote_run` escreve memórias novas por caminhos existentes (re-escopadas,
+  run vazio) — nenhum byte antigo reinterpretado.
+- Índices reversos (`sk_clocks`, `sk_ids`) e `remove_entities_exact` são
+  estado derivado em RAM — reconstruídos no `rebuild_indices`, nunca
+  persistidos.
+- TickvFile buffered (`open_buffered`) é opt-in do host; o layout TKLV no
+  disco é idêntico (flush antes de invalidate/checkpoint/compact).
+
 ## Known migrations
 
 ### MDM1 v7 — sem bump no v1.1.24 (canonicalização de escrita)

@@ -1,24 +1,28 @@
 # Roadmap — neural-sgdb
 
-Status: **v1.1.x maintenance line (crate v1.1.26)** —
+Status: **v1.2.x line (crate v1.2.1)** —
 stable API, zero deps, `no_std` + `std`, CI gates green. Crate version
-**1.1.26**; histórico v1.1.2–v1.1.26 no `CHANGELOG.md`. This roadmap is honest
+**1.2.1**; histórico v1.1.2–v1.2.1 no `CHANGELOG.md`. This roadmap is honest
 about what is DONE, what is NEXT, and what is deliberately NOT planned.
 
 Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
 
 ## Next (honest gaps — not this release)
 
-⏳ **seekdb import (2026-09-25)** — auditoria do competidor direto
-   (OceanBase, "state store for AI agents") em `docs/seekdb-analysis.md`.
-   Três itens priorizados: (1) **bench de write+search concorrente** (S) —
-   eles publicam P99 flat, nós nunca medimos; fechar o gap de medição antes
-   de qualquer comparação; (2) **harness fork/merge por scope run** (S–M) —
-   sandbox de exploração para o agente; ~80% já existe (`ScopeDims.run` +
-   `commit_run` + DAG causal), falta o merge com estratégia THEIRS/OURS
-   decidida pelo host; (3) delta BQ (M) — condicionado a medição mostrando
-   que órfãos dominam o scan em DBs velhos. Rejeitados: SQL/MySQL protocol,
-   ACID multi-op, GIS, async index infra (doutrina MCP/memórias/no_std).
+✅ **v1.2.1 — fork/merge de memória + otimizações medidas (2026-09-25)** —
+   lote pós-v1.2.0 fechado: `promote_run` (seekdb item 1 — o MERGE do
+   fork/merge por scope run, `MergeStrategy{Fail,Ours,Theirs}`);
+   **delete O(1)** via três índices reversos (30k deletes @60k docs:
+   265 s → 43 s, ~6×); **TickvFile buffered opt-in** (~23× no write) +
+   `impl Storage for Box<dyn Storage>`; **Gap 0 do seekdb fechado**
+   (`bench_concurrent`: P50 sub-ms, P99 é op-time, não lock-wait);
+   **delta BQ rejeitado por medição** (`bench_long_db`: órfãos custam ~0).
+   Contrato MCP **1.2.1** (40 aliases); matriz **370+1 / 416+1 / 307+1**;
+   hot test **150/0**.
+
+🔜 **seekdb item 2** — ver `docs/seekdb-analysis.md` pela ordem atualizada
+   (delta BQ foi REJEITADO por medição; o achado real — delete O(N) — já
+   foi fixado no v1.2.1).
 
 ✅ **v1.1.27 — aquisição Jev-Mem (2026-09-23)** — mapeamento mecanismo a
    mecanismo do arXiv 2609.23986 em `docs/jev-mem-adoption.md`: o core JÁ É o

@@ -46,7 +46,7 @@ commit** (see `docs/api.md` §Format versioning and `MIGRATIONS.md`).
 5. If the release touches a binary format, update `docs/api.md` format
    changelog, `MIGRATIONS.md`, and the golden tests in the SAME commit.
 6. **Não é gate:** `extension/` / Chrome Web Store estão **estacionados**.
-   O crate entrega memória **agêntica** (MCP 4 tools, doutrina,
+   O crate entrega memória **agêntica** (MCP 5 tools + 40 aliases, doutrina,
    `agent_protocol` / `two_ai_protocol` / `memory_arena_eval`). Republicar
    Store **não** faz parte do release.
 
@@ -60,13 +60,13 @@ above. Changes between 0.x lines that touched formats documented explicit
 migrations in `MIGRATIONS.md` and never silently reinterpreted old bytes
 (e.g. MDM1 v1→v2 decodes v1 with `version_id = memory_id`).
 
-## Current line (1.1.x)
+## Current line (1.2.x)
 
-Crate version in `Cargo.toml` is **1.1.24**; additive feature releases
-**v1.1.2–v1.1.24** are documented in `CHANGELOG.md` and `docs/api.md` without
+Crate version in `Cargo.toml` is **1.2.1**; additive feature releases
+**v1.1.2–v1.2.1** are documented in `CHANGELOG.md` and `docs/api.md` without
 a MAJOR bump. Architecture docs in `docs/architecture/` describe the
-**shipped** system at **v1.1.24** (lexical-first MCP, ADR-0008, ADR-0010
-`commit_run`, null-scoping `ScopeDims`, ADR-0011 oracle, ADR-0012 adaptive
+**shipped** system at **v1.2.1** (lexical-first MCP, ADR-0008, ADR-0010
+`commit_run`/`promote_run` fork/merge, null-scoping `ScopeDims`, ADR-0011 oracle, ADR-0012 adaptive
 recall). Typed hits
 landed in v1.1.6; agent doctrine in v1.1.8; cognitive metadata in v1.1.10; host governance + micro-ganhos in v1.1.11; security hardening 11→1 em v1.1.12; v1.1.13 tentou Store/extensão — **track browser estacionado** (não é produto); v1.1.15 = MDM1 v7 + TTL/GC + ANN; **v1.1.17** = ADC-lite dual-path + state-first; **v1.1.18** = telepathy 2-DB FileStorage harness; **v1.1.19** = harness `commit_run` / anti-patterns (ADR-0010); **v1.1.20** = null-scoping honra `ScopeDims` + pool `recall_*_dims` + consolidate herda dims; **v1.1.21** = oráculo `index_fingerprint` + invariante de `corpus_mean` + métricas de `open` + erro de alias útil (ADR-0011); **v1.1.22** = `src/math.rs` consolidado + `recall_adaptive` / `RecallProbe` (ADR-0012); **v1.1.23** = revisão de documentação + fix do `enum` anunciado em `health` (schema divergindo do handler); **v1.1.24** = `ScopeDims` autoritativo (o `scope` legado vira espelho de `user`, write-through; ADR-0013) + ledger de negativos `sys/negative/` (ADR-0014); **v1.1.25** = `payload_type` honra a CAMADA (L3 de prosa deixa de ser reportado como `Embedding(len/4)`);  **v1.1.26** = descoberta de escopo com procedência + `recall` honra as dims que o schema anuncia (ADR-0015); **v1.1.27** = `TypeScores` sobrepostos derivados na leitura (ADR-0016); **v1.1.28** = vocabulário único prosa/JSON + tool `decide` (𝒥(S,𝒬), 5º tool) + `recall_candidates` com sinais decompostos + validate tipado + k=0 erro (ADR-0017); **v1.1.29** = fast-mount IDX1 do índice derivado (ADR-0009 §3/§5, seam `NEURAL_SGDB_INDEX_SNAPSHOT`) + RaBitQ avaliado e REJEITADO com A/B medido.; **v1.2.0** = batch write `memories[]` + dedup guard `if_exists` + decide inline + preview `max_payload_bytes` + stale candidates report + IDX2 (snapshot paginado, teto 16 MiB) + auto-persist metrics-gated (ADR-0009 §5 completo). (o `scope` legado vira espelho de `user`, write-through; ADR-0013) + ledger de negativos `sys/negative/` (ADR-0014). **v1.2.1** = fork/merge de memória `promote_run` (MergeStrategy Fail/Ours/Theirs; seekdb item 1) + `remember(key=)` explícita + Gap 0 medido (`bench_concurrent`: P99 não-flat).
 

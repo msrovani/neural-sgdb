@@ -58,4 +58,4 @@ docs(v1.1.9): align root and docs/ to lexical-first MCP
 ## MCP / agentes
 
 Instalação e troubleshooting: [`docs/MCP.md`](docs/MCP.md). Superfície atual:
-4 tools, recall lexical-first (ADR-0008), `docs/MCP-RELOAD.md`.
+5 tools listadas + 40 alias names (`ALIAS_SURFACE`), recall lexical-first (ADR-0008), `docs/MCP-RELOAD.md`.
