@@ -11,6 +11,10 @@ Guia de instalação, contrato e troubleshooting do servidor MCP
 | Handshake | `initialize` → `protocolVersion: 2025-11-25` |
 | `serverInfo.version` | `1.2.0` (`MCP_CONTRACT_VERSION` em `examples/mcp_server.rs`) |
 | Tools | **4** (`remember`, `recall`, `health`, `curate`) — 38 nomes antigos/alias ainda funcionam em `tools/call` (`ALIAS_SURFACE`) |
+| Batch write (v1.2.0) | `remember(memories=[...])` até 64 itens num round trip; `if_exists=add\|reinforce\|supersede\|reject` (default `add` — ADD-only intacta) |
+| Preview (v1.2.0) | `recall(max_payload_bytes=N)` corta o text de cada hit em N bytes (marca `…`); default full |
+| Stale report (v1.2.0) | `health(view=tensions)` inclui `stale_candidates` (mesma entidade + jaccard ≥ 0.7) — report, o host decide |
+| Snapshot idx (v1.1.29+) | `NEURAL_SGDB_INDEX_SNAPSHOT=off\|auto\|always` (default off); auto-persist metrics-gated (v1.2.0): writes ≥ `MAX(8, open_rebuild_ms_last)` |
 | Recall default | **lexical** (ADR-0008). Cosine: `embedding=` ou `NEURAL_SGDB_EMBEDDER=demo` |
 | Embedder host | unset = none; `NEURAL_SGDB_EMBEDDER=demo` = trigrama explícito (**não** semântico) |
 | Write sem vetor | `remember(text=)` → **L3** (`remember_text_with`); L4 só com `embedding=` ou `NEURAL_SGDB_EMBEDDER=demo` |

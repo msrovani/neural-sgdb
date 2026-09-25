@@ -618,6 +618,55 @@ um campo visível mudou).
   só vale depois de provar que ele morre sem o fix.
 - Matrix: **339+1 / 385+1 / 283+1**; hot test **110/0**.
 
+## Post-release v1.2.0 (agentic write path + fast-mount sem teto, 2026-09-25)
+
+Lote de 4 itens em 5 commits + release. Contrato MCP → **1.2.0**. Matriz
+**362+1 / 408+1 / 300+1**; hot test **146/0** (fases 7c batch/dedup/decide
++ 7d preview/stale).
+
+- **(a) Batch + dedup + decide inline** — `remember` aceita `memories[]`
+  (teto 64; item herda scope/dims do topo com override; helper
+  `remember_one` fatora a lógica single — batch reusa sem duplicação).
+  `if_exists=add|reinforce|supersede|reject` (default `add` — ADD-only
+  intacta): probe de equivalência por **1-hop de entidades** (com
+  entidades) ou **tokens + texto igual** (sem); `supersede` usa a API
+  oficial do DAG, NUNCA `set_state` cru. `decide` carrega as respostas
+  tipadas TAMBÉM no `content[0].text` (JSON na 2ª linha) — o consumidor
+  que lê só o text não perde o payload (o `structuredContent` é secundário
+  no canal padrão).
+- **(b) Preview + stale candidates** — `recall` aceita `max_payload_bytes`
+  (opt-in, default full, char-boundary safe, marca `…`);
+  `health(view=tensions)` lista `stale_candidates`: pares de memórias
+  ATIVAS com mesma entidade + jaccard ≥ 0.7 (teto 20). REPORT, não decisão
+  — o ADD-only torna múltiplas memórias por entidade legítimo. Nova API
+  core `Sgdb::text_of(key)`: L3 direto, L4/L5 via companion `/L2/` —
+  reports que precisam de texto NÃO fazem N consultas de recall.
+- **(c) IDX2 — snapshot paginado** — o teto MAX_VLEN (1 MiB, ~7k writes)
+  saiu. Key primária `sys/idx/snapshot` = header IDX2 de 32B
+  (magic+ver+fp+written_at+total/chunk_len/n_parts, coerência
+  `total == ceil` validada no decode); blob IDX1 (v1, intocado) fatiado em
+  chunks de 256 KiB em `sys/idx/snapshot/p/%04x` (largura fixa 4 hex —
+  regra 4: ART prefix keys). Mount detecta IDX1 vs IDX2 pelo magic e junta
+  os chunks; chunk faltando/truncado → rebuild (nunca blob parcial);
+  header hostil → `Idx2Error` (clippy rejeita `Result<_, ()>` público).
+  Teto novo: 16 MiB (64 KiB partes).
+- **(d) Auto-persist metrics-gated (ADR-0009 §5 completo)** — política ≠
+  off persiste quando writes desde o último persist ≥ `MAX(8,
+  open_rebuild_ms_last)`: open barato (< 8 ms) não paga persist por put;
+  open caro persiste proporcional ao custo do próximo restart. Contador =
+  `metrics.memory_writes` (cobre L4/L3/fact/replicação); baseline open_ms
+  capturado no boot (`open_ms_at_start`). Falha de persist é LOG-ONLY — o
+  snapshot é derivado e o rebuild de fallback é a garantia; nunca quebra o
+  round trip da tool que só queria escrever.
+- **Lição de sessão (queda de luz)**: revalidar `git status` + `cargo
+  build` ANTES de prosseguir — o código parcial no disco pode compilar
+  (foi o caso) e a âncora de str_replace falhada deixa struct quebrado;
+  `grep -an` (arquivo pode ficar "binary" para o grep após sed com CRLF).
+- **Gotchas pegos**: clippy `needless_borrow` (`db.meta(&k)` quando `k` já
+  é `String` da iteração — usar `k`); `u32.div_ceil(usize)` não compila
+  (tipos têm de casar); mover `existing: Option<String>` no match antes do
+  segundo uso (`.clone()` antes do `if let`).
+
 ## Post-audit v1.1.24 (unificação de escopo + ledger de negativos)
 
 Release **3/3** do plano de melhorias (itens 4 e 7) — os dois únicos itens que
