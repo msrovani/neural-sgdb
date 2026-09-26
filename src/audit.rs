@@ -27,6 +27,10 @@ pub const AUDIT_VERSION: u8 = 1;
 pub const AUDIT_OP_CHECKPOINT: u8 = 0;
 /// Marcador de rollback aplicado (fecha o elo sem snapshot próprio).
 pub const AUDIT_OP_ROLLBACK: u8 = 1;
+/// Forget cognitivo auditado (v1.2.2): elo anexado por `Sgdb::audit_forget`
+/// quando o OS executa um esquecimento HITL — carrega a storage key canônica
+/// apagada no campo `ts_note`-like do snapshot (1 item, sem meta).
+pub const AUDIT_OP_FORGET: u8 = 2;
 
 /// Uma entrada do ledger (um elo da hash-chain).
 #[derive(Clone, Debug, PartialEq)]
@@ -37,7 +41,7 @@ pub struct AuditEntry {
     pub prev_hash: u64,
     /// Clock do caller no checkpoint/rollback.
     pub ts: u64,
-    /// `AUDIT_OP_CHECKPOINT` | `AUDIT_OP_ROLLBACK`.
+    /// `AUDIT_OP_CHECKPOINT` | `AUDIT_OP_ROLLBACK` | `AUDIT_OP_FORGET`.
     pub op: u8,
     /// FNV-1a do estado corrente (docs + side-tables ordenados). Para um
     /// marcador de rollback, o digest do estado DEPOIS do restore.
@@ -105,7 +109,7 @@ impl AuditEntry {
         off += 8;
         let op = *data.get(off).ok_or("trunc op")?;
         off += 1;
-        if !(op == AUDIT_OP_CHECKPOINT || op == AUDIT_OP_ROLLBACK) {
+        if !(op == AUDIT_OP_CHECKPOINT || op == AUDIT_OP_ROLLBACK || op == AUDIT_OP_FORGET) {
             return Err("bad audit op");
         }
         let digest = rd_u64(data, off).ok_or("trunc digest")?;

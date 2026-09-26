@@ -3350,6 +3350,45 @@ impl Sgdb {
         Ok(seq)
     }
 
+    /// Forget auditado (v1.2.2, HITL do OS): anexa um elo `AUDIT_OP_FORGET` à
+    /// hash-chain registrando o ESQUECIMENTO — a memória some do recall, mas
+    /// a EVIDÊNCIA de que ela existiu e foi apagada sobrevive na cadeia (a
+    /// quem cabe a decisão é política do chamador; o core só registra).
+    /// `sk` = storage key canônica apagada (`md/Lx/...`), `ts` = clock do
+    /// chamador, `reason` = rótulo curto da decisão (request-id/approver).
+    /// Devolve o seq do elo anexado.
+    pub fn audit_forget(&mut self, sk: &str, ts: u64, reason: &str) -> Result<u64, SgdbError> {
+        let last = self.engine.audit_last_seq()?;
+        let seq = last.map(|l| l.saturating_add(1)).unwrap_or(0);
+        let prev_hash = match last {
+            Some(l) => match self.engine.storage_get(&crate::audit::audit_key(l))? {
+                Some(b) => crate::tickv::fnv1a64(&b),
+                None => 0,
+            },
+            None => 0,
+        };
+        // Snapshot = 1 item marcando o alvo: state Superseded (tombstone
+        // lógico já aplicado), sem validity/meta — é um MARCADOR, não um
+        // checkpoint (não é alvo válido de rollback_to).
+        let e = crate::audit::AuditEntry {
+            seq,
+            prev_hash,
+            ts,
+            op: crate::audit::AUDIT_OP_FORGET,
+            digest: crate::tickv::fnv1a64(reason.as_bytes()),
+            snapshot: alloc::vec::Vec::from([
+                crate::audit::AuditSnapshotItem {
+                    sk: sk.into(),
+                    state: crate::memory_doc::MemoryState::Superseded,
+                    validity: None,
+                    meta: reason.as_bytes().to_vec(),
+                },
+            ]),
+        };
+        self.engine.storage_put(&crate::audit::audit_key(seq), &e.encode())?;
+        Ok(seq)
+    }
+
     /// Verifica a hash-chain e o drift do estado (tamper-evidence): caminha
     /// `sys/audit/` em ordem de seq, confere os `prev_hash` (elo a elo) e
     /// compara o digest CORRENTE com o do último CHECKPOINT. `chain_intact` =
@@ -9162,6 +9201,40 @@ mod tests {
         let rt2 = db.audit_verify().unwrap();
         assert!(!rt2.chain_intact, "elo adulterado detectado");
         assert_eq!(rt2.entries, 2);
+    }
+
+    #[test]
+    fn audit_forget_links_chain_and_survives_verify() {
+        // v1.2.2 (forget HITL do OS): `audit_forget` anexa elo FORGET à chain;
+        // a evidência do esquecimento sobrevive à verificação da cadeia.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_text_with("f1", "fato esquecível", RememberOptions::default()).unwrap();
+        let sk = "md/L3/f1";
+        let s0 = db.audit_checkpoint(100).unwrap();
+        // forget auditado: tombstone lógico + delete físico + elo na chain
+        db.set_state(sk, MemoryState::Superseded).unwrap();
+        assert!(db.delete(sk).unwrap(), "doc existia");
+        let seq = db.audit_forget(sk, 200, "hitl:req7").unwrap();
+        assert_eq!(seq, s0 + 1, "elo encadeado após o checkpoint");
+        // recall vazio (memória esquecida) mas a evidência sobrevive
+        assert!(db.scan_prefix("md/L3/").unwrap().is_empty());
+        let r = db.audit_verify().unwrap();
+        assert!(r.chain_intact, "elo FORGET não quebra a chain");
+        assert_eq!(r.entries, 2, "ckpt + forget");
+        // o elo carrega o alvo e o motivo (decode do item)
+        let b = db.engine.storage_get(&crate::audit::audit_key(seq)).unwrap().unwrap();
+        let e = crate::audit::AuditEntry::decode(&b).unwrap();
+        assert_eq!(e.op, crate::audit::AUDIT_OP_FORGET);
+        assert_eq!(e.snapshot.len(), 1);
+        assert_eq!(e.snapshot[0].sk, sk);
+        assert_eq!(e.snapshot[0].state, MemoryState::Superseded);
+        assert_eq!(e.snapshot[0].meta, b"hitl:req7".to_vec());
+        // forget de novo = segundo elo encadeado (seq monotônico)
+        let seq2 = db.audit_forget("md/L4/x", 300, "hitl:req8").unwrap();
+        assert_eq!(seq2, seq + 1);
+        let r2 = db.audit_verify().unwrap();
+        assert!(r2.chain_intact, "chain segue intacta após 2 forgets");
+        assert_eq!(r2.entries, 3);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
