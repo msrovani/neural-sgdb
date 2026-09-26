@@ -92,7 +92,9 @@ pub mod tickv;
 pub mod trust;
 pub mod wasm_storage;
 
-#[cfg(feature = "p2p")]
+// s410f: core CRDT (MergePolicy/MergeVerdict/happens-before) é no_std — o
+// kernel (bare-metal) usa `Sgdb::merge_remote` com a política por layer.
+// Apenas o transporte UDP de demo é std (UdpTransport, gateado abaixo).
 pub mod crdt;
 pub mod lifecycle;
 
@@ -154,8 +156,11 @@ pub use tickv::{
 pub use storage::FileStorage;
 #[cfg(feature = "file-storage")]
 pub use tickv::TickvFile;
+// Core CRDT (política/veredicto) sempre disponível; UdpTransport/crdt_demo
+// (std) só com p2p.
+pub use crdt::{MergePolicy, MergeVerdict};
 #[cfg(feature = "p2p")]
 pub use crdt::{
-    demo as crdt_demo, CrdtMemorySync, MemoryDelta, MemorySnapshot, MemoryVersion, MergePolicy,
-    MergeVerdict, SignedEnvelope, Transport, UdpTransport, DEFAULT_P2P_PORT,
+    demo as crdt_demo, CrdtMemorySync, MemoryDelta, MemorySnapshot, MemoryVersion,
+    SignedEnvelope, Transport, UdpTransport, DEFAULT_P2P_PORT,
 };

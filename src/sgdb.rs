@@ -4842,7 +4842,7 @@ impl Sgdb {
     ///
     /// O CRDT detecta/preserva; a camada cognitiva interpreta/decide
     /// (item 20/21 — nenhuma decisão semântica aqui).
-    #[cfg(feature = "p2p")]
+    /// s410f: core no_std — disponível sem a feature p2p (o kernel usa).
     pub fn merge_remote(&mut self, rec: MemoryRecord) -> Result<crate::crdt::MergeVerdict, SgdbError> {
         use crate::crdt::{MergePolicy, MergeVerdict};
         self.metrics.replication_received += 1;
