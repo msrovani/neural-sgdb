@@ -96,6 +96,10 @@ pub mod wasm_storage;
 // kernel (bare-metal) usa `Sgdb::merge_remote` com a política por layer.
 // Apenas o transporte UDP de demo é std (UdpTransport, gateado abaixo).
 pub mod crdt;
+
+/// Versão do crate compilada (s410f: exposta p/ o host logar no init —
+/// logs do kernel sempre reportam a versão REAL compilada, não a do doc).
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub mod lifecycle;
 
 mod engine;
