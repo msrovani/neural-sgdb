@@ -237,6 +237,13 @@ impl AiosDatabaseEngine {
         self.storage.name()
     }
 
+    /// MG4: batch cru direto na storage (`put_many`) — usado pelo caminho de
+    /// replicação em massa do kernel (mesh RX em batch). Índices NÃO são
+    /// tocados (derivados; rebuild cobre depois).
+    pub fn storage_put_many(&mut self, items: &[(&[u8], &[u8])]) -> Result<(), SgdbError> {
+        self.storage.put_many(items)
+    }
+
     /// Scan CRU do storage por prefixo (P2-3, `Sgdb::health`/`validate`):
     /// a fonte da verdade é o storage — os índices (ART/BQ/lexical) são
     /// derivados. `no_std`-safe.
@@ -681,13 +688,17 @@ impl AiosDatabaseEngine {
     }
 
     /// Flush L0/L1 RAM → Storage. Honesty: sem isto, reboot perde L0/L1.
+    /// MG4: via `put_many` — backends batched (TickvLite do OS, FileStorage)
+    /// gravam N records com 1 lock/`write_all` + GC adiado; o default do trait
+    /// degrada para N× `put` em backends sem override (mesma semântica).
     pub fn checkpoint_l0l1(&mut self) -> Result<usize, SgdbError> {
-        let mut n = 0usize;
-        for (sk, blob) in self.ram_l0l1.iter() {
-            self.storage.put(sk.as_bytes(), blob)?;
-            n += 1;
-        }
-        Ok(n)
+        let items: Vec<(&[u8], &[u8])> = self
+            .ram_l0l1
+            .iter()
+            .map(|(sk, blob)| (sk.as_bytes(), blob.as_slice()))
+            .collect();
+        self.storage.put_many(&items)?;
+        Ok(items.len())
     }
 
     /// Pós-checkpoint: drop arena RAM (docs já no Storage sob `md/L0|L1/…`).

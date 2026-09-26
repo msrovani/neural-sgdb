@@ -5136,6 +5136,29 @@ impl Sgdb {
         self.engine.checkpoint_l0l1()
     }
 
+    /// Aplica N NMD1 crus direto na storage (MG4 batch — `put_many`).
+    ///
+    /// Caminho de **replicação em massa** (mesh/anti-entropy): grava os blobs
+    /// com UMA operação de storage (1 lock/`write_all` + GC adiado no TickvLite
+    /// do OS). É o caminho CRU — os índices (ART/BQ/lexical) NÃO são tocados
+    /// aqui; use em um de dois fluxos:
+    ///
+    /// 1. **Import + rebuild:** merge/import tipado por doc (`merge_remote`/
+    ///    `import_record`) para decisão CRDT + índices, gravando o blob vencedor
+    ///    em batch quando o volume é grande;
+    /// 2. **Reindexação explícita:** chame `rebuild` depois (os índices são
+    ///    derivados; a storage é a fonte da verdade).
+    ///
+    /// Formato do item: (storage_key `md/Lx/<key>`, NMD1 encoded). Falha é
+    /// atômica por item conforme o backend (contrato de `put_many`).
+    pub fn put_many_raw(&mut self, items: &[(&str, &[u8])]) -> Result<(), SgdbError> {
+        let owned: Vec<(&[u8], &[u8])> = items
+            .iter()
+            .map(|(k, v)| (k.as_bytes(), *v))
+            .collect();
+        self.engine.storage_put_many(&owned)
+    }
+
     /// Drop arena RAM L0/L1 (pós-checkpoint).
     pub fn prune_working_ram(&mut self) -> Result<usize, SgdbError> {
         Ok(self.engine.prune_ram_l0l1())
