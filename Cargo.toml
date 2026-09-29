@@ -65,10 +65,18 @@ required-features = ["file-storage"]
 name = "bench_delete_cost"
 required-features = ["file-storage"]
 
+[[example]]
+name = "bench_tickv_buffered"
+required-features = ["file-storage"]
+
 # Hot SGDB Test (Via 3) — client cru que dirige o mcp_server como um IDE faria.
 # `file-storage` garante o teste de PERSISTÊNCIA real (cross-process).
 [[example]]
 name = "mcp_client"
+required-features = ["file-storage"]
+
+[[example]]
+name = "mcp_server"
 required-features = ["file-storage"]
 
 # Cognitive QA audit — "retorna memórias, não dados" (attack/corruption/fidelity)
