@@ -4,7 +4,7 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
-## [Unreleased] — lote consumer-triage (ISSUEs 1/2/5/6/7/8/9/11/12/14/16)
+## [1.2.2] — 2026-09-29 (lote consumer-triage s413)
 
 ### Novas APIs
 - `Sgdb::put_operational(doc)` — escrita OPERACIONAL de sistema: indexa sem

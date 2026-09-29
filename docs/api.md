@@ -399,7 +399,7 @@ código, binários). Duas regras tornam o consumo determinístico:
 ## Additive public surface (v1.1.2–v1.1.26)
 
 Everything below is **additive** (MINOR per VERSIONING.md) — no signature of a
-v1.0 method changed; crate version **1.2.1** in `Cargo.toml`. Key additions since the contract above:
+v1.0 method changed; crate version **1.2.2** in `Cargo.toml`. Key additions since the contract above:
 
 ```rust
 // ---- fork/merge de memória (v1.2.1, seekdb item 1; src/harness.rs) ----

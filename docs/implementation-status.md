@@ -130,8 +130,9 @@ v1.1.29) paginado IDX2 (v1.2.0, teto 16 MiB): seam
 MAX(8, open_rebuild_ms_last)). Batch write `memories[]` + dedup
 `if_exists` + decide inline + recall `max_payload_bytes` + stale_candidates
 report no tensions (v1.2.0). Fork/merge: `curate op=promote_run`
-(`merge_strategy=fail|ours|theirs`) + `remember(key=)` (v1.2.1). Hot test
-**150/0**. MCP contract
+(`merge_strategy=fail|ours|theirs`) + `remember(key=)` (v1.2.1). Consumer
+triage batch (v1.2.2): put_operational/forget_purge/audit_resolve/index_key
++ MDM1 v8 authority. Hot test **150/0**. MCP contract
 **1.2.1**.
 
 ### Host connectors

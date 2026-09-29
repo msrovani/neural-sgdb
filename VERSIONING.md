@@ -62,7 +62,7 @@ migrations in `MIGRATIONS.md` and never silently reinterpreted old bytes
 
 ## Current line (1.2.x)
 
-Crate version in `Cargo.toml` is **1.2.1**; additive feature releases
+Crate version in `Cargo.toml` is **1.2.2**; additive feature releases
 **v1.1.2–v1.2.1** are documented in `CHANGELOG.md` and `docs/api.md` without
 a MAJOR bump. Architecture docs in `docs/architecture/` describe the
 **shipped** system at **v1.2.1** (lexical-first MCP, ADR-0008, ADR-0010
