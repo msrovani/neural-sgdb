@@ -818,6 +818,9 @@ pub fn demo() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::format;
+    use alloc::string::String;
+    use alloc::vec;
 
     /// Loopback: `sent` acumula TX e `recv_crdt` drena — simula rede
     /// conectando a fila de um nó à entrada do outro.

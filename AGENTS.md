@@ -680,6 +680,33 @@ medido, nada especulativo):
 - **`remember` aceita `key=` explícita** (opt-in; default gera `mcp/…`).
 - **`Storage: Send`** (1 linha) — exigido pelo bench concorrente.
 
+## Integração s410 (commits do remote, 2026-09-29)
+
+Quatro commits da sessão s410 (kernel/neural-os-core) pousados no remote e
+reintegrados PÓS-release 1.2.1 — todos aditivos, sem mudança de formato:
+
+- **`feat(s410f)`** — core CRDT (`merge_remote`/`MergePolicy`/
+  `MergeVerdict`) disponível SEM feature `p2p`: hosts embutidos (`no_std`,
+  Ring 0) não precisam de transporte UDP para decidir merge.
+- **`feat(s410g)`** — `pub const VERSION` (`CARGO_PKG_VERSION`) para o host
+  logar a versão do crate no init (telemetria honesta de build).
+- **`perf(MG4)`** — `checkpoint_l0l1` via `put_many` + `Sgdb::put_many_raw`
+  (replicação em massa: 1 operação de storage para N NMD1 crus).
+- **`feat(s410m-b)`** — `AUDIT_OP_FORGET` (op=2): `Sgdb::audit_forget(sk, ts,
+  reason)` anexa elo de esquecimento à hash-chain — a memória some do recall,
+  a EVIDÊNCIA de que existiu sobrevive. `reason` viaja no `digest` (hash do
+  reason) + no `meta` do snapshot-item; semântica do `digest` POR OP
+  documentada no módulo `audit.rs` (CHECKPOINT = estado, FORGET = reason).
+
+**Gate no_std quebrou na integração (recorrência v1.1.15/v1.2.1, 3ª vez) —
+sabor diferente**: os TESTES do módulo `crdt.rs` usavam `String`/`format!`/
+`vec!` sem import de `alloc` — no host com `std` compila (prelude), no gate
+`cargo test --no-default-features` não. REGRA ampliada: **em módulos
+no_std, imports de `alloc::string::String`/`alloc::format`/`alloc::vec`
+valem TAMBÉM para `mod tests`** — não confie no prelude; o gate no_std é
+o único que pega. Matriz pós-integração: **401+1 / 417+1 / 338+1**; hot
+test **150/0** (contrato MCP 1.2.1 intocado).
+
 ## Post-release v1.2.0 (agentic write path + fast-mount sem teto, 2026-09-25)
 
 Lote de 4 itens em 5 commits + release. Contrato MCP → **1.2.0**. Matriz
