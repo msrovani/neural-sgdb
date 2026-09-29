@@ -6,6 +6,13 @@ All notable changes to this project. Format based on
 
 ## [1.2.1] — 2026-09-25 (fork/merge de memória — seekdb item 1)
 
+### Fixed (fechamento do release)
+- Gate no_std restaurado: `bench_tickv_buffered` e `mcp_server` agora
+  têm `[[example]]` com `required-features = ["file-storage"]` (o novo
+  exemplo sem entrada reativou o bug do v1.1.15; o mcp_server estava
+  latente). Docs de arquitetura atualizados de 1.2.0 → 1.2.1.
+  Matriz re-verificada 370+1 / 416+1 / 307+1.
+
 - **`Sgdb::promote_run(filter, base_dims, strategy)`** (`src/harness.rs`,
   ADR-0010 + seekdb-analysis item 1): PROMOVE as memórias ATIVAS de um
   run (sandbox) para o escopo base — o MERGE do fork/merge de memória que

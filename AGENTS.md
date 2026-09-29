@@ -647,6 +647,16 @@ medido, nada especulativo):
   OP-TIME (lock-wait ~0,2 µs); refactor de lock seria esforço perdido.
 - Lição de sessão: um bench que "não vale" (delta BQ rejeitado) pode
   esconder o achado real (delete O(N)) — medir SEMPRE antes de descartar.
+- **no_std gate quebrou no fechamento do release (recorrência do
+  v1.1.15)**: `bench_tickv_buffered` novo sem entrada `[[example]]` —
+  auto-discovery constrói ele no `cargo test --no-default-features` e o
+  import de `TickvFile` falha (gated). E `mcp_server` JÁ estava sem
+  required-features (latente — nenhum exemplo novo tocava `TickvFile`
+  desde que virou gated... o gate só não tinha rodado depois). Fix:
+  `[[example]]` + `required-features = ["file-storage"]` para ambos.
+  REGRA: **todo exemplo novo que importa tipo gated (TickvFile/
+  FileStorage) precisa de entrada `[[example]]` com required-features** —
+  verificado rodando o gate no_std ANTES do commit de release.
 
 - **`Sgdb::promote_run(filter, base_dims, strategy)`** — o MERGE do
   fork/merge: promove memórias ATIVAS do run (sandbox) ao escopo base.
