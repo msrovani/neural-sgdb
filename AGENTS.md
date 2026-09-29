@@ -756,6 +756,64 @@ Lote de 4 itens em 5 commits + release. Contrato MCP → **1.2.0**. Matriz
   (tipos têm de casar); mover `existing: Option<String>` no match antes do
   segundo uso (`.clone()` antes do `if let`).
 
+## Lote consumer-triage s413 (issues aceitas do relatório do consumidor, 2026-09-29)
+
+Implementação do resumo acionável aprovado (docs/consumer-report-triage.md).
+Matriz **408+2 / 424+2 / 345+2**; clippy `-D warnings` verdes; no_std target
+ok; hot test **150/0** (contrato MCP 1.2.1 intocado — nenhuma superfície MCP
+nova; as novas APIs são só de lib). **MDM1 → v8** (authority; NMD1/TKLV
+intactos). Sem bump de `MCP_CONTRACT_VERSION` (wire AUD1 op=3 é aditivo e
+os decoders do hot test não envelhecem no fluxo).
+
+- **ISSUE 1** — `VectorClock`: `Default` manual = `new()` (o derive criava
+  `nodes: [0u8; 8]` = nó 0 implícito) + `is_vacuous()`/`is_zero_at(node)`.
+  Teste golden `default() == new()`.
+- **ISSUE 2** — `Sgdb::put_operational(doc)`: escrita de SISTEMA próprio
+  (indexa, NÃO ticka o relógio — sem inflação causal por overwrite de
+  boot). Tabela de decisão de escrita em `docs/api.md`.
+- **ISSUE 5** — `Sgdb::forget_purge(key, reason) -> ForgetOutcome`:
+  tombstone → delete físico → elo `AUDIT_OP_FORGET` numa chamada (a ordem
+  importa: delete antes do tombstone deixa o mesh ressuscitar).
+- **ISSUE 6** — semântica do `digest` POR OP documentada no módulo
+  `audit.rs`; `Sgdb::audit_entries(since, limit)` + `audit_for_key(sk)`
+  (trilha sem full-scan do consumidor).
+- **ISSUE 7** — `AUDIT_OP_RESOLVE` (op=3) + `Sgdb::audit_resolve`: a
+  decisão HITL de conflito deixa rastro na chain do core.
+- **ISSUE 8** — `SgdbError::code() -> ErrorCode`
+  (`storage|corrupt|key_rejected|not_found`, `#[non_exhaustive]`): o
+  consumidor IA branqueia por código, sem string-match. As strings
+  `&'static str` seguem como Display (doutrina intacta).
+- **ISSUE 9** — `MemoryLayer::from_label("L4" | "L4Semantic")` + roundtrip.
+- **ISSUE 11** — `conflicts_open()`/`conflicts_count_open()`;
+  `resolve_conflict` devolve `ResolveOutcome{already_resolved, imported,
+  superseded}` (quebra o call-site do MCP — atualizado junto).
+- **ISSUE 12** — `RememberOptions::index_key: bool` (opt-in): tokens da
+  KEY no lexical — busca por NOME de key acha o que o payload não tem.
+  28 call-sites de `RememberOptions` em lib/examples atualizados.
+- **ISSUE 14** — `Sgdb::count_prefix(prefix)` (contagem O(1)-memória;
+  `scan_prefix_page` já existia — o relatório errou esse detalhe).
+- **ISSUE 16** — log do fast-mount corrigido: "BQ restaurado do snapshot"
+  (a frase "BQ vazio até rebuild" era FALSA desde o IDX2).
+- **ISSUE 10 (resolvida sem código)** — o crate JÁ tem framing canônico
+  de N records: `MemoryDelta` (MDP1) e `MemorySnapshot` (MSNP),
+  bounds-checked e fuzzados. O OS inventou `[len u32le][NMD1]` porque não
+  os usou. Documentado em `docs/api.md` — NÃO criar FrameWriter novo.
+- **ISSUE 21** — `MemoryMeta.authority: u8` (MDM1 **v8**; v1–v7 decodificam
+  com 0 = learned, migração explícita). `merge_remote`: remoto
+  causalmente dominante com authority MENOR que o local → novo veredito
+  `MergeVerdict::RejectedByAuthority` (decisão HITL não é antecipada por
+  peer learned). O promote/curadoria pode setar authority 255.
+- **ISSUE 20** — trait `CognitiveOps` (forget/resolve/audit_decision) +
+  `ResolveOutcome`: os verbos HITL numa superfície única e explicável;
+  hosts tomam `impl CognitiveOps` genérico (mockável).
+- **ISSUE 23** — `Sgdb::export_delta(node, since, max)`: pull DIRECIONADO
+  do anti-entropy via range-scan no `clock_index` (`keys_since_clock`) —
+  O(keys novas), NUNCA O(range de counters) (a 1ª versão varria counters
+  vazios e travou o teste — lição: BTreeMap range, não loop por counter).
+- **Lição de mutação aplicada**: o teste que pina "versão desconhecida →
+  Err" do MDM1 quebrou com o bump v7→v8 (o correto — o teste SERVE para
+  isso); atualizado para v9.
+
 ## Post-audit v1.1.24 (unificação de escopo + ledger de negativos)
 
 Release **3/3** do plano de melhorias (itens 4 e 7) — os dois únicos itens que

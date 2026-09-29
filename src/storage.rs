@@ -17,6 +17,47 @@ pub enum SgdbError {
     Invalid(&'static str),
 }
 
+/// Código de erro ESTÁVEL para branqueamento máquina (triagem s413, ISSUE 8):
+/// o consumidor IA decide retry/fail-closed/escalada pelo código, não por
+/// string-match. Derivado da variante; as mensagens `&'static str` seguem
+/// como `Display`. `#[non_exhaustive]`: códigos novos não quebram match
+/// exaustivo do consumidor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ErrorCode {
+    /// Backend de storage falhou (down/IO) — tipicamente retryable.
+    Storage,
+    /// Registro corrompido (CRC/parse) — não retryable, requer recovery.
+    Corrupt,
+    /// Entrada rejeitada por contrato (key/scope/entidade/valor inválido).
+    KeyRejected,
+    /// Recurso não encontrado na operação (key/conflito sem memória).
+    NotFound,
+}
+
+impl SgdbError {
+    /// Código estável do erro (ISSUE 8). Mapeamento:
+    /// `Invalid` → `KeyRejected` quando a mensagem indica rejeição de
+    /// escrita ("key", "scope", "entity", "importance", "content_type",
+    /// "label", "prefix"), `NotFound` quando indica ausência ("no memory",
+    /// "not found", "no doc"); os demais `Invalid` caem em `KeyRejected`
+    /// (o Invalid sempre sinaliza entrada fora de contrato).
+    pub fn code(&self) -> ErrorCode {
+        match self {
+            SgdbError::Storage(_) => ErrorCode::Storage,
+            SgdbError::Corrupt => ErrorCode::Corrupt,
+            SgdbError::Invalid(m) => {
+                const NOT_FOUND: &[&str] = &["no memory", "not found", "no doc", "no ckpt"];
+                if NOT_FOUND.iter().any(|p| m.contains(p)) {
+                    ErrorCode::NotFound
+                } else {
+                    ErrorCode::KeyRejected
+                }
+            }
+        }
+    }
+}
+
 impl core::fmt::Display for SgdbError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
@@ -24,6 +65,18 @@ impl core::fmt::Display for SgdbError {
             SgdbError::Corrupt => write!(f, "corrupt record"),
             SgdbError::Invalid(m) => write!(f, "invalid: {m}"),
         }
+    }
+}
+
+impl core::fmt::Display for ErrorCode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let s = match self {
+            ErrorCode::Storage => "storage",
+            ErrorCode::Corrupt => "corrupt",
+            ErrorCode::KeyRejected => "key_rejected",
+            ErrorCode::NotFound => "not_found",
+        };
+        f.write_str(s)
     }
 }
 

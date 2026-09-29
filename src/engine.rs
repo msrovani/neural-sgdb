@@ -288,6 +288,17 @@ impl AiosDatabaseEngine {
         self.put_inner(doc, true)
     }
 
+    /// Put OPERACIONAL (triagem s413, ISSUE 2): dado de sistema próprio
+    /// (`sys/`, `hw/`, config) — indexa como qualquer doc mas NÃO ticka o
+    /// relógio próprio nem promove o watermark. O doc não vira "autoria
+    /// causal" no CRDT: escrever a mesma key duas vezes no boot não cria
+    /// duas versões concorrentes. Semântica de meta: identidade estável
+    /// por key (como `put`), mas sem tick — a versão causal do doc é
+    /// preservada como veio (ou vazia).
+    pub fn put_operational(&mut self, doc: MemoryDoc) -> Result<u64, SgdbError> {
+        self.put_inner(doc, false)
+    }
+
     /// Escreve um doc COMPANION do mesmo write lógico SEM tickar o relógio:
     /// reutiliza o contador próprio atual (watermark). Um `remember_semantic`
     /// grava L4+L2 sob a MESMA versão causal — um write lógico = uma versão
@@ -454,6 +465,7 @@ impl AiosDatabaseEngine {
                     content_type: None,
                     scope_dims: crate::memory_doc::ScopeDims::new(),
                     model_id: String::new(),
+                    authority: 0,
                 }
             }
         };
@@ -679,6 +691,7 @@ impl AiosDatabaseEngine {
             content_type: None,
             scope_dims: crate::memory_doc::ScopeDims::new(),
             model_id: String::new(),
+            authority: 0,
         };
         // índice reverso também é derivado na migração (DAG consultável)
         self.storage
@@ -1493,6 +1506,21 @@ impl AiosDatabaseEngine {
             .unwrap_or_default()
     }
 
+    /// Storage keys cujo relógio tem `counter_of(node) > since` (triagem
+    /// s413, ISSUE 23): o pull DIRECIONADO do anti-entropy — o peer anuncia
+    /// seu clock `(node, last_seen)` e recebe só as memórias escritas
+    /// DEPOIS. Varre as entradas do `clock_index` para o nó (bounded pelo
+    /// contador do nó, não pelo corpus todo).
+    pub fn keys_since_clock(&self, node: u8, since: u64) -> Vec<String> {
+        let mut out = Vec::new();
+        for ((n, _c), keys) in self.clock_index.range((node, since + 1)..=(node, u64::MAX)) {
+            if *n == node {
+                out.extend(keys.iter().cloned());
+            }
+        }
+        out
+    }
+
     /// Acesso cru a uma side-table (escape hatch para metadados de
     /// replicação/host, ex: `sys/crdt/` do CRDT durável — P0-11). NÃO é
     /// uma API pública de leitura de memória.
@@ -2026,6 +2054,7 @@ fn meta_for_import(doc: &MemoryDoc) -> MemoryMeta {
             .map(|m| m.scope_dims.clone())
             .unwrap_or_default(),
         model_id: doc.meta.as_ref().map(|m| m.model_id.clone()).unwrap_or_default(),
+        authority: doc.meta.as_ref().map(|m| m.authority).unwrap_or(0),
     }
 }
 

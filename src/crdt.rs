@@ -210,6 +210,11 @@ pub enum MergeVerdict {
     /// Política da CAMADA bloqueou a adoção (L0/L1 local-only, L6 reservado —
     /// P0-6). Nada é escrito nem registrado como conflito.
     Rejected,
+    /// Triagem s413 (ISSUE 21): remoto causalmente posterior mas com
+    /// `authority` MENOR que o local (HITL-approved > learned) — rejeitado;
+    /// uma decisão humana não é antecipada por escrita learned de peer.
+    /// A camada superior decide se promove o local ou resolve o conflito.
+    RejectedByAuthority,
 }
 
 /// Política de merge POR CAMADA (v0.6 — P0-6). Tabela explícita em código:
@@ -689,6 +694,11 @@ impl CrdtMemorySync {
                 }
                 MergeVerdict::Rejected => {
                     crate::sgdb_log!("CRDT sync: node={node} v={v} rejeitado (politica da camada)");
+                }
+                MergeVerdict::RejectedByAuthority => {
+                    crate::sgdb_log!(
+                        "CRDT sync: node={node} v={v} rejeitado (autoridade local domina)",
+                    );
                 }
             }
         }

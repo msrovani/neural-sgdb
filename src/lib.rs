@@ -143,12 +143,12 @@ pub use harness::{
     MergeStrategy, MOM_ANTI_PATTERN, PromoteRunReport,
 };
 pub use sgdb::{
-    AdaptiveRecall, AuditReport, CandidateSignals, ConsolidateConfig, DecayConfig, GcConfig,
-    GcReport, HealthReport, Hit, HitProvenance, LexicalAnchorReranker, RecallLedger, RecallProbe,
-    RecallWeights, RememberOptions, RememberOutcome, Reranker, ScoreBreakdown, ScopeDistribution,
-    ScopeProbes, Sgdb, ValidateIssue,
+    AdaptiveRecall, AuditReport, CandidateSignals, CognitiveOps, ConsolidateConfig, DecayConfig,
+    ForgetOutcome, GcConfig, GcReport, HealthReport, Hit, HitProvenance, LexicalAnchorReranker,
+    RecallLedger, RecallProbe, RecallWeights, RememberOptions, RememberOutcome, Reranker,
+    ResolveOutcome, ScoreBreakdown, ScopeDistribution, ScopeProbes, Sgdb, ValidateIssue,
 };
-pub use storage::{InMemory, SnapshotStorage, Storage, SgdbError};
+pub use storage::{ErrorCode, InMemory, SnapshotStorage, Storage, SgdbError};
 pub use staleness::{StalenessConfig, StalenessHit, StalenessLevel, StalenessReason};
 pub use limits::{
     DEFAULT_SCAN_PAGE_SIZE, MAX_EMBEDDING_DIM, MAX_KLEN, MAX_RAG_CONTEXT_BYTES, MAX_VLEN,

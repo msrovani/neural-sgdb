@@ -565,6 +565,7 @@ fn main() {
             content_type: None,
             scope_dims: None,
             model_id: None,
+            index_key: false,
         },
     )
     .unwrap();
@@ -577,6 +578,7 @@ fn main() {
             content_type: None,
             scope_dims: None,
             model_id: None,
+            index_key: false,
         },
     )
     .unwrap();

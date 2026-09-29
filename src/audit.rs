@@ -31,6 +31,12 @@ pub const AUDIT_OP_ROLLBACK: u8 = 1;
 /// quando o OS executa um esquecimento HITL — carrega a storage key canônica
 /// apagada no campo `ts_note`-like do snapshot (1 item, sem meta).
 pub const AUDIT_OP_FORGET: u8 = 2;
+/// Resolução EXPLÍCITA de conflito auditada (triagem s413, ISSUE 7):
+/// anexada por `Sgdb::audit_resolve` quando a camada superior (HITL)
+/// decide o vencedor de um conflito CRDT. `digest` = FNV-1a do reason;
+/// snapshot = 1 item marcando o alvo (`sk` = `sys/conflict/<id>`-
+/// compatível: a key lógica do conflito, meta = winner_vid).
+pub const AUDIT_OP_RESOLVE: u8 = 3;
 
 /// Uma entrada do ledger (um elo da hash-chain).
 #[derive(Clone, Debug, PartialEq)]
@@ -41,10 +47,14 @@ pub struct AuditEntry {
     pub prev_hash: u64,
     /// Clock do caller no checkpoint/rollback.
     pub ts: u64,
-    /// `AUDIT_OP_CHECKPOINT` | `AUDIT_OP_ROLLBACK` | `AUDIT_OP_FORGET`.
+    /// `AUDIT_OP_CHECKPOINT` | `AUDIT_OP_ROLLBACK` | `AUDIT_OP_FORGET` |
+    /// `AUDIT_OP_RESOLVE`.
     pub op: u8,
-    /// FNV-1a do estado corrente (docs + side-tables ordenados). Para um
-    /// marcador de rollback, o digest do estado DEPOIS do restore.
+    /// Semântica POR OP (triagem s413, ISSUE 6):
+    /// - CHECKPOINT: FNV-1a do estado corrente (docs + side-tables);
+    /// - ROLLBACK: digest do estado DEPOIS do restore;
+    /// - FORGET: FNV-1a do `reason` (a evidência é o snapshot-item);
+    /// - RESOLVE: FNV-1a do `reason`; o vencedor viaja no meta do item.
     pub digest: u64,
     /// Snapshot das side-tables cognitivas (vazio p/ marcadores).
     pub snapshot: Vec<AuditSnapshotItem>,
@@ -109,7 +119,11 @@ impl AuditEntry {
         off += 8;
         let op = *data.get(off).ok_or("trunc op")?;
         off += 1;
-        if !(op == AUDIT_OP_CHECKPOINT || op == AUDIT_OP_ROLLBACK || op == AUDIT_OP_FORGET) {
+        if !(op == AUDIT_OP_CHECKPOINT
+            || op == AUDIT_OP_ROLLBACK
+            || op == AUDIT_OP_FORGET
+            || op == AUDIT_OP_RESOLVE)
+        {
             return Err("bad audit op");
         }
         let digest = rd_u64(data, off).ok_or("trunc digest")?;

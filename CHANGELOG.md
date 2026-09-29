@@ -4,6 +4,36 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [Unreleased] — lote consumer-triage (ISSUEs 1/2/5/6/7/8/9/11/12/14/16)
+
+### Novas APIs
+- `Sgdb::put_operational(doc)` — escrita OPERACIONAL de sistema: indexa sem
+  tickar o relógio (sem inflação causal por overwrite de boot).
+- `Sgdb::forget_purge(key, reason) -> ForgetOutcome` — forget purgativo
+  canônico: tombstone → delete físico → elo `AUDIT_OP_FORGET`.
+- `Sgdb::audit_resolve(conflict_id, winner_vid, ts, reason) -> seq` —
+  decisão HITL de conflito na hash-chain (`AUDIT_OP_RESOLVE`, op=3).
+- `Sgdb::audit_entries(since_seq, limit)` / `Sgdb::audit_for_key(sk)` —
+  leitura da trilha sem full-scan do consumidor.
+- `Sgdb::conflicts_open()` / `Sgdb::conflicts_count_open()`.
+- `Sgdb::count_prefix(prefix)` — contagem sem materializar.
+- `RememberOptions::index_key: bool` — tokens da KEY no lexical (opt-in).
+- `VectorClock::is_vacuous()` / `is_zero_at(node)`; `Default` agora é
+  canônico (= `new()`, slots 0xFF).
+- `MemoryLayer::from_label("L4" | "L4Semantic")`.
+- `SgdbError::code() -> ErrorCode` (`storage|corrupt|key_rejected|not_found`,
+  `#[non_exhaustive]`).
+
+### Mudanças de contrato
+- `AUD1` aceita op=3 (RESOLVE); decoders antigos rejeitam — atualizar junto.
+- Log do fast-mount mudou de "BQ vazio até rebuild" para "BQ restaurado do
+  snapshot" (a frase era falsa desde o IDX2; consumers que parseiam stderr
+  do exemplo devem saber).
+
+### Deprecated
+- (nada ainda; `Sgdb::put` p/ writes operacionais será marcado quando o
+  `put_operational` estiver na superfície MCP)
+
 ## [1.2.1] — 2026-09-25 (fork/merge de memória — seekdb item 1)
 
 ### Fixed (fechamento do release)

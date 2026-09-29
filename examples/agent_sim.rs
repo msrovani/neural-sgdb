@@ -38,6 +38,7 @@ fn main() {
                 content_type: None,
                 scope_dims: None,
                 model_id: None,
+                index_key: false,
             },
         ).unwrap();
         // episódico verbatim
@@ -53,6 +54,7 @@ fn main() {
                 content_type: Some("text"),
                 scope_dims: None,
                 model_id: None,
+                index_key: false,
             },
         ).unwrap();
         let t1 = Instant::now();

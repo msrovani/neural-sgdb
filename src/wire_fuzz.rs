@@ -133,6 +133,7 @@ fn sample_meta(state: &mut u64) -> MemoryMeta {
         },
         scope_dims: crate::memory_doc::ScopeDims::new(),
         model_id: String::new(),
+        authority: 0,
     }
 }
 

@@ -416,7 +416,8 @@ impl Sgdb {
             content_type: fact.content_type,
             scope_dims: write_dims.cloned(),
             model_id: None,
-        };
+        index_key: false,
+    };
         match fact.embedding {
             Some(emb) => self.remember_semantic_with(fact.key, fact.text, emb, opts),
             None => self.remember_text_with(fact.key, fact.text, opts),

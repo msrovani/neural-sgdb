@@ -7,6 +7,38 @@
 > parent OS; this doc defines the public surface the community crate exposes
 > (and already ships).
 
+## Wire framing for N records (ISSUE 10 — resolved: use existing wire types)
+
+NÃO invente `[len u32le][NMD1]` no transporte (contrato hoje vivo só no
+kernel). O crate JÁ tem framing canônico, bounds-checked e fuzzado
+(`wire_fuzz.rs`):
+
+- **`MemoryDelta` (MDP1)** — N records + versões base: anti-entropy/pull
+  direcionado, o caso do mesh 2-nós.
+- **`MemorySnapshot` (MSNP)** — N records + TODAS as versões conhecidas:
+  bootstrap de nó novo / restauração completa.
+
+Política de corrupção: `decode` nunca panics — truncado/malformado retorna
+`Err("trunc …"/"bad …")` (fail-stop). Encode truncating-seguo via
+`try_encode` (nunca silenciosamente corta). Golden vectors vivem no
+`wire_fuzz` (prop tests de roundtrip/truncation sobre os 9 wire types).
+
+## Write-path decision table (consumer triage s413, ISSUE 2)
+
+Qual rota de escrita usar — a tabela que só existia lendo `engine.rs`:
+
+| Rota | Quando | Tick do relógio | Índices | Identidade |
+|---|---|---|---|---|
+| `remember_*` / `remember_semantic_with` | memória COGNITIVA criada aqui | sim (+watermark) | ART+BQ+lexical | estável por key |
+| `Sgdb::put(doc)` | doc NMD1 cru de autoria local | sim (+watermark) | todos | estável por key |
+| `Sgdb::put_operational(doc)` | dado de SISTEMA próprio (`sys/`, `hw/`, config) | **não** | todos | estável por key |
+| `import_record(rec)` | memória ALHEIA replicada (P0-5) | não | todos | DO REMETENTE |
+| `merge_remote(...)` | decisão CRDT de merge (conflito → `Conflict`) | não | todos | vencedor do clock |
+| `put_many_raw(items)` | NMD1 CRU em massa (replicação/checkpoint) | não | **nenhum** (reindexar depois) | a do blob |
+
+Regra: overwrite operacional repetido (`hw/cpu/avx2` a cada boot) usa
+`put_operational` — cada `put` criaria uma autoria causal nova.
+
 ## Principles
 
 1. **Memories, not data.** The API speaks `remember` / `recall`, L0–L7 layers

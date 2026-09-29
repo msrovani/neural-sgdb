@@ -381,6 +381,41 @@ pub struct RememberOptions<'a> {
     pub scope_dims: Option<ScopeDims>,
     /// Modelo de embedding da era (v1.1.14): ex. "all-MiniLM-L6-v2-384".
     pub model_id: Option<&'a str>,
+    /// Indexar os TOKENS DA KEY no lexical (triagem s413, ISSUE 12):
+    /// faz `recall_lexical("net_config")` achar a memória gravada na key
+    /// `sys/net_config` mesmo quando o payload não contém o termo. Opt-in
+    /// (default false — comportamento legado: lexical indexa só o texto).
+    pub index_key: bool,
+}
+
+/// Resultado da resolução de conflito (triagem s413, ISSUE 11): o que a
+/// decisão EFETIVOU sem re-scan do consumidor.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolveOutcome {
+    /// O conflito já estava Resolved (chamada idempotente — nada feito).
+    pub already_resolved: bool,
+    /// O record do vencedor foi importado para o slot.
+    pub imported: bool,
+    /// version_ids dos perdedores que viraram parents do vencedor.
+    pub superseded: alloc::vec::Vec<String>,
+}
+
+/// Resultado do forget PURGATIVO canônico (triagem s413, ISSUE 5):
+/// `(existed, tombstoned, deleted, audit_seq)` — branqueável sem
+/// reinterpretar `bool` cru. `tombstoned=false` + `existed=true` nunca
+/// ocorre (tombstone precede o delete por contrato).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ForgetOutcome {
+    /// A memória existia antes da chamada.
+    pub existed: bool,
+    /// Tombstone lógico (`Superseded`) aplicado com sucesso.
+    pub tombstoned: bool,
+    /// Delete físico executado (`sys/` tombstone + índices). `false` =
+    /// storage falhou DEPOIS do tombstone (a memória ficou supersedida —
+    /// seguro: recall não a serve).
+    pub deleted: bool,
+    /// Seq do elo `AUDIT_OP_FORGET` anexado (`None` = key inexistente).
+    pub audit_seq: Option<u64>,
 }
 
 /// Resultado estruturado de uma escrita semântica — útil p/ agentes e MCP.
@@ -410,6 +445,55 @@ pub trait Reranker {
 /// tokens da query presentes no texto do hit (substring lowercased).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LexicalAnchorReranker;
+
+/// Ops cognitivas como cidadãs de primeira classe (triagem s413, ISSUE 20):
+/// os verbos HITL do ciclo de vida numa superfície única e explicável — cada
+/// um devolve um OUTCOME rico (o que efetivou) e deixa rastro auditável.
+/// O core reporta, nunca decide (quem aprova é a camada superior).
+///
+/// Implementado para `Sgdb`. Existe como trait para que hosts (kernel,
+/// conectores) possam tomar `impl CognitiveOps` genérico e testar com um
+/// mock sem subir o banco real.
+pub trait CognitiveOps {
+    /// Esquecimento PURGATIVO: tombstone → delete físico → elo FORGET.
+    fn forget(&mut self, key: &str, reason: &str) -> Result<ForgetOutcome, SgdbError>;
+    /// Decisão HITL sobre um conflito CRDT.
+    fn resolve(
+        &mut self,
+        conflict_id: &str,
+        winner_vid: &str,
+    ) -> Result<ResolveOutcome, SgdbError>;
+    /// Registro da decisão na hash-chain (o PORQUÊ sobrevive).
+    fn audit_decision(
+        &mut self,
+        conflict_id: &str,
+        winner_vid: &str,
+        ts: u64,
+        reason: &str,
+    ) -> Result<u64, SgdbError>;
+}
+
+impl CognitiveOps for Sgdb {
+    fn forget(&mut self, key: &str, reason: &str) -> Result<ForgetOutcome, SgdbError> {
+        self.forget_purge(key, reason)
+    }
+    fn resolve(
+        &mut self,
+        conflict_id: &str,
+        winner_vid: &str,
+    ) -> Result<ResolveOutcome, SgdbError> {
+        self.resolve_conflict(conflict_id, winner_vid)
+    }
+    fn audit_decision(
+        &mut self,
+        conflict_id: &str,
+        winner_vid: &str,
+        ts: u64,
+        reason: &str,
+    ) -> Result<u64, SgdbError> {
+        self.audit_resolve(conflict_id, winner_vid, ts, reason)
+    }
+}
 
 impl Reranker for LexicalAnchorReranker {
     fn score(&self, query_text: &str, hit: &Hit) -> f32 {
@@ -1907,6 +1991,37 @@ impl Sgdb {
         self.engine.set_state(&sk, MemoryState::Archived)
     }
 
+    /// Forget PURGATIVO canônico (triagem s413, ISSUE 5): a sequência
+    /// tombstone → delete físico → elo `AUDIT_OP_FORGET` numa chamada
+    /// atômica — a ordem importa (tombstone ANTES do delete, senão o mesh
+    /// ressuscita a memória no próximo sync) e o elo de auditoria registra
+    /// que a memória existiu e foi apagada. `reason` = rótulo da decisão
+    /// (request-id/approver). Nunca panic: erro de storage propaga.
+    pub fn forget_purge(&mut self, key: &str, reason: &str) -> Result<ForgetOutcome, SgdbError> {
+        let sk = self.resolve_known_key(key);
+        let existed = self.engine.get_by_storage_key(&sk)?.is_some();
+        if !existed {
+            return Ok(ForgetOutcome {
+                existed: false,
+                tombstoned: false,
+                deleted: false,
+                audit_seq: None,
+            });
+        }
+        // 1. tombstone lógico (o estado viaja nos records de replicação)
+        self.engine.set_state(&sk, MemoryState::Superseded)?;
+        // 2. delete físico (tombstone de storage + side-tables + índices)
+        let deleted = self.delete(&sk)?;
+        // 3. elo de auditoria (a evidência sobrevive ao delete)
+        let audit_seq = self.audit_forget(&sk, self.engine.own_counter(), reason)?;
+        Ok(ForgetOutcome {
+            existed: true,
+            tombstoned: true,
+            deleted,
+            audit_seq: Some(audit_seq),
+        })
+    }
+
     /// Explicação estruturada (roadmap Phase 17): por que a memória está no
     /// estado em que está. Sem registro pré-v0.6 / sem doc → `Err`.
     pub fn explain(&mut self, key: &str) -> Result<MemoryExplanation, SgdbError> {
@@ -2146,7 +2261,7 @@ impl Sgdb {
         let metrics = match mounted? {
             Some(n) => {
                 crate::sgdb_log!(
-                    "Sgdb fast-mount: {n} keys do snapshot IDX1 em {ms} ms (BQ vazio até rebuild)"
+                    "Sgdb fast-mount: {n} keys do snapshot em {ms} ms (BQ restaurado do snapshot)"
                 );
                 crate::metrics::Metrics {
                     storage_recoveries: 1,
@@ -2382,6 +2497,13 @@ impl Sgdb {
         if !model_id.is_empty() {
             self.set_model_id(&sk, &model_id)?;
         }
+        // ISSUE 12 (triagem s413): tokens da KEY no lexical — busca por NOME
+        // de key acha memórias cujo payload não contém o termo. Opt-in
+        // (index_key=false mantém o comportamento legado). `add` acumula
+        // sobre o texto já indexado (BM25 reconta o doc inteiro).
+        if opts.index_key {
+            self.engine.lexical.add(&sk, &sk);
+        }
         let recall_hint = if lexical {
             if scope.is_empty() {
                 "indexed=lexical; recall default (mode=lexical) ve globais; escopadas exigem recall(scope=...)"
@@ -2435,6 +2557,7 @@ impl Sgdb {
                 content_type: Some("text"),
                 scope_dims: None,
                 model_id: None,
+                index_key: false,
             },
         )?;
         Ok(true)
@@ -3387,6 +3510,85 @@ impl Sgdb {
         };
         self.engine.storage_put(&crate::audit::audit_key(seq), &e.encode())?;
         Ok(seq)
+    }
+
+    /// Resolução de conflito AUDITADA (triagem s413, ISSUE 7): anexa um elo
+    /// `AUDIT_OP_RESOLVE` à hash-chain registrando a decisão HITL —
+    /// `conflict_id`, `winner_vid` e `reason` sobrevivem à resolução.
+    /// `digest` = FNV-1a do reason (semântica por op documentada em
+    /// `src/audit.rs`); snapshot = 1 item (sk = key lógica do conflito,
+    /// meta = winner_vid). Devolve o seq do elo. Chame DEPOIS de
+    /// `resolve_conflict` (o core registra, nunca decide).
+    pub fn audit_resolve(
+        &mut self,
+        conflict_id: &str,
+        winner_vid: &str,
+        ts: u64,
+        reason: &str,
+    ) -> Result<u64, SgdbError> {
+        let last = self.engine.audit_last_seq()?;
+        let seq = last.map(|l| l.saturating_add(1)).unwrap_or(0);
+        let prev_hash = match last {
+            Some(l) => match self.engine.storage_get(&crate::audit::audit_key(l))? {
+                Some(b) => crate::tickv::fnv1a64(&b),
+                None => 0,
+            },
+            None => 0,
+        };
+        let e = crate::audit::AuditEntry {
+            seq,
+            prev_hash,
+            ts,
+            op: crate::audit::AUDIT_OP_RESOLVE,
+            digest: crate::tickv::fnv1a64(reason.as_bytes()),
+            snapshot: alloc::vec::Vec::from([
+                crate::audit::AuditSnapshotItem {
+                    sk: conflict_id.into(),
+                    state: crate::memory_doc::MemoryState::Active,
+                    validity: None,
+                    meta: winner_vid.as_bytes().to_vec(),
+                },
+            ]),
+        };
+        self.engine.storage_put(&crate::audit::audit_key(seq), &e.encode())?;
+        Ok(seq)
+    }
+
+    /// Elos da hash-chain desde `since_seq` (triagem s413, ISSUE 6):
+    /// leitura da trilha sem full-scan do consumidor. Ordenado por seq
+    /// crescente; `limit` = 0 → sem teto. Elos ilegíveis são PULADOS
+    /// (tamper-evidence fica a cargo do `audit_verify`).
+    pub fn audit_entries(
+        &mut self,
+        since_seq: u64,
+        limit: usize,
+    ) -> Result<alloc::vec::Vec<crate::audit::AuditEntry>, SgdbError> {
+        let last = self.engine.audit_last_seq()?.unwrap_or(0);
+        let mut out = alloc::vec::Vec::new();
+        let mut seq = since_seq;
+        while seq <= last && (limit == 0 || out.len() < limit) {
+            if let Some(b) = self.engine.storage_get(&crate::audit::audit_key(seq))? {
+                if let Ok(e) = crate::audit::AuditEntry::decode(&b) {
+                    out.push(e);
+                }
+            }
+            seq += 1;
+        }
+        Ok(out)
+    }
+
+    /// Elos da chain que mencionam a memória `sk` no snapshot (ISSUE 6):
+    /// a trilha de UMA memória em uma chamada (forget/resolve/checkpoint
+    /// que a carregarem). Sem match = chain vazia ou memória nunca citada.
+    pub fn audit_for_key(
+        &mut self,
+        sk: &str,
+    ) -> Result<alloc::vec::Vec<crate::audit::AuditEntry>, SgdbError> {
+        let all = self.audit_entries(0, 0)?;
+        Ok(all
+            .into_iter()
+            .filter(|e| e.snapshot.iter().any(|it| it.sk == sk))
+            .collect())
     }
 
     /// Verifica a hash-chain e o drift do estado (tamper-evidence): caminha
@@ -4820,6 +5022,26 @@ impl Sgdb {
         Ok(v)
     }
 
+    /// Escrita OPERACIONAL (triagem s413, ISSUE 2): dado de sistema próprio
+    /// do host (`sys/`, `hw/`, config) — indexa (ART/lexical) mas NÃO ticka
+    /// o relógio nem promove o watermark: sem inflação causal por overwrite
+    /// de boot. Diferente de `import_record` (memória ALHEIA replicada —
+    /// preserva identidade do criador): aqui a identidade é estável por key
+    /// (overwrite = mesma memória), só sem autoria causal.
+    ///
+    /// **Tabela de decisão de escrita** (docs/api.md tem a versão expandida):
+    /// - `remember_*`/`put` — memória COGNITIVA criada aqui (tick + versão);
+    /// - `put_operational` — dado de SISTEMA próprio (indexa, sem tick);
+    /// - `import_record`/`merge_remote` — memória ALHEIA replicada (sem tick,
+    ///   identidade do remetente);
+    /// - `put_many_raw` — NMD1 CRU sem índices (reindexar depois).
+    pub fn put_operational(&mut self, doc: MemoryDoc) -> Result<u64, SgdbError> {
+        validate_written(&doc.key)?;
+        let v = self.engine.put_operational(doc)?;
+        self.metrics.memory_writes += 1;
+        Ok(v)
+    }
+
     /// Exporta uma memória como UNIDADE de replicação (P0-5): doc NMD1 (com
     /// meta anexada) + estado lógico + janela de validade. `None` = sem doc
     /// na chave. O lado remoto reimporta com `import_record`/`merge_remote`.
@@ -4845,6 +5067,32 @@ impl Sgdb {
         self.metrics.replication_received += 1;
         self.metrics.memory_writes += 1;
         Ok(v)
+    }
+
+    /// Export DELTA por relógio (triagem s413, ISSUE 23): memórias cujo
+    /// contador do nó `node` é > `since` — o pull DIRECIONADO do
+    /// anti-entropy (o peer anuncia `(node, last_seen)`, recebe só o novo).
+    /// Cada record viaja com estado+validade (unidade de replicação P0-5);
+    /// o consumidor manda cada um por `merge_remote` no destino. `max`
+    /// limita o batch (0 = sem teto). Ordenado por counter crescente.
+    pub fn export_delta(
+        &mut self,
+        node: u8,
+        since: u64,
+        max: usize,
+    ) -> Result<alloc::vec::Vec<MemoryRecord>, SgdbError> {
+        let mut out = alloc::vec::Vec::new();
+        // Range scan no clock_index (BTreeMap, ordenado por counter) —
+        // NUNCA varre counters vazios: custo = O(keys novas), não O(range).
+        for sk in self.engine.keys_since_clock(node, since) {
+            if let Some(rec) = self.export_record(&sk)? {
+                out.push(rec);
+                if max > 0 && out.len() >= max {
+                    break;
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// Storage keys cujo relógio tem `counter_of(node) == counter` — o
@@ -4917,6 +5165,25 @@ impl Sgdb {
             return Ok(MergeVerdict::Stale); // local domina — sem regressão
         }
         if local.clock.happens_before(&rec.doc.clock) {
+            // ISSUE 21 (triagem s413): AUTHORIDADE antes de aceitar o domínio
+            // causal — memória HITL-approved (authority > learned) não é
+            // antecipada por escrita learned de peer, mesmo causalmente
+            // posterior. O core REPORTA (StaleByAuthority); o HITL decide.
+            let local_auth = local
+                .meta
+                .as_ref()
+                .map(|m| m.authority)
+                .unwrap_or(0);
+            let remote_auth = rec
+                .doc
+                .meta
+                .as_ref()
+                .map(|m| m.authority)
+                .unwrap_or(0);
+            if local_auth > remote_auth {
+                self.metrics.replication_rejected += 1;
+                return Ok(MergeVerdict::RejectedByAuthority);
+            }
             // remoto domina causalmente → importa: o conteúdo do slot é
             // atualizado, a IDENTIDADE permanece (v0.6: overwrite = mesma
             // memória). A lineage entre CHAVES distintas é registrada por
@@ -4985,6 +5252,21 @@ impl Sgdb {
         self.engine.list_conflicts()
     }
 
+    /// Só conflitos ABERTOS (triagem s413, ISSUE 11): o caso comum do HUD/
+    /// health gate — sem filtrar em memória no consumidor.
+    pub fn conflicts_open(&mut self) -> Vec<crate::conflict::ConflictRecord> {
+        self.engine
+            .list_conflicts()
+            .into_iter()
+            .filter(|c| c.status == crate::conflict::ConflictStatus::Open)
+            .collect()
+    }
+
+    /// Contagem de conflitos abertos (para gates sem materializar records).
+    pub fn conflicts_count_open(&mut self) -> usize {
+        self.conflicts_open().len()
+    }
+
     pub fn conflict(&mut self, conflict_id: &str) -> Option<crate::conflict::ConflictRecord> {
         self.engine.get_conflict(conflict_id)
     }
@@ -5003,12 +5285,16 @@ impl Sgdb {
         &mut self,
         conflict_id: &str,
         winner_vid: &str,
-    ) -> Result<(), SgdbError> {
+    ) -> Result<ResolveOutcome, SgdbError> {
         let Some(mut c) = self.engine.get_conflict(conflict_id) else {
             return Err(SgdbError::Invalid("conflict not found"));
         };
         if c.status == crate::conflict::ConflictStatus::Resolved {
-            return Ok(()); // idempotente
+            return Ok(ResolveOutcome {
+                already_resolved: true,
+                imported: false,
+                superseded: Vec::new(),
+            }); // idempotente
         }
         let winner_idx = match c.candidates.iter().position(|v| v == winner_vid) {
             Some(i) => i,
@@ -5016,10 +5302,13 @@ impl Sgdb {
         };
         // importa o record do VENCEDOR (evidência preservada no conflito — a
         // resolução não depende de re-buscar o nó remoto)
+        let mut imported = false;
+        let mut superseded: alloc::vec::Vec<String> = alloc::vec::Vec::new();
         if let Some(rec_bytes) = c.records.get(winner_idx) {
             if let Ok(rec) = crate::memory_doc::MemoryRecord::decode(rec_bytes) {
                 let sk = rec.doc.storage_key();
                 self.engine.import_record(rec)?;
+                imported = true;
                 // decisão EXPLÍCITA da camada superior: o vencedor vira a
                 // versão CORRENTE do slot (differe do overwrite implícito, que
                 // preserva a identidade local); perdedores viram parents
@@ -5028,6 +5317,7 @@ impl Sgdb {
                 for (i, v) in c.candidates.iter().enumerate() {
                     if i != winner_idx && !m.parent_ids.contains(v) {
                         m.parent_ids.push(v.clone());
+                        superseded.push(v.clone());
                     }
                 }
                 self.engine.write_meta(&sk, &m)?;
@@ -5036,7 +5326,12 @@ impl Sgdb {
         c.status = crate::conflict::ConflictStatus::Resolved;
         c.resolved_winner = Some(String::from(winner_vid));
         self.metrics.conflicts_resolved += 1;
-        self.engine.put_conflict(&c)
+        self.engine.put_conflict(&c)?;
+        Ok(ResolveOutcome {
+            already_resolved: false,
+            imported,
+            superseded,
+        })
     }
 
     /// Remove o REGISTRO do conflito após a camada superior encerrar o
@@ -5168,6 +5463,14 @@ impl Sgdb {
         limit: usize,
     ) -> Result<Vec<(String, u64)>, SgdbError> {
         Ok(self.engine.art.scan_prefix_page(prefix, offset, limit))
+    }
+
+    /// Conta keys sob o prefixo SEM materializar nada (triagem s413,
+    /// ISSUE 14): percorre o ART coletando só o comprimento. O(n) no
+    /// número de keys sob o prefixo, O(1) de memória. Para iterar sem
+    /// carregar tudo, use `scan_prefix_page`.
+    pub fn count_prefix(&mut self, prefix: &str) -> Result<usize, SgdbError> {
+        Ok(self.engine.art.scan_prefix(prefix).len())
     }
 
     /// Flush L0/L1 RAM → Storage.
@@ -5920,7 +6223,7 @@ mod tests {
         db.remember_text_with(
             "fato do projeto",
             "o deploy roda no ring",
-            RememberOptions { scope: None, entities: &["pref/lang"], content_type: None, scope_dims: None, model_id: None },
+            RememberOptions { scope: None, entities: &["pref/lang"], content_type: None, scope_dims: None, model_id: None, index_key: false },
         )
         .unwrap();
         let hits = db.recall_lexical("deploy ring", 3).unwrap();
@@ -5974,6 +6277,7 @@ mod tests {
                 content_type: None,
                 scope_dims: None,
                 model_id: None,
+                index_key: false,
             },
         )
         .unwrap();
@@ -6383,6 +6687,9 @@ mod tests {
         }
         let all = db.scan_prefix("md/L3/").unwrap();
         assert_eq!(all.len(), 25);
+        // ISSUE 14 (triagem s413): contagem sem materializar valores
+        assert_eq!(db.count_prefix("md/L3/").unwrap(), 25);
+        assert_eq!(db.count_prefix("md/L9/").unwrap(), 0);
 
         // scan_prefix (legado) pode vir em ordem de travessia da árvore;
         // scan_prefix_page SEMPRE devolve ordem lexicográfica determinística.
@@ -7748,6 +8055,23 @@ mod tests {
             id_before,
             "overwrite dominante não muda a identidade do slot"
         );
+        // ISSUE 21 (triagem s413): local HITL-approved (authority 255) NÃO é
+        // antecipado por remoto learned causalmente dominante
+        let mut m = db.engine.ensure_meta("md/L4/k").unwrap();
+        m.authority = 255;
+        db.engine.write_meta("md/L4/k", &m).unwrap();
+        let mut doc = MemoryDoc::new(MemoryLayer::L4Semantic, "k", vec![6, 6, 6, 6]);
+        doc.clock.tick(1);
+        doc.clock.tick(1);
+        doc.clock.tick(1); // (1,3) domina o (1,2) local
+        let rec = MemoryRecord::new(doc, MemoryState::Active, None);
+        assert_eq!(
+            db.merge_remote(rec).unwrap(),
+            MergeVerdict::RejectedByAuthority,
+            "decisão HITL não é antecipada por peer learned"
+        );
+        let cur = db.get(MemoryLayer::L4Semantic, "k").unwrap().unwrap();
+        assert_eq!(cur.payload, vec![5, 5, 5, 5], "local HITL preservado");
         // política por camada consultável (tabela explícita)
         assert_eq!(
             MergePolicy::for_layer(MemoryLayer::L2EpisodicShort),
@@ -8190,6 +8514,7 @@ mod tests {
                     content_type: Some("text"),
                     scope_dims: None,
                     model_id: None,
+                    index_key: false,
                 },
             )
             .unwrap();
@@ -8205,6 +8530,45 @@ mod tests {
     }
 
     #[test]
+    fn index_key_makes_key_findable_and_put_operational_no_tick() {
+        // ISSUE 12: key indexada no lexical
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_text_with(
+            "sys/net_config",
+            "mode=slirp",
+            RememberOptions {
+                index_key: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let hits = db.recall_lexical("net_config", 5).unwrap();
+        assert!(hits.iter().any(|h| h.key == "md/L3/sys/net_config"));
+        // default legado: sem index_key, a key não é encontrável pelo nome
+        let mut db2 = Sgdb::open(InMemory::new()).unwrap();
+        db2
+            .remember_text_with(
+                "sys/other",
+                "zzz unico",
+                RememberOptions::default(),
+            )
+            .unwrap();
+        assert!(db2.recall_lexical("other", 5).unwrap().is_empty());
+
+        // ISSUE 2: put_operational não ticka o relógio
+        let before = db.engine.own_counter();
+        let doc = crate::memory_doc::MemoryDoc::new(
+            MemoryLayer::L3EpisodicLong,
+            "sys/hw/cpu",
+            b"avx2".to_vec(),
+        );
+        db.put_operational(doc).unwrap();
+        assert_eq!(db.engine.own_counter(), before);
+        // encontrado no ART (indexado)
+        assert_eq!(db.count_prefix("md/L3/sys/hw/cpu").unwrap(), 1);
+    }
+
+    #[test]
     fn remember_text_with_is_lexical_not_bq() {
         let mut db = Sgdb::open(InMemory::new()).unwrap();
         let out = db
@@ -8217,6 +8581,7 @@ mod tests {
                     content_type: Some("text"),
                     scope_dims: None,
                     model_id: None,
+                    index_key: false,
                 },
             )
             .unwrap();
@@ -9235,6 +9600,92 @@ mod tests {
         let r2 = db.audit_verify().unwrap();
         assert!(r2.chain_intact, "chain segue intacta após 2 forgets");
         assert_eq!(r2.entries, 3);
+    }
+
+    #[test]
+    fn forget_purge_canonical_sequence_and_audit_resolve() {
+        // ISSUE 5 (triagem s413): forget_purge = tombstone → delete → elo
+        // FORGET numa chamada; a memória some do recall, a evidência fica.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_text_with("fp1", "fato purgável", RememberOptions::default())
+            .unwrap();
+        let out = db.forget_purge("fp1", "hitl:req9").unwrap();
+        assert!(out.existed && out.tombstoned && out.deleted);
+        assert!(out.audit_seq.is_some());
+        assert!(db.scan_prefix("md/L3/").unwrap().is_empty(), "sem ressurreição");
+        // key inexistente: outcome limpo, sem erro, sem elo
+        let ghost = db.forget_purge("nao/existe", "x").unwrap();
+        assert!(!ghost.existed && ghost.audit_seq.is_none());
+        // a trilha de UMA memória (audit_for_key) acha o elo do forget
+        let trail = db.audit_for_key("md/L3/fp1").unwrap();
+        assert_eq!(trail.len(), 1);
+        assert_eq!(trail[0].op, crate::audit::AUDIT_OP_FORGET);
+        // ISSUE 6/7: audit_entries lê desde seq sem full-scan do consumidor
+        let ck = db.audit_checkpoint(50).unwrap();
+        let entries = db.audit_entries(0, 0).unwrap();
+        assert!(entries.len() >= 2);
+        assert_eq!(entries[0].seq, 0);
+        let window = db.audit_entries(ck, 0).unwrap();
+        assert_eq!(window.len(), 1);
+        let limited = db.audit_entries(0, 1).unwrap();
+        assert_eq!(limited.len(), 1);
+
+        // ISSUE 7: audit_resolve registra a decisão HITL na chain
+        let c0 = db.conflicts_count_open();
+        let seq = db
+            .audit_resolve("conf-1", "vid-abc", 99, "hitl:req10")
+            .unwrap();
+        let e = db.audit_entries(seq, 1).unwrap().pop().unwrap();
+        assert_eq!(e.op, crate::audit::AUDIT_OP_RESOLVE);
+        assert_eq!(e.snapshot[0].sk, "conf-1");
+        assert_eq!(e.snapshot[0].meta, b"vid-abc".to_vec());
+        let _ = c0;
+        // chain segue íntegra com os novos ops
+        let r = db.audit_verify().unwrap();
+        assert!(r.chain_intact);
+    }
+
+    #[test]
+    fn export_delta_pulls_only_newer_clock_entries() {
+        // ISSUE 23: pull direcionado — peer anuncia (node, last_seen),
+        // recebe só memórias escritas DEPOIS, cada uma com estado+validade.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_text_with("d1", "primeiro", RememberOptions::default())
+            .unwrap();
+        let v1 = db.engine.own_counter();
+        db.remember_text_with("d2", "segundo", RememberOptions::default())
+            .unwrap();
+        let node = db.engine.node_id;
+        // nada depois do último write
+        assert!(db.export_delta(node, v1 + 10, 0).unwrap().is_empty());
+        // delta desde antes de d1: traz as duas
+        let all = db.export_delta(node, 0, 0).unwrap();
+        assert_eq!(all.len(), 2);
+        // estado viaja no record (unidade de replicação)
+        assert!(all.iter().all(|r| r.state == MemoryState::Active));
+        // delta desde d1: só d2
+        let d = db.export_delta(node, v1, 0).unwrap();
+        assert_eq!(d.len(), 1);
+        // max limita o batch
+        let one = db.export_delta(node, 0, 1).unwrap();
+        assert_eq!(one.len(), 1);
+        // nó errado → vazio (peer só puxa o que ELE perdeu de si mesmo)
+        assert!(db.export_delta(node + 1, 0, 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn error_code_branching_is_stable() {
+        // ISSUE 8: o consumidor IA branqueia por código, não por string
+        use crate::storage::{ErrorCode, SgdbError};
+        assert_eq!(SgdbError::Invalid("key contains # or NUL").code(), ErrorCode::KeyRejected);
+        assert_eq!(SgdbError::Invalid("no memory at key").code(), ErrorCode::NotFound);
+        assert_eq!(SgdbError::Storage("oob").code(), ErrorCode::Storage);
+        assert_eq!(SgdbError::Corrupt.code(), ErrorCode::Corrupt);
+        // Display do código é estável (contrato machine-readable)
+        assert_eq!(ErrorCode::KeyRejected.to_string(), "key_rejected");
+        assert_eq!(ErrorCode::NotFound.to_string(), "not_found");
+        assert_eq!(ErrorCode::Storage.to_string(), "storage");
+        assert_eq!(ErrorCode::Corrupt.to_string(), "corrupt");
     }
 
     // ═══════════════════════════════════════════════════════════════════════

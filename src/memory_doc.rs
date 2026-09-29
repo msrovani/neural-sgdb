@@ -47,6 +47,42 @@ impl MemoryLayer {
             Self::L7Identity => "L7",
         }
     }
+
+    /// Parse reverso do `as_str` (triagem do consumidor s413, ISSUE 9):
+    /// aceita o rótulo curto (`"L4"`) e o nome longo (`"L4Semantic"`).
+    /// Nome `from_label` (e não `from_str`) para não colidir com o
+    /// `FromStr::from_str` da trait — mesmo padrão do `RelationKind`.
+    pub fn from_label(s: &str) -> Option<Self> {
+        let short = s.len() == 2 && s.as_bytes()[0] == b'L';
+        if short {
+            return Self::from_u8(s.as_bytes()[1].wrapping_sub(b'0'));
+        }
+        ALL_LAYERS.iter().copied().find(|l| long_name(*l) == s)
+    }
+}
+
+const ALL_LAYERS: [MemoryLayer; 8] = [
+    MemoryLayer::L0Sensory,
+    MemoryLayer::L1Working,
+    MemoryLayer::L2EpisodicShort,
+    MemoryLayer::L3EpisodicLong,
+    MemoryLayer::L4Semantic,
+    MemoryLayer::L5Procedural,
+    MemoryLayer::L6Reserved,
+    MemoryLayer::L7Identity,
+];
+
+fn long_name(l: MemoryLayer) -> &'static str {
+    match l {
+        MemoryLayer::L0Sensory => "L0Sensory",
+        MemoryLayer::L1Working => "L1Working",
+        MemoryLayer::L2EpisodicShort => "L2EpisodicShort",
+        MemoryLayer::L3EpisodicLong => "L3EpisodicLong",
+        MemoryLayer::L4Semantic => "L4Semantic",
+        MemoryLayer::L5Procedural => "L5Procedural",
+        MemoryLayer::L6Reserved => "L6Reserved",
+        MemoryLayer::L7Identity => "L7Identity",
+    }
 }
 
 /// Estado lógico de uma memória (maturation P5 — modelo mínimo explícito).
@@ -89,7 +125,7 @@ impl MemoryState {
 /// fixos + `overflow` para nós além do 8º. O NMD1 serializa SÓ os 72B fixos
 /// (contrato byte-idêntico com o OS); o overflow persiste via side-table
 /// `sys/meta/` (MemoryMeta::clock_overflow) e é re-fundido no `get`.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct VectorClock {
     /// Pares (node_id, counter) densos; slots não usados = 0xFF / 0.
     pub nodes: [u8; 8],
@@ -97,6 +133,12 @@ pub struct VectorClock {
     /// Nós além do 8º — registro dinâmico (item 6: dynamic node identity).
     /// Invariante: um nó nunca aparece nos fixos E no overflow.
     pub overflow: Vec<(u8, u64)>,
+}
+
+impl Default for VectorClock {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Limite do registro dinâmico (política bounded): o espaço de u8 tem 256
@@ -133,6 +175,26 @@ impl VectorClock {
             counts: [0; 8],
             overflow: Vec::new(),
         }
+    }
+
+    /// Default canônico = `new()` (slots livres = 0xFF). O derive geraria
+    /// `nodes: [0u8; 8]` — um relógio com o nó 0 implícito via `counter_of`,
+    /// NÃO-vazio semanticamente. Único "vazio" do tipo.
+    /// (Triagem do consumidor s413, ISSUE 1.)
+    ///
+    /// ```
+    /// use neural_sgdb::VectorClock;
+    /// assert_eq!(VectorClock::default(), VectorClock::new());
+    /// assert!(VectorClock::default().is_vacuous());
+    /// ```
+    pub fn is_vacuous(&self) -> bool {
+        self.iter_nodes().all(|(_, c)| c == 0)
+    }
+
+    /// Contador do nó `node_id` é exatamente 0 (presente com zero OU
+    /// ausente — mesmo predicado semântico do `counter_of`).
+    pub fn is_zero_at(&self, node_id: u8) -> bool {
+        self.counter_of(node_id) == 0
     }
 
     /// Todos os pares (nó, contador): fixos + overflow, sem duplicatas.
@@ -459,6 +521,12 @@ pub struct MemoryMeta {
     /// ex. `"all-MiniLM-L6-v2-384"`, `"demo-256"`. Vazio = desconhecido
     /// (registros pré-v7). Mesma dim + `model_id` diferente → era distinta.
     pub model_id: String,
+    /// Autoridade da memória (triagem s413 ISSUE 21, MDM1 v8): 0 = learned
+    /// (aprendida em mesh), 255 = HITL-approved (decisão humana via
+    /// forget/resolve/curadoria). O merge desempata por authority ANTES do
+    /// timestamp no empate causal — um peer barulhento não antecipa decisão
+    /// humana. v1–v7 decodificam com 0 (migração explícita).
+    pub authority: u8,
 }
 
 /// Um elo da linhagem causal (Phase 3, v0.7): a versão corrente e seus
@@ -477,9 +545,10 @@ pub struct LineageEntry {
 const META_MAGIC: &[u8; 4] = b"MDM1";
 /// v1 (v0.6): memória + proveniência · v2 (v0.7): version_id · v3 (v0.9):
 /// last_reinforced · v4 (v1.1.4): scope · v5 (v1.1.4): entities · v6
-/// (v1.1.6): content_type declarado · v7 (v1.1.14): scope_dims + model_id.
-/// `decode` aceita as sete — migração explícita, nunca reinterpreta bytes antigos.
-const META_VERSION: u8 = 7;
+/// (v1.1.6): content_type declarado · v7 (v1.1.14): scope_dims + model_id ·
+/// v8 (triagem s413): authority (u8, 0=learned, 255=HITL).
+/// `decode` aceita as oito — migração explícita, nunca reinterpreta bytes antigos.
+const META_VERSION: u8 = 8;
 
 impl MemoryMeta {
     pub fn encode(&self) -> Vec<u8> {
@@ -534,6 +603,8 @@ impl MemoryMeta {
         out.extend_from_slice(self.scope_dims.run.as_bytes());
         out.extend_from_slice(&(self.model_id.len() as u16).to_le_bytes());
         out.extend_from_slice(self.model_id.as_bytes());
+        // v8: authority (1 byte; 0 = learned)
+        out.push(self.authority);
         out
     }
 
@@ -542,7 +613,7 @@ impl MemoryMeta {
             return Err("bad meta magic");
         }
         let ver = data[4];
-        if !(1..=7).contains(&ver) {
+        if !(1..=8).contains(&ver) {
             return Err("bad meta version");
         }
         let mut off = 5;
@@ -694,6 +765,18 @@ impl MemoryMeta {
         } else {
             (ScopeDims::new(), String::new())
         };
+        // v8: authority (v1–v7 = 0 learned; um byte). Último campo — o `off`
+        // final não é lido (v7 bloco acima já consumiu o `let _ = off`).
+        let authority = if ver >= 8 {
+            let a = *data.get(off).ok_or("trunc authority")?;
+            #[allow(unused_assignments)]
+            {
+                off += 1;
+            }
+            a
+        } else {
+            0
+        };
         // Compat: v1–v6 com scope legado alimenta user quando dims vazias.
         let scope_dims = if scope_dims.is_global() && !scope.is_empty() {
             ScopeDims {
@@ -720,6 +803,7 @@ impl MemoryMeta {
             content_type,
             scope_dims,
             model_id,
+            authority,
         })
     }
 }
@@ -1184,6 +1268,44 @@ mod tests {
     use alloc::vec; // no_std test builds: `vec!` não está no prelude
 
     #[test]
+    fn vector_clock_default_is_canonical_empty() {
+        // ISSUE 1 (triagem s413): único "vazio" — Default == new(), ambos
+        // sem nó nenhum (slots 0xFF não são nós; o derive antigo criaria
+        // nodes [0u8;8] = nó 0 implícito via counter_of).
+        assert_eq!(VectorClock::default(), VectorClock::new());
+        assert!(VectorClock::default().is_vacuous());
+        assert!(VectorClock::default().is_zero_at(0));
+        assert!(VectorClock::default().is_zero_at(7));
+        assert!(VectorClock::new().entries().is_empty());
+        // nó com contador 0 explícito segue vacuous (semântica, não forma)
+        let mut c = VectorClock::new();
+        c.set_counter(3, 0);
+        assert!(c.is_vacuous());
+        assert!(c.is_zero_at(3)); // contador explícito 0
+        c.set_counter(3, 5);
+        assert!(!c.is_vacuous());
+        assert!(!c.is_zero_at(3));
+        // golden de mutação: sem o Default manual, este teste morre
+        // (default() teria nodes[0]=0 → counter_of(0)=0 ≠ 0xFF-free... o
+        // eq semântico ainda casaria, mas entries() não seria vazio).
+        assert!(VectorClock::default().entries().is_empty());
+    }
+
+    #[test]
+    fn memory_layer_label_roundtrip() {
+        // ISSUE 9 (triagem s413): "L4" e "L4Semantic" → L4Semantic, e volta.
+        for l in ALL_LAYERS {
+            assert_eq!(MemoryLayer::from_label(l.as_str()), Some(l));
+            assert_eq!(MemoryLayer::from_label(long_name(l)), Some(l));
+            assert_eq!(MemoryLayer::from_label(l.as_str()).unwrap().as_str(), l.as_str());
+        }
+        assert_eq!(MemoryLayer::from_label("L9"), None);
+        assert_eq!(MemoryLayer::from_label("nope"), None);
+        assert_eq!(MemoryLayer::from_label("L"), None);
+        assert_eq!(MemoryLayer::from_label(""), None);
+    }
+
+    #[test]
     fn roundtrip_doc() {
         let mut doc = MemoryDoc::new(MemoryLayer::L1Working, "hello", b"world".to_vec());
         doc.clock.tick(1);
@@ -1513,6 +1635,7 @@ mod tests {
                 run: String::from("s1"),
             },
             model_id: String::from("all-MiniLM-L6-v2-384"),
+            authority: 0,
         }
     }
 
@@ -1539,6 +1662,25 @@ mod tests {
         let dec = MemoryMeta::decode(&m.encode()).unwrap();
         assert_eq!(dec, m);
         assert_eq!(dec.version_id, m.version_id);
+    }
+
+    #[test]
+    fn meta_v8_authority_roundtrip_and_v7_migration() {
+        // ISSUE 21 (triagem s413): authority viaja no MDM1 v8; v1–v7
+        // decodificam com 0 (learned) — migração explícita.
+        let mut m = sample_meta();
+        m.authority = 255;
+        let dec = MemoryMeta::decode(&m.encode()).unwrap();
+        assert_eq!(dec.authority, 255);
+        // v7 (corte do byte de authority) decodifica com 0
+        let enc_full = m.encode();
+        let mut enc7 = enc_full.clone();
+        enc7.truncate(enc7.len() - 1); // authority = 1 byte no fim
+        enc7[4] = 7;
+        let dec7 = MemoryMeta::decode(&enc7).unwrap();
+        assert_eq!(dec7.authority, 0, "v7 = learned (migração explícita)");
+        // sanity: decode do blob completo ok; truncado no meio → pode Err
+        assert!(MemoryMeta::decode(&enc_full).is_ok());
     }
 
     #[test]
@@ -1611,9 +1753,9 @@ mod tests {
         let dec6 = MemoryMeta::decode(&enc6).unwrap();
         assert_eq!(dec6.scope_dims.user, sample_meta().scope, "v6 legado mapeia user");
         assert!(dec6.model_id.is_empty(), "v6 = model desconhecido");
-        // versão desconhecida → Err
+        // versão desconhecida → Err (v8 agora é válida — authority)
         let mut bad = enc_full.clone();
-        bad[4] = 8;
+        bad[4] = 9;
         assert!(MemoryMeta::decode(&bad).is_err());
         // truncado no vid → Err, nunca panic
         let full = enc_full;
@@ -1851,6 +1993,7 @@ mod prop_tests {
                 content_type: None,
                 scope_dims: ScopeDims::new(),
                 model_id: String::new(),
+                authority: 0,
             };
             let dec = MemoryMeta::decode(&m.encode()).unwrap();
             assert_eq!(dec, m);

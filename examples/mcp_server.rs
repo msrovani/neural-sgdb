@@ -196,6 +196,7 @@ fn remember_one(
             params["scope_run"].as_str(),
         ),
         model_id: params["model_id"].as_str(),
+        index_key: false,
     };
     let semantic = has_caller_embedding(params) || host.is_some();
     let written = if semantic {
@@ -2175,8 +2176,10 @@ fn main() {
                             continue;
                         }
                         match db.resolve_conflict(cid, winner) {
-                            Ok(()) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("conflito {cid} resolvido -> {winner}")}],"isError":false}})),
+                            Ok(out) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":format!(
+                                    "conflito {cid} resolvido -> {winner} (imported={} superseded={} já_resolvido={})",
+                                    out.imported, out.superseded.len(), out.already_resolved)}],"isError":false}})),
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
                         }
