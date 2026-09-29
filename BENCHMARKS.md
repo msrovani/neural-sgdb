@@ -316,6 +316,18 @@ the reverse always agrees with the forward index (mutation-style check in
 `delete_is_o1_via_reverse_clock_index`). Anti-entropy
 (`keys_for_clock`) unchanged.
 
+## Real-world footprint — processo do agente (2026-09-29, observação)
+
+Datapoint de PRODUÇÃO (não bench controlado): durante processamento normal
+da sessão do agente (MCP server `neural-sgdb` vivo, DB local persistente),
+o processo ocupou **~6% de CPU** e **~0,6 MB de RAM**. Coerente com o
+design: índices derivados sobre corpus pequeno, payload fora da RAM
+(L0/L1 até checkpoint), zero deps. **Contexto necessário**: o 6% é
+fatia do processamento da sessão (não um core dedicado) e o workload não
+é reproduzível byte-a-byte — trate como cota de ordem de grandeza, não
+como claim comparável. Curva de memória vs corpus (RSS @ 1k/10k/50k docs)
+ainda não medida; ver `docs/consumer-report-triage.md` lote de escala.
+
 ## Passo 0+1 — tail decomposition + TickvFile buffered (2026-09-25)
 
 **Passo 0 (instrumentação)** — `bench_concurrent` agora separa
