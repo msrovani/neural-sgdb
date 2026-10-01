@@ -50,6 +50,24 @@ commit** (see `docs/api.md` §Format versioning and `MIGRATIONS.md`).
    `agent_protocol` / `two_ai_protocol` / `memory_arena_eval`). Republicar
    Store **não** faz parte do release.
 
+## MCP contract deprecation policy (P2.2)
+
+The MCP surface is a contract too. Rules:
+
+- **`contract.json` is the machine-readable source of truth** for the tools,
+  the alias classification (`stable` / `deprecated`) and the retrieval
+  defaults. It is pinned by the test `contract_json_is_pinned` — any drift
+  fails the build. Resource `nsgdb://contract` serves it at runtime.
+- **Two windows.** A new surface ships `stable`. Renaming/removing an alias
+  moves it to `deprecated` for **2 releases** (still functional, still listed)
+  before removal; removal is a **MAJOR**.
+- **Values matter.** Changing the *value* of a visible field (a label, a
+  default such as the retrieval mode, a version string) is a **MINOR** + a
+  `MCP_CONTRACT_VERSION` bump, and the pinned `serverInfo.version` in
+  `examples/mcp_client.rs` moves in the SAME commit (the hot test asserts it).
+- **Docs close the release:** `bash scripts/docs-version-gate.sh` must pass
+  (no previous-version strings left in the LIVE docs).
+
 ## Pre-1.0 note (history)
 
 Versions 0.x were feature lines (v0.6 = provenance/replication blocks,
@@ -60,9 +78,13 @@ above. Changes between 0.x lines that touched formats documented explicit
 migrations in `MIGRATIONS.md` and never silently reinterpreted old bytes
 (e.g. MDM1 v1→v2 decodes v1 with `version_id = memory_id`).
 
-## Current line (1.2.x)
+## Current line (1.3.x)
 
-Crate version in `Cargo.toml` is **1.2.2**; additive feature releases
+Crate version in `Cargo.toml` is **1.3.0**; the DX release (P0.1 semantic-on
+with a real embedder, P0.3 structured scope_dim_labels + scope_issues, P0.2
+`contract.json` + alias classification + `nsgdb://contract`, P1.1 docs gate,
+P1.2 cold-start `next_actions`, P1.3 negative-results, P2.2 this policy).
+Additive feature releases
 **v1.1.2–v1.2.1** are documented in `CHANGELOG.md` and `docs/api.md` without
 a MAJOR bump. Architecture docs in `docs/architecture/` describe the
 **shipped** system at **v1.2.1** (lexical-first MCP, ADR-0008, ADR-0010

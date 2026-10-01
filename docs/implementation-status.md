@@ -1,8 +1,12 @@
 ﻿# neural-sgdb — Implementation Status
 
-> **Current snapshot (2026-09-25, v1.2.1).** Capability matrix vs the shipped
+> **Current snapshot (2026-10-01, v1.3.0).** Capability matrix vs the shipped
 > codebase. For the public contract see [`docs/api.md`](api.md); for architecture
 > narrative see [`docs/architecture/README.md`](architecture/README.md).
+> v1.3.0 = DX release (P0.1 semantic-on with a real embedder; P0.3 structured
+> `scope_dim_labels` + `scope_issues`; P0.2 `contract.json` + alias
+> classification + `nsgdb://contract`; P1.1 docs gate; P1.2 cold-start
+> `next_actions`; P1.3 `docs/negative-results.md`; P2.2 deprecation policy).
 
 ## Status labels
 
@@ -17,9 +21,9 @@
 
 | Check | Command | Result |
 |---|---|---|
-| Default tests | `cargo test --lib` | **370** |
-| P2P tests | `cargo test --features p2p --lib` | **416** |
-| no_std tests | `cargo test --no-default-features --lib` | **307** |
+| Default tests | `cargo test --lib` | **410** |
+| P2P tests | `cargo test --features p2p --lib` | **426** |
+| no_std tests | `cargo test --no-default-features --lib` | **347** |
 | no_std target | `cargo check --no-default-features --target x86_64-unknown-none` | **ok** |
 | Hot test (MCP) | `cargo run --release --example mcp_client` | **150/0 exit 0** |
 | AI-user sim | `cargo run --release --example agent_sim` | loop real, scope isolado |
@@ -132,8 +136,9 @@ MAX(8, open_rebuild_ms_last)). Batch write `memories[]` + dedup
 report no tensions (v1.2.0). Fork/merge: `curate op=promote_run`
 (`merge_strategy=fail|ours|theirs`) + `remember(key=)` (v1.2.1). Consumer
 triage batch (v1.2.2): put_operational/forget_purge/audit_resolve/index_key
-+ MDM1 v8 authority. Hot test **150/0**. MCP contract
-**1.2.1**.
++ MDM1 v8 authority. DX release (v1.3.0): semantic default with a real embedder
++ `contract.json` / `nsgdb://contract` + structured `scope_dim_labels`.
+MCP contract **1.3.0**.
 
 ### Host connectors
 `connectors/` is host-side (not crate SemVer). Hermes `MemoryProvider` is

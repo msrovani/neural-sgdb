@@ -1,11 +1,36 @@
 ﻿# neural-sgdb — API Contract
 
 > Contract document for the extraction of the SGDB core from neural-os-core.
-> Status: **current public contract (crate v1.2.1)** —
+> Status: **current public contract (crate v1.3.0)** —
 > this document is the current public contract; roadmap items are explicitly
 > marked as such. The internal API lives in `crates/k_ai/src/sgdb/` of the
 > parent OS; this doc defines the public surface the community crate exposes
 > (and already ships).
+
+## v1.3.0 — DX surface (P0/P1)
+
+Additive; the MCP contract is `1.3.0` (`contract.json` is the machine-readable
+source of truth, served at resource `nsgdb://contract`).
+
+- **P0.1 — retrieval default.** MCP `recall`/`rag_context` with `mode` omitted:
+  `semantic` if the caller passed `embedding`; **`hybrid` (RRF) if a REAL host
+  embedder** is configured (`NEURAL_SGDB_EMBEDDER` ≠ `demo`/`none`); else
+  `lexical` (ADR-0008). `demo` does **not** raise the default. `health` and
+  `nsgdb://session` expose `semantic_ready` + `retrieval_default`.
+- **P0.3 — scope observability.**
+  - `Sgdb::scope_dim_descriptors() -> Vec<ScopeDimDescriptor>` — `{label, user,
+    agent, app, run, count}` from the REAL `ScopeDims` (no label reparse).
+  - `Sgdb::scope_issues() -> Vec<(String, &'static str)>` — suspicious legacy
+    scope labels (empty path segment). Report-only; the core never normalizes
+    (ADD-only).
+  - `HealthReport.scope_labels` is now **legacy only**; the multi-dim scopes
+    live in `HealthReport.scope_dim_labels` (no more opaque `///run`).
+- **P0.2 — surface classification + contract.** `contract.json` (tools +
+  `stable`/`deprecated` aliases + retrieval defaults), pinned by
+  `contract_json_is_pinned`; unknown-tool error carries `stable_aliases`,
+  `deprecated_aliases`, `contract`. Deprecation window = 2 releases.
+- **P1.1/P1.2/P1.3/P2.2** — `scripts/docs-version-gate.sh` (CI), cold-start
+  `next_actions`, `docs/negative-results.md`, `VERSIONING.md` §deprecation.
 
 ## Wire framing for N records (ISSUE 10 — resolved: use existing wire types)
 
@@ -399,7 +424,7 @@ código, binários). Duas regras tornam o consumo determinístico:
 ## Additive public surface (v1.1.2–v1.1.26)
 
 Everything below is **additive** (MINOR per VERSIONING.md) — no signature of a
-v1.0 method changed; crate version **1.2.2** in `Cargo.toml`. Key additions since the contract above:
+v1.0 method changed; crate version **1.3.0** in `Cargo.toml`. Key additions since the contract above:
 
 ```rust
 // ---- fork/merge de memória (v1.2.1, seekdb item 1; src/harness.rs) ----

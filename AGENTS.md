@@ -6,7 +6,7 @@ repo. **Read `codemap.md` (atlas), `docs/api.md` (contract) and
 Storage, Cognitive API; typed hits from v1.1.6; current crate = `Cargo.toml`) and
 `docs/implementation-status.md` before editing code.**
 
-**Shipped crate is 1.2.2 (agentic MCP contract 1.2.1, hot test 150/0):** Vocabulário ÚNICO
+**Shipped crate is 1.3.0 (agentic MCP contract 1.3.0, hot test 150/0):** Vocabulário ÚNICO
 prosa/JSON (ADR-0017: `{:?}` fora do wire; tool `decide` 𝒥(S,𝒬) = 5º tool;
 `recall_candidates` sinais decompostos; validate tipado; k=0 erro). `Hit.type_scores`
 = **ADR-0016** (episódico/semântico/procedural/preferência sobrepostos,
@@ -16,10 +16,11 @@ derivados na leitura de layer+entities, nunca persistidos — Jev-Mem). MCP list
 `curate` ganhou ops de metadado cognitivo (decay/consolidate/audit_checkpoint/
 audit_verify/rollback_to) e harness ADR-0010 (`commit_run`/`deprecate_run`/
 `promote_run` — fork/merge de memória por scope run, v1.2.1).
-Default retrieval is **lexical**. Unset `NEURAL_SGDB_EMBEDDER` = none;
+Default retrieval: **lexical** without a vector; **hybrid** (RRF) with a real
+host embedder; **semantic** with a caller `embedding`. Unset `NEURAL_SGDB_EMBEDDER` = none;
 `=demo` only if requested (não setar no `mcp.json` global). `remember(text=)`
 without a vector → L3 (`remember_text_with`). Resources: `nsgdb://doctrine` +
-`nsgdb://session`. Hot test **150/0**. Lib tests **370+1 / 416+1 / 307+1**
+`nsgdb://session`. Hot test **150/0**. Lib tests **410+2 / 426+1 / 347+1**
 (default / p2p / no_std). Bump `MCP_CONTRACT_VERSION` ⇒ pin `mcp_client`
 `serverInfo.version` no mesmo commit (senão hot test falha). **v1.1.17:**
 ADC-lite dual-path + state-first ranking (`corpus_mean`, `bq_top_k_f32_dual`);
@@ -30,6 +31,18 @@ null-scoping honra `ScopeDims`; `recall_*_dims` pool unfiltered;
 consolidate herda dims. **v1.1.24:** `ScopeDims` é AUTORITATIVO (o `scope`
 legado vira espelho de `user`, write-through) + ledger de negativos
 (`sys/negative/`).
+
+**v1.3.0 — DX release (dores do usuário-IA, 2026-10-01):** P0.1 retrieval default
+sobe para `hybrid`/`semantic` conforme a fonte de vetor (`resolve_retrieval_mode`
+usa `embedder_effective`; `demo` NÃO eleva; `health.semantic_ready`/
+`retrieval_default`). P0.3 `health.scope_labels` = legacy-only + novo
+`scope_dim_labels` estruturado (`ScopeDimDescriptor`); `Sgdb::scope_dim_descriptors`
+e `scope_issues`; `tensions.scope_issues`. P0.2 `ALIAS_SURFACE` classificada em
+`CORE_ALIASES`/`DEPRECATED_ALIASES` (40 ainda funcionam) + `contract.json`
+pinado por teste + resource `nsgdb://contract`. P1.1
+`scripts/docs-version-gate.sh` no CI; P1.2 `cold_start.next_actions` + TL;DR na
+doutrina; P1.3 `docs/negative-results.md`; P2.2 `VERSIONING.md` deprecation
+policy. `MIGRATIONS.md` §MCP contract (1.2.1→1.3.0).
 
 **Interop OS:** NMD1/TKLV byte-identical with `neural-os-core` (`k_ai` golden
 `golden_nmd1_bytes_match_neural_sgdb`). See [`docs/interop-os.md`](docs/interop-os.md).

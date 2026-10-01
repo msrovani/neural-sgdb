@@ -330,8 +330,12 @@ pub struct HealthReport {
     pub global_memory_count: usize,
     /// Memórias primárias com escopo não vazio.
     pub scoped_memory_count: usize,
-    /// Top escopos `(label, count)` — multi-tenancy observável.
+    /// Top escopos LEGADOS `(label, count)` — alcançáveis por `recall(scope=)`.
+    /// P0.3: era a fusão de legacy + dims (`///run` opaco); agora só legacy.
     pub scope_labels: Vec<(String, usize)>,
+    /// Escopos MULTI-DIM estruturados (P0.3): `user/agent/app/run` reais, sem
+    /// o label `///run` ilegível. Alcançáveis por `scope_user/agent/app/run`.
+    pub scope_dim_labels: Vec<ScopeDimDescriptor>,
     /// Dimensões de embedding indexadas no corpus vivo (era ADR-0007).
     pub indexed_embedding_dims: Vec<usize>,
     /// Modelos declarados (`model_id` MDM1 v7) no corpus vivo.
@@ -353,6 +357,19 @@ pub struct ScopeDistribution {
     pub global_count: usize,
     /// `(scope_label, count)` ordenado por label asc (determinístico).
     pub scoped: Vec<(String, usize)>,
+}
+
+/// Descritor ESTRUTURADO de um escopo multi-dim (P0.3): os campos REAIS vêm da
+/// `MemoryMeta` (não do label reparseado por `/` — um dim pode conter `/`, como
+/// num `scope` legado), para o `health` parar de exibir `///run`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScopeDimDescriptor {
+    pub label: String,
+    pub user: String,
+    pub agent: String,
+    pub app: String,
+    pub run: String,
+    pub count: usize,
 }
 
 /// Probes de cold-start com PROCEDÊNCIA (v1.1.26).
@@ -944,6 +961,59 @@ impl Sgdb {
             global_count: global,
             scoped: scoped.into_iter().collect(),
         })
+    }
+
+    /// Escopos multi-dim estruturados (P0.3) — `ScopeDimDescriptor` com os
+    /// campos REAIS de `ScopeDims`, derivado de `sys/meta/` (fonte da verdade).
+    /// Determinístico (ordenado por label). Globais são omitidos (não têm dims).
+    pub fn scope_dim_descriptors(&mut self) -> Result<Vec<ScopeDimDescriptor>, SgdbError> {
+        use alloc::collections::BTreeMap;
+        let metas = self.engine.scan_prefix_storage(b"sys/meta/")?;
+        let mut map: BTreeMap<String, (ScopeDims, usize)> = BTreeMap::new();
+        for (mk, bytes) in metas {
+            let sk = match mk.strip_prefix(b"sys/meta/") {
+                Some(s) => String::from_utf8_lossy(s).into_owned(),
+                None => continue,
+            };
+            if !(sk.starts_with("md/L3/") || sk.starts_with("md/L4/") || sk.starts_with("md/L5/")) {
+                continue;
+            }
+            let Ok(m) = MemoryMeta::decode(&bytes) else {
+                continue;
+            };
+            if m.scope_dims.is_global() {
+                continue;
+            }
+            let label = m.scope_dims.label();
+            let e = map.entry(label).or_insert_with(|| (m.scope_dims.clone(), 0));
+            e.1 += 1;
+        }
+        Ok(map
+            .into_iter()
+            .map(|(label, (d, c))| ScopeDimDescriptor {
+                label,
+                user: d.user,
+                agent: d.agent,
+                app: d.app,
+                run: d.run,
+                count: c,
+            })
+            .collect())
+    }
+
+    /// Rótulos de escopo SUSPEITOS (P0.3, report-only): `scope` legado com
+    /// segmento vazio (barra dupla, início ou fim) — o `validate_written` não
+    /// cobre estes, e um rótulo assim é ambíguo para o consumidor. O core
+    /// NUNCA normaliza sozinho (ADD-only): reporta para o host decidir.
+    pub fn scope_issues(&mut self) -> Result<Vec<(String, &'static str)>, SgdbError> {
+        let (_, probes) = self.scan_scope_metas()?;
+        let mut out = Vec::new();
+        for (label, _) in probes.legacy {
+            if label.starts_with('/') || label.ends_with('/') || label.contains("//") {
+                out.push((label, "scope legado com segmento vazio ('/' ou '//')"));
+            }
+        }
+        Ok(out)
     }
 
     /// Probes de cold-start COM PROCEDÊNCIA (v1.1.26) — o que o
@@ -5522,11 +5592,18 @@ impl Sgdb {
             probe.is_ok()
         };
         let open_conflicts = self.engine.list_conflicts().len();
-        let scope_dist = self.scope_distribution().unwrap_or_default();
-        let scoped_memory_count: usize = scope_dist.scoped.iter().map(|(_, c)| c).sum();
-        let mut scope_labels = scope_dist.scoped;
+        let probes = self.scope_probes().unwrap_or_default();
+        // P0.3: `scope_labels` = só LEGACY (alcançáveis por `scope=`);
+        // os dims vão estruturados em `scope_dim_labels` (fim do `///run`).
+        let scoped_memory_count: usize = probes.legacy.iter().map(|(_, c)| c).sum::<usize>()
+            + probes.dims_only.iter().map(|(_, c)| c).sum::<usize>();
+        let mut scope_labels = probes.legacy;
         scope_labels.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         scope_labels.truncate(8);
+        let mut scope_dim_labels = self.scope_dim_descriptors().unwrap_or_default();
+        scope_dim_labels.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.label.cmp(&b.label)));
+        scope_dim_labels.truncate(8);
+        let global_memory_count = self.scope_distribution().map(|d| d.global_count).unwrap_or(0);
         let mut indexed_embedding_dims: Vec<usize> = self.engine.indexed_dims.iter().copied().collect();
         indexed_embedding_dims.sort_unstable();
         let mut indexed_model_ids = self.indexed_model_ids();
@@ -5539,9 +5616,10 @@ impl Sgdb {
             bq_len: self.engine.bq_len(),
             ram_len: self.engine.ram_l0l1_len(),
             open_conflicts,
-            global_memory_count: scope_dist.global_count,
+            global_memory_count,
             scoped_memory_count,
             scope_labels,
+            scope_dim_labels,
             indexed_embedding_dims,
             indexed_model_ids,
             open_rebuild_ms_last: self.metrics.open_rebuild_ms_last,
@@ -8683,6 +8761,49 @@ mod tests {
         assert_eq!(h.global_memory_count, 1);
         assert_eq!(h.scoped_memory_count, 1);
         assert_eq!(h.indexed_embedding_dims, vec![4]);
+    }
+
+    #[test]
+    fn scope_dim_descriptors_are_structured_not_opaque() {
+        // P0.3: dims-only vai ESTRUTURADO em `scope_dim_labels`, não no
+        // `scope_labels` legado (fim do `///run` opaco).
+        use crate::memory_doc::ScopeDims;
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic_with(
+            "r1",
+            "run fact",
+            &[1.0, 0.0, 0.0, 0.0],
+            RememberOptions {
+                scope_dims: Some(ScopeDims {
+                    user: String::new(),
+                    agent: String::new(),
+                    app: String::new(),
+                    run: "release-x".into(),
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let h = db.health();
+        assert!(h.scope_labels.is_empty(), "dims-only nao e legacy: {:?}", h.scope_labels);
+        assert_eq!(h.scope_dim_labels.len(), 1);
+        let d = &h.scope_dim_labels[0];
+        assert_eq!(d.run, "release-x");
+        assert_eq!(d.user, "");
+        assert_eq!(d.app, "");
+        assert_eq!(d.count, 1);
+    }
+
+    #[test]
+    fn scope_issues_flags_empty_segments() {
+        // P0.3: `validate_written` não cobre `//`; o report sinaliza (sem
+        // normalizar sozinho — ADD-only).
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("k", "x", &[1.0, 0.0, 0.0, 0.0]).unwrap();
+        db.set_scope("md/L4/k", "tenant//proj").unwrap();
+        let issues = db.scope_issues().unwrap();
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].0, "tenant//proj");
     }
 
     #[test]

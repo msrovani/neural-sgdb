@@ -36,7 +36,7 @@ filesystem, no external runtime.
 
 ## Status
 
-**v1.2.1** — substrate **agêntico** (MCP 5 tools contract **1.2.1**, doutrina,
+**v1.3.0** — substrate **agêntico** (MCP 5 tools contract **1.3.0**, doutrina,
 hits tipados, TTL/GC, timeline, ANN) + **ADC-lite** + telepatia **2-DB** +
 **host harvest** + **ADR-0010 harness** (`commit_run` / `deprecate_run` /
 **`promote_run`** — fork/merge de memória por scope run, `mom/anti-pattern`) +
@@ -45,7 +45,7 @@ derivado** (`index_fingerprint`, ADR-0011) + **recall adaptativo** (ADR-0012) +
 **`ScopeDims` autoritativo** (ADR-0013), **ledger de negativos** (ADR-0014),
 **batch write + dedup guard** (`memories[]`, `if_exists`) e **write path
 agêntico** (v1.2.0). Extensão de browser / Store **estacionadas**. Crate em
-`Cargo.toml`: **1.2.2**. 
+`Cargo.toml`: **1.3.0**. 
 
 - `cargo test --lib` on host: **370** (p2p **416**, no_std **307**)
 - hot test MCP: **150/0**; `agent_protocol`: **25/0**
@@ -208,7 +208,7 @@ lists conflicts / superseded / unseen scopes.
 
 Host adapters for claw-like apps (Hermes provider, OpenClaw skeleton, shared
 MCP client) live in [`connectors/`](connectors/README.md) — **outside** crate
-SemVer; `crates/nsgdb-embed` (LocalEmbedder 384-dim, `cargo run --manifest-path crates/nsgdb-embed/Cargo.toml --example demo`) and `crates/nsgdb-wasm` (`Storage` stub) are host crates — core SemVer = `Cargo.toml` (**1.2.2**).
+SemVer; `crates/nsgdb-embed` (LocalEmbedder 384-dim, `cargo run --manifest-path crates/nsgdb-embed/Cargo.toml --example demo`) and `crates/nsgdb-wasm` (`Storage` stub) are host crates — core SemVer = `Cargo.toml` (**1.3.0**).
 Protocolo do agente: `examples/agent_protocol.rs` (25 checks), `two_ai_protocol.rs` (16), `memory_arena_eval.rs`. Fim de tarefa: `curate(op=commit_run)` (ADR-0010).
 
 ### Cursor (Windows)

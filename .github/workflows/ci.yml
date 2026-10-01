@@ -35,6 +35,10 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+      - name: docs version gate (P1.1)
+        # Fails if the previous version lingers in LIVE docs (v1.1.23 lesson).
+        run: bash scripts/docs-version-gate.sh
+
       - name: no_std gate (x86_64-unknown-none)
         # `cargo check` não emite nativo e mascara crash de codegen SIMD
         # (`STATUS_ILLEGAL_INSTRUCTION` em `#[target_feature]` + target none).

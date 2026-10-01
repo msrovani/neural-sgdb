@@ -146,7 +146,8 @@ pub use sgdb::{
     AdaptiveRecall, AuditReport, CandidateSignals, CognitiveOps, ConsolidateConfig, DecayConfig,
     ForgetOutcome, GcConfig, GcReport, HealthReport, Hit, HitProvenance, LexicalAnchorReranker,
     RecallLedger, RecallProbe, RecallWeights, RememberOptions, RememberOutcome, Reranker,
-    ResolveOutcome, ScoreBreakdown, ScopeDistribution, ScopeProbes, Sgdb, ValidateIssue,
+    ResolveOutcome, ScoreBreakdown, ScopeDimDescriptor, ScopeDistribution, ScopeProbes, Sgdb,
+    ValidateIssue,
 };
 pub use storage::{ErrorCode, InMemory, SnapshotStorage, Storage, SgdbError};
 pub use staleness::{StalenessConfig, StalenessHit, StalenessLevel, StalenessReason};

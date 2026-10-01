@@ -11,6 +11,12 @@ backward-decodable (old bytes still decode), (2) covered by a golden test
 updated in the same commit, and (3) documented here. When a field is absent
 in an old version, decode to a defined default — never guess.
 
+## MCP contract changes (non-binary, but breaking for consumers)
+
+| Contract | Change | Migration |
+|---|---|---|
+| 1.2.1 → 1.3.0 | `recall`/`rag_context` default is `hybrid` when a **real** host embedder is set (was lexical unless the caller passed `embedding`); `health.scope_labels` is **legacy-only** (multi-dim now in `scope_dim_labels` / `scopes_to_probe_dims` fields); `contract.json` + alias `stable`/`deprecated` classification; `semantic_ready`/`retrieval_default` fields; resource `nsgdb://contract` | If you depended on lexical-when-embedder, pass `mode=lexical`. Read multi-dim scopes from the structured fields, not the old merged `scope_labels`. Deprecated aliases keep working for 2 releases. |
+
 ## Format registry
 
 | Format | Version | Encode/decode | Golden test | Lives in |

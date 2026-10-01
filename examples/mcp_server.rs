@@ -100,26 +100,40 @@ fn has_caller_embedding(payload: &Value) -> bool {
         .is_some_and(|a| !a.is_empty())
 }
 
+/// Um embedder de host que produz semantica REAL (nao o trigram demo).
+/// `demo`/`none`/vazio NAO qualificam: o demo nao e modelo semantico, entao
+/// subir o default por causa dele seria mentir (ADR-0008).
+fn is_real_embedder(label: &str) -> bool {
+    !label.is_empty() && label != "none" && label != "demo"
+}
+
+/// Rotas de vetor citadas na mensagem de erro (P0.1) — antes so citava `demo`,
+/// escondendo `local`/`embedder_http`/`nsgdb-embed`.
+const VECTOR_ROUTES: &str = "passe `embedding` no payload, ou configure um host embedder: \
+     NEURAL_SGDB_EMBEDDER=demo (trigram, NAO semantico), examples/embedder_http, ou \
+     crates/nsgdb-embed (modelo local, ADR-0008). Sem vetor o default e lexical (mesmas palavras).";
+
 /// ADR-0008: sem `mode` e sem `embedding=` â†’ lexical. semantic/hybrid exigem
 /// vetor do caller ou host embedder explÃ­cito.
-fn resolve_retrieval_mode(args: &Value, has_host_embedder: bool) -> Result<String, String> {
+fn resolve_retrieval_mode(args: &Value, embedder_label: &str) -> Result<String, String> {
     let caller = has_caller_embedding(args);
+    // `demo` conta como fonte de vetor para `mode` explicito (mesmo fraco);
+    // para o DEFAULT, so um embedder REAL eleva o modo (P0.1).
+    let host = !embedder_label.is_empty() && embedder_label != "none";
     match args["mode"].as_str() {
         Some("lexical") => Ok("lexical".into()),
         Some(m @ ("semantic" | "hybrid")) => {
-            if caller || has_host_embedder {
+            if caller || host {
                 Ok(m.into())
             } else {
-                Err(
-                    "ADR-0008: mode=semantic|hybrid exige `embedding` no payload ou \
-                     NEURAL_SGDB_EMBEDDER=demo. Sem vetor, omita mode (default lexical)."
-                        .into(),
-                )
+                Err(format!("ADR-0008: mode={m} exige um vetor. {VECTOR_ROUTES}"))
             }
         }
         Some(other) => Err(format!("mode desconhecido: {other}")),
         None => Ok(if caller {
             "semantic".into()
+        } else if is_real_embedder(embedder_label) {
+            "hybrid".into()
         } else {
             "lexical".into()
         }),
@@ -402,7 +416,7 @@ fn error_response(id: &Value, code: i64, message: &str) -> Value {
 
 /// NÃºmero de tools em `tools/list` (aliases antigos ainda funcionam em tools/call).
 const EXPECTED_MCP_TOOL_COUNT: usize = 5;
-const MCP_CONTRACT_VERSION: &str = "1.2.1";
+const MCP_CONTRACT_VERSION: &str = "1.3.0";
 const BUILD_GIT: &str = env!("NEURAL_SGDB_BUILD_GIT");
 
 /// Lista pÃºblica: 4 tools. Os 23 nomes antigos continuam vÃ¡lidos em `tools/call`.
@@ -417,6 +431,59 @@ const LISTED_TOOLS: &[&str] = &["remember", "recall", "health", "curate", "decid
 /// (v1.1.10) e o harness (v1.1.19), e prosa nao trava contra drift: o teste
 /// `alias_surface_is_consistent` pina a lista, e `did_you_mean` procura aqui
 /// para sugerir o nome certo a quem errou.
+///
+/// P0.2: a superfície foi CLASSIFICADA (curada vs deprecada) para o consumidor
+/// saber o que é estável. Nada foi removido (compat); o que muda é o CONTRATO
+/// publicado (`contract.json`) e a janela de remoção (`VERSIONING.md`).
+const CORE_ALIASES: &[&str] = &[
+    "associate",
+    "conflicts",
+    "consolidate",
+    "decay",
+    "diary",
+    "era_report",
+    "expire_old",
+    "explain",
+    "feedback",
+    "forget",
+    "profile",
+    "rag_context",
+    "recall_entities",
+    "recall_temporal",
+    "reinforce",
+    "related_to",
+    "remember_episodic",
+    "resolve_conflict",
+    "supersede",
+    "validate",
+];
+
+/// Aliases do long tail: continuam FUNCIONANDO, mas estão marcados para
+/// remoção na janela de deprecação (2 releases). Migrar para a superfície
+/// curada (`CORE_ALIASES` + as 5 tools listadas).
+const DEPRECATED_ALIASES: &[&str] = &[
+    "audit_checkpoint",
+    "audit_verify",
+    "close_event",
+    "commit_run",
+    "contradicts",
+    "deprecate_run",
+    "expire_ttl",
+    "forget_absence",
+    "gc",
+    "merge_memories",
+    "note_absence",
+    "promote_run",
+    "recall_absences",
+    "recall_ann",
+    "recall_candidates",
+    "recall_ledger",
+    "rollback_to",
+    "set_event",
+    "set_ttl",
+    "timeline",
+];
+
 const ALIAS_SURFACE: &[&str] = &[
     "recall_candidates",
     "associate",
@@ -538,6 +605,9 @@ fn unknown_tool_error(id: &Value, asked: &str) -> Value {
                 "did_you_mean": did_you_mean(asked),
                 "listed_tools": LISTED_TOOLS,
                 "alias_count": ALIAS_SURFACE.len(),
+                "stable_aliases": CORE_ALIASES,
+                "deprecated_aliases": DEPRECATED_ALIASES,
+                "contract": "contract.json",
             }
         }
     })
@@ -564,6 +634,30 @@ fn expand_tool(name: &str, args: &Value) -> String {
         "curate" => args["op"].as_str().unwrap_or("curate").to_string(),
         other => other.to_string(),
     }
+}
+
+/// Documento de contrato estável (P0.2) — JSON canônico pinado por teste em
+/// `contract.json`. O consumidor difa entre versões sem ler prosa nem depender
+/// do `Debug`. `stable` = superfície curada; `deprecated` = long tail na janela
+/// de remoção (VERSIONING.md).
+fn contract_document() -> String {
+    let mut aliases: Vec<Value> = Vec::new();
+    for t in CORE_ALIASES {
+        aliases.push(json!({"name": t, "status": "stable"}));
+    }
+    for t in DEPRECATED_ALIASES {
+        aliases.push(json!({"name": t, "status": "deprecated"}));
+    }
+    let doc = json!({
+        "mcp_contract_version": MCP_CONTRACT_VERSION,
+        "tools": LISTED_TOOLS,
+        "aliases": aliases,
+        "deprecation_window_releases": 2,
+        "retrieval_default_without_vector": "lexical",
+        "retrieval_default_with_real_embedder": "hybrid",
+        "retrieval_default_with_caller_embedding": "semantic"
+    });
+    serde_json::to_string_pretty(&doc).unwrap_or_default()
 }
 
 fn mcp_listed_tools() -> Value {
@@ -922,6 +1016,21 @@ fn health_payload(db: &mut Sgdb, db_path: &str, embedder: &str) -> Value {
         "global_memory_count": h.global_memory_count,
         "scoped_memory_count": h.scoped_memory_count,
         "scope_labels": h.scope_labels,
+        // P0.3: escopos multi-dim ESTRUTURADOS (fim do label `///run` opaco).
+        "scope_dim_labels": h
+            .scope_dim_labels
+            .iter()
+            .map(|d| {
+                json!({
+                    "label": d.label,
+                    "user": d.user,
+                    "agent": d.agent,
+                    "app": d.app,
+                    "run": d.run,
+                    "count": d.count
+                })
+            })
+            .collect::<Vec<Value>>(),
         "db_path": db_path,
         "embedder": embedder,
         "default_scope": db.default_scope(),
@@ -930,10 +1039,14 @@ fn health_payload(db: &mut Sgdb, db_path: &str, embedder: &str) -> Value {
         "indexed_embedding_dims": h.indexed_embedding_dims,
         "demo_embed_dim": neural_sgdb::DEMO_EMBED_DIM,
         "demo_embed_note": neural_sgdb::DEMO_EMBED_NOTE,
+        // P0.1: o consumidor precisa saber, sem adivinhar, se o semantico esta
+        // LIGADO e qual o default de retrieval resultante.
+        "semantic_ready": is_real_embedder(embedder),
+        "retrieval_default": if is_real_embedder(embedder) { "hybrid" } else { "lexical" },
         "build_git": BUILD_GIT,
         "binary_path": binary_path,
         "binary_mtime_unix": binary_mtime,
-        "contract": "ADR-0008: default recall is lexical; demo trigram is NOT semantic and is not implied",
+        "contract": "ADR-0008: default recall is lexical WITHOUT a vector; semantic if you pass embedding=; hybrid if a REAL host embedder (not demo) is set. demo trigram is NOT semantic.",
         "http_embedder": "cargo run --release --example embedder_http â€” see docs/MCP.md",
         "doctrine_scope": neural_sgdb::DOCTRINE_SCOPE,
         "doctrine_key": format!("md/L4/{}", neural_sgdb::DOCTRINE_KEY),
@@ -942,7 +1055,7 @@ fn health_payload(db: &mut Sgdb, db_path: &str, embedder: &str) -> Value {
         // dentro da string (duplicando o índice do array, podia divergir).
         "onboarding": [
             {"step": 0, "text": "cold-start: resource nsgdb://session (campo cold_start) + nsgdb://doctrine; recall CADA scope em health.scope_labels / cold_start.scopes_to_probe — default_scope NAO ve outros scopes"},
-            {"step": 1, "text": "remember(text=...) is lexical L3; recall(query=...) default mode=lexical (same words). Cosine: pass embedding= on both, or NEURAL_SGDB_EMBEDDER=demo / embedder_http / nsgdb-embed (host, ADR-0008)"},
+            {"step": 1, "text": "recall(query=...) default: semantic se voce passou embedding=; hybrid se host embedder REAL (local/nsgdb-embed); lexical se sem vetor (mesmas palavras, ADR-0008). remember(text=) sem vetor = L3 lexical"},
             {"step": 2, "text": "multi-agente: scope por agente/tarefa (agent/<id>, project/<repo>); 1 processo mcp_server writer por ficheiro DB — partilhar ficheiro != telepatia CRDT"},
             {"step": 3, "text": "recall(format=json) for typed machine hits"},
             {"step": 4, "text": "remember(type=json|code|embedding|binary) to declare payload type (MDM1 v6)"},
@@ -956,15 +1069,20 @@ fn health_payload(db: &mut Sgdb, db_path: &str, embedder: &str) -> Value {
 fn tensions_payload(db: &mut Sgdb) -> Value {
     let default = db.default_scope().unwrap_or("").to_string();
     let dist = db.scope_distribution().ok();
-    let scope_labels: Vec<Value> = dist
-        .as_ref()
-        .map(|d| {
-            d.scoped
-                .iter()
-                .map(|(s, c)| json!([s, c]))
-                .collect()
-        })
-        .unwrap_or_default();
+    let probes = db.scope_probes().unwrap_or_default();
+    // P0.3: só LEGACY aqui (o label de dims ia como `///run` opaco).
+    let scope_labels: Vec<Value> = probes
+        .legacy
+        .iter()
+        .map(|(s, c)| json!([s, c]))
+        .collect();
+    // P0.3: rótulos suspeitos (segmento vazio) — report-only, o host decide.
+    let scope_issues: Vec<Value> = db
+        .scope_issues()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(label, reason)| json!({"label": label, "reason": reason}))
+        .collect();
     // v1.1.28 (D5): tupla TIPADA (label, count) — era `"scope(count)"`,
     // uma string que o consumidor reparseia. Os dois campos já estavam
     // separados em `scope_labels`; aqui era o único lugar que achatava.
@@ -1083,6 +1201,7 @@ fn tensions_payload(db: &mut Sgdb) -> Value {
         "superseded": superseded,
         "stale_candidates": stale_candidates,
         "scope_labels": scope_labels,
+        "scope_issues": scope_issues,
         "unseen_scopes": unseen_scopes,
         "empty_hint": empty_hint
     })
@@ -1115,21 +1234,49 @@ fn session_payload(db: &mut Sgdb, db_path: &str, embedder: &str) -> Value {
     // pronto para o `recall` — o consumidor não precisa parsear o rótulo (um
     // `scope` legado pode conter `/`, então por forma as duas listas seriam
     // indistinguíveis).
-    let scopes_to_probe_dims: Vec<Value> = probes
-        .dims_only
-        .iter()
-        .map(|(label, count)| {
-            let mut seg = label.split('/');
+    // P0.3: campos REAIS via core (não reparse do label por '/', que um dim
+    // pode conter). Globais já são omitidos pelo core.
+    let scopes_to_probe_dims: Vec<Value> = db
+        .scope_dim_descriptors()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|d| {
             json!({
-                "label": label,
-                "user": seg.next().unwrap_or(""),
-                "agent": seg.next().unwrap_or(""),
-                "app": seg.next().unwrap_or(""),
-                "run": seg.next().unwrap_or(""),
-                "count": count,
+                "label": d.label,
+                "user": d.user,
+                "agent": d.agent,
+                "app": d.app,
+                "run": d.run,
+                "count": d.count,
             })
         })
         .collect();
+    // P1.2: `next_actions` da cold-start — o que fazer AGORA, dado o estado.
+    let mut next_actions: Vec<Value> = Vec::new();
+    if !scopes_to_probe.is_empty() {
+        next_actions.push(json!({
+            "action": "recall_scoped",
+            "detail": format!("sondar {} scope(s) legado(s) por scope=", scopes_to_probe.len()),
+            "scopes": scopes_to_probe.clone()
+        }));
+    }
+    if !scopes_to_probe_dims.is_empty() {
+        next_actions.push(json!({
+            "action": "recall_dims",
+            "detail": format!("{} escopo(s) so por scope_user/agent/app/run", scopes_to_probe_dims.len()),
+            "descriptors": scopes_to_probe_dims.clone()
+        }));
+    }
+    if !is_real_embedder(embedder) {
+        next_actions.push(json!({
+            "action": "enable_semantic",
+            "detail": "sem vetor o recall e lexical; defina NEURAL_SGDB_EMBEDDER=local ou passe embedding= p/ semantico/hybrid (ADR-0008)"
+        }));
+    }
+    next_actions.push(json!({
+        "action": "gather_then_write",
+        "detail": "recall antes de remember; MOM roles mom/*; nao hoardear; 1 writer por DB file"
+    }));
     let cold_start = json!({
         "protocol": "gather-then-act",
         // v1.1.28 (D5): {step, text} tipado — o ordinal NÃO está mais dentro
@@ -1144,6 +1291,7 @@ fn session_payload(db: &mut Sgdb, db_path: &str, embedder: &str) -> Value {
             {"step": "6", "text": "So entao remember — MOM roles mom/*; fato identico → reinforce; nao hoarde; 1 writer por DB file"}
         ],
         "default_scope": default_scope,
+        "next_actions": next_actions,
         "scopes_to_probe": scopes_to_probe,
         "scopes_to_probe_dims": scopes_to_probe_dims,
         "unseen_scopes": tensions.get("unseen_scopes").cloned().unwrap_or(json!([])),
@@ -1153,7 +1301,7 @@ fn session_payload(db: &mut Sgdb, db_path: &str, embedder: &str) -> Value {
     });
     json!({
         "resource": "nsgdb://session",
-        "recall_default": "lexical",
+        "recall_default": if is_real_embedder(embedder) { "hybrid" } else { "lexical" },
         "cold_start": cold_start,
         "health": health,
         "tensions": tensions
@@ -1281,6 +1429,14 @@ fn main() {
     }
     let embedder = load_embedder();
     let embedder_name = embedder_label();
+    // Label EFETIVO: reflete o que foi de fato CARREGADO (P0.1). Evita o
+    // footgun de `NEURAL_SGDB_EMBEDDER=local` (real) com host nao plugado —
+    // sem isto o default subiria para hybrid e `embed_for` falharia sem vetor.
+    let embedder_effective = if embedder.is_some() {
+        embedder_name.clone()
+    } else {
+        "none".to_string()
+    };
     // Doutrina: seed L4 com DemoEmbedder interno (texto canÃ´nico, nÃ£o o default do produto).
     match DemoEmbedder.embed(DOCTRINE) {
         Ok(emb) => match db.ensure_doctrine(&emb) {
@@ -1368,6 +1524,12 @@ fn main() {
                     "mimeType": "application/json",
                     "description": "health + tensions + doctrine pointers (ADR-0008 lexical default)"
                 }));
+                all.push(json!({
+                    "uri": "nsgdb://contract",
+                    "name": "mcp-contract",
+                    "mimeType": "application/json",
+                    "description": "P0.2: stable vs deprecated tools/aliases + retrieval defaults"
+                }));
                 for layer in ["L1", "L2", "L3", "L4", "L5", "L7"] {
                     if let Ok(items) = db.scan_prefix(&format!("md/{layer}/")) {
                         for (k, _) in items {
@@ -1392,8 +1554,14 @@ fn main() {
                     continue;
                 }
                 if uri == "nsgdb://session" {
-                    let payload = session_payload(&mut db, &db_path, &embedder_name);
+                    let payload = session_payload(&mut db, &db_path, &embedder_effective);
                     let text = serde_json::to_string_pretty(&payload).unwrap_or_default();
+                    send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                        "contents":[{"uri":uri,"mimeType":"application/json","text":text}]}}));
+                    continue;
+                }
+                if uri == "nsgdb://contract" {
+                    let text = contract_document();
                     send(&json!({"jsonrpc":"2.0","id":id,"result":{
                         "contents":[{"uri":uri,"mimeType":"application/json","text":text}]}}));
                     continue;
@@ -1621,7 +1789,7 @@ fn main() {
                                 "k=0 é inválido: para sondar existência use k=1 e leia hits[] (vazio = não havia nada)"));
                             continue;
                         }
-                        let mode = match resolve_retrieval_mode(args, embedder.is_some()) {
+                        let mode = match resolve_retrieval_mode(args, &embedder_effective) {
                             Ok(m) => m,
                             Err(e) => {
                                 send(&json!({"jsonrpc":"2.0","id":id,"result":{
@@ -1718,7 +1886,7 @@ fn main() {
                             send(&error_response(&id, -32602, "parametro 'query' obrigatorio"));
                             continue;
                         }
-                        let mode = match resolve_retrieval_mode(args, embedder.is_some()) {
+                        let mode = match resolve_retrieval_mode(args, &embedder_effective) {
                             Ok(m) => m,
                             Err(e) => {
                                 send(&json!({"jsonrpc":"2.0","id":id,"result":{
@@ -2262,7 +2430,7 @@ fn main() {
                                     "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true}})),
                             }
                         } else {
-                            let payload = health_payload(&mut db, &db_path, &embedder_name);
+                            let payload = health_payload(&mut db, &db_path, &embedder_effective);
                             let text = serde_json::to_string_pretty(&payload).unwrap_or_default();
                             send(&json!({"jsonrpc":"2.0","id":id,"result":
                                 mcp_tool_result(&text, payload, false)}));
@@ -2966,8 +3134,8 @@ mod tests {
 
     #[test]
     fn mcp_contract_tool_count() {
-        assert_eq!(EXPECTED_MCP_TOOL_COUNT, 4);
-        assert_eq!(mcp_listed_tools().as_array().map(|a| a.len()), Some(4));
+        assert_eq!(EXPECTED_MCP_TOOL_COUNT, 5);
+        assert_eq!(mcp_listed_tools().as_array().map(|a| a.len()), Some(5));
         assert_eq!(expand_tool("era_report", &serde_json::json!({})), "era_report");
         assert_eq!(
             expand_tool("health", &serde_json::json!({"view":"era"})),
@@ -3015,14 +3183,41 @@ mod tests {
                 "'{t}' fora do padrao snake_case"
             );
         }
-        // tripwire: a superficie derivada do dispatch tem 34 nomes. Se um arm
+        // tripwire: a superficie derivada do dispatch tem 40 nomes. Se um arm
         // novo for adicionado sem entrar aqui, o `did_you_mean` fica cego.
         assert_eq!(
-        ALIAS_SURFACE.len(),
-        38,
-        "superficie de alias mudou (v1.1.24: +4 do ledger de negativos)"
-    );
+            ALIAS_SURFACE.len(),
+            40,
+            "superficie de alias mudou (P0.2: CORE_ALIASES + DEPRECATED_ALIASES)"
+        );
+        // P0.2: a partição curada/deprecada cobre EXATAMENTE a superficie
+        // (sem sobreposição, sem buraco) — prosa não trava contra drift.
+        let mut partition: Vec<&str> = CORE_ALIASES
+            .iter()
+            .chain(DEPRECATED_ALIASES.iter())
+            .copied()
+            .collect();
+        partition.sort_unstable();
+        let mut surface: Vec<&str> = ALIAS_SURFACE.to_vec();
+        surface.sort_unstable();
+        assert_eq!(partition, surface, "CORE+DEPRECATED diverge de ALIAS_SURFACE");
+        assert!(
+            CORE_ALIASES.iter().all(|t| !DEPRECATED_ALIASES.contains(t)),
+            "alias em ambas as listas"
+        );
         assert_eq!(LISTED_TOOLS.len(), EXPECTED_MCP_TOOL_COUNT);
+    }
+
+    /// P0.2: `contract.json` é o contrato publicado — pinado contra drift.
+    #[test]
+    fn contract_json_is_pinned() {
+        let doc: Value =
+            serde_json::from_str(&contract_document()).expect("contract_document é JSON");
+        let disk = std::fs::read_to_string("contract.json").unwrap_or_else(|_| {
+            panic!("contract.json ausente — é a superfície pública P0.2")
+        });
+        let disk: Value = serde_json::from_str(&disk).expect("contract.json é JSON");
+        assert_eq!(doc, disk, "contract.json desatualizado vs o servidor");
     }
 
     #[test]
@@ -3065,10 +3260,10 @@ mod tests {
         assert_eq!(v["error"]["code"], -32602, "o codigo de erro nao muda");
         assert_eq!(v["error"]["message"], "Unknown tool");
         assert_eq!(v["error"]["data"]["tool"], "recal");
-        assert_eq!(v["error"]["data"]["alias_count"], 38);
+        assert_eq!(v["error"]["data"]["alias_count"], 40);
         assert_eq!(
             v["error"]["data"]["listed_tools"].as_array().map(|a| a.len()),
-            Some(4)
+            Some(5)
         );
         let hints = v["error"]["data"]["did_you_mean"].as_array().unwrap();
         assert!(hints.iter().any(|h| h == "recall"), "{v}");
@@ -3103,22 +3298,32 @@ mod tests {
 
     #[test]
     fn adr0008_recall_default_is_lexical() {
-        let lexical = resolve_retrieval_mode(&serde_json::json!({"query": "x"}), false).unwrap();
+        // P0.1: sem vetor e sem embedder real -> lexical (ADR-0008).
+        let lexical = resolve_retrieval_mode(&serde_json::json!({"query": "x"}), "none").unwrap();
         assert_eq!(lexical, "lexical");
+        // demo NAO e semantico: default continua lexical.
+        let demo = resolve_retrieval_mode(&serde_json::json!({"query": "x"}), "demo").unwrap();
+        assert_eq!(demo, "lexical");
+        // host embedder REAL eleva o default para hybrid (semantico+lexical).
+        let real = resolve_retrieval_mode(&serde_json::json!({"query": "x"}), "local").unwrap();
+        assert_eq!(real, "hybrid");
+        // embedding do caller -> semantic.
         let with_vec = resolve_retrieval_mode(
             &serde_json::json!({"query": "x", "embedding": [1.0, -1.0]}),
-            false,
+            "none",
         )
         .unwrap();
         assert_eq!(with_vec, "semantic");
+        // mode explicito sem vetor -> erro que cita as rotas.
         let denied = resolve_retrieval_mode(
             &serde_json::json!({"query": "x", "mode": "semantic"}),
-            false,
+            "none",
         );
         assert!(denied.unwrap_err().contains("ADR-0008"));
+        // demo conta como fonte para mode explicito.
         let demo_host = resolve_retrieval_mode(
             &serde_json::json!({"query": "x", "mode": "hybrid"}),
-            true,
+            "demo",
         )
         .unwrap();
         assert_eq!(demo_host, "hybrid");

@@ -4,6 +4,58 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [1.3.0] — 2026-10-01 (DX release: dores do usuário-IA)
+
+Fecha as maiores dores de um consumidor-IA (memória semântica dormente,
+superfície inchada, escopo ilegível, doc drift). Aditivo; contrato MCP → **1.3.0**.
+
+### P0.1 — semântico ligado com embedder real
+- `resolve_retrieval_mode` (MCP): default quando `mode` é omitido = `semantic`
+  se o caller passou `embedding`; **`hybrid` (RRF) se há embedder de host REAL**
+  (≠ `demo`/`none`); senão `lexical` (ADR-0008). `demo` NÃO eleva o default
+  (não é semântico).
+- `health` ganha `semantic_ready: bool` e `retrieval_default`; `nsgdb://session`
+  idem. Erro de `mode=semantic|hybrid` cita TODAS as rotas de vetor.
+- Novo `embedder_effective`: `NEURAL_SGDB_EMBEDDER=local` sem host plugado não
+  eleva o default (evita hybrid sem vetor).
+
+### P0.3 — escopo legível e auditável
+- `HealthReport.scope_labels` volta a ser **só legacy** (alcançável por
+  `scope=`); novo `HealthReport.scope_dim_labels: Vec<ScopeDimDescriptor>` com
+  `user/agent/app/run` REAIS (fim do label `///run` opaco no `health`).
+- `Sgdb::scope_dim_descriptors()` (campos reais, não reparse do label) e
+  `Sgdb::scope_issues()` (segmento vazio `//` etc.) — report-only, ADD-only.
+- `health(view=tensions)` publica `scope_issues`; o cold-start usa os
+  descritores estruturados no `scopes_to_probe_dims`.
+
+### P0.2 — superfície classificada + contrato publicado
+- `ALIAS_SURFACE` (40) classificada em `CORE_ALIASES` (20, estáveis) e
+  `DEPRECATED_ALIASES` (20, janela de 2 releases) — nada removido.
+- Novo `contract.json` (raiz), pinado pelo teste `contract_json_is_pinned` e
+  servido em `nsgdb://contract`; o erro de tool desconhecida carrega
+  `stable_aliases`/`deprecated_aliases`/`contract`.
+
+### P1.1 — gate de documentação
+- `scripts/docs-version-gate.sh` + step no CI: falha se a versão ANTERIOR
+  aparecer em docs vivos (a lição v1.1.23 vira gate). Docs vivos → 1.3.0.
+
+### P1.2 — cold-start acionável
+- `nsgdb://session.cold_start.next_actions`: o que fazer AGORA (sondar escopos,
+  habilitar semântico, gather-then-write). Doutrina (`docs/doctrine.md`) ganha
+  TL;DR e corrige "4 tools" → 5.
+
+### P1.3 / P2.2 — honestidade e política
+- `docs/negative-results.md`: RaBitQ, delta BQ, post-RRF scoring — medidos e
+  rejeitados, com o artefato que reproduz.
+- `VERSIONING.md` §MCP contract deprecation policy (contract.json + 2 janelas).
+
+### Testes
+- Core: `scope_dim_descriptors_are_structured_not_opaque`,
+  `scope_issues_flags_empty_segments`.
+- Exemplo: `adr0008_recall_default_is_lexical` (hybrid com embedder real, demo
+  não eleva), `contract_json_is_pinned`, `alias_surface_is_consistent` (partição
+  CORE/DEPRECATED == superfície), tool count 5.
+
 ## [1.2.2] — 2026-09-29 (lote consumer-triage s413)
 
 ### Novas APIs

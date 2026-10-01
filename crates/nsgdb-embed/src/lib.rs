@@ -17,6 +17,11 @@
 use neural_sgdb::embedder::Embedder;
 use neural_sgdb::SgdbError;
 
+/// `model_id` da era (MDM1 v7) do stub determinístico. Passe este rótulo ao
+/// `remember(model_id=...)`/`RememberOptions.model_id` para o `era_report`
+/// distinguir eras com a MESMA dim (veredito `mixed_models`).
+pub const MODEL_ID: &str = "local-hash-384";
+
 /// Embedder local determinístico — prova o contrato same-model (write e query
 /// com o MESMO `LocalEmbedder` e mesma `dim`).
 ///
@@ -24,6 +29,20 @@ use neural_sgdb::SgdbError;
 /// e tem dim fixa — suficiente para provar `era_report`, `width-lock trap` e
 /// `backfill_helper.rs` sem rede/HTTP. Trocar para candle é só trocar o
 /// interior de `embed` (feature `candle`), a assinatura permanece.
+///
+/// ## ONNX / modelo real (P2.1)
+///
+/// O caminho para semântica de verdade, mantendo o core zero-dep (ADR-0001):
+/// 1. `--features candle` já liga o esqueleto `try_candle_embed` abaixo;
+/// 2. coloque `Modelos`: `./models/minilm/model.safetensors` + `tokenizer.json`
+///    (all-MiniLM-L6-v2, 384-dim) — o mesmo diretório que o README usa;
+/// 3. troque `try_candle_embed` por: tokenizer → forward → mean-pooling →
+///    L2-normalize; mantenha `model_id` estável (ex.: `"all-MiniLM-L6-v2-384"`)
+///    e a MESMA dim na escrita e na query.
+/// Alternativa sem candle: `examples/embedder_http` fala HTTP com um servidor
+/// local (ollama/llama.cpp) que já roda ONNX — mesma seam, zero dep.
+/// O core NUNCA linka runtime de inferência; quem fornece usa o MESMO modelo
+/// dos dois lados (o `recall` é LOUD em dim mismatch, S1).
 pub struct LocalEmbedder {
     dim: usize,
 }
@@ -38,6 +57,15 @@ impl LocalEmbedder {
     /// 384-dim é o default prático (compatível com MiniLM/BGE small)
     pub fn default_384() -> Self {
         Self { dim: 384 }
+    }
+    /// `model_id` da era (MDM1 v7) deste embedder — declarar no write p/ o
+    /// `era_report` separar eras de mesma dim.
+    pub fn model_id(&self) -> &'static str {
+        MODEL_ID
+    }
+    /// Dimensão do vetor produzido.
+    pub fn dim(&self) -> usize {
+        self.dim
     }
     /// Construtor unchecked para testes internos (clamp, não falha)
     #[cfg(test)]
