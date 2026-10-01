@@ -89,7 +89,7 @@
 | Recall heap (v1.1.11) | IMPLEMENTED | `recall_weighted_full` select_nth_unstable |
 | Arbitration policy seam | IMPLEMENTED | `ArbitrationPolicy`, no LLM in core |
 | Embedder seam | IMPLEMENTED | trait + DemoEmbedder + HTTP example |
-| MCP server | IMPLEMENTED | 4 tools (+ aliases), lexical-first (ADR-0008), `nsgdb://session` |
+| MCP server | IMPLEMENTED | 5 tools (+ 40 aliases `stable`/`deprecated`), `contract.json` + `nsgdb://contract`, default lexical/hybrid/semantic por fonte de vetor (v1.3.0), `nsgdb://session` |
 | Host connectors (claw) | PARTIAL | `connectors/`: Hermes provider + MCP client + 4/4 contract tests; OpenClaw TS skeleton (wire into host checkout next) |
 | Signed transport seam | IMPLEMENTED | `SignedEnvelope`, `signed_peer` example |
 | UdpTransport | EXPERIMENTAL | unauthenticated demo |
@@ -122,8 +122,10 @@ mesh harness tests. `node_versions` gossip may not converge in directed
 topologies; **content** does.
 
 ### MCP
-4 tools (`remember`/`recall`/`health`/`curate`); 38 legacy names as
-`tools/call` aliases (incl. the 4 ledger aliases of ADR-0014). Default recall **lexical** (ADR-0008). Unset
+5 tools (`remember`/`recall`/`health`/`curate`/`decide`); 40 legacy names as
+`tools/call` aliases — `stable`/`deprecated` em `contract.json` (resource
+`nsgdb://contract`). Default recall: **lexical** sem vetor; **hybrid** com
+embedder de host REAL; **semantic** com `embedding=` (v1.3.0). Unset
 `NEURAL_SGDB_EMBEDDER` = none (`=demo` explicit only). `remember(text=)`
 without vector → L3. Resources `nsgdb://doctrine` + `nsgdb://session`.
 `health(view=tensions|staleness|era)`. Harness ADR-0010:
@@ -142,7 +144,7 @@ MCP contract **1.3.0**.
 
 ### Host connectors
 `connectors/` is host-side (not crate SemVer). Hermes `MemoryProvider` is
-executable against current `mcp_server` (4 tools, lexical, scoped, lockfile).
+executable against current `mcp_server` (5 tools, lexical/hybrid/semantic default, scoped, lockfile).
 OpenClaw adapter is a documented skeleton pending Node MCP transport.
 Contract: `python -m unittest discover -s connectors/tests -v`. Keep adapter
 notes in sync with `MCP_CONTRACT_VERSION` (not frozen at 1.1.9).

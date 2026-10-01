@@ -988,13 +988,15 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-
 - **MCP server** (`examples/mcp_server.rs`): stdout JSON-RPC ONLY (logs →
   stderr), one message per `\n` line, `2025-11-25` handshake, do not gate tools
   on `notifications/initialized` (Claude Code sends tools/list first), echo the
-  id verbatim, `-32601` for unknown methods (modern-client fallback). **4 tools**
-  listed (`remember`/`recall`/`health`/`curate`); legacy names work on
-  `tools/call`. Default recall is **lexical** (ADR-0008). Unset
-  `NEURAL_SGDB_EMBEDDER` = none; `=demo` is an explicit trigram hash — NOT
-  cosine. `health(view=era)` = era_report; `health(view=tensions)` =
-  conflicts/superseded/unseen scopes. Resources `nsgdb://doctrine` +
-  `nsgdb://session`. **Pin:** `examples/mcp_client.rs` `serverInfo.version`
+  id verbatim, `-32601` for unknown methods (modern-client fallback). **5 tools**
+  listed (`remember`/`recall`/`health`/`curate`/`decide`); legacy names work on
+  `tools/call` (`stable`/`deprecated` em `contract.json`, resource
+  `nsgdb://contract`). Default recall: **lexical** without a vector;
+  **hybrid** with a real host embedder; **semantic** with a caller `embedding`
+  (v1.3.0). Unset `NEURAL_SGDB_EMBEDDER` = none; `=demo` is an explicit trigram
+  hash — NOT cosine. `health(view=era)` = era_report;
+  `health(view=tensions)` = conflicts/superseded/unseen scopes/`scope_issues`.
+  Resources `nsgdb://doctrine` + `nsgdb://session` + `nsgdb://contract`. **Pin:** `examples/mcp_client.rs` `serverInfo.version`
   deve igualar `MCP_CONTRACT_VERSION` (`mcp_server.rs`) no mesmo bump.
   **Rebuild antes do hot test:** `cargo run --example mcp_client` reconstrói o
   CLIENT mas resolve o SERVER por caminho — rode

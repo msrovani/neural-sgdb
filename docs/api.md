@@ -835,10 +835,13 @@ callers when scoped memories do not appear in global recall (mem0 null-scoping);
 `Sgdb::ensure_doctrine(emb)` seeds the agent protocol text (`docs/doctrine.md`)
 at `md/L4/nsgdb/doctrine` (scoped; idempotent). MCP injects the same text as
 `initialize.instructions` and as resource `nsgdb://doctrine`. Resource
-`nsgdb://session` is the MCP cold-start packet. MCP lists **4 tools**
-(`remember`/`recall`/`health`/`curate`); default recall is **lexical**.
+`nsgdb://session` is the MCP cold-start packet. MCP lists **5 tools**
+(`remember`/`recall`/`health`/`curate`/`decide`); default recall is
+**lexical** without a vector, **hybrid** with a real host embedder,
+**semantic** with a caller `embedding` (v1.3.0); `contract.json` is the
+machine-readable surface (resource `nsgdb://contract`).
 `health(view=era)` is `era_report`; `health(view=tensions)` reports conflicts,
-superseded keys, and unseen scopes.
+superseded keys, unseen scopes, and `scope_issues`.
 
 `Sgdb::remember_semantic_with(RememberOptions)` returns `RememberOutcome` (key,
 scope, entities, recall hint); `Sgdb::remember_text_with` writes **L3** without

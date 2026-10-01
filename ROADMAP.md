@@ -1,13 +1,22 @@
 # Roadmap — neural-sgdb
 
-Status: **v1.2.x line (crate v1.2.1)** —
+Status: **v1.3.x line (crate v1.3.0)** —
 stable API, zero deps, `no_std` + `std`, CI gates green. Crate version
-**1.2.1**; histórico v1.1.2–v1.2.1 no `CHANGELOG.md`. This roadmap is honest
+**1.3.0**; histórico v1.1.2–v1.3.0 no `CHANGELOG.md`. This roadmap is honest
 about what is DONE, what is NEXT, and what is deliberately NOT planned.
 
 Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
 
 ## Next (honest gaps — not this release)
+
+✅ **v1.3.0 — DX release (2026-10-01)** — dores do usuário-IA: P0.1 retrieval
+   default `semantic`/`hybrid` conforme a fonte de vetor (`semantic_ready`/
+   `retrieval_default`); P0.3 `scope_dim_labels` estruturado + `scope_issues`;
+   P0.2 `contract.json` (aliases `stable`/`deprecated`) + resource
+   `nsgdb://contract`; P1.1 `docs-version-gate.sh` no CI; P1.2
+   `cold_start.next_actions`; P1.3 `docs/negative-results.md`; P2.2
+   deprecation policy. Matriz **410+2 / 426+1 / 347+1**; hot test **150/0**;
+   contrato MCP **1.3.0**.
 
 ✅ **v1.2.1 — fork/merge de memória + otimizações medidas (2026-09-25)** —
    lote pós-v1.2.0 fechado: `promote_run` (seekdb item 1 — o MERGE do

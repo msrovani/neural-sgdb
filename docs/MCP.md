@@ -3,14 +3,16 @@
 Guia de instalação, contrato e troubleshooting do servidor MCP
 (`examples/mcp_server.rs`).
 
-## Contrato atual (v1.2.0)
+## Contrato atual (v1.3.0)
 
 | Campo | Valor |
 |-------|-------|
 | Protocolo | JSON-RPC 2.0 over **stdio** (uma linha JSON por mensagem) |
 | Handshake | `initialize` → `protocolVersion: 2025-11-25` |
-| `serverInfo.version` | `1.2.1` (`MCP_CONTRACT_VERSION` em `examples/mcp_server.rs`) |
-| Tools | **4** (`remember`, `recall`, `health`, `curate`) — 38 nomes antigos/alias ainda funcionam em `tools/call` (`ALIAS_SURFACE`) |
+| `serverInfo.version` | `1.3.0` (`MCP_CONTRACT_VERSION` em `examples/mcp_server.rs`) |
+| Tools | **5** (`remember`, `recall`, `health`, `curate`, `decide`) — 40 nomes antigos/alias ainda funcionam em `tools/call` (`ALIAS_SURFACE`, `stable`/`deprecated` em `contract.json` + resource `nsgdb://contract`) |
+| Retrieval default (v1.3.0) | `lexical` sem vetor; `hybrid` (RRF) com embedder de host REAL; `semantic` com `embedding=` do caller — `health.semantic_ready`/`retrieval_default` |
+| Escopo (v1.3.0) | `health.scope_labels` = só legacy; `scope_dim_labels` estruturado `{label,user,agent,app,run,count}`; `tensions.scope_issues` |
 | Batch write (v1.2.0) | `remember(memories=[...])` até 64 itens num round trip; `if_exists=add\|reinforce\|supersede\|reject` (default `add` — ADD-only intacta) |
 | Preview (v1.2.0) | `recall(max_payload_bytes=N)` corta o text de cada hit em N bytes (marca `…`); default full |
 | Stale report (v1.2.0) | `health(view=tensions)` inclui `stale_candidates` (mesma entidade + jaccard ≥ 0.7) — report, o host decide |
@@ -205,8 +207,9 @@ O repo inclui [`.cursor/mcp.json`](../.cursor/mcp.json) apontando para
 2. **`${workspaceFolder}` no `command`** — no Windows, mantenha `command`:
    `powershell` e o script em `args` (como acima).
 3. **Binário ausente** — rode `cargo build --release --example mcp_server`.
-4. **`tools/list` ≠ 4 tools** (`remember`/`recall`/`health`/`curate`) — binário
-   antigo (a lista de 23 nomes era v1.1.6). Rebuild + reload.
+4. **`tools/list` ≠ 5 tools** (`remember`/`recall`/`health`/`curate`/`decide`)
+   — binário antigo. Rebuild + reload (a lista passou de 4 → 5 na v1.1.28,
+   contrato 1.3.0 na v1.3.0).
 5. **Recall vazio / dim mismatch** — chame `health(view=era)` (alias
    `era_report`); use o **mesmo** embedder/dimensão em `remember` e `recall`.
    Sem `embedding=` o default é lexical (mesmas palavras).

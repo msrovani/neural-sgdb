@@ -47,7 +47,7 @@ derivado** (`index_fingerprint`, ADR-0011) + **recall adaptativo** (ADR-0012) +
 agêntico** (v1.2.0). Extensão de browser / Store **estacionadas**. Crate em
 `Cargo.toml`: **1.3.0**. 
 
-- `cargo test --lib` on host: **370** (p2p **416**, no_std **307**)
+- `cargo test --lib` on host: **410** (p2p **426**, no_std **347**)
 - hot test MCP: **150/0**; `agent_protocol`: **25/0**
 - `cargo check --no-default-features --target x86_64-unknown-none`: **clean**
 - **Concorrência** (`bench_concurrent`, Gap 0 do seekdb): mediana sub-ms em
@@ -100,7 +100,7 @@ agêntico** (v1.2.0). Extensão de browser / Store **estacionadas**. Crate em
   candidate, `resolve_conflict` via evidence, `dismiss_conflict`),
   **cognitive API** (`reinforce`/`forget`/`explain`/`transfer_to`/
   `merge_memories`/`conflicts`/`resolve_conflict`/`feedback`/`diary`/
-   `profile`/`expire_old`) and **MCP 4 tools** (`remember`/`recall`/`health`/`curate`;
+   `profile`/`expire_old`) and **MCP 5 tools** (`remember`/`recall`/`health`/`curate`/`decide`;
    `health`/`validate` observability, `era_report`, `remember_episodic`,
    retrieval modes semantic/lexical/hybrid, `recall_temporal`,
    `recall_entities`, ServerInfo v1.1.12, curate ops de metadado cognitivo: `decay`/`consolidate`/`audit_checkpoint`/`audit_verify`/`rollback_to`) + **write-side era guard** (S1 no
@@ -108,9 +108,10 @@ agêntico** (v1.2.0). Extensão de browser / Store **estacionadas**. Crate em
    + **seams de conteúdo** (`Embedder` trait, `entities`, `content_type` —
    quem fornece declara) + **security hardening 11→1** (`engine.put_inner` choke central, `validate_written`, `WasmStorage` bounds, `MCP -32601`)
 - **Interfaces**: MCP server with `memory://{layer}/{key}` + `nsgdb://doctrine`
-  + `nsgdb://session` resources, `nextCursor` pagination, **4 tools**
-  (`remember`/`recall`/`health`/`curate`; 23 legacy names as `tools/call`
-  aliases); `cargo run --release --example stress` (100k-op stress) and
+  + `nsgdb://session` (+ `nsgdb://contract`, v1.3.0) resources, `nextCursor`
+  pagination, **5 tools** (`remember`/`recall`/`health`/`curate`/`decide`;
+  40 legacy names as `tools/call` aliases — `stable`/`deprecated` em
+  `contract.json`); `cargo run --release --example stress` (100k-op stress) and
   `--example bench`
 - Full API contract in [`docs/api.md`](docs/api.md)
 - Architecture + status in [`docs/architecture/`](docs/architecture/) and
@@ -196,15 +197,18 @@ No Windows, use `scripts\mcp-server.ps1` no lugar do `.sh`. Detalhes MCP:
 Guia completo: **[`docs/MCP.md`](docs/MCP.md)** (Cursor/Windows, smoke test,
 embedder HTTP, troubleshooting).
 
-`cargo run --release --example mcp_server` exposes **4 tools**: `remember` /
-`recall` / `health` / `curate` (JSON-RPC 2.0 over stdio, `2025-11-25`
-handshake). Legacy names (`era_report`, `recall_entities`, …) still work on
-`tools/call`. Memories as **resources** (`memory://{layer}/{key}` +
-`nsgdb://doctrine` + **`nsgdb://session`**). Default `recall`/`rag_context`
-is **lexical** (ADR-0008). `remember(text=)` without a vector writes **L3**.
-Semantic/hybrid and L4 need `embedding=` or explicit `NEURAL_SGDB_EMBEDDER=demo`.
-Typed hits: `format=json`. `health(view=era)` is era_report; `view=tensions`
-lists conflicts / superseded / unseen scopes.
+`cargo run --release --example mcp_server` exposes **5 tools**: `remember` /
+`recall` / `health` / `curate` / `decide` (JSON-RPC 2.0 over stdio,
+`2025-11-25` handshake). Legacy names (`era_report`, `recall_entities`, …)
+still work on `tools/call` (`stable`/`deprecated` em `contract.json`).
+Memories as **resources** (`memory://{layer}/{key}` + `nsgdb://doctrine` +
+`nsgdb://session` + **`nsgdb://contract`**). Default `recall`/`rag_context`:
+**lexical** without a vector (ADR-0008); **hybrid** with a real host embedder;
+**semantic** with a caller `embedding` (v1.3.0). `remember(text=)` without a
+vector writes **L3**. Semantic/hybrid and L4 need `embedding=` or a host
+embedder. Typed hits: `format=json`. `health(view=era)` is era_report;
+`view=tensions` lists conflicts / superseded / unseen scopes / `scope_issues`;
+`health` exposes `semantic_ready`/`retrieval_default`/`scope_dim_labels`.
 
 Host adapters for claw-like apps (Hermes provider, OpenClaw skeleton, shared
 MCP client) live in [`connectors/`](connectors/README.md) — **outside** crate
@@ -219,7 +223,7 @@ Protocolo do agente: `examples/agent_protocol.rs` (25 checks), `two_ai_protocol.
 3. Recarregue MCP se rebuildar o binário.
 
 **Troubleshooting:** binário ausente → rebuild; recall vazio →
-`health(view=era)` (alias `era_report`); `tools/list` ≠ 4 tools → binário
+`health(view=era)` (alias `era_report`); `tools/list` ≠ 5 tools → binário
 desatualizado; ver [`docs/MCP.md`](docs/MCP.md).
 
 ### Scope / entidades (exemplo)
@@ -302,7 +306,7 @@ Licensed under **MIT** **or** **Apache-2.0** (dual license), your choice.
       `Transport` trait + std `UdpTransport`; symmetric LWW merge)
 - [x] Published benchmarks (`cargo run --release --example bench` — ART
       P50/P99, BQ top-k, recall BQ vs FP32) — `BENCHMARKS.md` + `BENCH_STABLE_1.1.10.txt` + `BENCH_COMPARE_1.1.10_vs_1.1.11.md`
-- [x] MCP server layer (`cargo run --release --example mcp_server` — 4 tools
+- [x] MCP server layer (`cargo run --release --example mcp_server` — 5 tools
       `remember`/`recall`/`health`/`curate`; default retrieval lexical;
       optional explicit `NEURAL_SGDB_EMBEDDER=demo`)
 - [x] **Byte-exact TKLV/TKCK storage interop with the OS** (`src/tickv.rs`:

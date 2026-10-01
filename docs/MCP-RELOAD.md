@@ -11,12 +11,12 @@ Use após `git pull`, mudanças em `examples/mcp_server.rs`, ou recall/health de
 2. **Cursor → Settings → MCP → Reload** (ou reinicie o IDE) — obrigatório
    para o processo usar o binário novo.
 3. **Verifique** (agente ou manual):
-   - tool `health` → `mcp_tool_count: 4`, `onboarding` presente, `embedder` = `none` (a menos que `NEURAL_SGDB_EMBEDDER=demo`)
+   - tool `health` → `mcp_tool_count: 5`, `onboarding` presente, `embedder` = `none` (a menos que `NEURAL_SGDB_EMBEDDER=demo`), `semantic_ready`, `retrieval_default`, `scope_dim_labels`
    - `health(view=tensions)` e resource `nsgdb://session`
    - `build_git` corresponde ao commit local (`git rev-parse --short HEAD`)
    - **Não** setar `NEURAL_SGDB_EMBEDDER=demo` no `~\.cursor\mcp.json` global
      (ADR-0008; workspace `.cursor/mcp.json` já omite)
-4. Se `tools/list` ainda não mostra 4 tools: desligue o MCP, apague
+4. Se `tools/list` ainda não mostra 5 tools: desligue o MCP, apague
    `target/release/examples/mcp_server.exe` se locked, reinstale.
 5. Se o MCP falha na subida (`failed during live tool discovery`): o Cursor
    usa **PowerShell 5.1** — `>&2` é erro de parse e stderr do `cargo` dispara
