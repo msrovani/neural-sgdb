@@ -417,7 +417,7 @@ fn error_response(id: &Value, code: i64, message: &str) -> Value {
 
 /// NÃºmero de tools em `tools/list` (aliases antigos ainda funcionam em tools/call).
 const EXPECTED_MCP_TOOL_COUNT: usize = 5;
-const MCP_CONTRACT_VERSION: &str = "1.4.1";
+const MCP_CONTRACT_VERSION: &str = "1.4.2";
 const BUILD_GIT: &str = env!("NEURAL_SGDB_BUILD_GIT");
 
 /// Lista pÃºblica: 4 tools. Os 23 nomes antigos continuam vÃ¡lidos em `tools/call`.
@@ -2620,10 +2620,9 @@ fn main() {
                     }
                     "set_ttl" => {
                         let key = args["key"].as_str().unwrap_or("");
-                        let now = args["now"].as_u64().unwrap_or(0);
-                        // expires_at absoluto ou relativo? contrato: now + ttl relativo via "amount"? usa "now" como expires_at direto
-                        let exp = args["seq"].as_u64().or(args["now"].as_u64()).unwrap_or(0);
-                        let _ = now;
+                        // expires_at absoluto (ms) — contrato: o HOST decide quando expira;
+                        // fallback "now" = expirar imediatamente (legado). NUNCA "seq" (rollback).
+                        let exp = args["expires_at"].as_u64().or(args["now"].as_u64()).unwrap_or(0);
                         match db.set_ttl(key, exp) {
                             Ok(()) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":format!("ttl {key} -> {exp}")}],"isError":false}})),

@@ -196,8 +196,8 @@ fn main() {
     rep.check("initialize responde", !r.get("error").is_some(), r.to_string());
     rep.check("protocolVersion 2025-11-25",
         r["result"]["protocolVersion"] == "2025-11-25", r.to_string());
-    rep.check("serverInfo version 1.4.1",
-        r["result"]["serverInfo"]["version"] == "1.4.1", r.to_string());
+    rep.check("serverInfo version 1.4.2",
+        r["result"]["serverInfo"]["version"] == "1.4.2", r.to_string());
     rep.check("serverInfo mcp_tool_count 5",
         r["result"]["serverInfo"]["mcp_tool_count"] == 5, r.to_string());
     let instr = r["result"]["instructions"].as_str().unwrap_or("");
@@ -526,6 +526,15 @@ fn main() {
     // decay em now=0 Ã© fator 1 â†’ 0 mudanÃ§as (idempotente/determinÃ­stico)
     let (txt, is_err) = srv.tool("curate", json!({"op": "decay", "now": 0}));
     rep.check("decay em now=0 Ã© no-op", !is_err && txt.contains("0 memorias"), txt.clone());
+    // regression claw-sandbox: set_ttl honors "expires_at" (handler read "seq"/"now" from rollback)
+    let (txt, is_err) = srv.tool("remember", json!({"text": "fato ttl claw", "key": "hot-ttl-1/fato"}));
+    rep.check("remember p/ ttl", !is_err && txt.contains("md/L3/hot-ttl-1/"), txt.clone());
+    let (txt, is_err) = srv.tool("curate", json!({"op": "set_ttl", "key": "md/L3/hot-ttl-1/fato", "expires_at": 1234567890123u64}));
+    rep.check("set_ttl honra expires_at absoluto", !is_err && txt.contains("1234567890123"), txt.clone());
+    let (txt, is_err) = srv.tool("curate", json!({"op": "expire_ttl", "now": 1234567890100u64}));
+    rep.check("expire_ttl com now<expires_at expira 0", !is_err && txt.contains("0 TTLs"), txt.clone());
+    let (txt, is_err) = srv.tool("curate", json!({"op": "expire_ttl", "now": 12345678909999u64}));
+    rep.check("expire_ttl com now>expires_at expira 1", !is_err && txt.contains("1 TTLs"), txt.clone());
     rep.phase("metadado cognitivo", &t);
 
     // ---------- fase 6c: ADR-0010 commit_run / deprecate_run ----------

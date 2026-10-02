@@ -4,9 +4,32 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [1.4.2] — 2026-10-02 (bugfix set_ttl achado pelo claw sandbox)
+
+Contrato MCP **1.4.2** (PATCH: comportamento do op `set_ttl` corrigido).
+
+- **BUGFIX (achado "using the DB for real")**: o handler MCP `curate(op=set_ttl)`
+  lia `args["seq"]`/`args["now"]` (herança do `rollback_to`) e IGNORAVA
+  `expires_at` — um claw que passasse o argumento natural `expires_at` setava
+  TTL=0 silenciosamente (no-op). Agora honra `expires_at` absoluto (ms), com
+  fallback `now` (expirar imediatamente); `seq` removido. Regressão no hot
+  test: set_ttl→expire_ttl em duas janelas (154/0).
+- **`scripts/claw-sandbox.ps1`**: sandbox host-side de um app "claw"
+  (openclaw-style) contra a superfície MCP — onboarding (nsgdb://session),
+  write escopado+entidades, recall exato/paráfrase/entities, decide
+  (`ask` obrigatório), multi-tenant isolation, null-scoping, TTL+expire_ttl,
+  supersede DAG, auditoria, curadoria, reopen. **25/25**. Achados:
+  (1) `decide` exige `ask` por question (erro -32602 acionável lista as
+  válidas); (2) recall active-only filtra por STATE, não TTL — o host roda
+  `expire_ttl`/`expire_old` (DB informa via health(view=staleness), nunca
+  auto-forget); (3) `if_exists=supersede` é DAG (a versão antiga permanece
+  Active no historical — `tensions.superseded` é state-based, lista vazia);
+  (4) `decide(evidence_sufficient)` com 0 hits retorna `sufficient:true`
+  (a suficiência mede a fronteira do top-k, não a presença de evidência).
+
 ## [1.4.1] — 2026-10-02 (F4 probe — o host "sabe o que fazer"?)
 
-Exemplo + docs (PATCH; sem mudança de API). Contrato MCP **1.4.0** (intacto).
+Exemplo + docs (PATCH; sem mudança de API). Contrato MCP **1.4.1** (build marker).
 
 - **`examples/self_policy_probe.rs`** (F4): sonda determinística B0 (verbos
   passivos) vs B1 (verbos + sinais do DB) em 3 tarefas de gestão
