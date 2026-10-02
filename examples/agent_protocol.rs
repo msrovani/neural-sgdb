@@ -343,6 +343,7 @@ fn recheck_for_contradiction(
 // 0; que não cobre = penalty 1).
 fn open_session(db: &mut Sgdb, scope: &str, now: u64) -> Result<Vec<Hit>, SgdbError> {
     db.expire_old(now)?; // forgetting cadence na abertura
+    db.expire_ttl(now)?; // TTL é promessa explícita do host: honra deadlines na abertura
     let q = emb(seed_from(scope));
     db.recall_scoped(&q, 8, scope)
 }

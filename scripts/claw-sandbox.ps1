@@ -99,17 +99,22 @@ Add-Check ($t -notmatch "beta") "isolamento: recall(scope=acme) nao vaza beta"
 $t = Txt "recall" '{"query":"deploy blue-green canary","mode":"lexical","k":5}'
 Add-Check ($t -notmatch "2-4am" -and $t -notmatch "blue-green") "null-scoping: recall global nao vaza acme nem beta"
 
-# 7. Staleness: TTL no passado -> DB informa (staleness) e expire_ttl remove
+# 7. TTL e contrato/promessa explicita:
+#    (a) futuro -> o recall ainda ve (nao venceu; staleness so reporta STALE,
+#        e TTL vencido e honrado no open antes de virar relatorio);
+#    (b) vencido -> honrado no OPEN da sessao (expire_ttl no open): a consulta
+#        ja nao ve a memoria (sem o host chamar expire_ttl manualmente).
 $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+$future = $now + 3600000
 $past = $now - 5000
-$ttl = Txt "curate" ('{"op":"set_ttl","key":"' + $k1s + '","expires_at":' + $past + '}')
-Add-Check ($ttl -match ([string]$past)) "set_ttl honra expires_at absoluto (nao seq)"
-$st = Scall "health" '{"view":"staleness"}'
-Add-Check ($st.count -gt 0) ("health(view=staleness) sinaliza a memoria expirando (count=" + $st.count + ")")
-$e = Txt "curate" '{"op":"expire_ttl"}'
-Add-Check ($e -match "TTLs expirados") "expire_ttl remove a memoria expirada"
+$ttl = Txt "curate" ('{"op":"set_ttl","key":"' + $k1s + '","expires_at":' + $future + '}')
+Add-Check ($ttl -match ([string]$future)) "set_ttl honra expires_at absoluto (futuro)"
 $t = Txt "recall" '{"query":"canary","scope":"acme","mode":"lexical","k":3}'
-Add-Check ($t -notmatch "canary") "TTL expirado+expire_ttl sai do recall ativo (active-only)"
+Add-Check ($t -match "canary") "TTL futuro ainda visivel (nao venceu)"
+$ttl2 = Txt "curate" ('{"op":"set_ttl","key":"' + $k1s + '","expires_at":' + $past + '}')
+Add-Check ($ttl2 -match ([string]$past)) "set_ttl no passado (vence)"
+$t = Txt "recall" '{"query":"canary","scope":"acme","mode":"lexical","k":3}'
+Add-Check ($t -notmatch "canary") "TTL vencido honrado no OPEN -> recall ativo nao ve"
 
 # 8. Supersede (DAG): versao corrente + historia preservada (ADD-only)
 $k3 = Scall "remember" '{"text":"deploy window moved to 3-5am UTC","scope":"acme","entities":["acme/ops/deploy"],"type":"text","if_exists":"supersede"}'

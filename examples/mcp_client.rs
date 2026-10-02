@@ -196,8 +196,8 @@ fn main() {
     rep.check("initialize responde", !r.get("error").is_some(), r.to_string());
     rep.check("protocolVersion 2025-11-25",
         r["result"]["protocolVersion"] == "2025-11-25", r.to_string());
-    rep.check("serverInfo version 1.4.2",
-        r["result"]["serverInfo"]["version"] == "1.4.2", r.to_string());
+    rep.check("serverInfo version 1.4.3",
+        r["result"]["serverInfo"]["version"] == "1.4.3", r.to_string());
     rep.check("serverInfo mcp_tool_count 5",
         r["result"]["serverInfo"]["mcp_tool_count"] == 5, r.to_string());
     let instr = r["result"]["instructions"].as_str().unwrap_or("");
@@ -948,6 +948,19 @@ fn main() {
         r["result"]["structuredContent"]["answers"][0]["error"].as_str().is_some(),
         r.to_string(),
     );
+    // regressão claw-sandbox: evidence_sufficient com 0 hits NÃO é suficiente
+    // (fronteira vazia é vacuous — "sufficient" com 0 evidência seria decidir no vácuo).
+    let r = srv.rpc("tools/call", json!({"name": "decide", "arguments": {"questions": [
+        {"ask": "evidence_sufficient", "query": "clawvacuo naoexiste zzz"}
+    ]}}));
+    let answers = r["result"]["structuredContent"]["answers"].as_array().cloned().unwrap_or_default();
+    rep.check(
+        "evidence_sufficient com 0 hits -> sufficient=false (s_d exige evidência)",
+        answers.len() == 1
+            && answers[0]["answer"]["sufficient"] == false
+            && answers[0]["answer"]["hits"] == 0,
+        r.to_string(),
+    );
     // Movimento 3: prefetch de candidatos com sinais decompostos (Eq. 8/23).
     let r = srv.rpc("tools/call", json!({"name": "recall_candidates", "arguments": {
         "query": "hot test alpha", "at": 1
@@ -1121,6 +1134,14 @@ fn main() {
     srv_idx2.stop();
     rep.phase("fast-mount IDX1", &t);
 
+    // regressão claw-sandbox: TTL vencido some no OPEN da próxima sessão
+    // (expire_ttl no open honra a promessa — a consulta já reflete a expiração).
+    let (txt, is_err) = srv.tool("remember", json!({"text": "fato ttl expira no open"}));
+    rep.check("remember p/ ttl-open", !is_err && txt.contains("md/L3/"), txt.clone());
+    let ttl_key = storage_key_from_remember(&txt);
+    let (txt, is_err) = srv.tool("curate", json!({"op": "set_ttl", "key": ttl_key.clone(), "expires_at": 1700000000000u64}));
+    rep.check("set_ttl no passado (expira no open)", !is_err && txt.contains("1700000000000"), txt.clone());
+
     // ---------- fase 10: PERSISTÃŠNCIA (o teste a quente de verdade) ----------
     let t = Instant::now();
     srv.stop(); // mata o processo â€” memÃ³ria sÃ³ sobrevive se FileStorage+checkpoint OK
@@ -1130,6 +1151,9 @@ fn main() {
         !is_err && txt.contains("hot test alpha"), txt.clone());
     let (txt, _) = srv2.tool("validate", json!({}));
     rep.check("validate pÃ³s-restart: saudÃ¡vel", txt.contains("saudavel"), txt.clone());
+    let (txt, _) = srv2.tool("recall", json!({"query": "ttl expira no open", "k": 3}));
+    rep.check("TTL vencido honrado no open (expire_ttl) -> recall ativo nao ve",
+        !txt.contains("ttl expira no open"), txt.clone());
     srv2.stop();
     rep.phase("persistÃªncia (restart)", &t);
 

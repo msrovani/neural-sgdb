@@ -417,7 +417,7 @@ fn error_response(id: &Value, code: i64, message: &str) -> Value {
 
 /// NÃºmero de tools em `tools/list` (aliases antigos ainda funcionam em tools/call).
 const EXPECTED_MCP_TOOL_COUNT: usize = 5;
-const MCP_CONTRACT_VERSION: &str = "1.4.2";
+const MCP_CONTRACT_VERSION: &str = "1.4.3";
 const BUILD_GIT: &str = env!("NEURAL_SGDB_BUILD_GIT");
 
 /// Lista pÃºblica: 4 tools. Os 23 nomes antigos continuam vÃ¡lidos em `tools/call`.
@@ -1458,6 +1458,19 @@ fn main() {
         if !scope.is_empty() {
             db.set_default_scope(Some(scope));
         }
+    }
+    // TTL é promessa explícita do host ("expira às X"): no OPEN da sessão,
+    // honra os deadlines (determinístico por relógio — o DB não decide,
+    // apenas cumpre o expires_at). Resultado: a consulta já reflete a
+    // expiração, sem o host precisar chamar expire_ttl manualmente.
+    let open_now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    match db.expire_ttl(open_now) {
+        Ok(n) if n > 0 => eprintln!("[neural-sgdb] open: {n} TTLs vencidos honrados (expire_ttl)"),
+        Ok(_) => {}
+        Err(e) => eprintln!("[neural-sgdb] open: expire_ttl falhou: {e}"),
     }
     let embedder = load_embedder();
     let embedder_name = embedder_label();
@@ -2859,8 +2872,11 @@ fn main() {
                                                 })
                                                 .cloned()
                                                 .collect();
-                                            // Eq. 21: s_d ≥ θ ∧ m_d < θ_cont ∧ c_d < θ_cont
-                                            let sufficient = ar.boundary_decisive
+                                            // Eq. 21: s_d ≥ θ ∧ m_d < θ_cont ∧ c_d < θ_cont.
+                                            // s_d exige EVIDÊNCIA (fronteira vazia é vacuous —
+                                            // "sufficient" com 0 hits seria decidir no vácuo).
+                                            let sufficient = !ar.hits.is_empty()
+                                                && ar.boundary_decisive
                                                 && missing.is_empty()
                                                 && unresolved == 0;
                                             json!({

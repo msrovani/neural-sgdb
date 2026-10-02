@@ -4,6 +4,24 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [1.4.3] — 2026-10-02 (honestidade do decide + TTL honrado no open)
+
+Contrato MCP **1.4.3** (PATCH: dois comportamentos de servidor corrigidos).
+
+- **`decide(evidence_sufficient)` com 0 hits → `sufficient:false`** (era `true`
+  por `boundary_decisive` vacuous — decidir no vácuo era má-contrato; a Eq.21
+  `s_d ≥ θ` exige evidência). Fix: `!hits.is_empty()` na conjunção. Regressão
+  no hot test (0 hits → `sufficient:false`, `hits:0`).
+- **TTL é promessa explícita → honrada no OPEN da sessão**: `expire_ttl(now)`
+  roda no `open` do mcp_server (uma vez por sessão, determinístico por relógio —
+  o DB não decide, apenas cumpre o `expires_at`). A consulta pós-open já
+  reflete a expiração. Mesmo nos helpers `open_session` de `agent_protocol.rs`
+  e `memory_arena_eval.rs`. Regressão no hot test: TTL vencido some após o
+  restart do processo. Doutrina regra 9 atualizada.
+- `scripts/claw-sandbox.ps1`: cobre os dois lados do contrato (TTL futuro
+  visível; vencido some no open) + decide com `ask`. **25/25**.
+- Gates: hot **158/0**; lib/p2p/no_std/clippy verdes.
+
 ## [1.4.2] — 2026-10-02 (bugfix set_ttl achado pelo claw sandbox)
 
 Contrato MCP **1.4.2** (PATCH: comportamento do op `set_ttl` corrigido).

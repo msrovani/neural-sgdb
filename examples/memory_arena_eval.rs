@@ -159,9 +159,10 @@ fn remember_fact_checked(db: &mut Sgdb, f: &Fact) -> Result<String, SgdbError> {
     remember_fact(db, f)
 }
 
-// P4/P6 — abrir sessão: expire_old + checkpoint escopado das restrições.
+// P4/P6 — abrir sessão: expire_old + expire_ttl + checkpoint escopado das restrições.
 fn open_session(db: &mut Sgdb, scope: &str, now: u64) -> Result<Vec<Hit>, SgdbError> {
     db.expire_old(now)?;
+    db.expire_ttl(now)?; // TTL é promessa explícita do host: honra deadlines na abertura
     let q = emb(seed_from(scope));
     db.recall_scoped(&q, 8, scope)
 }
