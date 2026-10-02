@@ -4,6 +4,22 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [1.4.1] — 2026-10-02 (F4 probe — o host "sabe o que fazer"?)
+
+Exemplo + docs (PATCH; sem mudança de API). Contrato MCP **1.4.0** (intacto).
+
+- **`examples/self_policy_probe.rs`** (F4): sonda determinística B0 (verbos
+  passivos) vs B1 (verbos + sinais do DB) em 3 tarefas de gestão
+  (supersede/consolidate/expire). **MEDIDO: B1 SR 3/3 sPS 2.25 vs B0 SR 0/3
+  sPS 0.50 → AFFORDANCE GO.** Combinado com `memory_arena_eval` (naive 0/3 vs
+  protocolo 3/3): o DB TEM o que o host precisa para se auto-gerir, mas a
+  COMPETÊNCIA (saber usar) exige ENSINO (doutrina) → **autonomia fica no
+  host; o DB expõe verbos+sinais**.
+- `docs/research-2026-10.md`: achado #4 (auto-evolutiva) atualizado com o
+  resultado medido.
+- Gates: lib **412+2** / p2p **428** / no_std **349+2** / multi_agent **21** /
+  exemplo **14** / hot test **150/0**.
+
 ## [1.4.0] — 2026-10-02 (F1+F2 GO — memória relacional + proveniência)
 
 GO/NOGO medido no `examples/bench_graph.rs` (corpus determinístico,

@@ -1,6 +1,6 @@
 [package]
 name = "neural-sgdb"
-version = "1.4.0"
+version = "1.4.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Persistent, transferable memory substrate for AI agents (no_std + std)"
@@ -134,3 +134,8 @@ required-features = ["file-storage"]
 # de grafo multi-hop (F2), isolados e juntos (docs/benchmark-hygiene.md).
 [[example]]
 name = "bench_graph"
+
+# F4 probe — o host "sabe o que fazer" ou precisa de ensino? B0 (verbos
+# passivos) vs B1 (verbos + sinais do DB): supersede/consolidate/expire.
+[[example]]
+name = "self_policy_probe"

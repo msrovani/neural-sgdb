@@ -1,9 +1,9 @@
 # neural-sgdb — Implementation Status
 
-> **Current snapshot (2026-10-01, v1.4.0).** Capability matrix vs the shipped
+> **Current snapshot (2026-10-01, v1.4.1).** Capability matrix vs the shipped
 > codebase. For the public contract see [`docs/api.md`](api.md); for architecture
 > narrative see [`docs/architecture/README.md`](architecture/README.md).
-> v1.4.0 = DX release (P0.1 semantic-on with a real embedder; P0.3 structured
+> v1.4.1 = DX release (P0.1 semantic-on with a real embedder; P0.3 structured
 > `scope_dim_labels` + `scope_issues`; P0.2 `contract.json` + alias
 > classification + `nsgdb://contract`; P1.1 docs gate; P1.2 cold-start
 > `next_actions`; P1.3 `docs/negative-results.md`; P2.2 deprecation policy).
@@ -64,8 +64,8 @@
 | ADC-lite dual-path (v1.1.17) | IMPLEMENTED | `corpus_mean`, `bq_top_k_f32_dual`, `sign(q−mean)`; state-first ties |
 | Lexical BM25 | IMPLEMENTED | L2/L3, matched_terms, scoped |
 | Entity 1-hop recall | IMPLEMENTED | `entity_index`, exact string match |
-| Multi-hop graph (v1.4.0, F2 GO) | IMPLEMENTED | `Sgdb::recall_graph` (BFS sobre `related_to`), `RecallPath::Graph`, `dist`=profundidade |
-| Provenance tie-break (v1.4.0, F1v2 GO) | IMPLEMENTED | `Sgdb::recall_provenance_tiebreak` (2 estágios, tie-margin, trust) |
+| Multi-hop graph (v1.4.1, F2 GO) | IMPLEMENTED | `Sgdb::recall_graph` (BFS sobre `related_to`), `RecallPath::Graph`, `dist`=profundidade |
+| Provenance tie-break (v1.4.1, F1v2 GO) | IMPLEMENTED | `Sgdb::recall_provenance_tiebreak` (2 estágios, tie-margin, trust) |
 | Typed hits (v1.1.6) | IMPLEMENTED | `ContentType`, `RecallPath`, MCP json |
 | Scoping multi-agent | IMPLEMENTED | MDM1 v4, scoped recall variants |
 | Storage trait + backends | IMPLEMENTED | InMemory, FileStorage, TickvFile |
@@ -92,7 +92,7 @@
 | Recall heap (v1.1.11) | IMPLEMENTED | `recall_weighted_full` select_nth_unstable |
 | Arbitration policy seam | IMPLEMENTED | `ArbitrationPolicy`, no LLM in core |
 | Embedder seam | IMPLEMENTED | trait + DemoEmbedder + HTTP example |
-| MCP server | IMPLEMENTED | 5 tools (+ 40 aliases `stable`/`deprecated`), `contract.json` + `nsgdb://contract`, default lexical/hybrid/semantic por fonte de vetor (v1.4.0), `nsgdb://session` |
+| MCP server | IMPLEMENTED | 5 tools (+ 40 aliases `stable`/`deprecated`), `contract.json` + `nsgdb://contract`, default lexical/hybrid/semantic por fonte de vetor (v1.4.1), `nsgdb://session` |
 | Host connectors (claw) | PARTIAL | `connectors/`: Hermes provider + MCP client + 4/4 contract tests; OpenClaw TS skeleton (wire into host checkout next) |
 | Signed transport seam | IMPLEMENTED | `SignedEnvelope`, `signed_peer` example |
 | UdpTransport | EXPERIMENTAL | unauthenticated demo |
@@ -128,7 +128,7 @@ topologies; **content** does.
 5 tools (`remember`/`recall`/`health`/`curate`/`decide`); 40 legacy names as
 `tools/call` aliases — `stable`/`deprecated` em `contract.json` (resource
 `nsgdb://contract`). Default recall: **lexical** sem vetor; **hybrid** com
-embedder de host REAL; **semantic** com `embedding=` (v1.4.0). Unset
+embedder de host REAL; **semantic** com `embedding=` (v1.4.1). Unset
 `NEURAL_SGDB_EMBEDDER` = none (`=demo` explicit only). `remember(text=)`
 without vector → L3. Resources `nsgdb://doctrine` + `nsgdb://session`.
 `health(view=tensions|staleness|era)`. Harness ADR-0010:
@@ -141,9 +141,9 @@ MAX(8, open_rebuild_ms_last)). Batch write `memories[]` + dedup
 report no tensions (v1.2.0). Fork/merge: `curate op=promote_run`
 (`merge_strategy=fail|ours|theirs`) + `remember(key=)` (v1.2.1). Consumer
 triage batch (v1.2.2): put_operational/forget_purge/audit_resolve/index_key
-+ MDM1 v8 authority. DX release (v1.4.0): semantic default with a real embedder
++ MDM1 v8 authority. DX release (v1.4.1): semantic default with a real embedder
 + `contract.json` / `nsgdb://contract` + structured `scope_dim_labels`.
-MCP contract **1.4.0**.
+MCP contract **1.4.1**.
 
 ### Host connectors
 `connectors/` is host-side (not crate SemVer). Hermes `MemoryProvider` is

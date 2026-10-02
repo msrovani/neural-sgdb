@@ -1,15 +1,15 @@
 # neural-sgdb — API Contract
 
 > Contract document for the extraction of the SGDB core from neural-os-core.
-> Status: **current public contract (crate v1.4.0)** —
+> Status: **current public contract (crate v1.4.1)** —
 > this document is the current public contract; roadmap items are explicitly
 > marked as such. The internal API lives in `crates/k_ai/src/sgdb/` of the
 > parent OS; this doc defines the public surface the community crate exposes
 > (and already ships).
 
-## v1.4.0 — DX surface (P0/P1)
+## v1.4.1 — DX surface (P0/P1)
 
-Additive; the MCP contract is `1.4.0` (`contract.json` is the machine-readable
+Additive; the MCP contract is `1.4.1` (`contract.json` is the machine-readable
 source of truth, served at resource `nsgdb://contract`).
 
 - **P0.1 — retrieval default.** MCP `recall`/`rag_context` with `mode` omitted:
@@ -424,7 +424,7 @@ código, binários). Duas regras tornam o consumo determinístico:
 ## Additive public surface (v1.1.2–v1.1.26)
 
 Everything below is **additive** (MINOR per VERSIONING.md) — no signature of a
-v1.0 method changed; crate version **1.4.0** in `Cargo.toml`. Key additions since the contract above:
+v1.0 method changed; crate version **1.4.1** in `Cargo.toml`. Key additions since the contract above:
 
 ```rust
 // ---- fork/merge de memória (v1.2.1, seekdb item 1; src/harness.rs) ----
@@ -838,7 +838,7 @@ at `md/L4/nsgdb/doctrine` (scoped; idempotent). MCP injects the same text as
 `nsgdb://session` is the MCP cold-start packet. MCP lists **5 tools**
 (`remember`/`recall`/`health`/`curate`/`decide`); default recall is
 **lexical** without a vector, **hybrid** with a real host embedder,
-**semantic** with a caller `embedding` (v1.4.0); `contract.json` is the
+**semantic** with a caller `embedding` (v1.4.1); `contract.json` is the
 machine-readable surface (resource `nsgdb://contract`).
 `health(view=era)` is `era_report`; `health(view=tensions)` reports conflicts,
 superseded keys, unseen scopes, and `scope_issues`.
