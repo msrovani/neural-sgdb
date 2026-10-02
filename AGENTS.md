@@ -6,7 +6,7 @@ repo. **Read `codemap.md` (atlas), `docs/api.md` (contract) and
 Storage, Cognitive API; typed hits from v1.1.6; current crate = `Cargo.toml`) and
 `docs/implementation-status.md` before editing code.**
 
-**Shipped crate is 1.4.3 (agentic MCP contract 1.4.3, hot test 150/0):** Vocabulário ÚNICO
+**Shipped crate is 1.4.3 (agentic MCP contract 1.4.3, hot test 158/0):** Vocabulário ÚNICO
 prosa/JSON (ADR-0017: `{:?}` fora do wire; tool `decide` 𝒥(S,𝒬) = 5º tool;
 `recall_candidates` sinais decompostos; validate tipado; k=0 erro). `Hit.type_scores`
 = **ADR-0016** (episódico/semântico/procedural/preferência sobrepostos,
@@ -20,7 +20,7 @@ Default retrieval: **lexical** without a vector; **hybrid** (RRF) with a real
 host embedder; **semantic** with a caller `embedding`. Unset `NEURAL_SGDB_EMBEDDER` = none;
 `=demo` only if requested (não setar no `mcp.json` global). `remember(text=)`
 without a vector → L3 (`remember_text_with`). Resources: `nsgdb://doctrine` +
-`nsgdb://session`. Hot test **150/0**. Lib tests **411+2 / 427+1 / 348+1** (+ **20** de integração
+`nsgdb://session`. Hot test **158/0**. Lib tests **412+2 / 428 / 349+2** (+ **21** de integração
 multi-agente em `tests/multi_agent.rs`, isolamento/estado — roda no gate no_std)
 (default / p2p / no_std). Bump `MCP_CONTRACT_VERSION` ⇒ pin `mcp_client`
 `serverInfo.version` no mesmo commit (senão hot test falha). **v1.1.17:**
@@ -898,8 +898,8 @@ Apache-2.0**. OS interop via byte-identical NMD1 and TKLV formats.
    updating the OS.
 6. **Seams, not globals** — clock via `now: u64`, SIMD via `cpu_caps()`/
    `set_cpu_caps()`, log via `sgdb_log!`. No global engine statics.
-7. **Verification** — `cargo test` (157+1 default, 192+1 `--features p2p`,
-   114+1 `--no-default-features`) and `cargo check` (std + no_std) before
+7. **Verification** — `cargo test` (412+2 default, 428 `--features p2p`,
+   349+2 `--no-default-features`) and `cargo check` (std + no_std) before
    committing. Clippy/rustdoc run with `-D warnings` (P0-5/P0-6/P0-10);
    `cargo fmt` is NOT a gate (repo is not rustfmt-clean — 223 diffs).
 
@@ -963,9 +963,9 @@ hash, not a semantic model). Restart opencode after changing the config.
 ## Running tests
 
 ```bash
-cargo test                                 # 342+1 tests (InMemory/FileStorage/TickvFile)
-cargo test --features p2p                  # 388+1 (includes CRDT sync + mesh harness)
-cargo test --no-default-features           # 286+1 (no_std core, host test harness)
+cargo test                                 # 412+2 tests (InMemory/FileStorage/TickvFile)
+cargo test --features p2p                  # 428 (includes CRDT sync + mesh harness)
+cargo test --no-default-features           # 349+2 (no_std core, host test harness)
 cargo check --no-default-features --target x86_64-unknown-none   # no_std gate
 cargo clippy --all-targets --all-features -- -D warnings          # lint gate (P0-5)
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-6/P0-10)

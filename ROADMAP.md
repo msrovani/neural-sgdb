@@ -1,13 +1,24 @@
 # Roadmap — neural-sgdb
 
-Status: **v1.3.x line (crate v1.3.0)** —
+Status: **v1.4.x line (crate v1.4.3)** —
 stable API, zero deps, `no_std` + `std`, CI gates green. Crate version
-**1.3.0**; histórico v1.1.2–v1.3.0 no `CHANGELOG.md`. This roadmap is honest
+**1.4.3**; histórico v1.1.2–v1.4.3 no `CHANGELOG.md`. This roadmap is honest
 about what is DONE, what is NEXT, and what is deliberately NOT planned.
 
 Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
 
 ## Next (honest gaps — not this release)
+
+✅ **v1.4.3 — honestidade do decide + TTL honrado no open (2026-10-02)** —
+   achados do claw sandbox (`scripts/claw-sandbox.ps1`, host-side openclaw-style
+   via MCP, **25/25**): `decide(evidence_sufficient)` com 0 hits →
+   `sufficient:false` (fronteira vazia era vacuous — Eq.21 exige evidência);
+   **TTL é promessa explícita** → `expire_ttl` no open da sessão (a consulta
+   já reflete a expiração). v1.4.0: F1+F2 GO (memória relacional +
+   proveniência, recall_graph + tiebreak, medidos no bench_graph). v1.4.1:
+   F4 probe (AFFORDANCE GO — autonomia fica no host). v1.4.2: bugfix
+   `set_ttl` (ignorava `expires_at`). Matriz **412+2 / 428 / 349+2** (+21);
+   hot test **158/0**; contrato MCP **1.4.3**.
 
 ✅ **v1.3.0 — DX release (2026-10-01)** — dores do usuário-IA: P0.1 retrieval
    default `semantic`/`hybrid` conforme a fonte de vetor (`semantic_ready`/

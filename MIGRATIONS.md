@@ -15,6 +15,10 @@ in an old version, decode to a defined default — never guess.
 
 | Contract | Change | Migration |
 |---|---|---|
+| 1.4.2 → 1.4.3 | `decide(evidence_sufficient)` com 0 hits → `sufficient:false` (era `true` por fronteira vazia vacuous — decidir no vácuo). `expire_ttl` roda no OPEN da sessão: TTL vencido some automaticamente na próxima conexão do mcp_server (a consulta já reflete a expiração) | Quem decidia com `sufficient:true` e 0 hits passa a ver `false` (o correto). Quem confiava em TTL "pendente" na próxima sessão: agora é honrado no open. |
+| 1.4.1 → 1.4.2 | `curate(op=set_ttl)` agora honra `expires_at` absoluto (ms). Antes lia `seq`/`now` (herança do `rollback_to`) e ignorava `expires_at` → TTL=0 silencioso (no-op) | Quem passava `expires_at` tinha no-op; agora o deadline é cumprido. `now` continua como fallback (expirar imediatamente). |
+| 1.4.0 → 1.4.1 | contrato = build marker (F4 probe + docs; nenhuma mudança de superfície) | Nada. |
+| 1.3.1 → 1.4.0 | `recall_graph` + `recall_provenance_tiebreak` na lib; `RecallPath::Graph`; nenhuma superfície MCP nova | Nada (adicional). |
 | 1.3.0 → 1.3.1 | `tensions.unseen_scopes` agora é **só legacy** (a versão 1.3.0 ainda vazava labels de dims `///x`); dims vão em `unseen_scope_dims` (`{label,display,user,agent,app,run,count}`); `scope_dim_labels`/`scopes_to_probe_dims` ganharam `display` (ex. `run=release-v1.1.24`); `recall_empty_hint` legível | Quem lia `unseen_scopes` para dims passe a ler `unseen_scope_dims`; `display` é a forma humana, `label` a chave canônica. |
 | 1.2.1 → 1.3.0 | `recall`/`rag_context` default is `hybrid` when a **real** host embedder is set (was lexical unless the caller passed `embedding`); `health.scope_labels` is **legacy-only** (multi-dim now in `scope_dim_labels` / `scopes_to_probe_dims` fields); `contract.json` + alias `stable`/`deprecated` classification; `semantic_ready`/`retrieval_default` fields; resource `nsgdb://contract` | If you depended on lexical-when-embedder, pass `mode=lexical`. Read multi-dim scopes from the structured fields, not the old merged `scope_labels`. Deprecated aliases keep working for 2 releases. |
 
@@ -23,7 +27,7 @@ in an old version, decode to a defined default — never guess.
 | Format | Version | Encode/decode | Golden test | Lives in |
 |--------|---------|---------------|-------------|----------|
 | NMD1 | v1 (stable) | `MemoryDoc` | `golden_nmd1_bytes` | `src/memory_doc.rs` |
-| MDM1 | v7 | side-table meta codec | golden/decode tests (via MemoryRecord) | `src/memory_doc.rs` |
+| MDM1 | v8 | side-table meta codec | golden/decode tests (via MemoryRecord) | `src/memory_doc.rs` |
 | TKLV / TKCK | v1 (stable) | `TickvFile` | `golden_record_bytes` | `src/tickv.rs` |
 | FNV-1a 64 | — | checksum | `fnv1a64_known_vector` | `src/fnv1a64.rs` (or engine) |
 | CRDT state | "CRDT" | `CrdtState` | bounds-checked decode | `src/crdt.rs` |

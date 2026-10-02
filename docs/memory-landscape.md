@@ -110,9 +110,9 @@ two-level HNSW sobre Change Stream. Análise completa em
 ## Roadmap por complexidade (aprovado 2026-08)
 
 Status: itens **1–10 entregues em v1.1.4** (2026-08-14, commits por item com
-regressão). **Estado corrente (v1.2.1):** crate 1.2.1; MCP 5 tools + 40
-aliases; default recall lexical (ADR-0008); hot test **150/0**; matriz
-**368+1 / 414+1 / 306+1**. Do seekdb entrou no roadmap e foi entregue: o
+regressão). **Estado corrente (v1.4.3):** crate 1.4.3; MCP 5 tools + 40
+aliases; default recall lexical (ADR-0008); hot test **158/0**; matriz
+**412+2 / 428 / 349+2**. Do seekdb entrou no roadmap e foi entregue: o
 fork/merge de memória (`promote_run`, v1.2.1) e a medição de concorrência
 (`bench_concurrent`, ver seção acima).
 Item 10 foi entregue no modo **custo baixo + risco baixo** (1-hop de

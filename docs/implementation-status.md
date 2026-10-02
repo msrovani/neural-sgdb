@@ -21,15 +21,16 @@
 
 | Check | Command | Result |
 |---|---|---|
-| Default tests | `cargo test --lib` | **411** (+2 doc-tests) |
-| P2P tests | `cargo test --features p2p --lib` | **427** |
-| no_std tests | `cargo test --no-default-features --lib` | **348** |
-| Multi-agent integration | `cargo test --test multi_agent` | **20** (também no gate no_std) |
+| Default tests | `cargo test --lib` | **412** (+2 doc-tests) |
+| P2P tests | `cargo test --features p2p --lib` | **428** |
+| no_std tests | `cargo test --no-default-features --lib` | **349** |
+| Multi-agent integration | `cargo test --test multi_agent` | **21** (também no gate no_std) |
 | no_std target | `cargo check --no-default-features --target x86_64-unknown-none` | **ok** |
-| Hot test (MCP) | `cargo run --release --example mcp_client` | **150/0 exit 0** |
+| Hot test (MCP) | `cargo run --release --example mcp_client` | **158/0 exit 0** |
 | AI-user sim | `cargo run --release --example agent_sim` | loop real, scope isolado |
 | Machine protocol | `cargo run --release --example two_ai_protocol` | **16/16 exit 0** |
-| Agent protocol | `cargo run --release --example agent_protocol` | **23/23 exit 0** |
+| Agent protocol | `cargo run --release --example agent_protocol` | **25/25 exit 0** |
+| Claw sandbox | `scripts/claw-sandbox.ps1` (host-side, MCP) | **25/25 exit 0** |
 | Clippy / doc gates | `-D warnings` | green |
 
 ## Capability matrix
