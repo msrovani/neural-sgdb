@@ -388,6 +388,33 @@ impl ScopeDims {
         alloc::format!("{}/{}/{}/{}", self.user, self.agent, self.app, self.run)
     }
 
+    /// Rótulo LEGÍVEL (P0.3): só as dims preenchidas, `chave=valor`, separadas
+    /// por `+`. Ex.: `run=release-v1.1.24`, `user=nsgdb/release`,
+    /// `user=nsgdb/release+run=adr-0017`. O `label()` canônico fica `///run`
+    /// quando só `run` está setado — opaco para o consumidor; `display()` é a
+    /// forma para PROSA/observabilidade (o `label()` continua a chave canônica
+    /// de agrupamento, nunca muda).
+    pub fn display(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if !self.user.is_empty() {
+            parts.push(alloc::format!("user={}", self.user));
+        }
+        if !self.agent.is_empty() {
+            parts.push(alloc::format!("agent={}", self.agent));
+        }
+        if !self.app.is_empty() {
+            parts.push(alloc::format!("app={}", self.app));
+        }
+        if !self.run.is_empty() {
+            parts.push(alloc::format!("run={}", self.run));
+        }
+        if parts.is_empty() {
+            String::from("global")
+        } else {
+            parts.join("+")
+        }
+    }
+
     /// Filtro multi-dim: `None` = wildcard na dimensão, `Some("")` = exige
     /// global na dimensão, `Some(s)` = exige valor exato.
     pub fn matches(&self, filter: &ScopeFilter) -> bool {

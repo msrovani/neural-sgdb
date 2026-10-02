@@ -4,6 +4,35 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [1.3.1] — 2026-10-01 (fix DX: fim do `///x` nas superfícies restantes)
+
+Correção da P0.3: a opacidade do escopo NÃO tinha sido eliminada por inteiro —
+`health.scope_labels` fora corrigido, mas `tensions.unseen_scopes`,
+`cold_start.unseen_scopes` e `recall_empty_hint` ainda usavam
+`scope_distribution()` (que FUNDE legacy+dims) e exibiam `///release-v1.1.24`.
+Contrato MCP → **1.3.1** (valor visível muda + campos novos):
+
+- **`ScopeDims::display()`** — rótulo legível só das dims preenchidas
+  (`run=release-v1.1.24`, `user=nsgdb/release+run=adr`); `label()` canônico
+  intocado (chave de agrupamento).
+- **`ScopeDimDescriptor.display`** — exposto no `health.scope_dim_labels`,
+  `tensions.unseen_scope_dims` e `session.scopes_to_probe_dims`.
+- **`tensions.unseen_scopes` = SÓ legacy** (sem `///x`); dims vão em
+  **`unseen_scope_dims`** estruturado `{label,display,user,agent,app,run,count}`.
+- **`recall_empty_hint`** lista legacy + `display()` (nunca `///x`).
+- Testes: `scope_dims_display_renders_only_filled_dims`; atualizado
+  `scope_dim_descriptors_are_structured_not_opaque` (assert `display`).
+- **Nova suíte de integração `tests/multi_agent.rs` (20 cenários)**: o nsgdb
+  testado COMO SE várias IAs dividissem o mesmo banco — isolamento por escopo
+  legado e dims, entidades 1-hop, fato compartilhado × privado, supersede entre
+  agentes, fork/merge `promote_run` (Ours/Theirs/Fail), sessões intercaladas
+  (backend compartilhado Arc/Mutex), modos lexical/semântico/RRF por agente,
+  validade temporal, feedback, ledger de ausências, TTL/GC, auditoria+rollback,
+  `scope_dim_descriptors`/`scope_issues`, timeline, snapshot de sessão,
+  doutrina escopada. Roda também no gate `--no-default-features`.
+- Gates: lib **411+2** / p2p **427+1** / no_std **348+1** / multi_agent **20**;
+  hot test **150/0**.
+
 ## [1.3.0] — 2026-10-01 (DX release: dores do usuário-IA)
 
 Fecha as maiores dores de um consumidor-IA (memória semântica dormente,

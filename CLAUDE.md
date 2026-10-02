@@ -36,9 +36,9 @@ TKLV formats.
 ## Commands
 
 ```bash
-cargo test                                   # 410+2 tests
-cargo test --features p2p                    # 426+1
-cargo test --no-default-features             # 347+1 (no_std core, host harness)
+cargo test                                   # 411+2 tests
+cargo test --features p2p                    # 427+1
+cargo test --no-default-features             # 348+1 (no_std core, host harness)
 cargo run --release --example bench          # benchmarks
 cargo run --release --example mcp_server     # MCP server (5 tools, lexical default)
 cargo run --release --example mcp_client     # HOT TEST (150/0 checks; rebuild mcp_server first)

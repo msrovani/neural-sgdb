@@ -6,7 +6,7 @@ repo. **Read `codemap.md` (atlas), `docs/api.md` (contract) and
 Storage, Cognitive API; typed hits from v1.1.6; current crate = `Cargo.toml`) and
 `docs/implementation-status.md` before editing code.**
 
-**Shipped crate is 1.3.0 (agentic MCP contract 1.3.0, hot test 150/0):** Vocabulário ÚNICO
+**Shipped crate is 1.3.1 (agentic MCP contract 1.3.1, hot test 150/0):** Vocabulário ÚNICO
 prosa/JSON (ADR-0017: `{:?}` fora do wire; tool `decide` 𝒥(S,𝒬) = 5º tool;
 `recall_candidates` sinais decompostos; validate tipado; k=0 erro). `Hit.type_scores`
 = **ADR-0016** (episódico/semântico/procedural/preferência sobrepostos,
@@ -20,7 +20,8 @@ Default retrieval: **lexical** without a vector; **hybrid** (RRF) with a real
 host embedder; **semantic** with a caller `embedding`. Unset `NEURAL_SGDB_EMBEDDER` = none;
 `=demo` only if requested (não setar no `mcp.json` global). `remember(text=)`
 without a vector → L3 (`remember_text_with`). Resources: `nsgdb://doctrine` +
-`nsgdb://session`. Hot test **150/0**. Lib tests **410+2 / 426+1 / 347+1**
+`nsgdb://session`. Hot test **150/0**. Lib tests **411+2 / 427+1 / 348+1** (+ **20** de integração
+multi-agente em `tests/multi_agent.rs`, isolamento/estado — roda no gate no_std)
 (default / p2p / no_std). Bump `MCP_CONTRACT_VERSION` ⇒ pin `mcp_client`
 `serverInfo.version` no mesmo commit (senão hot test falha). **v1.1.17:**
 ADC-lite dual-path + state-first ranking (`corpus_mean`, `bq_top_k_f32_dual`);

@@ -15,6 +15,7 @@ in an old version, decode to a defined default — never guess.
 
 | Contract | Change | Migration |
 |---|---|---|
+| 1.3.0 → 1.3.1 | `tensions.unseen_scopes` agora é **só legacy** (a versão 1.3.0 ainda vazava labels de dims `///x`); dims vão em `unseen_scope_dims` (`{label,display,user,agent,app,run,count}`); `scope_dim_labels`/`scopes_to_probe_dims` ganharam `display` (ex. `run=release-v1.1.24`); `recall_empty_hint` legível | Quem lia `unseen_scopes` para dims passe a ler `unseen_scope_dims`; `display` é a forma humana, `label` a chave canônica. |
 | 1.2.1 → 1.3.0 | `recall`/`rag_context` default is `hybrid` when a **real** host embedder is set (was lexical unless the caller passed `embedding`); `health.scope_labels` is **legacy-only** (multi-dim now in `scope_dim_labels` / `scopes_to_probe_dims` fields); `contract.json` + alias `stable`/`deprecated` classification; `semantic_ready`/`retrieval_default` fields; resource `nsgdb://contract` | If you depended on lexical-when-embedder, pass `mode=lexical`. Read multi-dim scopes from the structured fields, not the old merged `scope_labels`. Deprecated aliases keep working for 2 releases. |
 
 ## Format registry

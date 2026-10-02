@@ -416,7 +416,7 @@ fn error_response(id: &Value, code: i64, message: &str) -> Value {
 
 /// NÃºmero de tools em `tools/list` (aliases antigos ainda funcionam em tools/call).
 const EXPECTED_MCP_TOOL_COUNT: usize = 5;
-const MCP_CONTRACT_VERSION: &str = "1.3.0";
+const MCP_CONTRACT_VERSION: &str = "1.3.1";
 const BUILD_GIT: &str = env!("NEURAL_SGDB_BUILD_GIT");
 
 /// Lista pÃºblica: 4 tools. Os 23 nomes antigos continuam vÃ¡lidos em `tools/call`.
@@ -1023,6 +1023,7 @@ fn health_payload(db: &mut Sgdb, db_path: &str, embedder: &str) -> Value {
             .map(|d| {
                 json!({
                     "label": d.label,
+                    "display": d.display,
                     "user": d.user,
                     "agent": d.agent,
                     "app": d.app,
@@ -1068,7 +1069,6 @@ fn health_payload(db: &mut Sgdb, db_path: &str, embedder: &str) -> Value {
 
 fn tensions_payload(db: &mut Sgdb) -> Value {
     let default = db.default_scope().unwrap_or("").to_string();
-    let dist = db.scope_distribution().ok();
     let probes = db.scope_probes().unwrap_or_default();
     // P0.3: só LEGACY aqui (o label de dims ia como `///run` opaco).
     let scope_labels: Vec<Value> = probes
@@ -1083,19 +1083,32 @@ fn tensions_payload(db: &mut Sgdb) -> Value {
         .into_iter()
         .map(|(label, reason)| json!({"label": label, "reason": reason}))
         .collect();
-    // v1.1.28 (D5): tupla TIPADA (label, count) — era `"scope(count)"`,
-    // uma string que o consumidor reparseia. Os dois campos já estavam
-    // separados em `scope_labels`; aqui era o único lugar que achatava.
-    let unseen_scopes: Vec<Value> = dist
-        .as_ref()
+    // P0.3: `unseen_scopes` = SÓ LEGACY (não alcançado pelo `scope=` atual) —
+    // a versão antiga usava `scope_distribution()` FUNDIDO e vazava `///x`.
+    let unseen_scopes: Vec<Value> = probes
+        .legacy
+        .iter()
+        .filter(|(s, _)| s != &default)
+        .map(|(s, c)| json!({"label": s, "count": c}))
+        .collect();
+    // P0.3: dims não-`scope=` alcançáveis vão ESTRUTURADOS (com `display`
+    // legível) — nunca o label canônico `///run`.
+    let unseen_scope_dims: Vec<Value> = db
+        .scope_dim_descriptors()
+        .unwrap_or_default()
+        .into_iter()
         .map(|d| {
-            d.scoped
-                .iter()
-                .filter(|(s, _)| s.as_str() != default)
-                .map(|(s, c)| json!({"label": s, "count": c}))
-                .collect()
+            json!({
+                "label": d.label,
+                "display": d.display,
+                "user": d.user,
+                "agent": d.agent,
+                "app": d.app,
+                "run": d.run,
+                "count": d.count,
+            })
         })
-        .unwrap_or_default();
+        .collect();
     let conflicts: Vec<Value> = db
         .conflicts()
         .into_iter()
@@ -1203,6 +1216,7 @@ fn tensions_payload(db: &mut Sgdb) -> Value {
         "scope_labels": scope_labels,
         "scope_issues": scope_issues,
         "unseen_scopes": unseen_scopes,
+        "unseen_scope_dims": unseen_scope_dims,
         "empty_hint": empty_hint
     })
 }
@@ -1243,6 +1257,7 @@ fn session_payload(db: &mut Sgdb, db_path: &str, embedder: &str) -> Value {
         .map(|d| {
             json!({
                 "label": d.label,
+                "display": d.display,
                 "user": d.user,
                 "agent": d.agent,
                 "app": d.app,
@@ -1295,6 +1310,7 @@ fn session_payload(db: &mut Sgdb, db_path: &str, embedder: &str) -> Value {
         "scopes_to_probe": scopes_to_probe,
         "scopes_to_probe_dims": scopes_to_probe_dims,
         "unseen_scopes": tensions.get("unseen_scopes").cloned().unwrap_or(json!([])),
+        "unseen_scope_dims": tensions.get("unseen_scope_dims").cloned().unwrap_or(json!([])),
         "single_writer": "Um processo mcp_server por ficheiro NEURAL_SGDB_DB; dois writers no mesmo FileStorage e risco. Partilha de ficheiro = memorias comuns, nao sync CRDT.",
         "telepathy_when": "Dois ou mais Sgdb com DBs/nos distintos → cargo run --release --example p2p_telepathy --features p2p",
         "embedder_host": "Semantic/hybrid: embedding= nas tools, ou NEURAL_SGDB_EMBEDDER=demo (trigrama), ou examples/embedder_http / crates/nsgdb-embed (ADR-0008 — nunca no core)"

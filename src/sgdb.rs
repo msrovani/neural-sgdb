@@ -365,6 +365,7 @@ pub struct ScopeDistribution {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScopeDimDescriptor {
     pub label: String,
+    pub display: String,
     pub user: String,
     pub agent: String,
     pub app: String,
@@ -991,6 +992,7 @@ impl Sgdb {
         Ok(map
             .into_iter()
             .map(|(label, (d, c))| ScopeDimDescriptor {
+                display: d.display(),
                 label,
                 user: d.user,
                 agent: d.agent,
@@ -1233,45 +1235,47 @@ impl Sgdb {
         if h.doc_count == 0 {
             return None;
         }
-        let dist = self.scope_distribution().ok()?;
-        let scoped_total: usize = dist.scoped.iter().map(|(_, c)| c).sum();
+        let probes = self.scope_probes().ok()?;
+        let scoped_total: usize = probes.legacy.iter().map(|(_, c)| c).sum::<usize>()
+            + probes.dims_only.iter().map(|(_, c)| c).sum::<usize>();
+        // Lista LEGÍVEL (P0.3): legacy por `scope=` + dims por `display()`
+        // (`run=release-x`), NUNCA o label canônico `///x` (opaco).
+        let mut labels: Vec<String> = probes
+            .legacy
+            .iter()
+            .map(|(s, c)| format!("{s}({c})"))
+            .collect();
+        for d in self.scope_dim_descriptors().ok().unwrap_or_default() {
+            labels.push(format!("{}({})", d.display, d.count));
+        }
+        labels.sort();
+        labels.truncate(6);
         if scope_filter.is_empty() {
             if scoped_total == 0 {
                 return Some(format!(
                     "0 hits (mode={mode}). Corpus tem {} doc(s) globais — \
                      use as MESMAS palavras da escrita ou mode=lexical.",
-                    dist.global_count
+                    h.global_memory_count
                 ));
             }
-            let top: Vec<String> = dist
-                .scoped
-                .iter()
-                .take(4)
-                .map(|(s, c)| format!("{s}({c})"))
-                .collect();
             return Some(format!(
                 "0 hits no escopo global — recall global NAO ve escopos (mem0 null-scoping). \
-                 {scoped_total} memoria(s) escopada(s): {}. Tente recall(scope=...) ou mode=lexical.",
-                top.join(", ")
+                 {scoped_total} memoria(s) escopada(s): {}. Tente recall(scope=...) ou \
+                 scope_user/agent/app/run (dims, v1.3.0) ou mode=lexical.",
+                labels.join(", ")
             ));
         }
-        let in_scope = dist
-            .scoped
+        let in_scope = probes
+            .legacy
             .iter()
             .find(|(s, _)| s == scope_filter)
             .map(|(_, c)| *c)
             .unwrap_or(0);
         if in_scope == 0 && scoped_total > 0 {
-            let top: Vec<String> = dist
-                .scoped
-                .iter()
-                .take(4)
-                .map(|(s, c)| format!("{s}({c})"))
-                .collect();
             return Some(format!(
                 "0 hits em scope={scope_filter:?}. Escopos conhecidos: {}. \
                  Verifique o label ou use mode=lexical.",
-                top.join(", ")
+                labels.join(", ")
             ));
         }
         Some(format!(
@@ -8792,6 +8796,30 @@ mod tests {
         assert_eq!(d.user, "");
         assert_eq!(d.app, "");
         assert_eq!(d.count, 1);
+        // P0.3: `display` legível — o label canônico `///release-x` continua na
+        // `label` (chave de agrupamento), mas o consumidor lê `display`.
+        assert_eq!(d.label, "///release-x");
+        assert_eq!(d.display, "run=release-x");
+    }
+
+    #[test]
+    fn scope_dims_display_renders_only_filled_dims() {
+        use crate::memory_doc::ScopeDims;
+        assert_eq!(ScopeDims::new().display(), "global");
+        let run = ScopeDims {
+            user: String::new(),
+            agent: String::new(),
+            app: String::new(),
+            run: "release-v1.1.24".into(),
+        };
+        assert_eq!(run.display(), "run=release-v1.1.24");
+        let both = ScopeDims {
+            user: "nsgdb/release".into(),
+            agent: String::new(),
+            app: String::new(),
+            run: "adr-0017".into(),
+        };
+        assert_eq!(both.display(), "user=nsgdb/release+run=adr-0017");
     }
 
     #[test]
