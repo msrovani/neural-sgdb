@@ -4,6 +4,20 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [1.3.3] — 2026-10-02 (F5: higiene de avaliação)
+
+Contrato MCP → **1.3.3** (marca a build; sem mudança de superfície).
+
+- **`docs/benchmark-hygiene.md`** (F5): regras de medição — pinar `model_id`+dim
+  em todo bench, fixar embedding entre comparações, estratificar por modelo,
+  reportar custo de escrita (`metrics.memory_writes`). Números medidos do
+  MemDelta (2606.29914): trocar SÓ o embedding = **+6.2pp** (p=0.004);
+  verbatim RAG ≈ full-context (p=0.34); memória auto-gravada 42% < retrieval 47%.
+- **`examples/bench.rs`**: cabeçalho imprime `embedding-model: none (synthetic)`
+  — o recall@5 mede QUANTIZAÇÃO, nunca inferir qualidade de modelo real.
+- Gates: lib **411+2** / p2p **427** / no_std **348** / multi_agent **20** /
+  exemplo **14** / hot test **150/0**.
+
 ## [1.3.2] — 2026-10-01 (embedding via B — provisionamento in-process)
 
 Embedding LOCAL (via B, multilíngue) sem fugir das premissas: core zero-dep/

@@ -6,7 +6,7 @@ repo. **Read `codemap.md` (atlas), `docs/api.md` (contract) and
 Storage, Cognitive API; typed hits from v1.1.6; current crate = `Cargo.toml`) and
 `docs/implementation-status.md` before editing code.**
 
-**Shipped crate is 1.3.2 (agentic MCP contract 1.3.2, hot test 150/0):** Vocabulário ÚNICO
+**Shipped crate is 1.3.3 (agentic MCP contract 1.3.3, hot test 150/0):** Vocabulário ÚNICO
 prosa/JSON (ADR-0017: `{:?}` fora do wire; tool `decide` 𝒥(S,𝒬) = 5º tool;
 `recall_candidates` sinais decompostos; validate tipado; k=0 erro). `Hit.type_scores`
 = **ADR-0016** (episódico/semântico/procedural/preferência sobrepostos,

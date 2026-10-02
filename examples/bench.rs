@@ -34,6 +34,10 @@ fn percentiles(mut samples: Vec<Duration>) -> (Duration, Duration) {
 fn main() {
     select_best_hamming_kernel();
     println!("neural-sgdb bench — SIMD kernel: {}", path_name());
+    // F5 (docs/benchmark-hygiene.md): o recall@5 abaixo usa vetores SINTÉTICOS
+    // correlacionados — mede QUANTIZAÇÃO/retrieval, não semântica de um modelo
+    // real. NUNCA inferir qualidade de embedder real a partir dele.
+    println!("neural-sgdb bench — embedding-model: none (synthetic vectors; pin model_id/dim p/ comparar com modelo real)");
 
     // ── ART: 100k inserts + gets ────────────────────────────────────────────
     const N: usize = 100_000;
