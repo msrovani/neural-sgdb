@@ -14,7 +14,8 @@ use std::sync::{Arc, Mutex};
 
 use neural_sgdb::{
     demo_embed, GcConfig, InMemory, MemoryDoc, MemoryLayer, MemoryState, MergeStrategy,
-    RememberOptions, ScopeDims, ScopeFilter, Sgdb, SnapshotStorage, Storage,
+    RecallWeights, RelationKind, RememberOptions, ScopeDims, ScopeFilter, Sgdb, SnapshotStorage,
+    Storage,
 };
 
 /// Backend compartilhado: simula UM arquivo de DB acessado por "processos"
@@ -563,4 +564,52 @@ fn agents_share_doctrine_but_isolate_their_facts() {
     db.remember_semantic_with("u/1", "fato do usuario", &q("fato do usuario"), RememberOptions { scope: Some("user/ana"), ..Default::default() }).unwrap();
     assert!(db.recall(&q("fato do usuario"), 5).unwrap().is_empty(), "global não vê escopado");
     assert_eq!(db.recall_scoped(&q("fato do usuario"), 5, "user/ana").unwrap().len(), 1);
+}
+// 21. F2 + F1v2 no core (v1.4.0): travessia de grafo multi-hop + tie-break de
+// proveniencia (fonte confiavel vence empate semantico).
+#[test]
+fn graph_and_provenance_tiebreak_across_agents() {
+    let back = SharedBackend::default();
+    {
+        let mut w1 = Sgdb::open_with_node_id(1, back.clone()).unwrap();
+        for name in ["theme-a", "theme-b", "theme-c"] {
+            let text = format!("{name} topico");
+            let emb = demo_embed(&text);
+            w1.remember_semantic_with(
+                name,
+                &text,
+                &emb,
+                RememberOptions { entities: &[&format!("theme/rel-{name}")], ..Default::default() },
+            )
+            .unwrap();
+        }
+        w1.associate("md/L4/theme-a", RelationKind::RelatedTo, "md/L4/theme-b").unwrap();
+        w1.associate("md/L4/theme-b", RelationKind::RelatedTo, "md/L4/theme-c").unwrap();
+    }
+    {
+        // fonte confiavel (source=2): texto identico ao theme-a -> empate semantico
+        let mut w2 = Sgdb::open_with_node_id(2, back.clone()).unwrap();
+        w2.remember_semantic_with(
+            "theme-verified",
+            "theme-a topico",
+            &demo_embed("theme-a topico"),
+            RememberOptions { entities: &["theme/rel-theme-a"], ..Default::default() },
+        )
+        .unwrap();
+    }
+    let mut db = Sgdb::open(back).unwrap();
+    // F2: de theme-a, 2 hops alcanca theme-b e theme-c (ordem por profundidade)
+    let g = db.recall_graph("theme/rel-theme-a", 2, 10).unwrap();
+    let keys: Vec<&str> = g.iter().map(|h| h.key.as_str()).collect();
+    assert!(keys.contains(&"md/L4/theme-b"), "{keys:?}");
+    assert!(keys.contains(&"md/L4/theme-c"), "{keys:?}");
+    assert!(g.iter().all(|h| h.path == neural_sgdb::RecallPath::Graph));
+    // F1v2: query identica ao theme-a; theme-verified (source 2, trust 1.0) vence
+    let trust: &[(u8, f32)] = &[(1, 0.3), (2, 1.0)];
+    let w = RecallWeights { w_sem: 1.0, w_rec: 0.0, w_imp: 1.0, w_conf: 0.0, w_src: 2.0 };
+    let hits = db
+        .recall_provenance_tiebreak(&demo_embed("theme-a topico"), 5, &w, trust, 1)
+        .unwrap();
+    assert!(!hits.is_empty());
+    assert_eq!(hits[0].key, "md/L4/theme-verified", "trusted source vence o empate");
 }

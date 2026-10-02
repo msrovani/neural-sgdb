@@ -35,6 +35,9 @@ pub enum RecallPath {
     Semantic,
     Lexical,
     Entities,
+    /// Travessia de grafo multi-hop (v1.4.0, F2): `dist` = profundidade
+    /// normalizada (0 = 1-hop).
+    Graph,
 }
 
 /// Detecta o tipo do payload. `embedding_dim = Some(dim)` quando o payload é
@@ -193,6 +196,7 @@ pub fn path_label(p: RecallPath) -> &'static str {
         RecallPath::Semantic => "semantic",
         RecallPath::Lexical => "lexical",
         RecallPath::Entities => "entities",
+        RecallPath::Graph => "graph",
     }
 }
 

@@ -335,7 +335,7 @@ fn hit_json(h: &neural_sgdb::Hit) -> Value {
     // no lexical é constante 0.0 (a armadilha do "match perfeito"). O
     // consumidor usa `score` (BM25) e `path` como discriminante.
     let dist_val = match h.path {
-        RecallPath::Semantic | RecallPath::Entities => json!(h.dist),
+        RecallPath::Semantic | RecallPath::Entities | RecallPath::Graph => json!(h.dist),
         RecallPath::Lexical => Value::Null,
     };
     let mut obj = json!({
@@ -417,7 +417,7 @@ fn error_response(id: &Value, code: i64, message: &str) -> Value {
 
 /// NÃºmero de tools em `tools/list` (aliases antigos ainda funcionam em tools/call).
 const EXPECTED_MCP_TOOL_COUNT: usize = 5;
-const MCP_CONTRACT_VERSION: &str = "1.3.3";
+const MCP_CONTRACT_VERSION: &str = "1.4.0";
 const BUILD_GIT: &str = env!("NEURAL_SGDB_BUILD_GIT");
 
 /// Lista pÃºblica: 4 tools. Os 23 nomes antigos continuam vÃ¡lidos em `tools/call`.

@@ -3,17 +3,17 @@
 Guia de instalação, contrato e troubleshooting do servidor MCP
 (`examples/mcp_server.rs`).
 
-## Contrato atual (v1.3.3)
+## Contrato atual (v1.4.0)
 
 | Campo | Valor |
 |-------|-------|
 | Protocolo | JSON-RPC 2.0 over **stdio** (uma linha JSON por mensagem) |
 | Handshake | `initialize` → `protocolVersion: 2025-11-25` |
-| `serverInfo.version` | `1.3.3` (`MCP_CONTRACT_VERSION` em `examples/mcp_server.rs`) |
+| `serverInfo.version` | `1.4.0` (`MCP_CONTRACT_VERSION` em `examples/mcp_server.rs`) |
 | Tools | **5** (`remember`, `recall`, `health`, `curate`, `decide`) — 40 nomes antigos/alias ainda funcionam em `tools/call` (`ALIAS_SURFACE`, `stable`/`deprecated` em `contract.json` + resource `nsgdb://contract`) |
 | Retrieval default (v1.3.0) | `lexical` sem vetor; `hybrid` (RRF) com embedder de host REAL; `semantic` com `embedding=` do caller — `health.semantic_ready`/`retrieval_default` |
-| Embedding (via B, v1.3.3) | `NEURAL_SGDB_EMBEDDER=multilingual\|candle\|onnx\|local` → modelo `paraphrase-multilingual-MiniLM-L12-v2` (384, in-process em `crates/nsgdb-embed`); `model_id` auto-declarado no `remember`. Cadeia de fallback: caller `embedding=` (A) → host in-process (B) → `embedder_http`/ollama (C) → lexical (honesto, ADR-0008) |
-| Escopo (v1.3.0; v1.3.3 fecha o `///x`) | `health.scope_labels` = só legacy; `scope_dim_labels` estruturado `{label,display,user,agent,app,run,count}`; `tensions.unseen_scopes` = só legacy + `unseen_scope_dims` estruturado; `tensions.scope_issues`; `empty_hint` legível (`run=release-v1.1.24`) |
+| Embedding (via B, v1.4.0) | `NEURAL_SGDB_EMBEDDER=multilingual\|candle\|onnx\|local` → modelo `paraphrase-multilingual-MiniLM-L12-v2` (384, in-process em `crates/nsgdb-embed`); `model_id` auto-declarado no `remember`. Cadeia de fallback: caller `embedding=` (A) → host in-process (B) → `embedder_http`/ollama (C) → lexical (honesto, ADR-0008) |
+| Escopo (v1.3.0; v1.4.0 fecha o `///x`) | `health.scope_labels` = só legacy; `scope_dim_labels` estruturado `{label,display,user,agent,app,run,count}`; `tensions.unseen_scopes` = só legacy + `unseen_scope_dims` estruturado; `tensions.scope_issues`; `empty_hint` legível (`run=release-v1.1.24`) |
 | Batch write (v1.2.0) | `remember(memories=[...])` até 64 itens num round trip; `if_exists=add\|reinforce\|supersede\|reject` (default `add` — ADD-only intacta) |
 | Preview (v1.2.0) | `recall(max_payload_bytes=N)` corta o text de cada hit em N bytes (marca `…`); default full |
 | Stale report (v1.2.0) | `health(view=tensions)` inclui `stale_candidates` (mesma entidade + jaccard ≥ 0.7) — report, o host decide |

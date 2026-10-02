@@ -4,6 +4,30 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [1.4.0] — 2026-10-02 (F1+F2 GO — memória relacional + proveniência)
+
+GO/NOGO medido no `examples/bench_graph.rs` (corpus determinístico,
+`docs/benchmark-hygiene.md`): **F2 GO** (recall@3 multi-hop 0.000→0.750–1.000,
+12× mais rápido que o baseline), **F1v2 GO** (MRR saliência 0.000→0.467),
+**JUNTOS GO** (complementares). Contrato MCP → **1.4.0** (marca a build; a
+superfície MCP não muda — só o vocabulário `path` ganha `graph`).
+
+- **`Sgdb::recall_graph(entity_label, hops, k)`** (F2 no core): BFS multi-hop a
+  partir do nó cuja entidade casa, seguindo `related_to` (L6), active-only,
+  ordenado por profundidade asc. `path=graph`, `dist` = profundidade
+  normalizada. `RecallPath` ganhou `Graph`.
+- **`Sgdb::recall_provenance_tiebreak(query, k, w, trust, now)`** (F1v2 no
+  core): 2 estágios — agrupa por proximidade semântica (tie-margin) e, DENTRO
+  do grupo, ranqueia por penalidade de proveniência `w_imp·(1−imp) +
+  w_conf·(1−conf) + w_src·(1−trust[source])`. Desempate, não re-ponderação
+  global (o `recall_weighted_full` default fica intacto).
+- **Testes**: lib `recall_graph_multi_hop_finds_distant_fact`; integração
+  `graph_and_provenance_tiebreak_across_agents` (fontes 1/2 + trust).
+- **`docs/research-2026-10.md`**: achado da pesquisa (MAGMA/SAGE/LGM/MemCodex/
+  FluctlightDB/MemDelta) mapeado área↔nsgdb.
+- Gates: lib **412+2** / p2p **428** / no_std **349** / multi_agent **21** /
+  exemplo **14** / hot test **150/0**.
+
 ## [1.3.3] — 2026-10-02 (F5: higiene de avaliação)
 
 Contrato MCP → **1.3.3** (marca a build; sem mudança de superfície).

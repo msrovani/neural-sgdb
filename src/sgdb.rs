@@ -2016,6 +2016,175 @@ impl Sgdb {
         Ok(out)
     }
 
+    /// Travessia de grafo multi-hop (v1.4.0, F2 GO — `docs/benchmark-hygiene.md`):
+    /// BFS a partir do nó cuja entidade casa `entity_label` (1-hop de entidades),
+    /// seguindo as arestas L6 (`related_to`) até `hops`. Retorna os primários
+    /// ATIVOS alcançados, ordenados por profundidade asc (1-hop primeiro) e key.
+    ///
+    /// `dist` = profundidade normalizada `(depth-1)/hops` (0 = 1-hop);
+    /// `path` = [`RecallPath::Graph`]. O baseline (hybrid/similaridade) não
+    /// alcança 2+ hops (medido: 0.000 vs 0.750–1.000 no `bench_graph`).
+    pub fn recall_graph(
+        &mut self,
+        entity_label: &str,
+        hops: usize,
+        k: usize,
+    ) -> Result<Vec<Hit>, SgdbError> {
+        use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
+        let seeds = self.recall_entities(&[entity_label], 1)?;
+        let Some(seed) = seeds.first() else {
+            return Ok(Vec::new());
+        };
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        let mut by_depth: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+        let mut frontier: VecDeque<(String, usize)> = VecDeque::new();
+        frontier.push_back((seed.key.clone(), 0));
+        while let Some((sk, depth)) = frontier.pop_front() {
+            if depth > hops || !seen.insert(sk.clone()) {
+                continue;
+            }
+            if depth > 0 && self.engine.get_state(&sk) == MemoryState::Active {
+                by_depth.entry(depth).or_default().push(sk.clone());
+            }
+            if depth < hops {
+                for (_kind, nbr) in self.engine.related_to(&sk) {
+                    if !seen.contains(&nbr) {
+                        frontier.push_back((nbr, depth + 1));
+                    }
+                }
+            }
+        }
+        let mut order: Vec<(usize, String)> = Vec::new();
+        for d in 1..=hops {
+            if let Some(list) = by_depth.get(&d) {
+                for sk in list {
+                    order.push((d, sk.clone()));
+                    if order.len() >= k.max(1) {
+                        break;
+                    }
+                }
+            }
+        }
+        let hops_n = hops.max(1) as f32;
+        let companion_keys: Vec<String> = order.iter().map(|(_, sk)| companion_key(sk)).collect();
+        let texts = self.engine.get_texts_batch(&companion_keys);
+        let mut out = Vec::with_capacity(order.len());
+        for (i, (depth, sk)) in order.into_iter().enumerate() {
+            let Ok(Some(doc)) = self.engine.get_by_storage_key(&sk) else {
+                continue;
+            };
+            let state = self.engine.get_state(&sk);
+            let prov = doc.meta.as_ref().map(|m| HitProvenance {
+                memory_id: m.memory_id.clone(),
+                version_id: m.version_id.clone(),
+                layer: doc.layer,
+                state,
+                source: m.source,
+                confidence: m.confidence,
+                importance: m.importance,
+                created_tick: m.created_tick,
+                parent_ids: m.parent_ids.clone(),
+                last_reinforced: m.last_reinforced,
+                scope: m.scope.clone(),
+                entities: m.entities.clone(),
+                scope_dims: m.scope_dims.clone(),
+                model_id: m.model_id.clone(),
+            });
+            let ct_fallback = payload_content_type(&sk, &doc.payload, doc.bitvec.is_some());
+            let declared = doc
+                .meta
+                .as_ref()
+                .and_then(|m| m.content_type.as_deref())
+                .and_then(parse_stable_label);
+            let raw_text = texts.get(&companion_keys[i]).cloned().unwrap_or_default();
+            let content_type = resolve_content_type(declared, &raw_text, ct_fallback);
+            let text = if renders_prose(content_type) {
+                raw_text
+            } else {
+                String::new()
+            };
+            let (rel, payload_type) = if sk.starts_with("md/L2/") {
+                match self.primary_of(&sk) {
+                    Some((pk, pct)) => (Some(pk), pct),
+                    None => (None, ct_fallback),
+                }
+            } else {
+                (None, ct_fallback)
+            };
+            out.push(Hit {
+                key: sk,
+                text,
+                dist: ((depth - 1) as f32) / hops_n,
+                provenance: prov,
+                path: RecallPath::Graph,
+                content_type,
+                payload_type,
+                score: (hops.saturating_sub(depth)) as f32,
+                matched_terms: Vec::new(),
+                validity: self.engine.validity_window(&companion_key(&out.last().map(|h: &Hit| h.key.clone()).unwrap_or_default())),
+                rel,
+                score_breakdown: None,
+                type_scores: doc
+                    .meta
+                    .as_ref()
+                    .map(|m| TypeScores::derive(doc.layer, &m.entities)),
+            });
+        }
+        Ok(out)
+    }
+
+    /// Recall ponderado com **tie-break por proveniência** (v1.4.0, F1v2 GO):
+    /// 2 estágios — agrupa o pool semântico por proximidade (tie-margin) e,
+    /// DENTRO do grupo, ranqueia pela penalidade de proveniência
+    /// `w_imp·(1−imp) + w_conf·(1−conf) + w_src·(1−trust[source])`.
+    /// Proveniência vira DESEMPATADOR, não re-ponderação global (o default
+    /// `recall_weighted_full` permanece intacto).
+    pub fn recall_provenance_tiebreak(
+        &mut self,
+        query: &[f32],
+        k: usize,
+        w: &RecallWeights,
+        trust: &[(u8, f32)],
+        now: u64,
+    ) -> Result<Vec<Hit>, SgdbError> {
+        use alloc::collections::BTreeMap;
+        let pool = self.recall_weighted_full(
+            query,
+            k.max(1) * 4,
+            &RecallWeights {
+                w_sem: 1.0,
+                w_rec: 0.0,
+                w_imp: 0.0,
+                w_conf: 0.0,
+                w_src: 0.0,
+            },
+            trust,
+            now,
+        )?;
+        let mut buckets: BTreeMap<u32, Vec<(f32, Hit)>> = BTreeMap::new();
+        for h in pool {
+            let bucket = ((h.dist * 10_000.0) as u32) / (SCORE_TIE_MARGIN + 1);
+            let p = h.provenance.as_ref();
+            let imp = 1.0 - p.map(|p| p.importance).unwrap_or(0.0);
+            let conf = 1.0 - p.map(|p| p.confidence).unwrap_or(1.0);
+            let src = p.map(|p| p.source).unwrap_or(0);
+            let t = trust.iter().find(|(n, _)| *n == src).map(|(_, t)| *t).unwrap_or(0.5);
+            let pen = w.w_imp * imp + w.w_conf * conf + w.w_src * (1.0 - t);
+            buckets.entry(bucket).or_default().push((pen, h));
+        }
+        let mut out = Vec::new();
+        for (_b, mut list) in buckets {
+            list.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.key.cmp(&b.1.key)));
+            for (_, h) in list {
+                out.push(h);
+                if out.len() >= k.max(1) {
+                    return Ok(out);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Anexa `parent_ids` à meta da memória (linhagem causal do DAG) —
     /// usado pela promoção do lifecycle e pela fusão (`merge_memories`,
     /// v0.9). Idempotente; registros pré-v0.6 ganham meta via `ensure_meta`.
@@ -8822,7 +8991,7 @@ mod tests {
         assert_eq!(both.display(), "user=nsgdb/release+run=adr-0017");
     }
 
-    #[test]
+#[test]
     fn scope_issues_flags_empty_segments() {
         // P0.3: `validate_written` não cobre `//`; o report sinaliza (sem
         // normalizar sozinho — ADD-only).
@@ -8832,6 +9001,43 @@ mod tests {
         let issues = db.scope_issues().unwrap();
         assert_eq!(issues.len(), 1, "{issues:?}");
         assert_eq!(issues[0].0, "tenant//proj");
+    }
+
+    #[test]
+    fn recall_graph_multi_hop_finds_distant_fact() {
+        // F2 GO (v1.4.0): travessia BFS por profundidade; baseline por
+        // similaridade não alcança 2+ hops.
+        use crate::demo_embed;
+        use crate::memory_doc::RelationKind;
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        for n in ["cafe-a", "cafe-b", "cafe-c", "cafe-d"] {
+            let text = format!("{n} topico cafe origem");
+            let emb = demo_embed(&text);
+            db.remember_semantic_with(
+                n,
+                &text,
+                &emb,
+                RememberOptions { entities: &[n], ..Default::default() },
+            )
+            .unwrap();
+        }
+        db.associate("md/L4/cafe-a", RelationKind::RelatedTo, "md/L4/cafe-b").unwrap();
+        db.associate("md/L4/cafe-b", RelationKind::RelatedTo, "md/L4/cafe-c").unwrap();
+        db.associate("md/L4/cafe-c", RelationKind::RelatedTo, "md/L4/cafe-d").unwrap();
+        // 1-hop: a -> b
+        let one = db.recall_graph("cafe-a", 1, 10).unwrap();
+        let k1: Vec<&str> = one.iter().map(|h| h.key.as_str()).collect();
+        assert_eq!(k1, vec!["md/L4/cafe-b"]);
+        // 2-hop: a -> b, c (profundidade asc, dist normalizada)
+        let two = db.recall_graph("cafe-a", 2, 10).unwrap();
+        let k2: Vec<&str> = two.iter().map(|h| h.key.as_str()).collect();
+        assert_eq!(k2, vec!["md/L4/cafe-b", "md/L4/cafe-c"]);
+        assert!((two[0].dist - 0.0).abs() < 1e-6, "1-hop dist 0");
+        assert!((two[1].dist - 0.5).abs() < 1e-6, "2-hop dist 0.5");
+        assert_eq!(two[0].path, crate::RecallPath::Graph);
+        // 3-hop: a -> b,c,d
+        let three = db.recall_graph("cafe-a", 3, 10).unwrap();
+        assert_eq!(three.len(), 3);
     }
 
     #[test]
