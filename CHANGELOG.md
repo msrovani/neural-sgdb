@@ -4,6 +4,33 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [1.3.2] — 2026-10-01 (embedding via B — provisionamento in-process)
+
+Embedding LOCAL (via B, multilíngue) sem fugir das premissas: core zero-dep/
+no_std intactos, core nunca gera vetor (ADR-0002/0008), mesmo-modelo na
+escrita e busca (ADR-0007). Contrato MCP → **1.3.2** (o `remember` passa a
+auto-declarar `model_id` do embedder de host ativo).
+
+- **`crates/nsgdb-embed`**: `MULTILINGUAL_MODEL_ID =
+  "paraphrase-multilingual-MiniLM-L12-v2-384"`, `MULTILINGUAL_DIM = 384`,
+  `model_id_for(label)` (rótulos `candle|multilingual|onnx|local` → o model_id;
+  `demo` → `demo-256`); doc do corpo candle + o bloqueio de toolchain
+  (`dlltool` no Windows GNU) verificado. Teste: contrato model_id/dim/fallback.
+- **MCP**: `remember_one` preenche `model_id` automaticamente quando há
+  embedder de host real (`embedder_model_id_for` — espelho do crate host);
+  `era_report` passa a ver a era correta. Teste do mapeamento no exemplo.
+- **`scripts/install-embedding.ps1`** (novo): pergunta se quer instalar
+  embedding local; checa deps (toolchain/rede/modelo/admin); instala modelo HF
+  → toolchain (winget/choco mingw, admin+rede) → `cargo build --features
+  candle`; adequa o host (`NEURAL_SGDB_EMBEDDER` no `mcp-server.ps1` +
+  `.opencode/opencode.json` + `.cursor/mcp.json`, idempotente); smoke do crate
+  host; fail HONESTO com exit code (3/4/5) — nunca quebra em silêncio.
+  `-CheckOnly` para CI/offline (validado: reporta dlltool ausente).
+- **Docs**: doutrina + `docs/MCP.md` com a cadeia de fallback (A caller
+  `embedding=` → B in-process → lexical; sem via C).
+- Gates: lib **411+2** / p2p **427** / no_std **348** / multi_agent **20** /
+  exemplo **14** / hot test **150/0**; crate host **4+1**.
+
 ## [1.3.1] — 2026-10-01 (fix DX: fim do `///x` nas superfícies restantes)
 
 Correção da P0.3: a opacidade do escopo NÃO tinha sido eliminada por inteiro —

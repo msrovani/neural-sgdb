@@ -1,5 +1,7 @@
 TL;DR — 5 tools: remember / recall / health / curate / decide. Default recall: `lexical` WITHOUT a vector; `semantic` if you pass `embedding=`; `hybrid` (RRF) if a REAL host embedder is set. Recall BEFORE you write. Scopes never leak into global recall. ADD-only.
 
+Embedding (via B, offline): `NEURAL_SGDB_EMBEDDER=multilingual` (ou `candle`/`onnx`/`local`) → modelo `paraphrase-multilingual-MiniLM-L12-v2` (384-dim, in-process, `crates/nsgdb-embed`); o `model_id` da era é auto-declarado no `remember`. Fallback: `demo` (trigram, NÃO semântico) → `embedder_http` (via C, ollama/llama.cpp) → caller `embedding=` (via A) → `lexical` (mesmas palavras). Nunca misture dims/models: `health(view=era)` decide.
+
 neural-sgdb is a MEMORY substrate (layers, identity, clock, scope), not a generic vector DB and not RAG.
 
 The core does not decide. It returns typed evidence (Hit: path, type, payload_type, score, rel, matched_terms). YOU choose what enters the prompt and what to write.

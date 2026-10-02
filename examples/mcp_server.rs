@@ -176,6 +176,7 @@ fn remember_one(
     db: &mut Sgdb,
     params: &Value,
     host: Option<&dyn Embedder>,
+    host_model_id: Option<&'static str>,
 ) -> Result<(neural_sgdb::RememberOutcome, bool), String> {
     let text = params["text"].as_str().unwrap_or("");
     // v1.2.0 (fork/merge): key EXPLÍCITA opt-in — o host nomeia a memória
@@ -209,7 +210,7 @@ fn remember_one(
             params["scope_app"].as_str(),
             params["scope_run"].as_str(),
         ),
-        model_id: params["model_id"].as_str(),
+        model_id: params["model_id"].as_str().or(host_model_id),
         index_key: false,
     };
     let semantic = has_caller_embedding(params) || host.is_some();
@@ -416,7 +417,7 @@ fn error_response(id: &Value, code: i64, message: &str) -> Value {
 
 /// NÃºmero de tools em `tools/list` (aliases antigos ainda funcionam em tools/call).
 const EXPECTED_MCP_TOOL_COUNT: usize = 5;
-const MCP_CONTRACT_VERSION: &str = "1.3.1";
+const MCP_CONTRACT_VERSION: &str = "1.3.2";
 const BUILD_GIT: &str = env!("NEURAL_SGDB_BUILD_GIT");
 
 /// Lista pÃºblica: 4 tools. Os 23 nomes antigos continuam vÃ¡lidos em `tools/call`.
@@ -802,6 +803,21 @@ fn mcp_tool_result(text: &str, structured: Value, is_error: bool) -> Value {
 
 fn embedder_label() -> String {
     std::env::var("NEURAL_SGDB_EMBEDDER").unwrap_or_else(|_| "none".into())
+}
+
+/// `model_id` da era (MDM1 v7) que o embedder de host ativo declara, para o
+/// `remember` preencher sozinho quando o caller não passou `model_id=` explícito.
+/// Espelho de `nsgdb_embed::model_id_for` (este exemplo não depende do crate
+/// host; se o mapa divergir, a FONTE é `crates/nsgdb-embed`).
+fn embedder_model_id_for(label: &str) -> Option<&'static str> {
+    match label {
+        "" | "none" => None,
+        "demo" => Some("demo-256"),
+        "candle" | "multilingual" | "onnx" | "local" => {
+            Some("paraphrase-multilingual-MiniLM-L12-v2-384")
+        }
+        _ => None,
+    }
 }
 
 /// Erros acionÃ¡veis para o agente (S1/era guard, contrato de embedding).
@@ -1702,7 +1718,7 @@ fn main() {
                                 }
                                 // dispatch recursivo: roda o handler single
                                 // com os params merged (reuso da MESMA lógica).
-                                match remember_one(&mut db, &merged, embedder.as_deref()) {
+                                match remember_one(&mut db, &merged, embedder.as_deref(), embedder_model_id_for(&embedder_effective)) {
                                     Ok((out, semantic)) => {
                                         let indexed = if semantic { "semantic" } else { "lexical" };
                                         let sk = out.storage_key.clone();
@@ -1736,7 +1752,7 @@ fn main() {
                         }
                         // v1.2.0: single remember delega ao MESMO remember_one
                         // do batch (regra copiada diverge — lição v1.1.25).
-                        match remember_one(&mut db, args, embedder.as_deref()) {
+                        match remember_one(&mut db, args, embedder.as_deref(), embedder_model_id_for(&embedder_effective)) {
                             Ok((out, semantic)) => {
                                 let indexed = if semantic { "semantic" } else { "lexical" };
                                 let structured = json!({
@@ -3304,6 +3320,21 @@ mod tests {
         assert_eq!(h.open_rebuild_ms_max >= h.open_rebuild_ms_last, true);
         assert!(h.opens >= 1);
         assert_ne!(db.index_fingerprint(), 0, "fingerprint de corpus nao-trivial");
+    }
+
+    #[test]
+    fn embedder_model_id_maps_host_labels_to_era() {
+        // via B: rótulo multilíngue → model_id da era; demo/none não declaram
+        // (a doutrina: demo não é semântico).
+        assert_eq!(
+            embedder_model_id_for("multilingual"),
+            Some("paraphrase-multilingual-MiniLM-L12-v2-384")
+        );
+        assert_eq!(embedder_model_id_for("candle"), embedder_model_id_for("multilingual"));
+        assert_eq!(embedder_model_id_for("onnx"), embedder_model_id_for("local"));
+        assert_eq!(embedder_model_id_for("demo"), Some("demo-256"));
+        assert_eq!(embedder_model_id_for("none"), None);
+        assert_eq!(embedder_model_id_for(""), None);
     }
 
     #[test]

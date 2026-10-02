@@ -22,6 +22,26 @@ use neural_sgdb::SgdbError;
 /// distinguir eras com a MESMA dim (veredito `mixed_models`).
 pub const MODEL_ID: &str = "local-hash-384";
 
+/// Modelo multilíngue recomendado para via B (in-process, ADR-0007):
+/// `paraphrase-multilingual-MiniLM-L12-v2` (384-dim). Cobre português + código
+/// + JSON máquina→máquina, com a MESMA dim do MiniLM-L6 (era 384).
+pub const MULTILINGUAL_MODEL_ID: &str = "paraphrase-multilingual-MiniLM-L12-v2-384";
+/// Dimensão do vetor do modelo multilíngue (384).
+pub const MULTILINGUAL_DIM: usize = 384;
+
+/// Rótulos de embedder de host que o MCP aceita e o `model_id` da era que
+/// cada um declara (ADR-0007 — quem fornece usa o MESMO modelo dos dois lados).
+/// `demo` = trigram (NÃO semântico); `candle`/`multilingual`/`onnx`/`local` =
+/// o modelo multilíngue acima (via B). `None` = sem model_id a declarar.
+pub fn model_id_for(label: &str) -> Option<&'static str> {
+    match label {
+        "" | "none" => None,
+        "demo" => Some("demo-256"),
+        "candle" | "multilingual" | "onnx" | "local" => Some(MULTILINGUAL_MODEL_ID),
+        _ => None,
+    }
+}
+
 /// Embedder local determinístico — prova o contrato same-model (write e query
 /// com o MESMO `LocalEmbedder` e mesma `dim`).
 ///
@@ -30,17 +50,26 @@ pub const MODEL_ID: &str = "local-hash-384";
 /// `backfill_helper.rs` sem rede/HTTP. Trocar para candle é só trocar o
 /// interior de `embed` (feature `candle`), a assinatura permanece.
 ///
-/// ## ONNX / modelo real (P2.1)
+/// ## ONNX / modelo real (via B — in-process, P2.1)
 ///
 /// O caminho para semântica de verdade, mantendo o core zero-dep (ADR-0001):
-/// 1. `--features candle` já liga o esqueleto `try_candle_embed` abaixo;
-/// 2. coloque `Modelos`: `./models/minilm/model.safetensors` + `tokenizer.json`
-///    (all-MiniLM-L6-v2, 384-dim) — o mesmo diretório que o README usa;
-/// 3. troque `try_candle_embed` por: tokenizer → forward → mean-pooling →
-///    L2-normalize; mantenha `model_id` estável (ex.: `"all-MiniLM-L6-v2-384"`)
-///    e a MESMA dim na escrita e na query.
-/// Alternativa sem candle: `examples/embedder_http` fala HTTP com um servidor
-/// local (ollama/llama.cpp) que já roda ONNX — mesma seam, zero dep.
+/// 1. `--features candle` liga o esqueleto `try_candle_embed` abaixo
+///    (candle-core/candle-nn/tokenizers — já no cache offline);
+/// 2. coloque o modelo em `./models/multilingual/`:
+///    `model.safetensors` + `tokenizer.json` de
+///    `paraphrase-multilingual-MiniLM-L12-v2` (ONNX/transformers, 384-dim);
+///    declare `NEURAL_SGDB_EMBEDDER=multilingual` (ou `candle`/`onnx`/`local`);
+/// 3. `try_candle_embed` faz: tokenizer → forward → mean-pooling →
+///    L2-normalize → `Vec<f32>` 384-dim. `model_id` da era =
+///    [`MULTILINGUAL_MODEL_ID`] (o `model_id_for` mapeia os rótulos).
+///
+/// **Dor conhecida no Windows:** a árvore de deps do candle puxa `getrandom`,
+/// cujo build chama `dlltool.exe` — precisa de binutils (mingw) instalado.
+/// Sem isso, o build falha AQUI no `--features candle` (verificado). Alternativas:
+/// Linux/macOS (sem dlltool), ou via C (`examples/embedder_http` → ollama/
+/// llama.cpp, zero dep Rust), ou via A (caller `embedding=` de um modelo que o
+/// host já tem). A queda final é o hash/Lexical (honesto, ADR-0008).
+///
 /// O core NUNCA linka runtime de inferência; quem fornece usa o MESMO modelo
 /// dos dois lados (o `recall` é LOUD em dim mismatch, S1).
 pub struct LocalEmbedder {
@@ -160,5 +189,23 @@ mod tests {
         assert!(LocalEmbedder::new(0).is_err());
         assert!(LocalEmbedder::new(4097).is_err());
         assert!(LocalEmbedder::new(4096).is_ok());
+    }
+
+    #[test]
+    fn multilingual_contract_model_id_and_dim() {
+        // via B: rótulos do host → model_id da era (MDM1 v7), todos 384-dim.
+        assert_eq!(MULTILINGUAL_DIM, 384);
+        assert_eq!(MULTILINGUAL_MODEL_ID, "paraphrase-multilingual-MiniLM-L12-v2-384");
+        for label in ["candle", "multilingual", "onnx", "local"] {
+            assert_eq!(model_id_for(label), Some(MULTILINGUAL_MODEL_ID), "{label}");
+        }
+        assert_eq!(model_id_for("demo"), Some("demo-256"));
+        assert_eq!(model_id_for("none"), None);
+        assert_eq!(model_id_for(""), None);
+        // O stub determinístico (fallback sem rede) mantém a MESMA dim 384 —
+        // a era não muda se o modelo multilíngue não estiver baixado.
+        let e = LocalEmbedder::default_384();
+        assert_eq!(e.dim(), 384);
+        assert_eq!(e.model_id(), "local-hash-384");
     }
 }

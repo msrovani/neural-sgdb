@@ -36,7 +36,7 @@ filesystem, no external runtime.
 
 ## Status
 
-**v1.3.1** — substrate **agêntico** (MCP 5 tools contract **1.3.1**, doutrina,
+**v1.3.2** — substrate **agêntico** (MCP 5 tools contract **1.3.2**, doutrina,
 hits tipados, TTL/GC, timeline, ANN) + **ADC-lite** + telepatia **2-DB** +
 **host harvest** + **ADR-0010 harness** (`commit_run` / `deprecate_run` /
 **`promote_run`** — fork/merge de memória por scope run, `mom/anti-pattern`) +
@@ -45,7 +45,7 @@ derivado** (`index_fingerprint`, ADR-0011) + **recall adaptativo** (ADR-0012) +
 **`ScopeDims` autoritativo** (ADR-0013), **ledger de negativos** (ADR-0014),
 **batch write + dedup guard** (`memories[]`, `if_exists`) e **write path
 agêntico** (v1.2.0). Extensão de browser / Store **estacionadas**. Crate em
-`Cargo.toml`: **1.3.1**. 
+`Cargo.toml`: **1.3.2**. 
 
 - `cargo test --lib` on host: **411** (p2p **427**, no_std **348**)
 - hot test MCP: **150/0**; `agent_protocol`: **25/0**
@@ -108,7 +108,7 @@ agêntico** (v1.2.0). Extensão de browser / Store **estacionadas**. Crate em
    + **seams de conteúdo** (`Embedder` trait, `entities`, `content_type` —
    quem fornece declara) + **security hardening 11→1** (`engine.put_inner` choke central, `validate_written`, `WasmStorage` bounds, `MCP -32601`)
 - **Interfaces**: MCP server with `memory://{layer}/{key}` + `nsgdb://doctrine`
-  + `nsgdb://session` (+ `nsgdb://contract`, v1.3.1) resources, `nextCursor`
+  + `nsgdb://session` (+ `nsgdb://contract`, v1.3.2) resources, `nextCursor`
   pagination, **5 tools** (`remember`/`recall`/`health`/`curate`/`decide`;
   40 legacy names as `tools/call` aliases — `stable`/`deprecated` em
   `contract.json`); `cargo run --release --example stress` (100k-op stress) and
@@ -205,7 +205,7 @@ still work on `tools/call` (`stable`/`deprecated` em `contract.json`).
 Memories as **resources** (`memory://{layer}/{key}` + `nsgdb://doctrine` +
 `nsgdb://session` + **`nsgdb://contract`**). Default `recall`/`rag_context`:
 **lexical** without a vector (ADR-0008); **hybrid** with a real host embedder;
-**semantic** with a caller `embedding` (v1.3.1). `remember(text=)` without a
+**semantic** with a caller `embedding` (v1.3.2). `remember(text=)` without a
 vector writes **L3**. Semantic/hybrid and L4 need `embedding=` or a host
 embedder. Typed hits: `format=json`. `health(view=era)` is era_report;
 `view=tensions` lists conflicts / superseded / unseen scopes / `scope_issues`;
@@ -213,7 +213,7 @@ embedder. Typed hits: `format=json`. `health(view=era)` is era_report;
 
 Host adapters for claw-like apps (Hermes provider, OpenClaw skeleton, shared
 MCP client) live in [`connectors/`](connectors/README.md) — **outside** crate
-SemVer; `crates/nsgdb-embed` (LocalEmbedder 384-dim, `cargo run --manifest-path crates/nsgdb-embed/Cargo.toml --example demo`) and `crates/nsgdb-wasm` (`Storage` stub) are host crates — core SemVer = `Cargo.toml` (**1.3.1**).
+SemVer; `crates/nsgdb-embed` (LocalEmbedder 384-dim, `cargo run --manifest-path crates/nsgdb-embed/Cargo.toml --example demo`) and `crates/nsgdb-wasm` (`Storage` stub) are host crates — core SemVer = `Cargo.toml` (**1.3.2**).
 Protocolo do agente: `examples/agent_protocol.rs` (25 checks), `two_ai_protocol.rs` (16), `memory_arena_eval.rs`. Fim de tarefa: `curate(op=commit_run)` (ADR-0010).
 
 ### Cursor (Windows)
