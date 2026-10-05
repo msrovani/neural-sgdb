@@ -932,6 +932,23 @@ fn main() {
     let ec = r["result"]["structuredContent"]["error"]["code"].clone();
     rep.check("erro do core carrega codigo machine-readable (error.code)",
         ec == "not_found" || ec == "key_rejected", ec.to_string());
+    // v1.4.4 (ISSUE 22): `explain(full=true)` = proveniencia COMPLETA numa
+    // chamada. As pecas (linhagem, meta, clock, chain) ja existiam separadas.
+    let r = srv.rpc("tools/call", json!({"name": "curate", "arguments": {
+        "op": "explain", "key": "hot-op/cpu", "full": true}}));
+    let sc = r["result"]["structuredContent"].clone();
+    rep.check("explain(full=true) junta provenance: authority + clock + meta",
+        sc["authority"] == 255 && sc["clock"].is_array() && sc["meta"].is_object(),
+        sc.to_string());
+    rep.check("explain(full=true) traz os elos de auditoria da memoria",
+        sc["audit_refs"].is_array(), sc["audit_refs"].to_string());
+    // e o path antigo segue intacto (sem `full`, sem os campos novos)
+    let r = srv.rpc("tools/call", json!({"name": "curate", "arguments": {
+        "op": "explain", "key": "hot-op/cpu"}}));
+    let lean = r["result"]["structuredContent"].clone();
+    rep.check("explain sem full mantem o payload original",
+        lean["version_id"].is_string() && lean.get("clock").is_none(),
+        lean.to_string());
 
     // ---------- fase 7b: v1.1.28 — linguagem de máquina (ADR-0017) ----------
     let t = Instant::now();

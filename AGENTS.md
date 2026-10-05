@@ -6,7 +6,7 @@ repo. **Read `codemap.md` (atlas), `docs/api.md` (contract) and
 Storage, Cognitive API; typed hits from v1.1.6; current crate = `Cargo.toml`) and
 `docs/implementation-status.md` before editing code.**
 
-**Shipped crate is 1.4.4 (agentic MCP contract 1.4.4, hot test 170/0):** Vocabulário ÚNICO
+**Shipped crate is 1.4.4 (agentic MCP contract 1.4.4, hot test 173/0):** Vocabulário ÚNICO
 prosa/JSON (ADR-0017: `{:?}` fora do wire; tool `decide` 𝒥(S,𝒬) = 5º tool;
 `recall_candidates` sinais decompostos; validate tipado; k=0 erro). `Hit.type_scores`
 = **ADR-0016** (episódico/semântico/procedural/preferência sobrepostos,
@@ -88,6 +88,28 @@ core (38 sítios migrados de uma vez) + `data.code` nos erros JSON-RPC;
 2. **`audit_for_key` perdia a trilha da memória apagada.** Filtrava por storage key
    exata; depois do purge o doc não existe, e devolvia "nenhum elo" — justo
    quando a evidência importa mais. Passa a casar pela key **crua** do host.
+
+### Complemento (mesma 1.4.4) — `explain full` + as 3 medições do Lote F
+
+- **`curate op=explain full=true`** (ISSUE 22): `version_dag` + `audit_refs` +
+  `authority` + `clock` causal numa resposta (4 chamadas → 1). Default
+  byte-idêntico ao anterior.
+- **`examples/bench_footprint.rs` (novo)**: RSS do processo @ 1k/10k/50k docs =
+  11,3 / 60,4 / 278,5 MB — **custo por doc converge em ~5,7 KB** (a 256-dim), ou
+  seja total linear e gargalo no vetor em RAM. RSS sem dep nova
+  (`/proc/self/statm` / `GetProcessMemoryInfo`); `BENCH_N` corta o topo.
+- **recall@5 pós-RaBitQ (medido)**: ADC-lite 35–40% a ov=1 mas **89–93% a
+  ov=16** — o recall é majoritariamente *pool de candidatos*, não quantização
+  (é o que o `recall_adaptive` paga caro). RaBitQ 0–6% a ~1343 µs/query
+  (**50×** o ADC-lite): resultado negativo já pinado em `src/rabitq.rs`, agora
+  com a escala do custo. `src/rabitq.rs` segue `pub mod` mas com **zero
+  call-sites no core**.
+- **open IDX2-vs-rebuild (medido)**: o fast-mount é **também linear** (≈3,7
+  µs/doc vs ≈10 do rebuild) — o 1,2x→1,6x é constante menor, não tempo
+  constante. O gap de "open ~1,6 s @ 100k" **segue aberto**.
+- **Prosa corrigida (lição v1.1.23)**: o BENCHMARKS.md ainda tratava o teto do
+  snapshot IDX1 como bug futuro — era IDX2 desde o v1.2.0 (c); `docs/MCP.md`
+  dizia 38 aliases quando a tabela pinada tem 40.
 
 ### Lote C — seam de hash da audit chain
 

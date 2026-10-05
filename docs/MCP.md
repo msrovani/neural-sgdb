@@ -35,9 +35,13 @@ Dispatch: `remember(user+response)` → episódico L2; `remember(text=)` sem vet
 L3; `recall(entities|at|rag=true)` → 1-hop / temporal / rag; `health(view=era|validate|tensions)`;
 `curate(op=explain|reinforce|decay|consolidate|audit_checkpoint|audit_verify|audit_resolve|audit_trail|forget_purge|export_delta|set_authority|rollback_to|commit_run|deprecate_run|…)`
 (v1.1.10: metadado cognitivo; **v1.1.19+**: harness ADR-0010 `commit_run`/`deprecate_run`;
-`audit_verify` expõe `structuredContent` com o `AuditReport`).
+`audit_verify` expõe `structuredContent` com o `AuditReport`;
+**v1.4.4**: `op=explain` aceita `full=true`, que compõe numa resposta só a
+proveniência completa — `authority` (MDM1 v8), `clock` causal, `audit_refs`
+(elos da chain que tocam a memória, via `audit_for_key`) e o `version_dag`
+(da `VectorClock`) — no lugar de 4 chamadas separadas).
 
-Aliases (ainda aceitos no call): **38** nomes — a lista vive em `ALIAS_SURFACE`
+Aliases (ainda aceitos no call): **40** nomes — a lista vive em `ALIAS_SURFACE`
 (`examples/mcp_server.rs`) e e pinada por teste, em vez de prosa (a contagem
 "23" era do rework v1.1.8 e envelheceu com as ops cognitivas de v1.1.10 e o
 harness de v1.1.19):

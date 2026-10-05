@@ -66,6 +66,39 @@ gap — e, ao fazê-lo, o hot test achou **dois bugs reais** de persistência.
 - Gate `no_std` quebrado de novo (recorrência v1.1.15/v1.2.1): teste novo com
   `std::fs` precisa de `#[cfg(all(test, feature = "file-storage"))]`.
 
+### Complemento pós-release (mesma 1.4.4) — `explain full` + Lote F medido
+
+- **`curate op=explain` aceita `full=true`** (ISSUE 22): compõe numa resposta
+  só o que já existia em quatro lugares — `version_dag` (a cadeia de versões via
+  `VectorClock::entries()`), `audit_refs` (os elos da chain que tocam a memória,
+  via `audit_for_key`), `authority` (MDM1 v8) e o `clock` causal. Sem `full`,
+  o comportamento é byte-idêntico ao anterior (default = aditivo, sem
+  quebrar consumidor). O gain real é de LATÊNCIA: uma pergunta que exigia 4
+  `curate` calls agora custa 1.
+- **Lote F — as três medições que faltavam, agora com número:**
+  - `examples/bench_footprint.rs` (novo, `BENCH_N`): curva de RSS do processo
+    @ 1k/10k/50k docs = 11,3 / 60,4 / 278,5 MB. O **custo por doc converge**
+    em ~5,7 KB (a 256-dim), então o total é linear e o gargalo é o vetor em
+    RAM, não o índice derivado. RSS lido sem dep nova (`/proc/self/statm` /
+    `GetProcessMemoryInfo`).
+  - **recall@5 pós-RaBitQ**: ADC-lite entrega 35–40% a 1× de oversample mas
+    **89–93% a 16×** — o recall é majoritariamente problema de *pool de
+    candidatos*, não de quantização (é o que o `recall_adaptive` paga caro para
+    resolver). RaBitQ confirma 0–6% de overlap a ~1343 µs/query (**50×** a
+    latência do ADC-lite): resultado negativo já pinado em `src/rabitq.rs`,
+    agora com a escala do custo medida.
+  - **open IDX2-vs-rebuild**: o fast-mount é **também linear** (≈3,7 µs/doc
+    contra ≈10 µs/doc do rebuild). O speedup 1,2x→1,6x é constante menor, não
+    tempo constante — o gap de "open ~1,6 s @ 100k" **continua aberto** e só o
+    snapshot de ART/BQ + delta o fecharia.
+
+### Documentação corrigida (prosa que divergia do código)
+
+- O BENCHMARKS.md ainda dizia que o teto do snapshot IDX1 (~7k writes) era um
+  bug conhecido e que a paginação era "o próximo passo" — **já era IDX2 desde o
+  v1.2.0 (c)**. Bullet corrigido; o bench e o `persist_index_snapshot` se
+  anunciavam como IDX1 e escrevem IDX2.
+
 ### Infra
 
 - CI ganha três jobs: `wire_fuzz` (o fuzz existia no src e nunca rodava no CI),

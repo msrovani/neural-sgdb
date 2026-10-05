@@ -958,7 +958,7 @@ impl AiosDatabaseEngine {
         }
     }
 
-    /// Persiste o snapshot ATUAL em `sys/idx/snapshot` (IDX1). Chamado depois
+    /// Persiste o snapshot ATUAL em `sys/idx/snapshot`. Chamado depois
     /// de um rebuild/put/checkout que deixou o índice canônico. `now` entra no
     /// blob para o host medir staleness (não é usado para validação — o
     /// fingerprint é).

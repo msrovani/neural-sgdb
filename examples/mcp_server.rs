@@ -847,7 +847,7 @@ fn mcp_listed_tools() -> Value {
          }},
          "annotations":{"readOnlyHint":true}},
         {"name":"curate",
-         "description":"Mutacao pontual / grafo L6 + metadado cognitivo. op= explain|reinforce|feedback|forget|forget_purge|expire_old|decay|consolidate|diary|profile|associate|related_to|contradicts|supersede|conflicts|resolve_conflict|merge_memories|audit_checkpoint|audit_verify|audit_resolve|audit_trail|rollback_to|set_ttl|expire_ttl|set_event|close_event|timeline|gc|recall_ann|commit_run|deprecate_run|promote_run|export_delta|set_authority. ADR-0010: commit_run/deprecate_run usam scope_run (+ facts/anti_patterns). promote_run: merge do sandbox run no escopo base (keys do run com prefixo <run>/; estrategias fail|ours|theirs via merge_strategy; base_dims via base_user/base_agent/base_app). v1.4.4: forget_purge = forget COMPURGADO (tombstone→delete→elo FORGET, nesta ordem); audit_resolve deixa a decisao HITL na chain; audit_trail LE a trilha (key?/since?/limit?); export_delta = pull direcionado do anti-entropy (node/since/max); set_authority marca a memoria como HITL (0..=255, MDM1 v8). Use uma storage key completa md/L4/.... Nao hoarde: so depois de evidencia.",
+         "description":"Mutacao pontual / grafo L6 + metadado cognitivo. op= explain|reinforce|feedback|forget|forget_purge|expire_old|decay|consolidate|diary|profile|associate|related_to|contradicts|supersede|conflicts|resolve_conflict|merge_memories|audit_checkpoint|audit_verify|audit_resolve|audit_trail|rollback_to|set_ttl|expire_ttl|set_event|close_event|timeline|gc|recall_ann|commit_run|deprecate_run|promote_run|export_delta|set_authority. ADR-0010: commit_run/deprecate_run usam scope_run (+ facts/anti_patterns). promote_run: merge do sandbox run no escopo base (keys do run com prefixo <run>/; estrategias fail|ours|theirs via merge_strategy; base_dims via base_user/base_agent/base_app). v1.4.4: explain(full=true) junta a proveniencia completa (authority/clock/audit_refs); forget_purge = forget COMPURGADO (tombstone→delete→elo FORGET, nesta ordem); audit_resolve deixa a decisao HITL na chain; audit_trail LE a trilha (key?/since?/limit?); export_delta = pull direcionado do anti-entropy (node/since/max); set_authority marca a memoria como HITL (0..=255, MDM1 v8). Use uma storage key completa md/L4/.... Nao hoarde: so depois de evidencia.",
          "inputSchema":{"type":"object","properties":{
            "op":{"type":"string","enum":["explain","reinforce","feedback","forget","forget_purge","expire_old","decay","consolidate","diary","profile","associate","related_to","contradicts","supersede","conflicts","resolve_conflict","merge_memories","audit_checkpoint","audit_verify","audit_resolve","audit_trail","rollback_to","set_ttl","expire_ttl","set_event","close_event","timeline","gc","recall_ann","commit_run","deprecate_run","promote_run","export_delta","set_authority"]},
            "key":{"type":"string"},
@@ -858,6 +858,7 @@ fn mcp_listed_tools() -> Value {
            "node_id":{"type":"integer"},
            "limit":{"type":"integer"},
            "open_only":{"type":"boolean","description":"v1.4.4 (op=conflicts): so conflitos ABERTOS (o host nao filtra mais em memoria)"},
+           "full":{"type":"boolean","description":"v1.4.4 (op=explain):proveniencia COMPLETA numa chamada (authority, clock, audit_refs, meta) p/ o consumidor justificar a resposta"},
            "reason":{"type":"string","description":"v1.4.4: motivo do forget_purge / audit_resolve (o digest do elo FORGET/RESOLVE e o hash deste texto)"},
            "since":{"type":"integer","description":"v1.4.4 (op=audit_trail|export_delta): cursor — elo/memoria a partir daqui"},
            "node":{"type":"integer","description":"v1.4.4 (op=export_delta): no do CRDT cujo contador filtra o delta"},
@@ -2390,17 +2391,64 @@ fn main() {
                             send(&error_response(&id, -32602, "parametro 'key' obrigatorio"));
                             continue;
                         }
+                        // v1.4.4 (ISSUE 22): `full=true` junta a PROVENIENCIA
+                        // COMPLETA numa chamada — o consumidor IA precisa
+                        // justificar a resposta, e as pecas (linhagem, meta,
+                        // clock, chain) ja existiam separadas. Nao e op novo:
+                        // e o mesmo verbo com mais evidencia.
+                        let full = args["full"].as_bool().unwrap_or(false);
                         match db.explain(key) {
-                            Ok(ex) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":serde_json::to_string_pretty(&json!({
+                            Ok(ex) => {
+                                let mut doc = json!({
                                     "key": ex.key, "layer": layer_label(ex.layer),
                                     "state": state_label(ex.state),
                                     "memory_id": ex.memory_id, "version_id": ex.version_id,
                                     "source": ex.source, "confidence": ex.confidence,
                                     "importance": ex.importance, "created_tick": ex.created_tick,
                                     "last_reinforced": ex.last_reinforced, "parents": ex.parents,
-                                    "validity": ex.validity, "children": ex.children})).unwrap_or_default()}],
-                                "isError":false}})),
+                                    "validity": ex.validity, "children": ex.children});
+                                if full {
+                                    let authority = db.authority_of(key).unwrap_or(0);
+                                    let clock = db
+                                        .export_record(key)
+                                        .ok()
+                                        .flatten()
+                                        .map(|r| {
+                                            json!(r.doc.clock.entries()
+                                                .into_iter()
+                                                .map(|(n, c)| json!({"node": n, "counter": c}))
+                                                .collect::<Vec<_>>())
+                                        })
+                                        .unwrap_or(json!([]));
+                                    let refs: Vec<Value> = db
+                                        .audit_for_key(key)
+                                        .unwrap_or_default()
+                                        .iter()
+                                        .map(|e| json!({"seq": e.seq, "op": e.op, "ts": e.ts}))
+                                        .collect();
+                                    let m = db.meta(key).ok().flatten();
+                                    let meta_view = match &m {
+                                        Some(mm) => json!({
+                                            "scope": mm.scope,
+                                            "entities": mm.entities,
+                                            "content_type": mm.content_type,
+                                            "model_id": mm.model_id,
+                                            "scope_dims": mm.scope_dims.label(),
+                                            "authority": mm.authority,
+                                        }),
+                                        None => json!(null),
+                                    };
+                                    let obj = doc.as_object_mut().expect("objeto json");
+                                    obj.insert("authority".into(), json!(authority));
+                                    obj.insert("clock".into(), clock);
+                                    obj.insert("audit_refs".into(), json!(refs));
+                                    obj.insert("meta".into(), meta_view);
+                                }
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                    "content":[{"type":"text","text":serde_json::to_string_pretty(&doc).unwrap_or_default()}],
+                                    "isError":false,
+                                    "structuredContent": doc}}))
+                            }
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true,"structuredContent":mcp_error_data(&e)}})),
                         }

@@ -167,7 +167,7 @@ agora medido pelo core em vez de estimado.
 Gap conhecido, sem acao agendada: `stress` mostra ~60 ms por `open` mesmo com
 101 docs vivos, porque o volume append-only domina o custo quando ha muito churn.
 
-## Fast-mount IDX1 — open() vs open_with_snapshot() (v1.1.29)
+## Fast-mount IDX2 — open() vs open_with_snapshot() (v1.1.29; IDX2 no v1.2.0)
 
 `cargo run --release --example bench_index_snapshot`. Mesmo corpus do agente
 (`remember_semantic` → L4 no BQ + companion L2), embeddings 64-dim LCG. Três
@@ -177,11 +177,20 @@ fp(rebuild) == fp(coleta)` e sai 1 se algum divergir.
 
 | N writes | docs | `open` legado | fast-mount | speedup | persist idx |
 |---|---|---|---|---|---|
-| 400 | 800 | 15–17 ms | 12–20 ms | ~1.2x | 1 ms |
-| 1 600 | 3 200 | 43–47 ms | 28–31 ms | ~1.5x | 4–5 ms |
-| 4 000 | 8 000 | 102–109 ms | 65–75 ms | ~1.5x | 12–14 ms |
+| 400 | 800 | 15 ms | 13 ms | 1.2x | 0 ms |
+| 1 600 | 3 200 | 45 ms | 33 ms | 1.4x | 4 ms |
+| 4 000 | 8 000 | 118 ms | 74 ms | 1.6x | 15 ms |
 
-(3 rodadas; intervalos = variação observada.)
+(rodada 2026-10-05; a de 2026-08-13 com 3 runs deu 1.2/1.5/1.5x —
+intervalos = variação observada.)
+
+**Achado desta rodada: o fast-mount TAMBÉM é linear.** O ganho aparente
+cresce (1.2x → 1.6x) não porque o rebuild deixou de ser linear, mas porque a
+constante do mount (≈3,7 µs/doc) é menor que a do rebuild (≈10 µs/doc). Logo
+o gap documentado de "open ~1,6 s @ 100k docs" **continua aberto**: trocar o
+rebuild pelo snapshot não compra tempo constante, só constante menor. O que
+compraria é o snapshot de ART/BQ + delta (ADR-0009 §3, não implementado) — ou
+o `TKCK` fast-mount, que é separado e não aparece nesta tabela.
 
 Leitura honesta:
 
@@ -193,10 +202,12 @@ Leitura honesta:
   mount é proporcional ao deserialize do snapshot.
 - O custo de `persist_index_snapshot` é ~1/7 do open legado no mesmo N (14 ms
   @ 8k docs) — pago uma vez no checkpoint, recuperado no próximo open.
-- **Teto do V1**: o snapshot é UM valor no storage (`MAX_VLEN` = 1 MiB);
-  ~7k writes (14k docs, dim 64) encostam no teto e a escrita falha com
-  `Storage("limits")`. Paginação do snapshot em múltiplos valores é o
-  próximo passo quando houver demanda medida.
+- **Teto do V1 (RESOLVIDO no v1.2.0 (c))**: o snapshot é UM valor no storage
+  (`MAX_VLEN` = 1 MiB) e ~7k writes encostavam no teto. Hoje a escrita é
+  **IDX2**: header de 32 B em `sys/idx/snapshot` + chunks de 256 KiB em
+  `sys/idx/snapshot/p/<NNNN>`, teto novo 16 MiB. O mount continua aceitando o
+  blob IDX1 legado (detectado pelo magic); chunk faltando/truncado → rebuild,
+  nunca blob parcial.
 - O mount é opt-in (`NEURAL_SGDB_INDEX_SNAPSHOT=auto|always` no MCP host,
   `open_with_snapshot` no core): o `open()` default NUNCA mudou.
 
@@ -325,8 +336,25 @@ design: índices derivados sobre corpus pequeno, payload fora da RAM
 (L0/L1 até checkpoint), zero deps. **Contexto necessário**: o 6% é
 fatia do processamento da sessão (não um core dedicado) e o workload não
 é reproduzível byte-a-byte — trate como cota de ordem de grandeza, não
-como claim comparável. Curva de memória vs corpus (RSS @ 1k/10k/50k docs)
-ainda não medida; ver `docs/consumer-report-triage.md` lote de escala.
+como claim comparável.
+
+### Curva medida — RSS vs corpus (v1.4.4, Lote F)
+
+`BENCH_N=50000 cargo run --release --example bench_footprint` — InMemory,
+embedding 256-dim, `remember_semantic` (L4 + companion L2). RSS lido sem dep
+nova (`/proc/self/statm` no Linux, `GetProcessMemoryInfo` no Windows).
+
+| corpus | RSS absoluto | delta vs base | custo/doc | write |
+|---|---|---|---|---|
+| 1 000 docs | 11,3 MB | 6,2 MB | 6 488 B/doc | 13,3 ms (13,3 µs/doc) |
+| 10 000 docs | 60,4 MB | 55,3 MB | 5 797 B/doc | 122,6 ms (12,3 µs/doc) |
+| 50 000 docs | 278,5 MB | 273,3 MB | 5 732 B/doc | 758,9 ms (15,2 µs/doc) |
+
+Leitura: o **custo por doc converge** (6,5 → 5,7 KB) — o total é linear e a
+constante é ~5,7 KB/doc a 256-dim (1 KiB do payload + companion + MDM1 + BQ).
+Ou seja: **50k docs ≈ 280 MB de processo**, e o gargalo é o vetor em RAM, não
+o índice derivado. Para o custo de ARQUIVO por corpus (que é o que o embedded
+paga no disco), ver o `bench_index_snapshot` acima.
 
 ## Passo 0+1 — tail decomposition + TickvFile buffered (2026-09-25)
 
@@ -362,3 +390,40 @@ the O(N) delete finding — reverse clock index is the next fix — and the
 10-term lexical scan over a small corpus, respectively.) The MCP server
 can opt in per deployment; default `open()` unchanged (minimal crash
 window preserved).
+
+## recall@5 pós-RaBitQ — o degrau seguinte foi MEDIDO e rejeitado (v1.4.4, Lote F)
+
+`cargo run --release --example bench_rabitq_ab` — A/B no mesmo corpus e o
+**mesmo ground truth** (top-5 por cosseno FP32 exato): ADC-lite dual-path
+(`top_k_f32` ∪ `top_k_f32_minus_mean`) vs RaBitQ (`src/rabitq.rs`), 1024
+vetores × 1024-dim, 40 queries.
+
+| corpus | variante | ov=1 | ov=4 | ov=16 | µs/query |
+|---|---|---|---|---|---|
+| clusters densos | ADC-lite | 35% | 57% | **93%** | 27–50 |
+| clusters densos | RaBitQ (sem proj) | 0% | 0% | 0% | ~1343 |
+| clusters densos | RaBitQ (com proj) | 0% | 0% | 0% | ~1343 |
+| espalhado | ADC-lite | 40% | 65% | **89%** | 28–53 |
+| espalhado | RaBitQ (sem proj) | 0% | 1% | 6% | ~1343 |
+| espalhado | RaBitQ (com proj) | 0% | 1% | 6% | ~1343 |
+
+Duas leituras, e a segunda é a que importa:
+
+1. **O oversample é a alavanca, não o quantizador.** O ADC-lite a 1× entrega
+   35–40% — o número já registrado desde o v1.1.17 — mas a 16× entrega
+   **89–93%**, ou seja o recall@5 é majoritariamente um problema de *pool de
+   candidatos*, não de quantização. `recall_adaptive` (v1.1.22) existe
+   exatamente para pagar oversample só onde a fronteira é ambígua.
+2. **RaBitQ não ranqueia sem a rotação aleatória do paper.** 0–6% de overlap
+   de top-5 a ~1343 µs/query — **50× a latência do ADC-lite para recall
+   pior**. Isto não é um achado novo: `src/rabitq.rs` já pinava esse resultado
+   negativo num teste (overlap 0–2/5) e a adoção foi rejeitada no critério de
+   custo antes de investir na rotação (Householder por era). O que a medição de
+   hoje acrescenta é a escala do custo (50×) e a confirmação de que a correção
+   de bias do snap (§3.2 do paper) não muda nada sem a rotação — as duas
+   variantes (`com proj`/`sem proj`) são idênticas.
+
+`src/rabitq.rs` segue `pub mod` mas **não é usado por nenhum caminho do core**
+(grep confirma zero call-sites fora do próprio módulo e do bench). Candidato
+natural a remoção, ou a reimplementação com a rotação — mas só com demanda
+medida, como a casa faz.

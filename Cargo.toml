@@ -118,6 +118,14 @@ required-features = ["file-storage"]
 name = "wasm_backend"
 required-features = ["std"]
 
+# v1.4.4 (Lote F): curva de footprint RSS x corpus. SEMPRE com
+# required-features = ["std"] — o auto-discovery de examples constrói isto no
+# `cargo test --no-default-features`, e sem o gate o `std::fs` do RSS quebra o
+# gate no_std (recorrencia do v1.1.15).
+[[example]]
+name = "bench_footprint"
+required-features = ["std"]
+
 # AI-user simulation (audit) — loop de agente real: latência por turno
 # (remember+recall+rag), qualidade de recall (exato vs paráfrase), isolamento
 # de scope. Padrão de instrumentação para re-medir pós-mudanças.

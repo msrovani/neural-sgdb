@@ -1,5 +1,5 @@
-//! Bench do fast-mount IDX1 (v1.1.29, ADR-0009 §3) — `open()` legado vs
-//! `open_with_snapshot()`.
+//! Bench do fast-mount IDX2 (v1.2.0 (c); IDX1 legado aceito no mount) —
+//! `open()` legado vs `open_with_snapshot()`. ADR-0009 §3.
 //!
 //! Mede, por N writes (docs = 2×N: L4 + companion L2), três fases:
 //! 1. build: escreve N docs + persist_index_snapshot (com o custo do IO extra);
@@ -51,7 +51,7 @@ fn build(path: &std::path::Path, n_writes: usize) {
 }
 
 fn main() {
-    println!("=== Bench open() vs open_with_snapshot() (IDX1, ADR-0009 §3) ===\n");
+    println!("=== Bench open() vs open_with_snapshot() (IDX2, ADR-0009 §3) ===\n");
     println!(
         "{:>10} {:>12} {:>14} {:>14} {:>10} {:>12}",
         "N writes", "docs", "open legado", "fast-mount", "speedup", "persist idx"
