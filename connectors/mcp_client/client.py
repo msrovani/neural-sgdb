@@ -13,7 +13,14 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 PROTOCOL_VERSION = "2025-11-25"
-EXPECTED_TOOLS = frozenset({"remember", "recall", "health", "curate"})
+# O 5o tool (`decide`) chegou no 1.4.3 e este host ficou no contrato
+# anterior — `assert_contract` recusava o servidor PROPRIO. Sem gate no CI
+# para os testes do conector, essa divergencia passou despercebida.
+EXPECTED_TOOLS = frozenset({"remember", "recall", "health", "curate", "decide"})
+# Mesma regra do crate: bump de contrato = pin atualizado no mesmo passo.
+# Sem este pin, uma tool nova aparecia como "sobrou" e o `frozenset` acusava
+# uma mudanca que nao era erro — o diagnostico errado, que e pior que nenhum.
+EXPECTED_CONTRACT = "1.4.5"
 
 
 class McpError(RuntimeError):
@@ -203,6 +210,13 @@ class McpClient:
             raise McpError(
                 f"contrato MCP incompatível: esperado {sorted(EXPECTED_TOOLS)}, "
                 f"recebido {sorted(name for name in names if isinstance(name, str))}"
+            )
+        version = str(self.server_info.get("mcp_contract_version", ""))
+        if version != EXPECTED_CONTRACT:
+            raise McpError(
+                f"versão de contrato MCP divergente: esperado {EXPECTED_CONTRACT}, "
+                f"recebido {version or 'ausente'}. O pin mora em EXPECTED_CONTRACT "
+                f"(connectors/mcp_client/client.py) e muda junto do bump."
             )
 
     def rpc(self, method: str, params: Mapping[str, Any]) -> Mapping[str, Any]:

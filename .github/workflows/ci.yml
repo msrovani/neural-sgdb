@@ -47,8 +47,23 @@ jobs:
       - name: build examples
         run: cargo build --release --examples
 
-      - name: MCP smoke (4 tools + structured health)
+      - name: MCP smoke (5 tools + structured health)
         run: bash scripts/mcp-smoke.sh
+
+      # v1.4.5: o conector host ficou no contrato de 4 tools desde o 1.4.3 e
+      # `assert_contract` recusava o servidor PROPRIO — sem ninguem rodar os
+      # testes dele, a divergencia ficou invisivel. Agora o gate existe.
+      # Precisa do binario ja construido acima (`build examples`).
+      - name: host connector contract tests (connectors/)
+        run: python3 -m unittest discover -s connectors/tests -v
+
+      # v1.4.5: `crates/nsgdb-embed` e `crates/nsgdb-wasm` sao Builds
+      # SEPARADOS (nao sao workspace members), entao a matriz acima nao os
+      # toca. O README os anuncia como parte da entrega, entao eles entram.
+      - name: host crates (nsgdb-embed / nsgdb-wasm)
+        run: |
+          cargo check --manifest-path crates/nsgdb-embed/Cargo.toml
+          cargo check --manifest-path crates/nsgdb-wasm/Cargo.toml
 
       - name: stress (reduced N for CI)
         run: |

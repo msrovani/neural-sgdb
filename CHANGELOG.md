@@ -21,6 +21,15 @@ rodou** e três conclusoes que o repo carregava sem numero.
   foi recriado **3 meses mais novo** do que o da sessao anterior: o CI (stable)
   ja reprovava e ninguem tinha rodado.
 
+- **O conector host estava pinado no contrato de 4 tools desde o 1.4.3**:
+  `assert_contract` recusava o servidor **proprio** (`esperado [...4 tools],
+  recebido [... decide]`) e os 4 testes de `connectors/` morriam no import
+  (`Ran 0 tests`). Nao era bug do crate — era o host parando de acompanhar o
+  contrato, invisivel porque nenhum gate rodava os testes do conector. Agora
+  `EXPECTED_TOOLS` tem as 5 tools e ha um **pin de versao**
+  (`EXPECTED_CONTRACT = 1.4.5`), que faz a proxima divergencia estourar em vez
+  de virar "tool nova = erro".
+
 - **O job de dependencia de ordem no CI NUNCA rodou.** Escrevi
   `cargo test --lib -- --shuffle` no Lote E e ele quebrava em **toda** execucao:
   `--shuffle` e instavel no libtest e exige `-Z unstable-options`, e o libtest
