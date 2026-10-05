@@ -6,7 +6,7 @@ repo. **Read `codemap.md` (atlas), `docs/api.md` (contract) and
 Storage, Cognitive API; typed hits from v1.1.6; current crate = `Cargo.toml`) and
 `docs/implementation-status.md` before editing code.**
 
-**Shipped crate is 1.4.4 (agentic MCP contract 1.4.4, hot test 173/0):** Vocabulário ÚNICO
+**Shipped crate is 1.4.5 (agentic MCP contract 1.4.5, hot test 177/0):** Vocabulário ÚNICO
 prosa/JSON (ADR-0017: `{:?}` fora do wire; tool `decide` 𝒥(S,𝒬) = 5º tool;
 `recall_candidates` sinais decompostos; validate tipado; k=0 erro). `Hit.type_scores`
 = **ADR-0016** (episódico/semântico/procedural/preferência sobrepostos,
@@ -52,6 +52,20 @@ policy. `MIGRATIONS.md` §MCP contract (1.2.1→1.3.0).
 [`docs/agent-self-program.md`](docs/agent-self-program.md) +
 [`docs/doctrine.md`](docs/doctrine.md); cold-start toda sessão; skill
 `.cursor/skills/nsgdb-full-usage/`.
+
+## Release 1.4.5 — o gate do CI estava quebrado (2026-10-05)
+
+Release de conserto, sem API nova. O achado: **o job de dependencia de ordem que
+eu adicionei no Lote E nunca rodou**. `cargo test --lib -- --shuffle` quebra em
+toda execucao — `--shuffle` e instavel no libtest, exige `-Z unstable-options`, e
+o libtest pre-compilado do toolchain nao aceita nem em nightly (nem com
+`RUSTC_BOOTSTRAP=1`). Trocado por `--test-threads=1`, que cobre a mesma classe
+(estado global vazado entre testes — o risco que o seam `set_audit_hasher`, um
+`AtomicU8`, introduziu) e roda no stable.
+
+**Licao**: um step de CI nao verificado e um gate FALSO. Nao falhava alto nem
+baixo — nao rodava. O `scripts/docs-version-gate.sh` pega esse tipo de coisa
+por execucao; o resto do gate eu tenho que rodar na mao.
 
 ## Release 1.4.4 — a lib inteira finalmente chega ao MCP (2026-10-02)
 

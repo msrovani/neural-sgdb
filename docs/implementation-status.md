@@ -1,6 +1,6 @@
 # neural-sgdb — Implementation Status
 
-> **Current snapshot (2026-10-02, v1.4.4).** Capability matrix vs the shipped
+> **Current snapshot (2026-10-05, v1.4.5).** Capability matrix vs the shipped
 > codebase. For the public contract see [`docs/api.md`](api.md); for architecture
 > narrative see [`docs/architecture/README.md`](architecture/README.md).
 > v1.4.3 = DX release (P0.1 semantic-on with a real embedder; P0.3 structured
@@ -154,7 +154,7 @@ triage batch (v1.2.2): put_operational/forget_purge/audit_resolve/index_key
 index_key`, `curate forget_purge|audit_resolve|audit_trail|export_delta|
 set_authority`, `error.code`), + `explain full=true`, seam `Storage::capacity_*`,
 seam de hash da audit chain (SHA-256 `no_std`, wire AUD1 intocado).
-MCP contract **1.4.4**.
+MCP contract **1.4.5**.
 
 ### Host connectors
 `connectors/` is host-side (not crate SemVer). Hermes `MemoryProvider` is

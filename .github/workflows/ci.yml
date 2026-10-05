@@ -65,11 +65,16 @@ jobs:
       - name: wire_fuzz (property test dos 9 tipos wire)
         run: cargo test --release --lib wire_fuzz -- --nocapture
 
-      # v1.4.4 (ISSUE 17): a suíte passa por acidente dependente da ORDEM. Rodar
-      # embaralhado expoe a dependencia — `multi_agent` usa o mesmo backend e
-      # qualquer estado vazado aparece como falha, não como Passage.
-      - name: lib tests (shuffled — expoe dependencia de ordem)
-        run: cargo test --lib -- --shuffle
+      # NOTA (achado rodando o gate, v1.4.5): a primeira versao deste step era
+      # `cargo test --lib -- --shuffle`, e NUNCA rodou — `--shuffle` e instavel
+      # no libtest e exige `-Z unstable-options`; o libtest pre-compilado do
+      # toolchain nao aceita nem em nightly, entao o job quebrava em TODA run.
+      # `--test-threads=1` cobre a mesma classe (estado global vazado entre
+      # testes — que era o risco que o seam `set_audit_hasher`, um `AtomicU8`,
+      # introduziu) e roda no stable. Para ordem embaralhada de verdade o gate
+      # precisa de um toolchain nightly com libtest unstable de fato.
+      - name: lib tests (em serie — expoe estado global compartilhado)
+        run: cargo test --lib -- --test-threads=1
 
       # v1.4.4: goldens de formato no proprio repo (a paridade byte-exata com o
       # OS e provada do lado do kernel; aqui ficam os vetores de NMD1/MDM1/AUD1).

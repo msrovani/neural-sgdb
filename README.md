@@ -36,7 +36,7 @@ filesystem, no external runtime.
 
 ## Status
 
-**v1.4.4** — substrate **agêntico** (MCP 5 tools contract **1.4.4**, doutrina,
+**v1.4.5** — substrate **agêntico** (MCP 5 tools contract **1.4.5**, doutrina,
 hits tipados, TTL/GC, timeline, ANN) + **ADC-lite** + telepatia **2-DB** +
 **host harvest** + **ADR-0010 harness** (`commit_run` / `deprecate_run` /
 **`promote_run`** — fork/merge de memória por scope run, `mom/anti-pattern`) +
@@ -45,7 +45,7 @@ derivado** (`index_fingerprint`, ADR-0011) + **recall adaptativo** (ADR-0012) +
 **`ScopeDims` autoritativo** (ADR-0013), **ledger de negativos** (ADR-0014),
 **batch write + dedup guard** (`memories[]`, `if_exists`) e **write path
 agêntico** (v1.2.0). Extensão de browser / Store **estacionadas**. Crate em
-`Cargo.toml`: **1.4.4**. 
+`Cargo.toml`: **1.4.5**. 
 
 - `cargo test --lib` on host: **412** (p2p **428**, no_std **349**)
 - hot test MCP: **158/0**; `agent_protocol`: **25/0**

@@ -602,7 +602,7 @@ fn error_code_label(c: neural_sgdb::ErrorCode) -> &'static str {
 
 /// NÃºmero de tools em `tools/list` (aliases antigos ainda funcionam em tools/call).
 const EXPECTED_MCP_TOOL_COUNT: usize = 5;
-const MCP_CONTRACT_VERSION: &str = "1.4.4";
+const MCP_CONTRACT_VERSION: &str = "1.4.5";
 const BUILD_GIT: &str = env!("NEURAL_SGDB_BUILD_GIT");
 
 /// Lista pÃºblica: 4 tools. Os 23 nomes antigos continuam vÃ¡lidos em `tools/call`.

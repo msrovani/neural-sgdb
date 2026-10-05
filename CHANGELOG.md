@@ -4,6 +4,60 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [1.4.5] — 2026-10-05 (o gate do CI estava quebrado desde o 1.4.4)
+
+Release de conserto. Nenhuma API nova: o que mudou foi um **gate que nunca
+rodou** e três conclusoes que o repo carregava sem numero.
+
+### Fixed
+
+- **O job de dependencia de ordem no CI NUNCA rodou.** Escrevi
+  `cargo test --lib -- --shuffle` no Lote E e ele quebrava em **toda** execucao:
+  `--shuffle` e instavel no libtest e exige `-Z unstable-options`, e o libtest
+  pre-compilado do toolchain nao aceita nem em nightly (nem com
+  `RUSTC_BOOTSTRAP=1`). Trocado por `cargo test --lib -- --test-threads=1`,
+  que cobre a mesma classe — estado global vazado entre testes, que era
+  exatamente o risco introduzido pelo seam `set_audit_hasher` (`AtomicU8`) — e
+  roda no stable. Para ordem embaralhada de verdade o gate exige um toolchain
+  nightly com libtest unstable de fato; fica escrito no `ci.yml` para o
+  proximo nao "consertar" de volta.
+  Licao: **um step de CI nao verificado e um gate falso** — falha barulhenta
+  seria bom; aqui ele nem falhava em lugar nenhum, porque ninguem rodou.
+
+### Documentacao corrigida (prosa que divergia do codigo)
+
+- `BENCHMARKS.md` dizia que o teto do snapshot IDX1 (~7k writes) era bug
+  conhecido e que a paginacao era "o proximo passo" — **ja era IDX2 desde o
+  v1.2.0 (c)**. O `persist_index_snapshot` e o `bench_index_snapshot` se
+  anunciavam como IDX1 enquanto escreviam IDX2.
+- `docs/MCP.md` dizia **38** aliases; a tabela `ALIAS_SURFACE` pinada por teste
+  tem **40**.
+
+### Medido (Lote F, fechado)
+
+- `bench_footprint` (novo): RSS @ 1k/10k/50k docs = 11,3 / 60,4 / 278,5 MB,
+  custo por doc convergindo em **~5,7 KB** — total linear, gargalo no vetor em
+  RAM. RSS sem dep nova (procfs / `GetProcessMemoryInfo`).
+- **recall@5**: ADC-lite 35–40% a oversample 1, **89–93% a 16** — o recall e
+  majoritariamente *pool de candidatos*, nao quantizacao. RaBitQ volta
+  negativo com a escala do custo (0–6% a ~1343 µs/query, **50×** o ADC-lite);
+  resultado ja pinado em `src/rabitq.rs`, agora com o numero.
+- **open IDX2-vs-rebuild**: o fast-mount e **tambem linear** (~3,7 µs/doc
+  contra ~10 do rebuild) — o 1,2x→1,6x e constante menor, nao tempo
+  constante. O gap de "open ~1,6 s @ 100k" **segue aberto**.
+
+### Conteudo herdado do 1.4.4 (ja commitado, documentado aqui)
+
+- **Lote D**: `Sgdb::recall_causal` + `CausalHit` + `RecallPath::Causal` —
+  o hit semantico acompanhado da linhagem que o produziu. MCP
+  `recall(mode=causal)` + `causal_depth`.
+- **B1**: `curate op=explain full=true` — `version_dag` + `audit_refs` +
+  `authority` + `clock` numa resposta.
+
+Gates: lib **423**, p2p **439**, no_std **356**, `wire_fuzz` (4), goldens (4),
+`clippy -D warnings`, rustdoc `-D warnings`, `x86_64-unknown-none`, hot test
+**177/0** (exit 0).
+
 ## [1.4.4] — 2026-10-02 (a lib inteira finalmente chega ao MCP)
 
 O lote consumer-triage s413 (1.2.2) entregou nove APIs na **lib**. Nenhuma
