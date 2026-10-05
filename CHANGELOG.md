@@ -11,6 +11,16 @@ rodou** e três conclusoes que o repo carregava sem numero.
 
 ### Fixed
 
+- **5 lints novos do clippy moderno travavam o gate (`-D warnings`)**:
+  `needless_range_loop` no decode do `VectorClock` ([memory_doc.rs](src/memory_doc.rs),
+  caminho quente do NMD1) e no anuncio de nos + 4 loops de teste em
+  [crdt.rs](src/crdt.rs). Nao e bug — as transformacoes preservam offset, ordem
+  e observabilidade (`enumerate` mantem o `i` das mensagens de assert), e as
+  goldens NMD1/MDM1 v8/AUD1/TKLV passam, que e o gate desenhado para pegar
+  exatamente um decode que muda um byte. Achados porque o toolchain da maquina
+  foi recriado **3 meses mais novo** do que o da sessao anterior: o CI (stable)
+  ja reprovava e ninguem tinha rodado.
+
 - **O job de dependencia de ordem no CI NUNCA rodou.** Escrevi
   `cargo test --lib -- --shuffle` no Lote E e ele quebrava em **toda** execucao:
   `--shuffle` e instavel no libtest e exige `-Z unstable-options`, e o libtest
