@@ -134,6 +134,12 @@ impl Storage for Box<dyn Storage> {
     fn durability(&self) -> Durability {
         (**self).durability()
     }
+    fn capacity_bytes(&self) -> Option<u64> {
+        (**self).capacity_bytes()
+    }
+    fn used_bytes(&self) -> Option<u64> {
+        (**self).used_bytes()
+    }
     fn sync_durable(&mut self) -> Result<(), SgdbError> {
         (**self).sync_durable()
     }
@@ -159,6 +165,22 @@ pub trait Storage: Send {
     /// checkpoint = Durable, turno = Flushed).
     fn sync_durable(&mut self) -> Result<(), SgdbError> {
         Ok(())
+    }
+
+    /// Capacidade total do backend em BYTES (`None` = ilimitado / desconhecido).
+    ///
+    /// Triagem s413 ISSUE 3 (o `oob` do consumidor embedded): sem este seam o
+    /// host não tem como pré-checar espaço e só descobre a falta NO meio do
+    /// write. `None` é o default HONESTO — um backend que não sabe não inventa
+    /// número (mesma doutrina do `open_rebuild_ms` no `no_std`).
+    fn capacity_bytes(&self) -> Option<u64> {
+        None
+    }
+
+    /// Bytes em uso (payloads + side-tables). `None` = o backend não conta.
+    /// Usado por `validate` §7 quando `capacity_bytes()` é `Some`.
+    fn used_bytes(&self) -> Option<u64> {
+        None
     }
 
     /// Batch put — default: loop de `put`; backends `Flushed` podem sobrescrever
@@ -280,6 +302,16 @@ impl Storage for InMemory {
     fn durability(&self) -> Durability {
         // RAM pura — não sobrevive a crash nem power loss
         Durability::Buffered
+    }
+    fn used_bytes(&self) -> Option<u64> {
+        // RAM: o "uso" é a soma dos valores (sem overhead de log) — é uma
+        // MÉTRICA de conteúdo, não de mídia, e por isso fica em `used_bytes`.
+        Some(
+            self.map
+                .values()
+                .map(|v| v.len() as u64)
+                .sum::<u64>(),
+        )
     }
     fn put(&mut self, key: &[u8], val: &[u8]) -> Result<(), SgdbError> {
         self.map.insert(key.to_vec(), val.to_vec());
@@ -613,6 +645,12 @@ impl FileStorage {
 impl Storage for FileStorage {
     fn name(&self) -> &'static str {
         "file"
+    }
+    fn used_bytes(&self) -> Option<u64> {
+        // Arquivo CRESCENTE: `capacity_bytes` é `None` (não tem teto) mas o
+        // consumo é honesto — é o número que o operador precisa antes de
+        // encher o disco.
+        std::fs::metadata(&self.path).ok().map(|m| m.len())
     }
     fn durability(&self) -> Durability {
         // write + flush por append → sobrevive a crash de processo; NÃO

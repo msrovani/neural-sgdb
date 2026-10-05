@@ -589,6 +589,17 @@ impl crate::storage::Storage for TickvFile {
     fn name(&self) -> &'static str {
         "tickv"
     }
+    fn used_bytes(&self) -> Option<u64> {
+        // v1.4.4 (seam de capacidade): o log CRESCE — `capacity_bytes` fica
+        // `None` (o arquivo não tem teto), mas o consumo é o número que o
+        // operador precisa antes de encher o volume. `append_off` é o
+        // watermark do log; o arquivo pode estar maior (compactação/header).
+        Some(
+            std::fs::metadata(&self.path)
+                .map(|m| m.len())
+                .unwrap_or(self.append_off),
+        )
+    }
     fn durability(&self) -> crate::storage::Durability {
         // Pareado com a realidade do modo: buffered = os records podem estar
         // só no buffer do handle até o próximo flush (checkpoint/sync).

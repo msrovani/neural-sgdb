@@ -1,6 +1,6 @@
 # neural-sgdb — Implementation Status
 
-> **Current snapshot (2026-10-01, v1.4.3).** Capability matrix vs the shipped
+> **Current snapshot (2026-10-02, v1.4.4).** Capability matrix vs the shipped
 > codebase. For the public contract see [`docs/api.md`](api.md); for architecture
 > narrative see [`docs/architecture/README.md`](architecture/README.md).
 > v1.4.3 = DX release (P0.1 semantic-on with a real embedder; P0.3 structured
@@ -21,12 +21,12 @@
 
 | Check | Command | Result |
 |---|---|---|
-| Default tests | `cargo test --lib` | **412** (+2 doc-tests) |
-| P2P tests | `cargo test --features p2p --lib` | **428** |
-| no_std tests | `cargo test --no-default-features --lib` | **349** |
+| Default tests | `cargo test --lib` | **422** (+2 doc-tests) |
+| P2P tests | `cargo test --features p2p --lib` | **438** |
+| no_std tests | `cargo test --no-default-features --lib` | **355** |
 | Multi-agent integration | `cargo test --test multi_agent` | **21** (também no gate no_std) |
 | no_std target | `cargo check --no-default-features --target x86_64-unknown-none` | **ok** |
-| Hot test (MCP) | `cargo run --release --example mcp_client` | **158/0 exit 0** |
+| Hot test (MCP) | `cargo run --release --example mcp_client` | **170/0 exit 0** |
 | AI-user sim | `cargo run --release --example agent_sim` | loop real, scope isolado |
 | Machine protocol | `cargo run --release --example two_ai_protocol` | **16/16 exit 0** |
 | Agent protocol | `cargo run --release --example agent_protocol` | **25/25 exit 0** |
@@ -85,6 +85,12 @@
 | Adaptive recall (v1.1.22) | EXPERIMENTAL | ADR-0012: `recall_adaptive` + `AdaptiveRecall` + `RecallProbe`; opt-in, default intacto. **O bench mostra que o threshold default escala quase sempre** — o valor é o instrumento, não um ganho medido |
 | Score breakdown (v1.1.10) | IMPLEMENTED | `recall_weighted_full`, `Hit.score_breakdown`, trust weights |
 | Audit hash-chain (v1.1.10) | IMPLEMENTED | `sys/audit/` (AUD1), `audit_verify`, `rollback_to` |
+| Audit hash-chain — seam de hasher (v1.4.4) | IMPLEMENTED | `audit::Hasher` (`Fnv1a64`/`Sha256Trunc`) + `set_audit_hasher`; SHA-256 `no_std` zero-dep; **wire AUD1 intocado**; 64 bits NAO e assinatura (ADR-0006) |
+| Erro machine-readable no wire (v1.4.4) | IMPLEMENTED | `error.code` (`storage`/`corrupt`/`key_rejected`/`not_found`) + `retryable`; `data.code` nos erros JSON-RPC |
+| Superficie MCP do lote s413 (v1.4.4) | IMPLEMENTED | `remember(author/layer/index_key)`; `curate op=forget_purge/audit_resolve/audit_trail/export_delta/set_authority`; `conflicts(open_only,limit)` |
+| Seam de capacidade do storage (v1.4.4) | IMPLEMENTED | `Storage::capacity_bytes()`/`used_bytes()` (default `None`), `Sgdb::storage_capacity()`, `validate` §7 |
+| Honestidade do recall (v1.4.4) | IMPLEMENTED | `Sgdb::recall_degraded_reason()` → `bq_unmounted`/`mixed_eras`; `health.recall_degraded` |
+| Authority HITL (v1.4.4) | IMPLEMENTED | `Sgdb::set_authority`/`authority_of` (MDM1 v8); MCP `curate op=set_authority` |
 | Write-path hardening (v1.1.10) | IMPLEMENTED | `validate_written` on all write seams |
 | Host scheduler (v1.1.11) | IMPLEMENTED | `examples/host_scheduler.rs` (expire/decay/consolidate/audit) |
 | Backfill helper (v1.1.11) | IMPLEMENTED | `examples/backfill_helper.rs` (L3→L4 re-embed + rebuild) |
@@ -144,7 +150,7 @@ report no tensions (v1.2.0). Fork/merge: `curate op=promote_run`
 triage batch (v1.2.2): put_operational/forget_purge/audit_resolve/index_key
 + MDM1 v8 authority. DX release (v1.4.3): semantic default with a real embedder
 + `contract.json` / `nsgdb://contract` + structured `scope_dim_labels`.
-MCP contract **1.4.3**.
+MCP contract **1.4.4**.
 
 ### Host connectors
 `connectors/` is host-side (not crate SemVer). Hermes `MemoryProvider` is

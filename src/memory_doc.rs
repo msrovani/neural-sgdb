@@ -2072,3 +2072,64 @@ mod prop_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod v144_golden_tests {
+    use super::*;
+
+    fn meta_v8() -> MemoryMeta {
+        MemoryMeta {
+            memory_id: String::from("aabbccddeeff00112233445566778899"),
+            version_id: String::from("00112233445566778899aabbccddeeff"),
+            source: 7,
+            confidence: 0.9,
+            importance: 0.6,
+            created_tick: 42,
+            parent_ids: alloc::vec![String::from("p1")],
+            clock_overflow: alloc::vec![(9, 3)],
+            last_reinforced: 99,
+            scope: String::new(),
+            entities: alloc::vec![],
+            content_type: None,
+            scope_dims: ScopeDims::new(),
+            model_id: String::new(),
+            authority: 255,
+        }
+    }
+
+    /// v1.4.4 (Lote E, ISSUE 18): golden byte-exato da **MDM1 v8** — o campo
+    /// `authority` (triagem s413 ISSUE 21) entrou no wire da side-table. Sem
+    /// golden, um off errado no encode passaria despercebido até o peer do OS
+    /// ler um meta diferente do esperado.
+    ///
+    /// Pina: magic MDM1, versao 8 no byte 4 e `authority` como ULTIMO byte
+    /// (disciplina "todo campo avança off" — a lição do bug de decode do
+    /// `scope` no v1.1.4).
+    #[test]
+    fn golden_mdm1_v8_layout_pins_authority_as_last_field() {
+        let m = meta_v8();
+        let enc = m.encode();
+        assert_eq!(&enc[0..4], b"MDM1", "magic byte-exato");
+        assert_eq!(enc[4], 8, "versao da meta = 8 (authority)");
+        assert_eq!(
+            *enc.last().unwrap(),
+            255,
+            "authority viaja como ultimo campo da MDM1"
+        );
+        // roundtrip byte-exato do campo novo
+        let back = MemoryMeta::decode(&enc).expect("decode da MDM1 v8");
+        assert_eq!(back.authority, 255);
+        // e o byte e mesmo o ULTIMO: mudar so o authority muda so o ultimo byte
+        let mut m0 = m.clone();
+        m0.authority = 0;
+        let enc0 = m0.encode();
+        assert_eq!(enc0.len(), enc.len(), "authority = 1 byte, sem tamanho variavel");
+        let mut diffs = 0;
+        for (a, b) in enc0.iter().zip(enc.iter()) {
+            if a != b {
+                diffs += 1;
+            }
+        }
+        assert_eq!(diffs, 1, "so o byte do authority muda entre 0 e 255");
+    }
+}

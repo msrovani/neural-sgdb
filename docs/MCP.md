@@ -33,7 +33,7 @@ Lista: `remember`, `recall`, `health`, `curate`.
 
 Dispatch: `remember(user+response)` → episódico L2; `remember(text=)` sem vetor →
 L3; `recall(entities|at|rag=true)` → 1-hop / temporal / rag; `health(view=era|validate|tensions)`;
-`curate(op=explain|reinforce|decay|consolidate|audit_checkpoint|audit_verify|rollback_to|commit_run|deprecate_run|…)`
+`curate(op=explain|reinforce|decay|consolidate|audit_checkpoint|audit_verify|audit_resolve|audit_trail|forget_purge|export_delta|set_authority|rollback_to|commit_run|deprecate_run|…)`
 (v1.1.10: metadado cognitivo; **v1.1.19+**: harness ADR-0010 `commit_run`/`deprecate_run`;
 `audit_verify` expõe `structuredContent` com o `AuditReport`).
 

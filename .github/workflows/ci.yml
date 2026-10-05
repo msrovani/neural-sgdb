@@ -58,6 +58,24 @@ jobs:
       - name: bench (smoke, reduced)
         run: cargo run --release --example bench
 
+      # v1.4.4 (ISSUE 18 da triagem s413): o `wire_fuzz` existia no src mas o
+      # CI nunca o rodava — a garantia de "decode bounds-checked" era por
+      # inspeção. Aqui ela vira CONTÍNUA: qualquer decode que panicar derruba o
+      # build em vez de esperar alguém rodar na mão.
+      - name: wire_fuzz (property test dos 9 tipos wire)
+        run: cargo test --release --lib wire_fuzz -- --nocapture
+
+      # v1.4.4 (ISSUE 17): a suíte passa por acidente dependente da ORDEM. Rodar
+      # embaralhado expoe a dependencia — `multi_agent` usa o mesmo backend e
+      # qualquer estado vazado aparece como falha, não como Passage.
+      - name: lib tests (shuffled — expoe dependencia de ordem)
+        run: cargo test --lib -- --shuffle
+
+      # v1.4.4: goldens de formato no proprio repo (a paridade byte-exata com o
+      # OS e provada do lado do kernel; aqui ficam os vetores de NMD1/MDM1/AUD1).
+      - name: golden vectors (NMD1/MDM1 v8/AUD1/TKLV)
+        run: cargo test --lib golden
+
   mcp-windows:
     runs-on: windows-latest
     steps:

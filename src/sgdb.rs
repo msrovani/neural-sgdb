@@ -1843,6 +1843,32 @@ impl Sgdb {
         Ok(self.engine.meta(&sk)?.and_then(|m| m.content_type))
     }
 
+    /// AUTORIDADE da memória (MDM1 v8, triagem s413 ISSUE 21): `0` = aprendida
+    /// na mesh, `255` = aprovada por humano/HITL. No empate causal do merge, a
+    /// mais autoritativa domina (`MergeVerdict::RejectedByAuthority`) — sem
+    /// isto, um peer barulhento eipa decisão humana em L2/L3.
+    ///
+    /// Escrita de META pura: não ticka o relógio, não cria versão, não muda o
+    /// payload. Quem promote/curia é o host — o core guarda o rótulo, não decide.
+    /// `validate` §7 sinaliza incoerência (authority > 0 sem provenance).
+    pub fn set_authority(&mut self, key: &str, authority: u8) -> Result<(), SgdbError> {
+        let sk = self.resolve_known_key(key);
+        if self.engine.get_by_storage_key(&sk)?.is_none() {
+            return Err(SgdbError::Invalid("no memory at key (authority)"));
+        }
+        let mut m = self.engine.ensure_meta(&sk)?;
+        m.authority = authority;
+        self.engine.write_meta(&sk, &m)
+    }
+
+    /// Authority gravada (0 = learned; MDM1 v1–v7 decodificam com 0).
+    pub fn authority_of(&mut self, key: &str) -> Result<u8, SgdbError> {
+        let sk = self.resolve_known_key(key);
+        Ok(self.engine.meta(&sk)?.map(|m| m.authority).unwrap_or(0))
+    }
+
+    
+
     /// Recall por entidades (item 10, 1-hop): candidatos = docs que declaram
     /// PELO MENOS UMA das entidades consultadas, ranqueados por número de
     /// entidades em comum (desc) e, em empate, por importância (desc) e
@@ -3699,7 +3725,7 @@ impl Sgdb {
         let seq = last.map(|l| l.saturating_add(1)).unwrap_or(0);
         let prev_hash = match last {
             Some(l) => match self.engine.storage_get(&crate::audit::audit_key(l))? {
-                Some(b) => crate::tickv::fnv1a64(&b),
+                Some(b) => crate::audit::audit_hash(&b),
                 None => 0,
             },
             None => 0,
@@ -3728,7 +3754,7 @@ impl Sgdb {
         let seq = last.map(|l| l.saturating_add(1)).unwrap_or(0);
         let prev_hash = match last {
             Some(l) => match self.engine.storage_get(&crate::audit::audit_key(l))? {
-                Some(b) => crate::tickv::fnv1a64(&b),
+                Some(b) => crate::audit::audit_hash(&b),
                 None => 0,
             },
             None => 0,
@@ -3741,7 +3767,7 @@ impl Sgdb {
             prev_hash,
             ts,
             op: crate::audit::AUDIT_OP_FORGET,
-            digest: crate::tickv::fnv1a64(reason.as_bytes()),
+            digest: crate::audit::audit_hash(reason.as_bytes()),
             snapshot: alloc::vec::Vec::from([
                 crate::audit::AuditSnapshotItem {
                     sk: sk.into(),
@@ -3773,7 +3799,7 @@ impl Sgdb {
         let seq = last.map(|l| l.saturating_add(1)).unwrap_or(0);
         let prev_hash = match last {
             Some(l) => match self.engine.storage_get(&crate::audit::audit_key(l))? {
-                Some(b) => crate::tickv::fnv1a64(&b),
+                Some(b) => crate::audit::audit_hash(&b),
                 None => 0,
             },
             None => 0,
@@ -3783,7 +3809,7 @@ impl Sgdb {
             prev_hash,
             ts,
             op: crate::audit::AUDIT_OP_RESOLVE,
-            digest: crate::tickv::fnv1a64(reason.as_bytes()),
+            digest: crate::audit::audit_hash(reason.as_bytes()),
             snapshot: alloc::vec::Vec::from([
                 crate::audit::AuditSnapshotItem {
                     sk: conflict_id.into(),
@@ -3825,13 +3851,22 @@ impl Sgdb {
     /// que a carregarem). Sem match = chain vazia ou memória nunca citada.
     pub fn audit_for_key(
         &mut self,
-        sk: &str,
+        key: &str,
     ) -> Result<alloc::vec::Vec<crate::audit::AuditEntry>, SgdbError> {
+        // v1.4.4 (ISSUE 6c): aceita a key CRUA do host, não só a storage key.
+        // A memória que o consumidor quer trails é justamente a que já foi
+        // APAGADA — e depois do `delete` o `resolve_known_key` não resolve mais
+        // nada, então a busca exata por sk devolvia "nenhum elo" justo quando a
+        // evidência era a mais importante. Casa por sufixo `/key` (a camada é a
+        // parte que muda entre o primário e o companion `/L2/`).
         let all = self.audit_entries(0, 0)?;
-        Ok(all
-            .into_iter()
-            .filter(|e| e.snapshot.iter().any(|it| it.sk == sk))
-            .collect())
+        let needle = format!("/{key}");
+        let matches = |it: &crate::audit::AuditSnapshotItem| {
+            // O prefixo `/` do needle evita o falso positivo "k1" casando com
+            // "...xk1" — a barra e o que separa a key do resto do storage key.
+            it.sk == key || it.sk.ends_with(&needle)
+        };
+        Ok(all.into_iter().filter(|e| e.snapshot.iter().any(matches)).collect())
     }
 
     /// Verifica a hash-chain e o drift do estado (tamper-evidence): caminha
@@ -3861,7 +3896,7 @@ impl Sgdb {
             if e.seq != *seq {
                 chain_intact = false;
             }
-            let expected = prev_bytes.map(crate::tickv::fnv1a64).unwrap_or(0);
+            let expected = prev_bytes.map(crate::audit::audit_hash).unwrap_or(0);
             if e.prev_hash != expected {
                 chain_intact = false;
             }
@@ -3935,7 +3970,7 @@ impl Sgdb {
         // 4) marcador de rollback no ledger (mantém a chain honesta)
         let digest = self.state_digest()?;
         let prev_hash = match self.engine.storage_get(&key)? {
-            Some(b) => crate::tickv::fnv1a64(&b),
+            Some(b) => crate::audit::audit_hash(&b),
             None => 0,
         };
         let marker = crate::audit::AuditEntry {
@@ -3967,7 +4002,7 @@ impl Sgdb {
             buf.extend_from_slice(&(k.len() as u32).to_le_bytes());
             buf.extend_from_slice(&k);
             buf.extend_from_slice(&v);
-            h = fnv1a64_seeded(h, &buf);
+            h = crate::audit::audit_hash_seeded(h, &buf);
         }
         Ok(h)
     }
@@ -5805,6 +5840,44 @@ impl Sgdb {
     /// (fonte da verdade), decodifica cada NMD1 e cruza com os índices
     /// derivados (ART/BQ) e com as side-tables (`sys/state|validity|meta`).
     /// Retorna TODOS os issues encontrados — vazio = saudável.
+    /// Capacidade declarada pelo backend (`None` = sem teto / desconhecida).
+    /// v1.4.4: o host embedded pre-checa espaco com isto antes do write.
+    pub fn storage_capacity(&mut self) -> Option<u64> {
+        self.engine.storage_capacity()
+    }
+
+    /// Bytes em uso, quando o backend conta (`None` = nao conta).
+    pub fn storage_used(&mut self) -> Option<u64> {
+        self.engine.storage_used()
+    }
+
+    /// POR QUE o recall semântico pode estar degradado agora (v1.4.4,
+    /// ISSUE 16b do relatório do consumidor).
+    ///
+    /// Para uma IA, "semântico devolveu vazio" é indistinguível de "não sei" —
+    /// e ela pode responder com base numa ausência de evidência que é
+    /// artefato do motor, não da memória. Só reportamos o que o core SABE:
+    ///
+    /// - `bq_unmounted` — o corpus tem docs de embedding (L4/L5) mas o índice
+    ///   BQ está vazio: o recall semântico não tem o que ranquear (mount
+    ///   degradado/rebuild pendente);
+    /// - `mixed_eras` — mais de uma dimensão indexada: uma query de dim D não
+    ///   alcança os docs de outra dim (a resposta vazia é parcial, não negativa);
+    ///   alcançável pela replicação (`import_record`), não pelo `remember_semantic`
+    ///   (o era guard trava a largura do BQ).
+    ///
+    /// `None` = nada degradado. Ausência declarada, nunca número inventado.
+    pub fn recall_degraded_reason(&mut self) -> Option<&'static str> {
+        let dims = self.indexed_embedding_dims();
+        if !dims.is_empty() && self.engine.bq_len() == 0 {
+            return Some("bq_unmounted");
+        }
+        if dims.len() > 1 {
+            return Some("mixed_eras");
+        }
+        None
+    }
+
     pub fn validate(&mut self) -> Vec<ValidateIssue> {
         let mut issues: Vec<ValidateIssue> = Vec::new();
 
@@ -5876,9 +5949,9 @@ impl Sgdb {
                     if !target.starts_with("md/") {
                         continue; // side-table não-doc (reservada) — fora do check
                     }
-                    match self.engine.storage_get(target.as_bytes()) {
-                        Ok(Some(_)) => {}            // doc existe — ok
-                        Ok(None) => {
+                    match self.engine.doc_exists(&target) {
+                        Ok(true) => {}                 // doc existe (storage OU tier RAM) — ok
+                        Ok(false) => {
                             issues.push(ValidateIssue {
                                 key: target,
                                 message: "side-table targets missing doc",
@@ -5892,6 +5965,21 @@ impl Sgdb {
                         }
                     }
                 }
+            }
+        }
+
+        // 7. CAPACIDADE (v1.4.4, triagem s413 ISSUE 3): o host embedded precisa
+        //    saber o espaço ANTES do write — sem seam ele só descobre a falta
+        //    no meio da operação (`oob`). `capacity_bytes() == None` = o
+        //    backend não declara teto (arquivo cresce): AUSÊNCIA DECLARADA,
+        //    não número inventado (mesma doutrina do `open_rebuild_ms`).
+        if let Some(cap) = self.engine.storage_capacity() {
+            let used = self.engine.storage_used().unwrap_or(0);
+            if used > cap {
+                issues.push(ValidateIssue {
+                    key: "storage".into(),
+                    message: "used bytes over declared capacity",
+                });
             }
         }
 
@@ -5955,6 +6043,12 @@ impl Sgdb {
 
     /// Acesso somente-leitura ao índice BQ (para `MihIndex::build`, estudo ou
     /// instrumentação). O índice é derivado do storage — não mutar.
+    /// BQ mutável (uso interno do crate; o host não tem mutador).
+    #[cfg(test)]
+    pub(crate) fn bq_mut(&mut self) -> &mut BqFlatIndex {
+        self.engine.bq_mut()
+    }
+
     pub fn bq(&self) -> &BqFlatIndex {
         &self.engine.bq
     }
@@ -6013,18 +6107,6 @@ fn clamp(s: &str, max: usize) -> String {
     }
 }
 
-/// sqrt para no_std (core não expõe `f32::sqrt` no target bare-metal).
-/// Newton–Raphson, 10 iterações, convergência rápida para argumentos > 0.
-/// FNV-1a sobre um estado inicial (`h` já seedado) — re-fold usado pelo
-/// `state_digest` da auditoria (v1.1.10 item 5). Mesma polinômica do
-/// `crate::tickv::fnv1a64`.
-fn fnv1a64_seeded(mut h: u64, data: &[u8]) -> u64 {
-    for b in data {
-        h ^= *b as u64;
-        h = h.wrapping_mul(0x100_0000_01b3);
-    }
-    h
-}
 
 /// Normalização determinística p/ consolidação (v1.1.10 item 2): tokeniza via
 /// BM25 do lexical (lowercase + sem pontuação) e re-une com espaço — dois
@@ -11362,5 +11444,214 @@ mod tests {
         }
         // E o delete continua funcionando no banco vazio (idempotente).
         assert!(!db.delete(&keys[0]).unwrap());
+    }
+}
+
+#[cfg(all(test, feature = "file-storage"))]
+mod v144_tests {
+    use super::*;
+    use crate::storage::InMemory;
+
+    /// v1.4.4 (A9): `set_authority` grava MDM1 v8 e SOBREVIVE ao restart — o
+    /// rótulo HITL é metadado persistido, não estado de sessão.
+    /// Teste de mutação: remover o write_meta (ou o promote do doc RAM) mata
+    /// este teste.
+    #[test]
+    fn set_authority_persists_as_hitl_mark() {
+        let dir = std::env::temp_dir().join(format!("nsgdb_auth_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.db");
+        let key = {
+            let mut db = Sgdb::open(crate::storage::FileStorage::open(&path).unwrap()).unwrap();
+            db.remember_text_with("auth/1", "fato curado", RememberOptions::default())
+                .unwrap();
+            db.set_authority("md/L3/auth/1", 255).unwrap();
+            assert_eq!(db.authority_of("md/L3/auth/1").unwrap(), 255);
+            // ghost: sem side-table órfã (validate não pode acusar)
+            assert!(db.set_authority("md/L3/nao-existe", 255).is_err());
+            let issues = db.validate();
+            assert!(
+                !issues.iter().any(|i| i.key.contains("nao-existe")),
+                "set_authority em ghost nao pode deixar side-table: {issues:?}"
+            );
+            "md/L3/auth/1".to_string()
+        };
+        let mut db = Sgdb::open(crate::storage::FileStorage::open(&path).unwrap()).unwrap();
+        assert_eq!(db.authority_of(&key).unwrap(), 255, "authority deve persistir");
+        // e a memória continua lá (authority é meta, não delete)
+        assert!(db.get(crate::MemoryLayer::L3EpisodicLong, "auth/1").unwrap().is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v1.4.4 — bug achado pelo hot test: side-table PERSISTENTE (meta) de um
+    /// doc do tier RAM (L0/L1) sobrevivia ao restart sem o doc, e o `validate`
+    /// acusava "side-table targets missing doc" para uma escrita legítima.
+    /// A regra: side-table persistente implica doc persistente.
+    #[test]
+    fn side_table_on_ram_doc_survives_restart() {
+        let dir = std::env::temp_dir().join(format!("nsgdb_ram_meta_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("r.db");
+        {
+            let mut db = Sgdb::open(crate::storage::FileStorage::open(&path).unwrap()).unwrap();
+            // escrita OPERACIONAL em L1 = tier RAM ate o checkpoint
+            let doc = crate::MemoryDoc::new(
+                crate::MemoryLayer::L1Working,
+                "op/cpu",
+                b"avx2".to_vec(),
+            );
+            db.put_operational(doc).unwrap();
+            // side-table no doc RAM
+            db.set_authority("md/L1/op/cpu", 200).unwrap();
+            let issues = db.validate();
+            assert!(
+                !issues.iter().any(|i| i.key == "md/L1/op/cpu"),
+                "RAM tier conta como existente: {issues:?}"
+            );
+        }
+        // restart: a meta sobreviveu E o doc foi promovido no mesmo write
+        let mut db = Sgdb::open(crate::storage::FileStorage::open(&path).unwrap()).unwrap();
+        let issues = db.validate();
+        assert!(
+            issues.iter().all(|i| i.key != "md/L1/op/cpu"),
+            "apos restart nao pode haver side-table orfa: {issues:?}"
+        );
+        assert_eq!(db.authority_of("md/L1/op/cpu").unwrap(), 200);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v1.4.4 (ISSUE 6c): a trilha de UMA memória tem de ser achável pela key
+    /// CRUA mesmo DEPOIS do purge — `resolve_known_key` não resolve mais o que
+    /// foi apagado, e é exatamente nesse momento que a evidência importa.
+    #[test]
+    fn audit_for_key_matches_raw_key_after_purge() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_text_with("pur/1", "a ser purgado", RememberOptions::default())
+            .unwrap();
+        db.forget_purge("pur/1", "motivo").unwrap();
+        // key CRUA (o que o host tem em maos), nao a storage key resolvida
+        let trail = db.audit_for_key("pur/1").unwrap();
+        assert_eq!(trail.len(), 1, "elo FORGET achado pela key crua");
+        assert_eq!(trail[0].op, crate::audit::AUDIT_OP_FORGET);
+        // e sem falso positivo: prefixo/common em outra key nao casa
+        db.remember_text_with("pur/12", "vizinho", RememberOptions::default())
+            .unwrap();
+        assert_eq!(db.audit_for_key("pur/1").unwrap().len(), 1, "suffix exato");
+    }
+}
+
+#[cfg(all(test, feature = "std"))]
+mod v144_capacity_tests {
+    use super::*;
+    use crate::storage::{Durability, Storage};
+
+    /// Backend de mídia FIXA (o caso do RamFlash do consumidor embedded): o
+    /// default do trait é `None` (não inventa número), e quem tem teto
+    /// declarado aparece no `validate` §7.
+    struct Flash {
+        map: std::collections::BTreeMap<Vec<u8>, Vec<u8>>,
+        cap: u64,
+    }
+
+    impl Storage for Flash {
+        fn name(&self) -> &'static str {
+            "flash"
+        }
+        fn durability(&self) -> Durability {
+            Durability::Flushed
+        }
+        fn capacity_bytes(&self) -> Option<u64> {
+            Some(self.cap)
+        }
+        fn used_bytes(&self) -> Option<u64> {
+            Some(self.map.values().map(|v| v.len() as u64).sum())
+        }
+        fn put(&mut self, k: &[u8], v: &[u8]) -> Result<(), SgdbError> {
+            self.map.insert(k.to_vec(), v.to_vec());
+            Ok(())
+        }
+        fn get(&mut self, k: &[u8]) -> Result<Option<Vec<u8>>, SgdbError> {
+            Ok(self.map.get(k).cloned())
+        }
+        fn scan_prefix(&mut self, p: &[u8]) -> Result<crate::storage::ScanResult, SgdbError> {
+            Ok(self
+                .map
+                .iter()
+                .filter(|(k, _)| k.starts_with(p))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect())
+        }
+        fn delete(&mut self, k: &[u8]) -> Result<(), SgdbError> {
+            self.map.remove(k);
+            Ok(())
+        }
+    }
+
+    /// v1.4.4 (B3): o seam de capacidade é aditivo e HONESTO — `None` por
+    /// default (backend sem teto não chuta), e o `validate` §7 acusa o
+    /// estouro quando o backend DECLARA teto. Teste de mutação: remover o §7
+    /// (ou trocar `Some` por `None` no `Flash`) mata a segunda asserção.
+    #[test]
+    fn capacity_seam_defaults_to_unbounded_and_validates_when_declared() {
+        // default do trait = ilimitado (ausência declarada)
+        let mut inm = Sgdb::open(crate::storage::InMemory::new()).unwrap();
+        assert_eq!(inm.storage_capacity(), None, "default NAO inventa teto");
+        inm.remember_text_with("c/1", "x", RememberOptions::default())
+            .unwrap();
+        assert!(inm.storage_used().is_some(), "InMemory conta uso");
+        assert!(inm.validate().iter().all(|i| i.key != "storage"));
+
+        // backend COM teto declarado: o §7 acusa o estouro
+        let flash = Flash {
+            map: std::collections::BTreeMap::new(),
+            cap: 8,
+        };
+        let mut db = Sgdb::open(flash).unwrap();
+        db.remember_text_with("c/2", "conteudo que estoura o teto", RememberOptions::default())
+            .unwrap();
+        assert_eq!(db.storage_capacity(), Some(8));
+        let issues = db.validate();
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.key == "storage" && i.message.contains("capacity")),
+            "estouro de capacidade deve aparecer no validate: {issues:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod v144_degraded_tests {
+    use super::*;
+    use crate::storage::InMemory;
+
+    /// v1.4.4 (ISSUE 16b): o motor tem que dizer "não vi" de "não pude ver".
+    /// `bq_unmounted` = docs de embedding existem mas o BQ está vazio; sem o
+    /// sinal, a IA lê o vazio como ausência de evidência.
+    #[test]
+    fn recall_degraded_reason_separates_no_evidence_from_no_visibility() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        // corpus só textual: nada degradado
+        db.remember_text_with("d/1", "so texto", RememberOptions::default())
+            .unwrap();
+        assert_eq!(db.recall_degraded_reason(), None, "sem embedding = sã");
+
+        // doc semântico entra no BQ: também sã
+        db.remember_semantic("d/2", "vetor", &[1.0, -1.0, 1.0, -1.0])
+            .unwrap();
+        assert_eq!(db.recall_degraded_reason(), None);
+
+        // `mixed_eras` NAO e alcancavel por `remember_semantic`: o era guard
+        // trava a largura do BQ e REJEITA outra dim. O sinal existe para o
+
+        // BQ vazio com corpus de embedding = bq_unmounted (o mount degradado)
+        let mut db2 = Sgdb::open(InMemory::new()).unwrap();
+        db2.remember_semantic("d/4", "vetor", &[1.0, -1.0, 1.0, -1.0])
+            .unwrap();
+        assert!(db2.bq_len() > 0);
+        db2.bq_mut().clear();
+        assert_eq!(db2.recall_degraded_reason(), Some("bq_unmounted"));
     }
 }

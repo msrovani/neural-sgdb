@@ -1,15 +1,83 @@
 # neural-sgdb — API Contract
 
 > Contract document for the extraction of the SGDB core from neural-os-core.
-> Status: **current public contract (crate v1.4.3)** —
+> Status: **current public contract (crate v1.4.4)** —
 > this document is the current public contract; roadmap items are explicitly
 > marked as such. The internal API lives in `crates/k_ai/src/sgdb/` of the
 > parent OS; this doc defines the public surface the community crate exposes
 > (and already ships).
 
+## v1.4.4 — the s413 lib finally reaches the wire
+
+Additive; this release moves the MCP contract **up one minor** (see
+`contract.json`). The s413 triage shipped
+nine APIs in 1.2.2 but none of them reached `tools/list` — and `index_key` was
+hardcoded `false` in the handler. What a model reads is the schema, so the
+surface is the contract.
+
+### MCP: write
+
+- `remember(author="agent"|"system", layer=)` — `system` is an **operational
+  write**: it indexes (ART/lexical) but does **not** tick the clock, so
+  overwriting `hw/cpu/avx2` twice at boot does not create two causal
+  authorities. `layer` is mandatory with `system` (and **rejected** with
+  `agent`: cognitive memory gets its layer from the type, ADR-0008). L4/L5 with
+  `system` require `embedding=` — without a bitvec the payload would be
+  reinterpreted as f32 and pollute the BQ.
+- `remember(index_key=true)` — indexes the KEY tokens in the lexical index, so
+  ops recall ("what is net_config?") finds by name. Default `false`.
+
+### MCP: the cognitive cycle, audited
+
+- `curate(op=forget_purge, key=, reason=)` — tombstone → delete → `AUDIT_OP_FORGET`
+  elo, in that order (delete first makes the tombstone fail and the mesh
+  resurrects the memory). Returns `{existed, tombstoned, deleted, audit_seq}`.
+  `op=forget` stays the soft archive.
+- `curate(op=audit_resolve, conflict_id=, winner_version_id=, now=, reason=)` —
+  the HITL decision that picks the winner now leaves a trail in the core chain
+  (`digest_kind=reason`).
+- `curate(op=audit_trail, key?=, since=, limit=)` — **reads** the trail. Matches
+  the raw key (suffix), so it still finds a memory **after** it is purged —
+  which is when the evidence matters.
+- `curate(op=export_delta, node=, since=, max=)` — directed anti-entropy pull
+  (range scan over the clock index; never a full scan).
+- `curate(op=set_authority, key=, authority=0..=255)` — MDM1 v8 `authority`
+  (`0` learned on the mesh, `255` HITL-approved); ties a causal draw.
+- `curate(op=conflicts, open_only=, limit=)` — the host no longer filters in
+  memory; `health(view=tensions).open_conflicts` now counts in the core.
+
+### MCP: machine-readable errors and honesty
+
+- Every core error carries `error.code` — `storage` | `corrupt` |
+  `key_rejected` | `not_found`, plus `retryable`. JSON-RPC errors carry
+  `data.code` (`invalid_params`, `unknown_tool`, …). The JSON-RPC `code` and
+  `message` are untouched: the code ADDS information.
+- `health.recall_degraded` → `bq_unmounted` | `mixed_eras` | `null`. "Semantic
+  recall returned nothing" must not be indistinguishable from "I don't know".
+- `health(view=validate)` gains `capacity_bytes` / `used_bytes` (`null` = the
+  backend declares no ceiling — a declared absence, never a fake number).
+
+### Lib
+
+- `Sgdb::set_authority(key, u8)` / `authority_of(key)`.
+- `Sgdb::storage_capacity()` / `storage_used()`; the `Storage` trait gains
+  `capacity_bytes()` / `used_bytes()` (default `None`); `validate` §7.
+- `Sgdb::recall_degraded_reason() -> Option<&'static str>`.
+- `audit::Hasher` (`Fnv1a64` | `Sha256Trunc`) + `set_audit_hasher()` +
+  `audit::sha256()` (`no_std`, zero-dep) + `audit::hash_with()` (pure).
+  **The AUD1 wire is unchanged** — the seam swaps the hash function, not the
+  format. 64 bits is not a signature (ADR-0006).
+
+### Invariant worth stating
+
+A **persistent side-table implies a persistent document**. Writing `sys/meta/`
+for an L0/L1 doc (RAM tier, flushed by `checkpoint_l0l1`) used to leave the
+meta in storage and the doc in RAM — after a restart the meta was orphaned and
+`validate` reported a legitimate write as corruption.
+
 ## v1.4.3 — DX surface (P0/P1)
 
-Additive; the MCP contract is `1.4.3` (`contract.json` is the machine-readable
+Additive; superseded by the section above; `contract.json` is the machine-readable
 source of truth, served at resource `nsgdb://contract`).
 
 - **P0.1 — retrieval default.** MCP `recall`/`rag_context` with `mode` omitted:
@@ -424,7 +492,7 @@ código, binários). Duas regras tornam o consumo determinístico:
 ## Additive public surface (v1.1.2–v1.1.26)
 
 Everything below is **additive** (MINOR per VERSIONING.md) — no signature of a
-v1.0 method changed; crate version **1.4.3** in `Cargo.toml`. Key additions since the contract above:
+v1.0 method changed; crate version **1.4.4** in `Cargo.toml`. Key additions since the contract above:
 
 ```rust
 // ---- fork/merge de memória (v1.2.1, seekdb item 1; src/harness.rs) ----

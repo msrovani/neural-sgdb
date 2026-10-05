@@ -196,8 +196,8 @@ fn main() {
     rep.check("initialize responde", !r.get("error").is_some(), r.to_string());
     rep.check("protocolVersion 2025-11-25",
         r["result"]["protocolVersion"] == "2025-11-25", r.to_string());
-    rep.check("serverInfo version 1.4.3",
-        r["result"]["serverInfo"]["version"] == "1.4.3", r.to_string());
+    rep.check("serverInfo version 1.4.4",
+        r["result"]["serverInfo"]["version"] == "1.4.4", r.to_string());
     rep.check("serverInfo mcp_tool_count 5",
         r["result"]["serverInfo"]["mcp_tool_count"] == 5, r.to_string());
     let instr = r["result"]["instructions"].as_str().unwrap_or("");
@@ -602,6 +602,28 @@ fn main() {
     rep.check("promote_run re-execucao e dedup", !is_err && txt.contains("deduped=1"), txt.clone());
     rep.phase("fork/merge promote_run", &t);
 
+    // ---------- fase 6f: ciclo cognitivo AUDITADO (v1.4.4, ISSUE 5/7) ----------
+    // O lote s413 entregou `forget_purge`/`audit_resolve`/`audit_trail` na LIB;
+    // ate v1.4.4 eles eram invisiveis pelo schema. Aqui o consumidor REALMENTE os usa.
+    let r = srv.rpc("tools/call", json!({"name": "curate", "arguments": {
+        "op": "forget_purge", "key": "hot-promote-1/fato-sandbox",
+        "reason": "hot test: purge com rasto"}}));
+    let fp = r["result"]["structuredContent"].clone();
+    rep.check("forget_purge apaga com elo de auditoria",
+        fp["tombstoned"] == true && fp["deleted"] == true && fp["audit_seq"].is_u64(),
+        fp.to_string());
+    // A memoria NAO existe mais: a trilha e o que sobrou dela.
+    let (txt, is_err) = srv.tool("curate", json!({"op": "audit_trail",
+        "key": "hot-promote-1/fato-sandbox"}));
+    rep.check("audit_trail le a trilha da memoria APAGADA",
+        !is_err && txt.contains("seq="), txt.clone());
+    let r = srv.rpc("tools/call", json!({"name": "curate", "arguments": {
+        "op": "audit_resolve", "conflict_id": "hot-c1", "winner_version_id": "v-hot-1",
+        "now": 7, "reason": "decisao HITL do hot test"}}));
+    let at = r["result"]["structuredContent"].clone();
+    rep.check("audit_resolve registra a decisao HITL na chain",
+        at["seq"].is_u64() && at["digest_kind"] == "reason", at.to_string());
+
     // ---------- fase 6d: ledger de negativos (v1.1.24, item 7) ----------
     // A memória guarda o que foi DITO; o ledger guarda o que foi PROCURADO e
     // não estava lá. O shape JSON é PRÓPRIO (query/probes/first/last) — não é
@@ -844,6 +866,72 @@ fn main() {
             && session_txt.contains("cold_start")
             && session_txt.contains("scopes_to_probe"), session_txt.to_string());
     rep.phase("health/validate", &t);
+
+    // ---------- fase 7e: superficie MCP do lote s413 (v1.4.4) ----------
+    // O `index_key` estava `false` HARD-CODED: a feature existia na lib e era
+    // invisivel para quem so le o schema (a mesma classe do bug do v1.1.23).
+    srv.rpc("tools/call", json!({"name": "remember", "arguments": {
+        "text": "hot test: somente o payload nao cita o nome da chave",
+        "key": "hot-index-key/alvo", "index_key": true}}));
+    let (txt, is_err) = srv.tool("recall", json!({"query": "alvo", "k": 10}));
+    rep.check("remember(index_key=true) torna a KEY pesquisavel",
+        !is_err && txt.contains("hot-index-key/alvo"), txt.clone());
+    // author=system: escrita operacional NAO cria autoria causal. Duas escritas
+    // da MESMA key nao viram duas versoes no export_delta.
+    let (txt, is_err) = srv.tool("remember", json!({
+        "text": "avx2", "key": "hot-op/cpu", "author": "system", "layer": "L1"}));
+    rep.check("remember(author=system) grava a camada pedida",
+        !is_err && txt.contains("hot-op/cpu"), txt.clone());
+    let (txt, is_err) = srv.tool("remember", json!({
+        "text": "avx2", "key": "hot-op/cpu", "author": "system", "layer": "L1"}));
+    rep.check("author=system aceita reescrita da mesma key", !is_err, txt.clone());
+    // `layer` com author=agent e recusado em voz alta (anunciado == servido).
+    let (txt, is_err) = srv.tool("remember", json!({
+        "text": "x", "key": "hot-op/recusado", "layer": "L1"}));
+    rep.check("layer= sem author=system e recusado com o motivo", is_err && txt.contains("author=system"), txt.clone());
+    // authority (MDM1 v8): o HITL marca a memoria sem escrever meta a mao.
+    let r = srv.rpc("tools/call", json!({"name": "curate", "arguments": {
+        "op": "set_authority", "key": "hot-op/cpu", "authority": 255}}));
+    rep.check("set_authority marca a memoria como HITL",
+        r["result"]["structuredContent"]["authority"] == 255,
+        r["result"].to_string());
+    // export_delta: pull direcionado do anti-entropy (o que o peer novo pede).
+    let r = srv.rpc("tools/call", json!({"name": "curate", "arguments": {
+        "op": "export_delta", "node": 1, "since": 0, "max": 0}}));
+    let recs = r["result"]["structuredContent"]["records"].clone();
+    // A escrita operacional NAO autoria: nada de `hot-op/cpu` no delta do nó 1.
+    let delta_s = recs.to_string();
+    rep.check("export_delta serve o pull do mesh e NAO inclui escrita operacional",
+        recs.is_array() && !delta_s.contains("hot-op/cpu"), delta_s.clone());
+    rep.phase("superficie MCP s413", &t);
+
+    // Guard v1.1.23 AMPLADO (v1.4.4): o enum anunciado do `curate op` e os
+    // args de `remember` tambem sao contrato — o `index_key` hard-coded
+    // sobreviveu a 3 releases porque o guard so cobria `view` do health.
+    let curate_schema = srv_tools["result"]["tools"]
+        .as_array()
+        .and_then(|ts| ts.iter().find(|t| t["name"] == "curate"))
+        .map(|t| t.to_string())
+        .unwrap_or_default();
+    rep.check("tools/list anuncia as ops novas do curate (forget_purge/audit_resolve/audit_trail/export_delta/set_authority)",
+        ["forget_purge", "audit_resolve", "audit_trail", "export_delta", "set_authority"]
+            .iter().all(|o| curate_schema.contains(&format!("\"{o}\""))),
+        curate_schema.clone());
+    let remember_schema = srv_tools["result"]["tools"]
+        .as_array()
+        .and_then(|ts| ts.iter().find(|t| t["name"] == "remember"))
+        .map(|t| t.to_string())
+        .unwrap_or_default();
+    rep.check("tools/list anuncia author/layer/index_key no remember",
+        ["\"author\"", "\"layer\"", "\"index_key\""].iter()
+            .all(|a| remember_schema.contains(a)),
+        remember_schema.clone());
+    // Erro machine-readable: o consumidor branqueia por codigo, nao por prosa.
+    let r = srv.rpc("tools/call", json!({"name": "curate", "arguments": {
+        "op": "set_authority", "key": "hot-op/nao-existe", "authority": 255}}));
+    let ec = r["result"]["structuredContent"]["error"]["code"].clone();
+    rep.check("erro do core carrega codigo machine-readable (error.code)",
+        ec == "not_found" || ec == "key_rejected", ec.to_string());
 
     // ---------- fase 7b: v1.1.28 — linguagem de máquina (ADR-0017) ----------
     let t = Instant::now();

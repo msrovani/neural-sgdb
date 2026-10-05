@@ -113,8 +113,9 @@ mod wire_fuzz;
 pub use art::ArtIndex;
 pub use ann::{HnswLite, IvfFlat};
 pub use audit::{
-    audit_key, audit_seq_from_key, AuditEntry, AuditSnapshotItem, AUDIT_OP_CHECKPOINT,
-    AUDIT_OP_FORGET, AUDIT_OP_ROLLBACK,
+    audit_hash, audit_hasher, audit_key, audit_seq_from_key, set_audit_hasher, AuditEntry,
+    AuditSnapshotItem, Hasher, AUDIT_OP_CHECKPOINT, AUDIT_OP_FORGET, AUDIT_OP_RESOLVE,
+    AUDIT_OP_ROLLBACK,
 };
 pub use bq::{
     hamming, hamming_path, quantize_f32, quantize_f32_centered, quantize_f32_minus_mean,

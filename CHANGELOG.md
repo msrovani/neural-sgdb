@@ -4,6 +4,84 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [1.4.4] — 2026-10-02 (a lib inteira finalmente chega ao MCP)
+
+O lote consumer-triage s413 (1.2.2) entregou nove APIs na **lib**. Nenhuma
+chegou ao schema: o consumidor que só le `tools/list` nunca as viu. O
+`index_key` estava literalmente `false` fixo no handler. Esta release fecha o
+gap — e, ao fazê-lo, o hot test achou **dois bugs reais** de persistência.
+
+### Novas APIs (lib)
+
+- `Sgdb::set_authority(key, u8)` / `authority_of(key)` — MDM1 v8 no wire (o
+  campo existia desde 1.2.2, sem setter p/ o host marcar HITL).
+- `Sgdb::storage_capacity()` / `storage_used()` + seam `Storage::capacity_bytes()`
+  e `used_bytes()` (default `None` = sem teto declarado) + `validate` §7.
+- `Sgdb::recall_degraded_reason()` → `bq_unmounted` | `mixed_eras` | `None`.
+- `audit::Hasher` + `set_audit_hasher()` + `sha256()` (`no_std`, zero-dep) — seam
+  da hash-chain, **wire AUD1 intocado**. `Sha256Trunc` eleva a tamper-evidence;
+  64 bits continua não sendo assinatura (ADR-0006).
+- `audit::hash_with()` — a função pura (testável sem global).
+
+### Mudança de contrato (MCP 1.4.3 → **1.4.4**)
+
+- `remember` ganha `author` (`agent` default | `system`), `layer` (enum L0–L7,
+  só com `author=system`) e `index_key` (opt-in, antes fixo em `false`).
+- `curate` ganha as ops `forget_purge`, `audit_resolve`, `audit_trail`,
+  `export_delta`, `set_authority`; `conflicts` ganha `open_only` e `limit`.
+- **Todo erro do core carrega código machine-readable** (`error.code`:
+  `storage` | `corrupt` | `key_rejected` | `not_found`, com `retryable`), e os
+  erros JSON-RPC carregam `data.code` (`invalid_params`, `unknown_tool`, …).
+  `code`/`message` seguem intactos — o código ADICIONA, não substitui.
+- `health` ganha `recall_degraded`; `health(view=validate)` ganha
+  `capacity_bytes`/`used_bytes`.
+
+### Fixed (achados pelo hot test, não por leitura)
+
+- **Side-table órfãa através restart**: `sys/meta/` de um doc do tier RAM
+  (L0/L1 antes do `checkpoint_l0l1`) ia para o storage enquanto o doc ficava em
+  RAM — no restart a meta sobrevivia órfã e o `validate` acusava "side-table
+  targets missing doc" para uma escrita legítima. Rega nova e única:
+  *side-table persistente implica doc persistente* (`materialize_ram_doc`).
+  A mesma regra vivia duplicada (`ensure_meta` olhava o RAM, `validate` não) —
+  regra copiada em N lugares diverge; a N-ésima foi o `validate`.
+- **`audit_for_key` perdia a trilha da memória apagada**: filtrava por storage key
+  exata, e depois do purge o doc já não existe — devolvia "nenhum elo" justo
+  quando a evidência importava. Passa a casar pela key crua do host.
+
+### Processo
+
+- **Erro meu de edição de arquivo, com lição**: duas edições por índice (sem
+  `assert`) duplicaram 11 mil linhas do `sgdb.rs` e apagaram as structs do
+  `audit.rs`. Regra: **toda substituição por string exige `assert alvo in texto`
+  antes de escrever**; nada de fatiar por índice (o arquivo é CRLF).
+- **O golden AUD1 pegou um off-by-one meu** (esqueci o byte de versão no offset
+  4) — exatamente o que ele existe para pegar.
+- **A paridade do FNV pegou a prima errada**: escrevi `0x1000_0000_01b3` (um zero a
+  mais) e o hash "funcionava" sem erro visível; so a comparação byte-a-byte
+  com `tickv::fnv1a64` denunciou — teria invalidado toda chain gravada.
+- **Teste que muta global vai para binário separado** (`tests/audit_hasher_seam.rs`):
+  `set_audit_hasher` é um `AtomicU8`, e um teste de lib que o mutasse correria em
+  paralelo com os testes da chain.
+- Gate `no_std` quebrado de novo (recorrência v1.1.15/v1.2.1): teste novo com
+  `std::fs` precisa de `#[cfg(all(test, feature = "file-storage"))]`.
+
+### Infra
+
+- CI ganha três jobs: `wire_fuzz` (o fuzz existia no src e nunca rodava no CI),
+  `cargo test --lib -- --shuffle` (a suíte passa por acidente dependente da ordem)
+  e o gate de goldens.
+- Goldens novos: **MDM1 v8** (`authority` como último byte) e **AUD1** (ordem de
+  campos da chain). Já havia NMD1 e TKLV.
+
+### Gates
+
+- Matriz **422** (lib) / **438** (p2p) / **355** (`no_std`), clippy `-D warnings`,
+  rustdoc `-D warnings`, `x86_64-unknown-none`, hot test **170/0** (12 novas
+  asserções: fases 6f e 7e + guard "anunciado == servido" estendido ao enum do
+  `curate op` e aos args do `remember`).
+- NMD1/TKLV/AUD1 byte-identicalos; MDM1 v8 é o único bump (migração explícita).
+
 ## [1.4.3] — 2026-10-02 (honestidade do decide + TTL honrado no open)
 
 Contrato MCP **1.4.3** (PATCH: dois comportamentos de servidor corrigidos).

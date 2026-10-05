@@ -6,7 +6,7 @@ repo. **Read `codemap.md` (atlas), `docs/api.md` (contract) and
 Storage, Cognitive API; typed hits from v1.1.6; current crate = `Cargo.toml`) and
 `docs/implementation-status.md` before editing code.**
 
-**Shipped crate is 1.4.3 (agentic MCP contract 1.4.3, hot test 158/0):** Vocabulário ÚNICO
+**Shipped crate is 1.4.4 (agentic MCP contract 1.4.4, hot test 170/0):** Vocabulário ÚNICO
 prosa/JSON (ADR-0017: `{:?}` fora do wire; tool `decide` 𝒥(S,𝒬) = 5º tool;
 `recall_candidates` sinais decompostos; validate tipado; k=0 erro). `Hit.type_scores`
 = **ADR-0016** (episódico/semântico/procedural/preferência sobrepostos,
@@ -52,6 +52,79 @@ policy. `MIGRATIONS.md` §MCP contract (1.2.1→1.3.0).
 [`docs/agent-self-program.md`](docs/agent-self-program.md) +
 [`docs/doctrine.md`](docs/doctrine.md); cold-start toda sessão; skill
 `.cursor/skills/nsgdb-full-usage/`.
+
+## Release 1.4.4 — a lib inteira finalmente chega ao MCP (2026-10-02)
+
+O lote consumer-triage s413 (1.2.2) entregou **nove APIs na lib** e **nenhuma
+no schema**. O consumidor que só lê `tools/list` — que é o modelo — nunca as
+viu. O `index_key` estava `false` **fixo no handler** ([mcp_server.rs:214]
+(é 1.4.4)). Isso é o bug de contrato do v1.1.23 (`health(view=index)` servido e
+não anunciado) repetido em outra forma: feature entregue, testada na lib,
+invisível para quem decide.
+
+**Regra que fecha a classe:** o guard "anunciado == servido" do hot test cobria
+só o enum `view` do health. Estendido ao **enum do `curate op`** e aos **args do
+`remember`** — que é o que teria pego o `index_key` fixo 3 releases depois.
+
+### O que entrou no contrato MCP (1.4.3 → 1.4.4)
+
+`remember(author=system|agent)`, `remember(layer=)`, `remember(index_key=)`;
+`curate op=forget_purge|audit_resolve|audit_trail|export_delta|set_authority`;
+`conflicts(open_only, limit)`; `error.code` machine-readable em **todo** erro do
+core (38 sítios migrados de uma vez) + `data.code` nos erros JSON-RPC;
+`health.recall_degraded`; `health(view=validate).capacity_bytes/used_bytes`.
+
+### Dois bugs REAIS que o hot test achou (nao leitura)
+
+1. **Side-table órfãa através restart.** `sys/meta/` de um doc do tier RAM
+   (L0/L1 antes do `checkpoint_l0l1`) ia para o storage enquanto o doc ficava em
+   RAM. No restart a meta sobrevivia órfã e o `validate` acusava "side-table
+   targets missing doc" para uma escrita legítima. Rega nova, em `engine.rs`:
+   **side-table persistente implica doc persistente** (`materialize_ram_doc`).
+   A mesma regra vivia duplicada — `ensure_meta` olhava o tier RAM, `validate`
+   olhava só `storage`. Regra copiada em N lugares diverge; a N-ésima foi o
+   `validate`. Ambos os testes **morrem sem o fix** (mutção verificada: o arquivo
+   é CRLF — mutações por índice/sem assert eram no-op e davam "verde" falso).
+2. **`audit_for_key` perdia a trilha da memória apagada.** Filtrava por storage key
+   exata; depois do purge o doc não existe, e devolvia "nenhum elo" — justo
+   quando a evidência importa mais. Passa a casar pela key **crua** do host.
+
+### Lote C — seam de hash da audit chain
+
+`audit::Hasher` (`Fnv1a64` | `Sha256Trunc`) + `set_audit_hasher`, wire **AUD1
+intocado**. SHA-256 `no_std` zero-dep no próprio crate. **Honesto:** 64 bits não
+é assinatura (ADR-0006) — isto eleva tamper-evidence, não cria autenticidade.
+
+Duas armadilhas que os testes pegaram, ambas silenciosas:
+- **a prima do FNV-64**: escrevi `0x1000_0000_01b3` (um zero a mais) e o hash
+  "funcionava" sem erro visível. A comparação byte-a-byte com `tickv::fnv1a64`
+  denunciou — teria invalidado **toda chain já gravada**. O default tem que ser
+  byte-idêntico ao histórico, e agora há teste que diz isso.
+- **teste que muta global**: `set_audit_hasher` é `AtomicU8`; um teste de lib que o
+  mutasse correria em paralelo com os testes da chain. Vai para
+  `tests/audit_hasher_seam.rs` (processo separado).
+
+### Lote E — CI
+
+`wire_fuzz` (existia no src, nunca rodou no CI), `cargo test --lib -- --shuffle`
+(a suíte passa por acidente dependente da ordem) e gate de goldens. Goldens
+novos: **MDM1 v8** e **AUD1** — o do AUD1 pegou um off-by-one meu (esqueci o byte
+de versão no offset 4), que é exatamente o que um golden existe pra pegar.
+
+### Lição de processo (custou caro)
+
+Duas edições por índice, sem `assert`, duplicaram 11 mil linhas do
+`sgdb.rs` e apagaram as structs do `audit.rs`. **Toda substituição por string
+exige `assert alvo in texto` antes de escrever**; nada de fatiar por índice
+(o repo é CRLF). Recuperar exigiu `git show HEAD:arquivo > local` e reaplicar
+numa passada única com âncoras verificadas.
+
+### Matriz desta release
+
+lib **422+2** / p2p **438** / no_std **355**; clippy e rustdoc `-D warnings`;
+`x86_64-unknown-none` ok; hot test **170/0**. Gate `no_std` quebrou de novo
+(recorrência v1.1.15/v1.2.1): teste novo com `std::fs` precisa de
+`#[cfg(all(test, feature = "file-storage"))]`.
 
 ## Post-P2 hardening state (2026-08-13)
 

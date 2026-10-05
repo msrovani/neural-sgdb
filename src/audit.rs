@@ -38,6 +38,196 @@ pub const AUDIT_OP_FORGET: u8 = 2;
 /// compatível: a key lógica do conflito, meta = winner_vid).
 pub const AUDIT_OP_RESOLVE: u8 = 3;
 
+// -- Seam de hash da chain (v1.4.4, triagem s413 ISSUE 6a) ----------------------
+//
+// ADR-0006: cripto e SEAM. O efeito pratico do FNV-1a sem chave e que a chain
+// detecta corrupcao ACIDENTAL, nao adversario - quem escreve no storage
+// recalcula o `prev_hash`. `Sha256Trunc` eleva a tamper-evidence sem mudar o
+// wire (o `digest` continua `u64`). Honesto: 64 bits NAO e assinatura -
+// autenticidade (Ed25519) continua sendo do host.
+//
+// Selecao por enum + `AtomicU8`: sem `dyn` global, sem `unsafe`, `no_std`.
+
+/// SHA-256 (`no_std`, zero-dep). Existe para o seam: a chain deixa de
+/// depender so do FNV-1a sem chave, sem wire change e sem `unsafe`. Nao e
+/// assinatura - e resistencia a pre-imagem (~2^32 por forca bruta no trunc).
+pub fn sha256(data: &[u8]) -> [u8; 32] {
+    const K: [u32; 64] = [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
+        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
+        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
+        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
+        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+        0xc67178f2,
+    ];
+    let mut h: [u32; 8] = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+        0x5be0cd19,
+    ];
+
+    // padding: 0x80 + zeros + 64-bit BE do bit-length
+    let bit_len = (data.len() as u64).wrapping_mul(8);
+    let mut msg = Vec::with_capacity(data.len() + 72);
+    msg.extend_from_slice(data);
+    msg.push(0x80);
+    while msg.len() % 64 != 56 {
+        msg.push(0);
+    }
+    msg.extend_from_slice(&bit_len.to_be_bytes());
+
+    let mut w = [0u32; 64];
+    for chunk in msg.as_chunks::<64>().0 {
+        for i in 0..16 {
+            w[i] = u32::from_be_bytes([
+                chunk[4 * i],
+                chunk[4 * i + 1],
+                chunk[4 * i + 2],
+                chunk[4 * i + 3],
+            ]);
+        }
+        for i in 16..64 {
+            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16]
+                .wrapping_add(s0)
+                .wrapping_add(w[i - 7])
+                .wrapping_add(s1);
+        }
+        let (mut a, mut b, mut c, mut d) = (h[0], h[1], h[2], h[3]);
+        let (mut e, mut f, mut g, mut hh) = (h[4], h[5], h[6], h[7]);
+        for i in 0..64 {
+            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+            let ch = (e & f) ^ ((!e) & g);
+            let t1 = hh
+                .wrapping_add(s1)
+                .wrapping_add(ch)
+                .wrapping_add(K[i])
+                .wrapping_add(w[i]);
+            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+            let maj = (a & b) ^ (a & c) ^ (b & c);
+            let t2 = s0.wrapping_add(maj);
+            hh = g;
+            g = f;
+            f = e;
+            e = d.wrapping_add(t1);
+            d = c;
+            c = b;
+            b = a;
+            a = t1.wrapping_add(t2);
+        }
+        h[0] = h[0].wrapping_add(a);
+        h[1] = h[1].wrapping_add(b);
+        h[2] = h[2].wrapping_add(c);
+        h[3] = h[3].wrapping_add(d);
+        h[4] = h[4].wrapping_add(e);
+        h[5] = h[5].wrapping_add(f);
+        h[6] = h[6].wrapping_add(g);
+        h[7] = h[7].wrapping_add(hh);
+    }
+
+    let mut out = [0u8; 32];
+    for (i, v) in h.iter().enumerate() {
+        out[4 * i..4 * i + 4].copy_from_slice(&v.to_be_bytes());
+    }
+    out
+}
+
+/// Hashers da chain (v1.4.4). O wire AUD1 nao muda: o seam troca a FUNCAO de
+/// hash, nunca o formato.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hasher {
+    /// FNV-1a 64 - default historico da chain.
+    Fnv1a64,
+    /// SHA-256 truncado aos 64 bits primeiros.
+    Sha256Trunc,
+}
+
+impl Hasher {
+    /// Rotulo estavel (telemetria honesta no health/contract).
+    pub fn label(&self) -> &'static str {
+        match self {
+            Hasher::Fnv1a64 => "fnv1a64",
+            Hasher::Sha256Trunc => "sha256-trunc",
+        }
+    }
+}
+
+/// Offset basis do FNV-1a 64 (o "hash vazio" da funcao).
+pub const FNV64_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+
+/// FNV-1a 64 COM SEED. O seed explicito cobre os DOIS formatos que a chain
+/// usa: hash de bloco (`digest`, `prev_hash`) e digest RODANTE do estado.
+/// Mesma polinomica de `crate::tickv::fnv1a64` - mudar aqui invalida toda
+/// chain ja gravada (o teste de paridade impede).
+#[inline]
+fn fnv1a64_seeded(mut h: u64, data: &[u8]) -> u64 {
+    for &b in data {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100_0000_01b3);
+    }
+    h
+}
+
+static AUDIT_HASHER: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+/// Hasher ativo da chain.
+#[inline]
+pub fn audit_hasher() -> Hasher {
+    match AUDIT_HASHER.load(core::sync::atomic::Ordering::Relaxed) {
+        1 => Hasher::Sha256Trunc,
+        _ => Hasher::Fnv1a64,
+    }
+}
+
+/// Troca o hasher da chain. Afeta elos NOVOS: a chain existente foi gravada
+/// com o hasher antigo e re-auditar-la exigiria reescrever a storage - o host
+/// escolhe o seam ANTES do primeiro checkpoint.
+pub fn set_audit_hasher(h: Hasher) {
+    use core::sync::atomic::Ordering;
+    AUDIT_HASHER.store(
+        match h {
+            Hasher::Fnv1a64 => 0,
+            Hasher::Sha256Trunc => 1,
+        },
+        Ordering::Relaxed,
+    );
+}
+
+/// Hash de um bloco da chain (`digest`, `prev_hash`) com o hasher ativo.
+#[inline]
+pub fn audit_hash(data: &[u8]) -> u64 {
+    hash_with(audit_hasher(), FNV64_OFFSET, data)
+}
+
+/// Hash de um bloco COM SEED (digest rodante do estado).
+#[inline]
+pub fn audit_hash_seeded(seed: u64, data: &[u8]) -> u64 {
+    hash_with(audit_hasher(), seed, data)
+}
+
+/// Hash com hasher EXPLICITO - a funcao pura que os testes usam (nao toca no
+/// global, entao nao corre em paralelo com os testes da chain).
+#[inline]
+pub fn hash_with(h: Hasher, seed: u64, data: &[u8]) -> u64 {
+    match h {
+        Hasher::Fnv1a64 => fnv1a64_seeded(seed, data),
+        Hasher::Sha256Trunc => {
+            // O seed entra como prefixo de 8 bytes: sem ele o modo seeded e o
+            // modo de bloco dariam o MESMO hash.
+            let mut buf = Vec::with_capacity(8 + data.len());
+            buf.extend_from_slice(&seed.to_le_bytes());
+            buf.extend_from_slice(data);
+            let full = sha256(&buf);
+            u64::from_le_bytes([full[0], full[1], full[2], full[3], full[4], full[5], full[6], full[7]])
+        }
+    }
+}
+
+
 /// Uma entrada do ledger (um elo da hash-chain).
 #[derive(Clone, Debug, PartialEq)]
 pub struct AuditEntry {
@@ -268,5 +458,120 @@ mod tests {
         for cut in 0..enc.len() {
             let _ = AuditEntry::decode(&enc[..cut]);
         }
+    }
+}
+
+#[cfg(test)]
+mod v144_hasher_tests {
+    use super::*;
+
+    /// (a) SHA-256 bate com os vetores do NIST. A constante da prima do FNV
+    /// tambem e coberta aqui: escrevi `0x1000_0000_01b3` (um zero a mais) e o
+    /// hash "funcionava" sem nenhum erro visivel - so a PARIDADE com
+    /// `tickv::fnv1a64` denunciou.
+    #[test]
+    fn sha256_matches_nist_vectors() {
+        assert_eq!(
+            sha256(b"abc"),
+            [
+                0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d,
+                0xae, 0x22, 0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10,
+                0xff, 0x61, 0xf2, 0x00, 0x15, 0xad
+            ]
+        );
+        assert_eq!(
+            sha256(b""),
+            [
+                0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99,
+                0x6f, 0xb9, 0x24, 0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95,
+                0x99, 0x1b, 0x78, 0x52, 0xb8, 0x55
+            ]
+        );
+        // multiplos blocos + o padding de 56 mod 64
+        let big = alloc::vec![b'a'; 1 << 20];
+        assert_ne!(sha256(&big), sha256(b"a"));
+    }
+
+    /// (b) O default tem que ser BYTE-IDENTICO ao FNV-1a historico - o teste que
+    /// impediu a prima errada de virar mudanca silenciosa de formato.
+    #[test]
+    fn fnv1a64_default_is_byte_identical_to_history() {
+        let data = b"elo de auditoria";
+        assert_eq!(
+            hash_with(Hasher::Fnv1a64, FNV64_OFFSET, data),
+            crate::tickv::fnv1a64(data),
+            "default tem que bater com fnv1a64 historico"
+        );
+        // seeded: o estado rodante usa a mesma funcao com semente
+        let seed = FNV64_OFFSET;
+        let mut h = seed;
+        for &b in data {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100_0000_01b3);
+        }
+        assert_eq!(hash_with(Hasher::Fnv1a64, seed, data), h);
+    }
+
+    /// (c) Os dois hashers produzem digests DIFERENTES para o mesmo motivo, e
+    /// o modo seeded nao degenera no modo de bloco.
+    #[test]
+    fn hashers_differ_and_seeded_is_not_the_block_hash() {
+        let data = b"motivo";
+        let a = hash_with(Hasher::Fnv1a64, FNV64_OFFSET, data);
+        let b = hash_with(Hasher::Sha256Trunc, FNV64_OFFSET, data);
+        assert_ne!(a, b, "sha256-trunc tem que diferir do fnv1a64");
+        assert_ne!(
+            hash_with(Hasher::Sha256Trunc, 7, data),
+            hash_with(Hasher::Sha256Trunc, FNV64_OFFSET, data),
+            "o seed tem que entrar no digest (ou o rolling nao herda nada)"
+        );
+        assert_eq!(Hasher::Fnv1a64.label(), "fnv1a64");
+        assert_eq!(Hasher::Sha256Trunc.label(), "sha256-trunc");
+    }
+}
+
+#[cfg(test)]
+mod v144_golden_aud_tests {
+    use super::*;
+
+    /// v1.4.4 (Lote E, ISSUE 18): golden byte-exato da **AUD1**. A chain é o
+    /// formato onde um off errado é mais caro: um `prev_hash` lido do lugar
+    /// errado não dá panic — dá "chain intacta" sobre chain quebrada. Sem
+    /// golden byte-a-byte, isso só apareceria num incidente real.
+    #[test]
+    fn golden_aud1_layout_pins_magic_version_and_field_order() {
+        let e = AuditEntry {
+            seq: 7,
+            prev_hash: 0x1111_2222_3333_4444,
+            ts: 99,
+            op: AUDIT_OP_RESOLVE,
+            digest: 0x5555_6666_7777_8888,
+            snapshot: alloc::vec![AuditSnapshotItem {
+                sk: String::from("md/L3/x"),
+                state: crate::memory_doc::MemoryState::Active,
+                validity: None,
+                meta: alloc::vec![0xAA, 0xBB],
+            }],
+        };
+        let enc = e.encode();
+        assert_eq!(&enc[0..4], b"AUD1", "magic AUD1 byte-exato");
+        assert_eq!(enc[4], AUDIT_VERSION, "byte de versao logo apos o magic");
+        // campos de topo em ordem: seq | prev_hash | ts | op | digest
+        // (o golden pegou um off-by-one REAL na 1a redacao deste teste: sem o
+        // byte de versao no offset 4, todo o resto desliza 1 byte.)
+        assert_eq!(&enc[5..13], &7u64.to_le_bytes(), "seq");
+        assert_eq!(&enc[13..21], &0x1111_2222_3333_4444u64.to_le_bytes(), "prev_hash");
+        assert_eq!(&enc[21..29], &99u64.to_le_bytes(), "ts");
+        assert_eq!(enc[29], AUDIT_OP_RESOLVE, "op");
+        assert_eq!(&enc[30..38], &0x5555_6666_7777_8888u64.to_le_bytes(), "digest");
+        // roundtrip preserva o elo (tamper-evidence depende disso)
+        let back = AuditEntry::decode(&enc).expect("decode do elo");
+        assert_eq!(back.seq, e.seq);
+        assert_eq!(back.prev_hash, e.prev_hash);
+        assert_eq!(back.digest, e.digest);
+        assert_eq!(back.op, e.op);
+        assert_eq!(back.snapshot.len(), 1);
+        assert_eq!(back.snapshot[0].sk, "md/L3/x");
+        assert_eq!(back.snapshot[0].meta, alloc::vec![0xAA, 0xBB]);
     }
 }

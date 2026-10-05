@@ -253,6 +253,18 @@ impl AiosDatabaseEngine {
 
     /// Get CRU do storage por key (P2-3, `Sgdb::validate`): não passa pelo
     /// índice ART nem pelo decode NMD1 — integridade da side-table.
+    /// Capacidade do backend (seam v1.4.4): delega ao `Storage` para o
+    /// `validate` §7 e para o host que precisa pré-checar espaço antes do write.
+    /// `None` = sem teto declarado (arquivo cresce) — ausência DECLARADA.
+    pub fn storage_capacity(&mut self) -> Option<u64> {
+        self.storage.capacity_bytes()
+    }
+
+    /// Bytes em uso (ou `None` = o backend não conta).
+    pub fn storage_used(&mut self) -> Option<u64> {
+        self.storage.used_bytes()
+    }
+
     pub fn storage_get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, SgdbError> {
         self.storage.get(key)
     }
@@ -524,8 +536,24 @@ impl AiosDatabaseEngine {
     }
 
     pub fn write_meta(&mut self, sk: &str, m: &MemoryMeta) -> Result<(), SgdbError> {
+        self.materialize_ram_doc(sk)?;
         self.storage.put(&meta_key(sk), &m.encode())?;
         self.reindex_entities(sk, m);
+        Ok(())
+    }
+
+    /// Side-table PERSISTENTE implica doc PERSISTENTE (v1.4.4).
+    ///
+    /// `sys/*` vai para o storage na hora; o doc de L0/L1 vive no tier RAM ate
+    /// o `checkpoint_l0l1`. Sem promover o doc, a side-table sobrevivia ao
+    /// restart e o doc nao — `validate` acusava "side-table targets missing
+    /// doc" para uma escrita legitima. Custa 1 write no momento da side-table
+    /// e mata a classe inteira do bug (achado pelo hot test com
+    /// `remember(author=system, layer=L1)` + `set_authority`).
+    fn materialize_ram_doc(&mut self, sk: &str) -> Result<(), SgdbError> {
+        if let Some(blob) = self.ram_l0l1.remove(sk) {
+            self.storage.put(sk.as_bytes(), &blob)?;
+        }
         Ok(())
     }
 
@@ -659,11 +687,21 @@ impl AiosDatabaseEngine {
 
     /// Garante meta para `sk` (migração de registros pré-v0.6: cria
     /// identidade determinística a partir do doc). Err se o doc não existe.
+    ///
+    /// REGRA ÚNICA de "o doc existe?" (v1.4.4): o tier RAM (`ram_l0l1`, L0/L1
+    /// até o `checkpoint_l0l1`) É storage para efeitos de existência. Antes
+    /// esta regra vivia duplicada: `ensure_meta` olhava o RAM e o `validate`
+    /// olhava só `storage` — então uma side-table legítima em memória (meta de
+    /// um L1 escrito no boot) era reportada como órfã. Regra copiada em N
+    /// lugares diverge; a N-ésima foi o `validate`.
+    pub fn doc_exists(&mut self, sk: &str) -> Result<bool, SgdbError> {
+        Ok(self.ram_l0l1.contains_key(sk) || self.storage.get(sk.as_bytes())?.is_some())
+    }
     pub fn ensure_meta(&mut self, sk: &str) -> Result<MemoryMeta, SgdbError> {
         if let Some(m) = self.read_meta(sk) {
             return Ok(m);
         }
-        let exists = self.ram_l0l1.contains_key(sk) || self.storage.get(sk.as_bytes())?.is_some();
+        let exists = self.doc_exists(sk)?;
         if !exists {
             return Err(SgdbError::Invalid(
                 "no memory at key (use the full canonical storage key, e.g. md/L4/<key> — remember returns it)",
@@ -1703,6 +1741,12 @@ impl AiosDatabaseEngine {
         self.ram_l0l1.len()
     }
 
+    /// BQ mutável — só para teste interno (simula mount degradado).
+    #[cfg(test)]
+    pub(crate) fn bq_mut(&mut self) -> &mut BqFlatIndex {
+        &mut self.bq
+    }
+
     pub fn bq_len(&self) -> usize {
         self.bq.len()
     }
@@ -1727,6 +1771,8 @@ impl AiosDatabaseEngine {
         if st != MemoryState::Active && self.get_by_storage_key(sk)?.is_none() {
             return Err(SgdbError::Invalid("set_state: no memory at key"));
         }
+        // side-table persistente => doc persistente (v1.4.4, ver write_meta)
+        self.materialize_ram_doc(sk)?;
         let k = state_key(sk);
         if st == MemoryState::Active {
             // Active = default: remove o registro lateral SOMENTE se existir
@@ -1745,6 +1791,8 @@ impl AiosDatabaseEngine {
     /// remove a marcação (validade infinita = default). Side-table
     /// `sys/validity/` via Storage cru — NMD1 intacto.
     pub fn set_validity(&mut self, sk: &str, from: u64, until: u64) -> Result<(), SgdbError> {
+        // side-table persistente => doc persistente (v1.4.4, ver write_meta)
+        self.materialize_ram_doc(sk)?;
         let k = validity_key(sk);
         if until <= from {
             self.storage.delete(&k)?;
