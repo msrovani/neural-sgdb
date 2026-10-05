@@ -328,9 +328,13 @@ impl VectorClock {
         }
         let mut vc = Self::new();
         vc.nodes.copy_from_slice(&data[0..8]);
-        for i in 0..8 {
+        // `enumerate` em vez de `0..8` indexando `vc.counts[i]`: o lint
+        // `needless_range_loop` (novo no clippy moderno) pede o iterador. O
+        // offset e a ordem de leitura sao IDENTICOS — e o decode e o caminho
+        // quente do NMD1, entao a equivalencia nao e negociavel.
+        for (i, slot) in vc.counts.iter_mut().enumerate() {
             let o = 8 + i * 8;
-            vc.counts[i] = u64::from_le_bytes(data[o..o + 8].try_into().ok()?);
+            *slot = u64::from_le_bytes(data[o..o + 8].try_into().ok()?);
         }
         Some((vc, 8 + 64))
     }

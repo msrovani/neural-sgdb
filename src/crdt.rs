@@ -1372,8 +1372,10 @@ mod tests {
                 (0..n).map(|i| self.nodes[i].crdt.known_clock()).collect();
             // 1) anúncios
             let mut outboxes: Vec<Vec<(u8, u64)>> = Vec::with_capacity(n);
-            for i in 0..n {
-                outboxes.push(self.nodes[i].crdt.announce());
+            // `take(n)` e nao `0..n` + indexacao: a ordem dos nos e a mesma
+            // (o vetor e `[Node; NODES]`, a ordem de announce e observavel).
+            for node in self.nodes.iter().take(n) {
+                outboxes.push(node.crdt.announce());
             }
             // 2) entrega por arestas + merge de versões
             for j in 0..n {
@@ -1754,16 +1756,16 @@ mod tests {
             k.sort();
             k
         };
-        for i in 1..n {
-            let mut k: Vec<String> = m.nodes[i]
+        // `take(n).skip(1)` == `1..n`, e `enumerate` mantem o `i` da mensagem.
+        for (i, node) in m.nodes.iter_mut().enumerate().take(n).skip(1) {
+            let mut k: Vec<String> = node
                 .db
                 .scan_prefix("md/L2/")
                 .unwrap()
                 .into_iter()
                 .map(|(k, _)| k)
                 .chain(
-                    m.nodes[i]
-                        .db
+                    node.db
                         .scan_prefix("md/L4/")
                         .unwrap()
                         .into_iter()
@@ -1785,8 +1787,8 @@ mod tests {
                 .unwrap()
                 .unwrap_or_else(|| panic!("nó 0 sem {key}"));
             let enc0 = rec0.encode();
-            for i in 1..n {
-                let rec = m.nodes[i]
+            for (i, node) in m.nodes.iter_mut().enumerate().take(n).skip(1) {
+                let rec = node
                     .db
                     .export_record(key)
                     .unwrap()
@@ -1905,16 +1907,16 @@ mod tests {
             k.sort();
             k
         };
-        for i in 1..n {
-            let mut k: Vec<String> = m.nodes[i]
+        // `take(n).skip(1)` == `1..n`, e `enumerate` mantem o `i` da mensagem.
+        for (i, node) in m.nodes.iter_mut().enumerate().take(n).skip(1) {
+            let mut k: Vec<String> = node
                 .db
                 .scan_prefix("md/L2/")
                 .unwrap()
                 .into_iter()
                 .map(|(k, _)| k)
                 .chain(
-                    m.nodes[i]
-                        .db
+                    node.db
                         .scan_prefix("md/L4/")
                         .unwrap()
                         .into_iter()
@@ -1931,8 +1933,8 @@ mod tests {
             }
             let rec0 = m.nodes[0].db.export_record(key).unwrap().unwrap();
             let enc0 = rec0.encode();
-            for i in 1..n {
-                let rec = m.nodes[i].db.export_record(key).unwrap().unwrap();
+            for (i, node) in m.nodes.iter_mut().enumerate().take(n).skip(1) {
+                let rec = node.db.export_record(key).unwrap().unwrap();
                 assert_eq!(rec.encode(), enc0, "nó {i}: record divergente em {key}");
             }
         }
