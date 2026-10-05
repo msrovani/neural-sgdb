@@ -21,6 +21,21 @@ rodou** e três conclusoes que o repo carregava sem numero.
   foi recriado **3 meses mais novo** do que o da sessao anterior: o CI (stable)
   ja reprovava e ninguem tinha rodado.
 
+- **`scripts/release-gate.sh` (novo)**: a matriz completa em UM comando local —
+  clippy, lib (+ em serie), p2p, no_std, integracao, goldens, wire_fuzz,
+  rustdoc, target `x86_64-unknown-none`, host crates, `wasm32` de verdade,
+  conectores e hot test. Imprime o resumo de **todas** as quebras (nao para na
+  primeira) e sai != 0 se alguma falhar; `SKIP_HOT=1` pula o hot test.
+  Nasceu dos TRES gates do CI que estavam vermelhos e nunca tinham rodado —
+  um gate que ninguem executa nao e gate, e "lembre-se de rodar" nao sobrevive
+  a um release fechado.
+- **O check do `nsgdb-wasm` dava confianca falsa**: a feature `wasm` (que e a
+  razao da crate existir) nunca era compilada — o default dela e vazio. Agora
+  o CI compila em `wasm32-unknown-unknown`, que e o que o crate promete. As
+  deps (`wasm-bindgen`/`js-sys`/`web-sys`) sao **reservadas** de proposito
+  (o esqueleto esta comentado em `src/lib.rs`); o comment no manifest diz isso,
+  senao o aviso de `unused_dependencies` parece esquecimento.
+
 - **O conector host estava pinado no contrato de 4 tools desde o 1.4.3**:
   `assert_contract` recusava o servidor **proprio** (`esperado [...4 tools],
   recebido [... decide]`) e os 4 testes de `connectors/` morriam no import

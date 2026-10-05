@@ -63,7 +63,11 @@ jobs:
       - name: host crates (nsgdb-embed / nsgdb-wasm)
         run: |
           cargo check --manifest-path crates/nsgdb-embed/Cargo.toml
-          cargo check --manifest-path crates/nsgdb-wasm/Cargo.toml
+          # A feature `wasm` e o que a crate PROMETE ("compila em wasm32 e no
+          # host"). Checkar so o default (vazio) dava confianca falsa.
+          rustup target add wasm32-unknown-unknown
+          cargo check --manifest-path crates/nsgdb-wasm/Cargo.toml \
+            --features wasm --target wasm32-unknown-unknown
 
       - name: stress (reduced N for CI)
         run: |

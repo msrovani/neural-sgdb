@@ -1017,10 +1017,19 @@ Apache-2.0**. OS interop via byte-identical NMD1 and TKLV formats.
    updating the OS.
 6. **Seams, not globals** — clock via `now: u64`, SIMD via `cpu_caps()`/
    `set_cpu_caps()`, log via `sgdb_log!`. No global engine statics.
-7. **Verification** — `cargo test` (412+2 default, 428 `--features p2p`,
-   349+2 `--no-default-features`) and `cargo check` (std + no_std) before
-   committing. Clippy/rustdoc run with `-D warnings` (P0-5/P0-6/P0-10);
-   `cargo fmt` is NOT a gate (repo is not rustfmt-clean — 223 diffs).
+7. **Verification** — **`bash scripts/release-gate.sh`** antes de fechar
+   release (não antes de cada commit). Ele roda a matriz completa + clippy +
+   rustdoc + goldens + wire_fuzz + target no_std + conectores + host crates +
+   hot test, imprime o resumo de **todas** as quebras (não para na primeira) e
+   sai != 0 se qualquer uma falhar. `SKIP_HOT=1` pula o hot test (o lento).
+   Matriz atual: **423** default, **439** `--features p2p`, **356**
+   `--no-default-features`, **21** integração, **4** goldens, hot test
+   **177/0**. Clippy/rustdoc com `-D warnings`; `cargo fmt` **não** é gate (o
+   repo não é rustfmt-clean).
+   *Por que um script e não "lembre-se de rodar": na 1.4.5, três gates do CI
+   estavam vermelhos e nenhum tinha rodado (job `--shuffle` quebrado,
+   docs-gate reprovando o release fechado, 5 lints novos). Gate que ninguém
+   executa não é gate.*
 
 ## Quick API
 

@@ -1,6 +1,12 @@
 # Rust
 target/
+# Convenção Rust de LIBRARY: o lock nao entra. Consequencia aceita e
+# documentada (VERSIONING.md): cada maquina re-resolve. O CI checa os host
+# crates justamente porque nao ha lock para prender a resolucao.
 Cargo.lock
+
+# Logs do release gate (scripts/release-gate.sh)
+.release-gate.*.log
 
 # Connector Python bytecode
 __pycache__/

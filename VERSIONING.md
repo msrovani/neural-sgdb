@@ -92,6 +92,22 @@ a MAJOR bump. Architecture docs in `docs/architecture/` describe the
 recall). Typed hits
 landed in v1.1.6; agent doctrine in v1.1.8; cognitive metadata in v1.1.10; host governance + micro-ganhos in v1.1.11; security hardening 11→1 em v1.1.12; v1.1.13 tentou Store/extensão — **track browser estacionado** (não é produto); v1.1.15 = MDM1 v7 + TTL/GC + ANN; **v1.1.17** = ADC-lite dual-path + state-first; **v1.1.18** = telepathy 2-DB FileStorage harness; **v1.1.19** = harness `commit_run` / anti-patterns (ADR-0010); **v1.1.20** = null-scoping honra `ScopeDims` + pool `recall_*_dims` + consolidate herda dims; **v1.1.21** = oráculo `index_fingerprint` + invariante de `corpus_mean` + métricas de `open` + erro de alias útil (ADR-0011); **v1.1.22** = `src/math.rs` consolidado + `recall_adaptive` / `RecallProbe` (ADR-0012); **v1.1.23** = revisão de documentação + fix do `enum` anunciado em `health` (schema divergindo do handler); **v1.1.24** = `ScopeDims` autoritativo (o `scope` legado vira espelho de `user`, write-through; ADR-0013) + ledger de negativos `sys/negative/` (ADR-0014); **v1.1.25** = `payload_type` honra a CAMADA (L3 de prosa deixa de ser reportado como `Embedding(len/4)`);  **v1.1.26** = descoberta de escopo com procedência + `recall` honra as dims que o schema anuncia (ADR-0015); **v1.1.27** = `TypeScores` sobrepostos derivados na leitura (ADR-0016); **v1.1.28** = vocabulário único prosa/JSON + tool `decide` (𝒥(S,𝒬), 5º tool) + `recall_candidates` com sinais decompostos + validate tipado + k=0 erro (ADR-0017); **v1.1.29** = fast-mount IDX1 do índice derivado (ADR-0009 §3/§5, seam `NEURAL_SGDB_INDEX_SNAPSHOT`) + RaBitQ avaliado e REJEITADO com A/B medido.; **v1.2.0** = batch write `memories[]` + dedup guard `if_exists` + decide inline + preview `max_payload_bytes` + stale candidates report + IDX2 (snapshot paginado, teto 16 MiB) + auto-persist metrics-gated (ADR-0009 §5 completo). (o `scope` legado vira espelho de `user`, write-through; ADR-0013) + ledger de negativos `sys/negative/` (ADR-0014). **v1.2.1** = fork/merge de memória `promote_run` (MergeStrategy Fail/Ours/Theirs; seekdb item 1) + `remember(key=)` explícita + Gap 0 medido (`bench_concurrent`: P99 não-flat).
 
+## Build reproducibility & `Cargo.lock` (decisao, v1.4.5)
+
+`Cargo.lock` é **ignorado em todos os níveis** (`.gitignore`), por convenção de
+crate de biblioteca. Consequência aceita: cada máquina re-resolve as deps dos
+host crates — um `cargo check` local pode migrar um lock de `v1.3.2` para
+`v1.4.5` sozinho. Duas coisas compensam isso:
+
+1. O CI checa `crates/nsgdb-embed` e `crates/nsgdb-wasm` (e o `wasm32` de
+   verdade), então uma quebra de API nos host crates reprova o build em vez de
+   chegar a alguém em `cargo run`.
+2. Os lockfiles são regeneráveis: apagar um é seguro, o cargo reconstrói do
+   manifest.
+
+Se um dia um host crate virar binário distribuído, a decisão muda: passa a
+versionar o lock dele. Anotado aqui para não ser "descoberta" de novo.
+
 ## Host connectors (`connectors/`)
 
 Adapters for OpenClaw / Hermes / similar hosts live **outside** the crate

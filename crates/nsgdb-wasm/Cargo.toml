@@ -12,6 +12,13 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 neural-sgdb = { path = "../.." }
 
+# DEPENDENCIAS RESERVADAS (v1.4.5): o backend IndexedDB/OPFS ainda NAO foi
+# implementado — o esqueleto esta comentado em `src/lib.rs` (ver `wasm_open`).
+# Estas tres existem para que a feature `wasm` ja compile no alvo certo sem
+# mexer no manifest quando o corpo sair do comentario. O cargo moderno
+# (`cargo::unused_dependencies`) reclama porque elas ainda nao sao usadas; o
+# aviso e esperado e o gate `host-wasm32` prova que a feature compila em
+# `wasm32-unknown-unknown`.
 [dependencies.wasm-bindgen]
 version = "0.2"
 optional = true
