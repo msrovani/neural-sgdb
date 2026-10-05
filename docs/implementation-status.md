@@ -150,10 +150,11 @@ report no tensions (v1.2.0). Fork/merge: `curate op=promote_run`
 triage batch (v1.2.2): put_operational/forget_purge/audit_resolve/index_key
 + MDM1 v8 authority. DX release (v1.4.3): semantic default with a real embedder
 + `contract.json` / `nsgdb://contract` + structured `scope_dim_labels`.
-**1.4.4**: o mesmo lote do s413 chegou ao *schema* (`remember author/layer/
-index_key`, `curate forget_purge|audit_resolve|audit_trail|export_delta|
-set_authority`, `error.code`), + `explain full=true`, seam `Storage::capacity_*`,
-seam de hash da audit chain (SHA-256 `no_std`, wire AUD1 intocado).
+**Contract 1.4.5**: o mesmo lote do s413 chegou ao *schema* (`remember
+author/layer/index_key`, `curate forget_purge|audit_resolve|audit_trail/
+export_delta|set_authority`, `error.code`), + `explain full=true` e
+`recall(mode=causal)`, seam `Storage::capacity_*`, seam de hash da audit chain
+(SHA-256 `no_std`, wire AUD1 intocado).
 MCP contract **1.4.5**.
 
 ### Host connectors
