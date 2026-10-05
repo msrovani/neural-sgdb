@@ -40,6 +40,26 @@ run() {
   fi
 }
 
+# Alvos de cross-compile: o gate depende de `x86_64-unknown-none` (contrato
+# no_std) e `wasm32-unknown-unknown` (o backend WASM do host crate). Numa
+# maquina limpa os dois passos falhariam com um erro de CARGO, que e o
+# diagnostico errado para "target faltando" — a mesma clase de bug que o
+# conector pinado. `rustup target add` e idempotente: aqui e instantaneo.
+ensure_target() {
+  local t="$1"
+  if rustup target list --installed 2>/dev/null | grep -qx "$t"; then
+    return 0
+  fi
+  if command -v rustup >/dev/null 2>&1; then
+    printf '%s>>> instalando target %s%s\n' "$DIM" "$t" "$OFF"
+    rustup target add "$t" >/dev/null 2>&1 \
+      || { printf '%sFAIL%s nao consegui instalar o target %s\n' "$RED" "$OFF" "$t"; return 1; }
+  else
+    printf '%sSKIP%s target %s (sem rustup no PATH)\n' "$DIM" "$OFF" "$t"
+    return 2
+  fi
+}
+
 # Python do CI (ubuntu) e o do Windows nem sempre tem o mesmo nome.
 PY=python3
 command -v python3 >/dev/null 2>&1 || PY=python
@@ -55,8 +75,12 @@ run "integration"   cargo test --test multi_agent
 run "goldens"       cargo test --lib golden
 run "wire-fuzz"     cargo test --release --lib wire_fuzz -- --nocapture
 run "rustdoc"       env RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
+ensure_target x86_64-unknown-none \
+  || RESULTS+=("SKIP target-none (target x86_64-unknown-none ausente)")
 run "target-none"   cargo check --no-default-features --target x86_64-unknown-none
 run "host-crates"   cargo check --manifest-path crates/nsgdb-embed/Cargo.toml
+ensure_target wasm32-unknown-unknown \
+  || RESULTS+=("SKIP host-wasm32 (target wasm32-unknown-unknown ausente)")
 run "host-wasm32"   cargo check --manifest-path crates/nsgdb-wasm/Cargo.toml \
                         --features wasm --target wasm32-unknown-unknown
 run "connectors"    "$PY" -m unittest discover -s connectors/tests
