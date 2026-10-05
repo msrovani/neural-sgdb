@@ -122,7 +122,7 @@ fn resolve_retrieval_mode(args: &Value, embedder_label: &str) -> Result<String, 
     let host = !embedder_label.is_empty() && embedder_label != "none";
     match args["mode"].as_str() {
         Some("lexical") => Ok("lexical".into()),
-        Some(m @ ("semantic" | "hybrid")) => {
+        Some(m @ ("semantic" | "hybrid" | "causal")) => {
             if caller || host {
                 Ok(m.into())
             } else {
@@ -403,12 +403,73 @@ fn content_type_json(ct: ContentType) -> Value {
 /// mÃ¡quina: o consumidor parseia JSON e vÃª o datum (`type`), o caminho
 /// (`path`), o grounding (`matched_terms`) e a proveniÃªncia, sem depender
 /// da projeÃ§Ã£o prosa.
+/// v1.4.4 (Lote D): projecao CAUSAL de um page de hits - `path=causal` +
+/// `ancestry` (a linha de versao que produziu o hit, via `Sgdb::lineage`).
+///
+/// Fica numa funcao de proposito: a REGRA (o que e uma trilha causal, quantos
+/// elos, o shape do JSON) e identica no `recall` paginado e no `rag_context` -
+/// e regra copiada em dois lugares diverge, com o segundo sendo o que esquece.
+/// Foi exatamente o que aconteceu na primeira versao deste patch: o arm foi
+/// so no `rag_context`, e o `recall` serviu `path=semantic` sem trilha.
+fn causal_rows(
+    db: &mut neural_sgdb::Sgdb,
+    hits: &[neural_sgdb::Hit],
+    depth: usize,
+) -> Vec<Value> {
+    hits.iter()
+        .map(|h| {
+            let mut o = hit_json(h);
+            let anc: Vec<Value> = if depth == 0 {
+                Vec::new()
+            } else {
+                db.lineage(&h.key)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .take(depth)
+                    .map(|e| {
+                        json!({
+                            "version_id": e.version_id,
+                            "created_tick": e.created_tick,
+                            "source": e.source,
+                            "storage_key": e.storage_key,
+                        })
+                    })
+                    .collect()
+            };
+            if let Some(map) = o.as_object_mut() {
+                map.insert("path".into(), json!("causal"));
+                map.insert("ancestry".into(), json!(anc));
+            }
+            o
+        })
+        .collect()
+}
+
+/// Mesma regra em prosa: a trilha entra indentada sob o hit.
+fn causal_prose(db: &mut neural_sgdb::Sgdb, hits: &[neural_sgdb::Hit], depth: usize) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for h in hits {
+        out.push(fmt_hit(h));
+        if depth > 0 {
+            for e in db.lineage(&h.key).unwrap_or_default().into_iter().take(depth) {
+                out.push(format!(
+                    "    \u{21b3} v{} tick={} src={}",
+                    e.version_id, e.created_tick, e.source
+                ));
+            }
+        }
+    }
+    out.join("\n")
+}
+
 fn hit_json(h: &neural_sgdb::Hit) -> Value {
     // v1.1.28 (D2): `dist` só carrega informação onde a distância existe —
     // no lexical é constante 0.0 (a armadilha do "match perfeito"). O
     // consumidor usa `score` (BM25) e `path` como discriminante.
     let dist_val = match h.path {
-        RecallPath::Semantic | RecallPath::Entities | RecallPath::Graph => json!(h.dist),
+        RecallPath::Semantic | RecallPath::Entities | RecallPath::Graph | RecallPath::Causal => {
+            json!(h.dist)
+        }
         RecallPath::Lexical => Value::Null,
     };
     let mut obj = json!({
@@ -816,7 +877,8 @@ fn mcp_listed_tools() -> Value {
          "description":"Read. Default mode=lexical (ADR-0008) se nao houver embedding=. semantic/hybrid exigem vetor (hybrid usa RRF). entities[]= 1-hop; at= temporal; rag=true. Sem scope= so globais. format=json hits tipados. Session: resource nsgdb://session.",
          "inputSchema":{"type":"object","properties":{
            "query":{"type":"string"},
-           "mode":{"type":"string","enum":["semantic","lexical","hybrid"],"default":"lexical"},
+           "mode":{"type":"string","enum":["semantic","lexical","hybrid","causal"],"default":"lexical"},
+           "causal_depth":{"type":"integer","minimum":0,"default":4,"description":"v1.4.4 (mode=causal): quantos ancestrais da linha de versao accompany cada hit (0 = so o hit)"},
            "format":{"type":"string","enum":["json"]},
            "max_payload_bytes":{"type":"integer","description":"v1.2.0: preview opt-in — corta o text de cada hit em N bytes (marca …). Default = full."},
            "embedding":{"type":"array","items":{"type":"number"}},
@@ -2034,11 +2096,25 @@ fn main() {
                         if let Some(mb) = args["max_payload_bytes"].as_u64() {
                             preview_text(&mut page, mb as usize);
                         }
+                        // v1.4.4 (Lote D): `mode=causal` projeta o page com a
+                        // trilha. Computado UMA vez (a lineage custa uma leitura
+                        // de versao por hit) e reusado na prosa E no estruturado.
+                        let causal_depth = args["causal_depth"].as_u64().unwrap_or(4) as usize;
+                        let causal_rows_json = if mode == "causal" {
+                            Some(causal_rows(&mut db, &page, causal_depth))
+                        } else {
+                            None
+                        };
                         let text = if json_fmt {
-                            hits_json(&page)
+                            match &causal_rows_json {
+                                Some(rows) => json!({ "hits": rows }).to_string(),
+                                None => hits_json(&page),
+                            }
                         } else if page.is_empty() {
                             db.recall_empty_hint(&scope, &mode)
                                 .unwrap_or_else(|| "nenhuma memoria similar encontrada".into())
+                        } else if mode == "causal" {
+                            causal_prose(&mut db, &page, causal_depth)
                         } else {
                             page.iter().map(fmt_hit).collect::<Vec<_>>().join("\n")
                         };
@@ -2052,7 +2128,10 @@ fn main() {
                             "run": dims_filter.run
                         });
                         let structured = if json_fmt {
-                            json!({"hits": page.iter().map(hit_json).collect::<Vec<_>>(), "scope": scope, "mode": mode, "scope_dims": filter_echo})
+                            match &causal_rows_json {
+                                Some(rows) => json!({"hits": rows, "scope": scope, "mode": mode, "scope_dims": filter_echo}),
+                                None => json!({"hits": page.iter().map(hit_json).collect::<Vec<_>>(), "scope": scope, "mode": mode, "scope_dims": filter_echo}),
+                            }
                         } else {
                             json!({"hit_count": page.len(), "scope": scope, "mode": mode, "scope_dims": filter_echo})
                         };
@@ -2109,6 +2188,37 @@ fn main() {
                                     "nenhum contexto recuperado".into()
                                 } else {
                                     hits.iter().map(fmt_hit).collect::<Vec<_>>().join("\n")
+                                }
+                            }
+                            "causal" => {
+                                // o filtro de scope vem do `recall_for_mcp`
+                                // (o `recall_causal` do core nao filtra -
+                                // null-scoping e doutrina, nao opcao).
+                                let depth = args["causal_depth"].as_u64().unwrap_or(4) as usize;
+                                match recall_for_mcp(
+                                    &mut db,
+                                    "semantic",
+                                    "",
+                                    &mcp_scope_filter(args),
+                                    &emb,
+                                    query,
+                                    k,
+                                ) {
+                                    Err(e) => {
+                                        send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                            "content":[{"type":"text","text":e}],"isError":true}}));
+                                        continue;
+                                    }
+                                    Ok(hits) => {
+                                        if json_fmt {
+                                            json!({"hits": causal_rows(&mut db, &hits, depth)})
+                                                .to_string()
+                                        } else if hits.is_empty() {
+                                            "nenhum contexto recuperado".into()
+                                        } else {
+                                            causal_prose(&mut db, &hits, depth)
+                                        }
+                                    }
                                 }
                             }
                             _ => {

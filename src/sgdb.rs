@@ -700,6 +700,18 @@ fn companion_key(sk: &str) -> String {
     }
 }
 
+/// Hit de retrieval causal (v1.4.4, Lote D) — ver [`Sgdb::recall_causal`].
+#[derive(Clone, Debug)]
+pub struct CausalHit {
+    /// O hit, com `path` = [`RecallPath::Causal`] e `dist` na escala do
+    /// semântico (o ranqueamento é o do recall semântico).
+    pub hit: Hit,
+    /// Linhagem do mais novo ao mais antigo (ordem de [`Sgdb::lineage`]).
+    /// O primeiro elo é a versão corrente do hit; vazio quando o host pediu
+    /// `max_ancestry = 0`.
+    pub ancestry: Vec<LineageEntry>,
+}
+
 /// Resultado de recall semântico.
 #[derive(Clone, Debug)]
 pub struct Hit {
@@ -2038,6 +2050,45 @@ impl Sgdb {
                 score_breakdown: None,
                 type_scores,
             });
+        }
+        Ok(out)
+    }
+
+    /// Recall **causal** (v1.4.4, Lote D): o recall semântico + a linhagem que
+    /// produziu cada hit.
+    ///
+    /// O recall puro devolve o que *parece* perto agora; o que o agente
+    /// frequentemente precisa é "por que o DB acredita nisso" — a cadeia de
+    /// versões que levou ao estado corrente. Aqui cada hit vem com os
+    /// ancestrais (`Sgdb::lineage`), do mais novo ao mais antigo.
+    ///
+    /// `ancestry.len() == 1` = memória nunca foi substituída; `> 1` = o hit
+    /// atual é o resultado de `n-1` revisões, e `ancestry` é a trilha
+    /// auditável delas. O ranqueamento é o do semântico (`dist` na escala do
+    /// cosseno, escala DIFERENTE do lexical e do graph — ver [`RecallPath`]).
+    ///
+    /// `max_ancestry = 0` entrega só o hit, sem linhagem (caminho mais curto
+    /// quando o consumidor não quer a trilha). Guard de ciclo e truncate são
+    /// do `lineage`; aqui só se limita o quanto da trilha viaja na resposta.
+    pub fn recall_causal(
+        &mut self,
+        emb: &[f32],
+        k: usize,
+        max_ancestry: usize,
+    ) -> Result<Vec<CausalHit>, SgdbError> {
+        let hits = self.recall(emb, k)?;
+        let mut out = Vec::with_capacity(hits.len());
+        for mut h in hits {
+            let ancestry = if max_ancestry == 0 {
+                Vec::new()
+            } else {
+                self.lineage(&h.key)?
+                    .into_iter()
+                    .take(max_ancestry)
+                    .collect()
+            };
+            h.path = RecallPath::Causal;
+            out.push(CausalHit { hit: h, ancestry });
         }
         Ok(out)
     }
@@ -11653,5 +11704,89 @@ mod v144_degraded_tests {
         assert!(db2.bq_len() > 0);
         db2.bq_mut().clear();
         assert_eq!(db2.recall_degraded_reason(), Some("bq_unmounted"));
+    }
+}
+
+#[cfg(test)]
+mod v144_causal_tests {
+    use super::*;
+    use alloc::vec;
+
+    fn emb(seed: f32) -> Vec<f32> {
+        vec![1.0, -1.0, seed, -1.0]
+    }
+
+    /// v1.4.4 (Lote D): `recall_causal` entrega o hit semântico + a LINHAGEM
+    /// que o produziu. O que este teste fixa é a semântica, não o contrato
+    /// (o contrato MCP é coberto pelo hot test):
+    ///
+    /// 1. `path` = `Causal` e o ranqueamento/`dist` são os do semântico;
+    /// 2. uma memória nunca revisada tem ancestry de 1 elo;
+    /// 3. depois de um `supersede`, a memória NOVA tem ≥2 elos — a trilha é o
+    ///    que o recall puro não entrega;
+    /// 4. `max_ancestry` trunca (e 0 = sem trilha, shape intacto).
+    #[test]
+    fn recall_causal_carries_the_lineage_behind_the_hit() {
+        let mut db = Sgdb::open(crate::storage::InMemory::new()).unwrap();
+        db.remember_semantic("causal/nova", "fato revisado", &emb(0.2))
+            .unwrap();
+        db.remember_semantic("causal/velha", "fato antigo", &emb(0.9))
+            .unwrap();
+        db.remember_semantic("causal/outra", "topico sem relacao", &emb(-0.9))
+            .unwrap();
+
+        // ── 1+2: memória nunca revisada = 1 elo, path causal, dist semântico
+        let cs = db.recall_causal(&emb(0.9), 3, 4).unwrap();
+        assert!(!cs.is_empty(), "o corpus tem hits");
+        assert_eq!(cs[0].hit.path, RecallPath::Causal, "path = Causal");
+        let sem = db.recall(&emb(0.9), 3).unwrap();
+        assert_eq!(
+            cs[0].hit.key, sem[0].key,
+            "o RANQUEAMENTO é o do semântico (mesma query, mesma ordem)"
+        );
+        let first = cs
+            .iter()
+            .find(|c| c.hit.key.ends_with("causal/nova"))
+            .expect("a memória nova está no pool");
+        assert_eq!(
+            first.ancestry.len(),
+            1,
+            "memória nunca supersedada: 1 elo (a si mesma)"
+        );
+
+        // ── 3: depois do supersede a trilha aparece
+        db.supersede("causal/velha", "causal/nova").unwrap();
+        let cs = db.recall_causal(&emb(0.2), 3, 4).unwrap();
+        let tracked = cs
+            .iter()
+            .find(|c| c.hit.key.ends_with("causal/nova"))
+            .expect("a memória revisada continua no pool");
+        assert!(
+            tracked.ancestry.len() >= 2,
+            "a revisada tem que trazer o ancestral, não só ela mesma: {:?}",
+            tracked.ancestry
+        );
+        // o primeiro elo é a PRÓPRIA versão corrente, os seguintes são ancestrais
+        let own = db.version_of("causal/nova").unwrap();
+        assert_eq!(
+            tracked.ancestry[0].version_id,
+            own.clone().expect("versao corrente"),
+            "o elo 0 é a versão corrente do hit"
+        );
+        let old_v = db.version_of("causal/velha").unwrap().unwrap();
+        assert!(
+            tracked.ancestry.iter().any(|e| e.version_id == old_v),
+            "a versão antiga (supersedada) aparece na trilha"
+        );
+
+        // ── 4: trunca, e 0 = sem trilha mas o shape continua
+        let one = db.recall_causal(&emb(0.2), 3, 1).unwrap();
+        assert!(one.iter().all(|c| c.ancestry.len() <= 1), "max_ancestry trunca");
+        let none = db.recall_causal(&emb(0.2), 3, 0).unwrap();
+        assert!(none.iter().all(|c| c.ancestry.is_empty()), "0 = sem trilha");
+        assert!(
+            none.iter().all(|c| c.hit.path == RecallPath::Causal),
+            "o path continua causal mesmo sem a trilha"
+        );
     }
 }

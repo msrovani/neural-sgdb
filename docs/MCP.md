@@ -32,7 +32,9 @@ Guia de instalação, contrato e troubleshooting do servidor MCP
 Lista: `remember`, `recall`, `health`, `curate`.
 
 Dispatch: `remember(user+response)` → episódico L2; `remember(text=)` sem vetor →
-L3; `recall(entities|at|rag=true)` → 1-hop / temporal / rag; `health(view=era|validate|tensions)`;
+L3; `recall(entities|at|rag=true|mode=causal)` → 1-hop / temporal / rag / **causal**
+(v1.4.4: o hit vem com `ancestry` = a linha de versão que o produziu;
+`causal_depth` limita quantos elos, default 4); `health(view=era|validate|tensions)`;
 `curate(op=explain|reinforce|decay|consolidate|audit_checkpoint|audit_verify|audit_resolve|audit_trail|forget_purge|export_delta|set_authority|rollback_to|commit_run|deprecate_run|…)`
 (v1.1.10: metadado cognitivo; **v1.1.19+**: harness ADR-0010 `commit_run`/`deprecate_run`;
 `audit_verify` expõe `structuredContent` com o `AuditReport`;

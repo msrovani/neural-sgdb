@@ -89,7 +89,17 @@ core (38 sítios migrados de uma vez) + `data.code` nos erros JSON-RPC;
    exata; depois do purge o doc não existe, e devolvia "nenhum elo" — justo
    quando a evidência importa mais. Passa a casar pela key **crua** do host.
 
-### Complemento (mesma 1.4.4) — `explain full` + as 3 medições do Lote F
+### Complemento (mesma 1.4.4) — `explain full`, recall causal, as 3 medições do Lote F
+
+- **`recall_causal` + `RecallPath::Causal`** (Lote D): o hit semântico vem
+  acompanhado da **linhagem** que o produziu (`Sgdb::lineage`). `dist` segue na
+  escala do semântico — `dist` tem escala DIFERENTE por path, e o path novo não
+  inventa uma terceira. MCP: `recall(mode=causal)` + `causal_depth` (default 4).
+- **A arm do `causal` foi escrita primeiro no lugar ERRADO** (o `rag_context`) e
+  o `recall` continuou servindo `path=semantic` sem trilha — o hot test pegou.
+  Causa: o dispatch de `mode` existe em **dois** handlers e o segundo esquece.
+  Agora a regra mora em `causal_rows`/`causal_prose`,called pelos dois.
+
 
 - **`curate op=explain full=true`** (ISSUE 22): `version_dag` + `audit_refs` +
   `authority` + `clock` causal numa resposta (4 chamadas → 1). Default

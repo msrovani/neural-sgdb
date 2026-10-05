@@ -66,7 +66,22 @@ gap — e, ao fazê-lo, o hot test achou **dois bugs reais** de persistência.
 - Gate `no_std` quebrado de novo (recorrência v1.1.15/v1.2.1): teste novo com
   `std::fs` precisa de `#[cfg(all(test, feature = "file-storage"))]`.
 
-### Complemento pós-release (mesma 1.4.4) — `explain full` + Lote F medido
+### Complemento pós-release (mesma 1.4.4) — `explain full`, recall causal, Lote F
+
+- **`Sgdb::recall_causal(emb, k, max_ancestry)` + `CausalHit`** (Lote D): o hit
+  semântico **acompanhado da linhagem que o produziu** (`Sgdb::lineage`, do mais
+  novo ao mais antigo). Responde a pergunta que o recall puro não responde —
+  "por que o DB acredita nisso?" — e `ancestry.len() > 1` diz que a memória
+  corrente é resultado de revisões, com a trilha auditável delas.
+  `RecallPath::Causal` novo; `dist` mantém a **escala do semântico** (cosseno),
+  porque o que muda é o conteúdo do hit, não a métrica.
+- **MCP: `recall(mode=causal)` + `causal_depth`** (default 4). O filtro de scope
+  continua vindo do `recall_for_mcp` — o `recall_causal` do core não filtra, e
+  null-scoping é doutrina, não opção. `format=json` acrescenta `ancestry[]`
+  (`version_id`/`created_tick`/`source`/`storage_key`); em prosa a trilha entra
+  indentada sob o hit com `↳`.
+
+
 
 - **`curate op=explain` aceita `full=true`** (ISSUE 22): compõe numa resposta
   só o que já existia em quatro lugares — `version_dag` (a cadeia de versões via

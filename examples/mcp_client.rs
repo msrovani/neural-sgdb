@@ -950,6 +950,46 @@ fn main() {
         lean["version_id"].is_string() && lean.get("clock").is_none(),
         lean.to_string());
 
+    // v1.4.4 (Lote D): `recall(mode=causal)` — o hit semantico VEM com a
+    // linhagem que o produziu. O guard e o mesmo do v1.1.23: o `enum` do
+    // `mode` anunciado tem que listar o que o handler serve.
+    let recall_schema = srv_tools["result"]["tools"]
+        .as_array()
+        .and_then(|ts| ts.iter().find(|t| t["name"] == "recall"))
+        .map(|t| t.to_string())
+        .unwrap_or_default();
+    rep.check("tools/list anuncia mode=causal e o arg causal_depth",
+        recall_schema.contains("\"causal\"") && recall_schema.contains("\"causal_depth\""),
+        recall_schema.clone());
+    let r = srv.rpc("tools/call", json!({"name": "recall", "arguments": {
+        "query": "memoria paginada embedding do agente", "k": 3, "mode": "causal",
+        "format": "json", "causal_depth": 4,
+        "embedding": demo_embed("memoria paginada embedding do agente")}}));
+    let hits = r["result"]["structuredContent"]["hits"].clone();
+    let all_causal = hits.as_array().map(|a| !a.is_empty()
+        && a.iter().all(|h| h["path"] == "causal" && h["ancestry"].is_array()))
+        .unwrap_or(false);
+    rep.check("recall(mode=causal) serve path=causal + ancestry por hit", all_causal,
+        hits.to_string());
+    // `dist` continua na escala do SEMANTICO (cosseno) — nao inventei uma
+    // escala nova para o path novo (a armadilha documentada do campo `dist`).
+    let dists_ok = hits.as_array().map(|a| a.iter()
+        .all(|h| h["dist"].is_f64() && h["dist"].as_f64().unwrap() >= 0.0))
+        .unwrap_or(false);
+    rep.check("mode=causal mantem a escala do dist semantico", dists_ok,
+        hits.to_string());
+    // depth=0 entrega so o hit (caminho mais curto, sem a trilha).
+    let r = srv.rpc("tools/call", json!({"name": "recall", "arguments": {
+        "query": "memoria paginada embedding do agente", "k": 3, "mode": "causal",
+        "format": "json", "causal_depth": 0,
+        "embedding": demo_embed("memoria paginada embedding do agente")}}));
+    let shallow = r["result"]["structuredContent"]["hits"].clone();
+    rep.check("causal_depth=0 devolve ancestry vazia (sem quebrar o shape)",
+        shallow.as_array().map(|a| a.iter().all(|h| h["path"] == "causal"
+            && h["ancestry"].as_array().map(|x| x.is_empty()).unwrap_or(false)))
+        .unwrap_or(false),
+        shallow.to_string());
+
     // ---------- fase 7b: v1.1.28 — linguagem de máquina (ADR-0017) ----------
     let t = Instant::now();
     // D1/D8: prosa e JSON compartilham o vocabulário — o mesmo hit não pode

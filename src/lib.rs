@@ -144,8 +144,9 @@ pub use harness::{
     MergeStrategy, MOM_ANTI_PATTERN, PromoteRunReport,
 };
 pub use sgdb::{
-    AdaptiveRecall, AuditReport, CandidateSignals, CognitiveOps, ConsolidateConfig, DecayConfig,
-    ForgetOutcome, GcConfig, GcReport, HealthReport, Hit, HitProvenance, LexicalAnchorReranker,
+    AdaptiveRecall, AuditReport, CandidateSignals, CausalHit, CognitiveOps, ConsolidateConfig,
+    DecayConfig, ForgetOutcome, GcConfig, GcReport, HealthReport, Hit, HitProvenance,
+    LexicalAnchorReranker,
     RecallLedger, RecallProbe, RecallWeights, RememberOptions, RememberOutcome, Reranker,
     ResolveOutcome, ScoreBreakdown, ScopeDimDescriptor, ScopeDistribution, ScopeProbes, Sgdb,
     ValidateIssue,

@@ -38,6 +38,15 @@ pub enum RecallPath {
     /// Travessia de grafo multi-hop (v1.4.0, F2): `dist` = profundidade
     /// normalizada (0 = 1-hop).
     Graph,
+    /// Recall semântico **+ a linhagem que produziu o hit** (v1.4.4, Lote D).
+    /// `dist` mantém a escala do semântico (cosseno 0..1) — o que muda é o
+    /// *conteúdo*, não a métrica: cada hit vem acompanhado dos ancestrais
+    /// (`Sgdb::lineage`). Ver [`crate::CausalHit`].
+    ///
+    /// ATENÇÃO — `dist` tem escala DIFERENTE por path (BM25 normalizado no
+    /// lexical, profundidade no graph). `Causal` é a **mesma escala do
+    /// semântico**: quem consome o campo não pode assumir uma escala única.
+    Causal,
 }
 
 /// Detecta o tipo do payload. `embedding_dim = Some(dim)` quando o payload é
@@ -197,6 +206,7 @@ pub fn path_label(p: RecallPath) -> &'static str {
         RecallPath::Lexical => "lexical",
         RecallPath::Entities => "entities",
         RecallPath::Graph => "graph",
+        RecallPath::Causal => "causal",
     }
 }
 
