@@ -62,7 +62,10 @@ arquivada via `examples/dedupe_l3_mcp.rs` (guarda de conteudo). Pendentes
 de decisao de contrato (candidatos 1.4.6): escopo padrao com 0 hits, 27
 globais sem rota de recall, eras `[4, 256]`. `rabitq.rs` mantido (negativo
 pinado). Tag `v1.4.5` REALINHADA ao HEAD (estava em `d6b9ccc`, sem os 3
-commits finais do release).
+commits finais do release). **Item 21 FECHADO (2026-10-07):** runs lidos
+via API pública do GitHub (sem gh CLI) — `e493d76`, `da57c5a` e o run do
+pós-task `16c0c29` todos SUCCESS no runner, incluindo os steps novos
+(conectores, host crates, wasm32, mcp-windows).
 
 Release de conserto, sem API nova. O achado: **o job de dependencia de ordem que
 eu adicionei no Lote E nunca rodou**. `cargo test --lib -- --shuffle` quebra em

@@ -103,7 +103,11 @@ parafraase da curadoria de `…535000`, que fica. Exemplo one-off de
 manutencao: `examples/dedupe_l3_mcp.rs` (com guarda de conteudo — ABORT se
 os textos divergirem de assunto). `src/rabitq.rs` (268 linhas, zero
 call-sites, bench negativo pinado) mantido por decisao: resultado negativo
-nao se apaga, se registra.
+nao se apaga, se registra. **Item 21 fechado (2026-10-07):** o status dos
+runs no runner GitHub Actions, que ninguem tinha lido (sem gh CLI), foi
+lido via API publica — `e493d76`, `da57c5a` e `16c0c29` (pos-task) todos
+SUCCESS no runner, incluindo os steps novos de conectores, host crates,
+wasm32 e mcp-windows. A incognita era so observacao, nao execucao.
 
 Gates: lib **423**, p2p **439**, no_std **356**, `wire_fuzz` (4), goldens (4),
 `clippy -D warnings`, rustdoc `-D warnings`, `x86_64-unknown-none`, hot test
