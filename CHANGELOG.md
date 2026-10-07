@@ -88,6 +88,23 @@ rodou** e três conclusoes que o repo carregava sem numero.
 - **B1**: `curate op=explain full=true` — `version_dag` + `audit_refs` +
   `authority` + `clock` numa resposta.
 
+### Manutencao do banco nsgdb (pos-release, auditoria de 21 itens)
+
+Auditoria completa pos-task confirmou que os 17 itens de codigo da sessao
+estavam de fato fechados nos commits acima. Do banco real
+(`.nsgdb/memory.db`, 93 docs) restavam problemas de ESTADO, reportados sem
+acao (pendentes de decisao de contrato, candidatos ao 1.4.6): escopo padrao
+`project/neural-sgdb` com 0 hits no recall default; **27 memorias globais
+sem rota de recall** (classe ADR-0015 um nivel acima); eras de embedding
+misturadas `[4, 256]` (`semantic_ready: false`, so lexical). O item
+acionavel foi fechado: **duplicata `md/L3/mcp/1790975709980000` arquivada**
+(via `forget`, precedendo o proprio banco — "historia preservada"),
+parafraase da curadoria de `…535000`, que fica. Exemplo one-off de
+manutencao: `examples/dedupe_l3_mcp.rs` (com guarda de conteudo — ABORT se
+os textos divergirem de assunto). `src/rabitq.rs` (268 linhas, zero
+call-sites, bench negativo pinado) mantido por decisao: resultado negativo
+nao se apaga, se registra.
+
 Gates: lib **423**, p2p **439**, no_std **356**, `wire_fuzz` (4), goldens (4),
 `clippy -D warnings`, rustdoc `-D warnings`, `x86_64-unknown-none`, hot test
 **177/0** (exit 0).

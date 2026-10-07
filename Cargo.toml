@@ -147,3 +147,8 @@ name = "bench_graph"
 # passivos) vs B1 (verbos + sinais do DB): supersede/consolidate/expire.
 [[example]]
 name = "self_policy_probe"
+
+# One-off maintenance: dedupe de md/L3/mcp (item 13, 1.4.5).
+[[example]]
+name = "dedupe_l3_mcp"
+required-features = ["file-storage"]

@@ -55,6 +55,15 @@ policy. `MIGRATIONS.md` §MCP contract (1.2.1→1.3.0).
 
 ## Release 1.4.5 — o gate do CI estava quebrado (2026-10-05)
 
+**Pos-task (auditoria de 21 itens, 2026-10-07):** 17 itens de codigo
+confirmados nos commits acima. Banco real = `.nsgdb/memory.db` (93 docs;
+o `sgdb_memory.db` da raiz e teste). Duplicata `md/L3/mcp/1790975709980000`
+arquivada via `examples/dedupe_l3_mcp.rs` (guarda de conteudo). Pendentes
+de decisao de contrato (candidatos 1.4.6): escopo padrao com 0 hits, 27
+globais sem rota de recall, eras `[4, 256]`. `rabitq.rs` mantido (negativo
+pinado). Tag `v1.4.5` REALINHADA ao HEAD (estava em `d6b9ccc`, sem os 3
+commits finais do release).
+
 Release de conserto, sem API nova. O achado: **o job de dependencia de ordem que
 eu adicionei no Lote E nunca rodou**. `cargo test --lib -- --shuffle` quebra em
 toda execucao — `--shuffle` e instavel no libtest, exige `-Z unstable-options`, e
