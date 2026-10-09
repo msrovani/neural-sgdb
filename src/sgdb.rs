@@ -3628,6 +3628,10 @@ impl Sgdb {
     /// 0..1)` da fonte (ex: um peer p2p é menos confiável que o autor local);
     /// fora do mapa → 0.5 (neutro). Cada `Hit.score_breakdown` carrega o
     /// valor de cada sinal + o total — o consumidor vê o "porquê" do ranking.
+    /// Pool GLOBAL (sem filtro de scope — mesma postura do `hybrid`/`temporal`
+    /// do MCP, que recusam dims em vez de vazar em silêncio): quem precisa de
+    /// isolamento pondera DEPOIS de um recall escopado (`recall_scoped` +
+    /// `score_breakdown`), nunca este pool direto.
     pub fn recall_weighted_full(
         &mut self,
         query: &[f32],
@@ -6459,6 +6463,70 @@ mod tests {
         // scope_of / meta expõem o campo
         assert_eq!(db.scope_of("kA").unwrap(), "user/ana");
         assert_eq!(db.scope_of("kG").unwrap(), "", "sem marcação = global");
+    }
+
+    #[test]
+    fn scoped_paths_agree_on_isolation_across_modes() {
+        // P3 (isolamento por superfície): os TRÊS paths de recall com filtro
+        // de scope (semântico, lexical, entidades) concordam na pertinência —
+        // a regra de filtro vive copiada em 3 impls e a N-ésima cópia é a que
+        // diverge (lição v1.1.25/v1.1.26). Um sweep só as mantém honestas.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let e = [1.0f32, -1.0, 1.0, -1.0];
+        let ea = ["bev/cafe"];
+        let eb = ["bev/cha"];
+        let eg = ["shop/hours"];
+        db.remember_semantic_with(
+            "kA",
+            "ana prefere cafe torrado",
+            &e,
+            RememberOptions { scope: Some("user/ana"), entities: &ea, content_type: None, scope_dims: None, model_id: None, index_key: false },
+        )
+        .unwrap();
+        db.remember_semantic_with(
+            "kB",
+            "bruno prefere cha verde",
+            &e,
+            RememberOptions { scope: Some("user/bruno"), entities: &eb, content_type: None, scope_dims: None, model_id: None, index_key: false },
+        )
+        .unwrap();
+        db.remember_semantic_with(
+            "kG",
+            "a loja abre as nove",
+            &e,
+            RememberOptions { scope: None, entities: &eg, content_type: None, scope_dims: None, model_id: None, index_key: false },
+        )
+        .unwrap();
+        // semântico: pertinência por scope
+        let keys = |hits: Vec<Hit>| -> Vec<String> { hits.into_iter().map(|h| h.key).collect() };
+        assert_eq!(keys(db.recall_scoped(&e, 10, "user/ana").unwrap()), vec!["md/L4/kA"]);
+        assert_eq!(keys(db.recall_scoped(&e, 10, "user/bruno").unwrap()), vec!["md/L4/kB"]);
+        assert_eq!(keys(db.recall(&e, 10).unwrap()), vec!["md/L4/kG"], "global não vaza de scopes");
+        // lexical: "prefere" casa A e B por texto — o filtro decide. O hit
+        // lexical de um doc L4 é o companion de texto `md/L2/<id>`.
+        let lex_a = db.recall_lexical_scoped("prefere", 10, "user/ana").unwrap();
+        assert_eq!(lex_a.len(), 1, "lexical escopado não vaza o outro tenant");
+        assert!(lex_a[0].key.ends_with("/kA"), "hit do tenant certo: {}", lex_a[0].key);
+        let lex_b = db.recall_lexical_scoped("prefere", 10, "user/bruno").unwrap();
+        assert_eq!(lex_b.len(), 1);
+        assert!(lex_b[0].key.ends_with("/kB"), "hit do tenant certo: {}", lex_b[0].key);
+        assert!(
+            keys(db.recall_lexical("prefere", 10).unwrap()).iter().all(|k| k != "md/L4/kA" && k != "md/L4/kB"),
+            "lexical global não vaza de scopes"
+        );
+        // entidades: mesma entidade, scopes distintos
+        assert_eq!(
+            keys(db.recall_entities_scoped(&["bev/cafe"], 10, "user/ana").unwrap()),
+            vec!["md/L4/kA"]
+        );
+        assert!(
+            db.recall_entities_scoped(&["bev/cafe"], 10, "user/bruno").unwrap().is_empty(),
+            "entidade de outro tenant não atravessa scope"
+        );
+        assert!(
+            db.recall_entities(&["bev/cafe"], 10).unwrap().is_empty(),
+            "entidade escopada não vaza para o recall global"
+        );
     }
 
     #[test]
