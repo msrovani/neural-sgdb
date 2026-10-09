@@ -6799,6 +6799,107 @@ mod tests {
     }
 
     #[test]
+    fn delete_cleans_relations_entities_lexical_and_validate_stays_clean() {
+        // P1 (invariantes): delete físico limpa relações, entidades e texto
+        // lexical do doc — sem órfãos em índice derivado nem side-table, e o
+        // vizinho segue recuperável.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let ea = ["svc/auth"];
+        let eb = ["svc/billing"];
+        db.remember_text_with(
+            "a",
+            "o quasar gira no halo distante",
+            RememberOptions {
+                scope: None,
+                entities: &ea,
+                content_type: None,
+                scope_dims: None,
+                model_id: None,
+                index_key: false,
+            },
+        )
+        .unwrap();
+        db.remember_text_with(
+            "b",
+            "o ledger fecha no fim do dia",
+            RememberOptions {
+                scope: None,
+                entities: &eb,
+                content_type: None,
+                scope_dims: None,
+                model_id: None,
+                index_key: false,
+            },
+        )
+        .unwrap();
+        db.associate_checked("a", RelationKind::Supports, "b").unwrap();
+        // baseline: tudo visível e validate limpo
+        assert!(db.validate().is_empty(), "baseline validate limpo");
+        assert!(db.related_to("md/L3/b").iter().any(|(_, t)| t == "md/L3/a"));
+        assert!(db.recall_lexical("quasar", 5).unwrap().iter().any(|h| h.key == "md/L3/a"));
+        assert!(db.recall_entities(&["svc/auth"], 5).unwrap().iter().any(|h| h.key == "md/L3/a"));
+        // delete físico
+        assert!(db.delete("md/L3/a").unwrap());
+        // invariantes pós-delete: nada ressuscita, nada órfão
+        assert!(db.validate().is_empty(), "validate limpo após delete");
+        assert!(
+            !db.related_to("md/L3/b").iter().any(|(_, t)| t == "md/L3/a"),
+            "aresta some com o doc deletado"
+        );
+        assert!(
+            !db.recall_lexical("quasar", 5).unwrap().iter().any(|h| h.key == "md/L3/a"),
+            "lexical não ressuscita deletado"
+        );
+        assert!(
+            !db.recall_entities(&["svc/auth"], 5).unwrap().iter().any(|h| h.key == "md/L3/a"),
+            "entidade não ressuscita deletado"
+        );
+        // vizinho intacto
+        assert!(db.recall_lexical("ledger", 5).unwrap().iter().any(|h| h.key == "md/L3/b"));
+    }
+
+    #[test]
+    fn export_import_roundtrip_preserves_identity_and_validate_stays_clean() {
+        // P1 (invariantes): export→import preserva a identidade do autor
+        // (memory_id), o texto e as entidades; ambos os bancos validam limpo.
+        let mut db1 = Sgdb::open(InMemory::new()).unwrap();
+        let ex = ["eq/valvula"];
+        db1.remember_text_with(
+            "x",
+            "a valvula regula a pressao do reator",
+            RememberOptions {
+                scope: None,
+                entities: &ex,
+                content_type: None,
+                scope_dims: None,
+                model_id: None,
+                index_key: false,
+            },
+        )
+        .unwrap();
+        let rec = db1.export_record("md/L3/x").unwrap().expect("record existe");
+        let id1 = db1.memory_id("md/L3/x").unwrap().unwrap();
+        let mut db2 = Sgdb::open(InMemory::new()).unwrap();
+        db2.import_record(rec).unwrap();
+        assert!(db1.validate().is_empty());
+        assert!(db2.validate().is_empty());
+        let hits = db2.recall_lexical("valvula", 5).unwrap();
+        let h = hits
+            .iter()
+            .find(|h| h.key == "md/L3/x")
+            .expect("importado recuperável no lexical");
+        assert_eq!(
+            h.provenance.as_ref().map(|p| p.memory_id.as_str()),
+            Some(id1.as_str()),
+            "identidade do autor preservada no import"
+        );
+        assert!(
+            db2.recall_entities(&["eq/valvula"], 5).unwrap().iter().any(|h| h.key == "md/L3/x"),
+            "entidades viajam no record"
+        );
+    }
+
+    #[test]
     fn recall_candidates_decomposes_signals() {
         // ADR-0017 Movimento 3 (Eq. 8/23 do Jev-Mem): o prefetch devolve os
         // sinais SEPARADOS — o controlador pondera, o core não decide.
