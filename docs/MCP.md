@@ -9,7 +9,7 @@ Guia de instalação, contrato e troubleshooting do servidor MCP
 |-------|-------|
 | Protocolo | JSON-RPC 2.0 over **stdio** (uma linha JSON por mensagem) |
 | Handshake | `initialize` → `protocolVersion: 2025-11-25` |
-| `serverInfo.version` | `1.4.3` (`MCP_CONTRACT_VERSION` em `examples/mcp_server.rs`) |
+| `serverInfo.version` | `1.4.6` (`MCP_CONTRACT_VERSION` em `examples/mcp_server.rs`) |
 | Tools | **5** (`remember`, `recall`, `health`, `curate`, `decide`) — 40 nomes antigos/alias ainda funcionam em `tools/call` (`ALIAS_SURFACE`, `stable`/`deprecated` em `contract.json` + resource `nsgdb://contract`) |
 | Retrieval default (v1.3.0) | `lexical` sem vetor; `hybrid` (RRF) com embedder de host REAL; `semantic` com `embedding=` do caller — `health.semantic_ready`/`retrieval_default` |
 | Embedding (via B, v1.4.3) | `NEURAL_SGDB_EMBEDDER=multilingual\|candle\|onnx\|local` → modelo `paraphrase-multilingual-MiniLM-L12-v2` (384, in-process em `crates/nsgdb-embed`); `model_id` auto-declarado no `remember`. Cadeia de fallback: caller `embedding=` (A) → host in-process (B) → `embedder_http`/ollama (C) → lexical (honesto, ADR-0008) |
@@ -35,7 +35,7 @@ Dispatch: `remember(user+response)` → episódico L2; `remember(text=)` sem vet
 L3; `recall(entities|at|rag=true|mode=causal)` → 1-hop / temporal / rag / **causal**
 (v1.4.4: o hit vem com `ancestry` = a linha de versão que o produziu;
 `causal_depth` limita quantos elos, default 4); `health(view=era|validate|tensions)`;
-`curate(op=explain|reinforce|decay|consolidate|audit_checkpoint|audit_verify|audit_resolve|audit_trail|forget_purge|export_delta|set_authority|rollback_to|commit_run|deprecate_run|…)`
+`curate(op=explain|reinforce|decay|consolidate|audit_checkpoint|audit_verify|audit_resolve|audit_trail|forget_purge|export_delta|set_authority|rollback_to|commit_run|deprecate_run|hygiene|…)`
 (v1.1.10: metadado cognitivo; **v1.1.19+**: harness ADR-0010 `commit_run`/`deprecate_run`;
 `audit_verify` expõe `structuredContent` com o `AuditReport`;
 **v1.4.4**: `op=explain` aceita `full=true`, que compõe numa resposta só a

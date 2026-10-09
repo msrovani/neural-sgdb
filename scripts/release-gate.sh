@@ -61,8 +61,11 @@ ensure_target() {
 }
 
 # Python do CI (ubuntu) e o do Windows nem sempre tem o mesmo nome.
+# python3 pode ser o alias quebrado da Microsoft Store no Windows (exit 49,
+# imprime aviso e nao roda): so confiar se --version funcionar; senao python.
 PY=python3
-command -v python3 >/dev/null 2>&1 || PY=python
+if ! "$PY" --version >/dev/null 2>&1; then PY=python; fi
+command -v "$PY" >/dev/null 2>&1 || PY=python
 
 echo "== neural-sgdb release gate =="
 run "docs-version"  bash scripts/docs-version-gate.sh

@@ -45,6 +45,18 @@ surface is the contract.
   (`0` learned on the mesh, `255` HITL-approved); ties a causal draw.
 - `curate(op=conflicts, open_only=, limit=)` — the host no longer filters in
   memory; `health(view=tensions).open_conflicts` now counts in the core.
+- `curate(op=hygiene)` — content-hygiene report (contract 1.4.6): READ-ONLY,
+  reports never decides — `superseded_without_successor`, `malformed_keys`
+  (`md/`-doubled layer namespace), `orphan_entities`, `duplicate_texts` (same
+  BM25 tokens + same entities). Structured payload + capped prose.
+- `remember(key=)` **rejects raw keys starting with `md/`** (contract 1.4.6):
+  the server composes `md/L{N}/<key>` — passing a full storage key used to
+  write `md/L3/md/L3/...`. Full storage keys belong to `curate`/`explain`
+  follow-ups, not to `remember`.
+- `supersede(old, new)` is **atomic** (contract 1.4.6): both keys must resolve
+  to existing memories BEFORE any mutation; the old half-mutation (old marked,
+  missing successor reported as success) is rejected. Success returns
+  `structuredContent {old, new, state}` (the keys, not the echoed text).
 
 ### MCP: machine-readable errors and honesty
 
@@ -59,6 +71,9 @@ surface is the contract.
 
 ### Lib
 
+- `Sgdb::hygiene() -> Result<HygieneReport, SgdbError>` — content-hygiene
+  report (same four classes as `curate(op=hygiene)`); O(docs), opt-in, never
+  in the default health.
 - `Sgdb::set_authority(key, u8)` / `authority_of(key)`.
 - `Sgdb::storage_capacity()` / `storage_used()`; the `Storage` trait gains
   `capacity_bytes()` / `used_bytes()` (default `None`); `validate` §7.

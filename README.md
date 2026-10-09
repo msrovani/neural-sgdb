@@ -36,7 +36,7 @@ filesystem, no external runtime.
 
 ## Status
 
-**v1.4.5** — substrate **agêntico** (MCP 5 tools contract **1.4.5**, doutrina,
+**v1.4.5** — substrate **agêntico** (MCP 5 tools contract **1.4.6**, doutrina,
 hits tipados, TTL/GC, timeline, ANN) + **ADC-lite** + telepatia **2-DB** +
 **host harvest** + **ADR-0010 harness** (`commit_run` / `deprecate_run` /
 **`promote_run`** — fork/merge de memória por scope run, `mom/anti-pattern`) +

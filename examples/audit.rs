@@ -245,7 +245,13 @@ fn battery3_fidelity(path: &std::path::Path, rep: &mut Report) {
     rep.check("explain expõe o estado Archived", expl.state == MemoryState::Archived, format!("state={:?}", expl.state));
 
     // ── 3.3 supersede constrói DAG (linhagem causal) ────────────────────────
-    db.supersede("md/L4/f2", "md/L4/f3").unwrap(); // f3 ainda não existe — design
+    // TRIAGEM #2 ISSUE 1 (P0): sucessor INEXISTENTE é recusado ANTES de
+    // mutar — a meia-mutação antiga marcava old, reportava sucesso e a
+    // sucessora não existia em lugar nenhum (perda de conteúdo).
+    let r = db.supersede("md/L4/f2", "md/L4/f3");
+    rep.check("supersede com sucessor inexistente recusado", r.is_err(), format!("{r:?}"));
+    rep.check("f2 segue Active após a recusa",
+        db.get_state("md/L4/f2").unwrap() == MemoryState::Active, "".into());
     // cria o sucessor real e liga a linhagem
     db.remember_semantic("f3", "o orçamento estourou em duzentos e dez mil", &emb(42)).unwrap();
     db.supersede("md/L4/f2", "md/L4/f3").unwrap();

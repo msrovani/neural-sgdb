@@ -146,6 +146,7 @@ pub use harness::{
 pub use sgdb::{
     AdaptiveRecall, AuditReport, CandidateSignals, CausalHit, CognitiveOps, ConsolidateConfig,
     DecayConfig, ForgetOutcome, GcConfig, GcReport, HealthReport, Hit, HitProvenance,
+    HygieneReport,
     LexicalAnchorReranker,
     RecallLedger, RecallProbe, RecallWeights, RememberOptions, RememberOutcome, Reranker,
     ResolveOutcome, ScoreBreakdown, ScopeDimDescriptor, ScopeDistribution, ScopeProbes, Sgdb,

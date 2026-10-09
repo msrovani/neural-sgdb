@@ -196,8 +196,8 @@ fn main() {
     rep.check("initialize responde", !r.get("error").is_some(), r.to_string());
     rep.check("protocolVersion 2025-11-25",
         r["result"]["protocolVersion"] == "2025-11-25", r.to_string());
-    rep.check("serverInfo version 1.4.5",
-        r["result"]["serverInfo"]["version"] == "1.4.5", r.to_string());
+    rep.check("serverInfo version 1.4.6",
+        r["result"]["serverInfo"]["version"] == "1.4.6", r.to_string());
     rep.check("serverInfo mcp_tool_count 5",
         r["result"]["serverInfo"]["mcp_tool_count"] == 5, r.to_string());
     let instr = r["result"]["instructions"].as_str().unwrap_or("");
@@ -1286,6 +1286,59 @@ fn main() {
     let ttl_key = storage_key_from_remember(&txt);
     let (txt, is_err) = srv.tool("curate", json!({"op": "set_ttl", "key": ttl_key.clone(), "expires_at": 1700000000000u64}));
     rep.check("set_ttl no passado (expira no open)", !is_err && txt.contains("1700000000000"), txt.clone());
+
+    // ---------- fase 9c: triagem do consumidor #2 (2026-10-08) ----------
+    // P0 #1 supersede atômico; P0 #2 key com prefixo md/; verificabilidade
+    // (structuredContent/truncated/vazio=json); higiene (op nova). Cada
+    // asserção MORRE sem o fix correspondente.
+    let t = Instant::now();
+    // P0 #2: key crua com namespace do servidor → recusada, nada gravado
+    let (txt, is_err) = srv.tool("remember", json!({
+        "text": "zumbido de torneia tratavel", "key": "md/L3/duplicado"
+    }));
+    rep.check("P0: remember com key iniciada em md/ recusado",
+        is_err && txt.contains("md/"), txt.clone());
+    let (txt, _) = srv.tool("recall", json!({"query": "zumbido de torneia", "k": 3}));
+    rep.check("P0: nada gravado pela key torta (recall sem o texto)",
+        !txt.contains("zumbido de torneia"), txt.clone());
+    // P0 #1: supersede com sucessor inexistente → erro E nada muda
+    let (txt, _) = srv.tool("remember", json!({"text": "guardiao atomico hipotetico"}));
+    let k_guard = storage_key_from_remember(&txt);
+    let (txt, is_err) = srv.tool("supersede", json!({
+        "old": k_guard, "new": "md/L4/sucessor-fantasma"
+    }));
+    rep.check("P0: supersede com new inexistente → erro acionável",
+        is_err && txt.contains("new key"), txt.clone());
+    let (txt, _) = srv.tool("recall", json!({"query": "guardiao atomico hipotetico", "k": 1}));
+    rep.check("P0: old NÃO foi mutado (segue ativo no recall)",
+        txt.contains("guardiao atomico hipotetico"), txt.clone());
+    // Verificabilidade: entities SEMPRE structuredContent + corte visível
+    let r = srv.rpc("tools/call", json!({"name": "recall_entities", "arguments": {
+        "entities": ["org/opencode"], "k": 1
+    }}));
+    let sc = &r["result"]["structuredContent"];
+    rep.check("entities: structuredContent sempre + truncated/nextCursor",
+        sc["truncated"] == json!(true)
+            && sc["hit_count"].as_u64() == Some(1)
+            && r["result"]["nextCursor"].is_string()
+            && r["result"]["content"][0]["text"].is_string(),
+        r.to_string());
+    let (txt, is_err) = srv.tool("recall_entities", json!({
+        "entities": ["entidade/inexistente"], "format": "json"
+    }));
+    rep.check("entities vazio com format=json → [] (nunca prosa)",
+        !is_err && txt.trim() == "[]", txt.clone());
+    // Shape consistente do recall comum: truncated anunciado no structured
+    let r = srv.rpc("tools/call", json!({"name": "recall", "arguments": {
+        "query": "hot test alpha", "k": 1, "mode": "lexical"
+    }}));
+    rep.check("recall: structuredContent com truncated (shape)",
+        r["result"]["structuredContent"]["truncated"].is_boolean(), r.to_string());
+    // Higiene (ISSUE 7): op nova servida, read-only, relatório nas 4 classes
+    let (txt, is_err) = srv.tool("curate", json!({"op": "hygiene"}));
+    rep.check("hygiene: op servida (anunciada==servida) e read-only",
+        !is_err && txt.contains("higiene"), txt.clone());
+    rep.phase("triagem consumidor #2", &t);
 
     // ---------- fase 10: PERSISTÃŠNCIA (o teste a quente de verdade) ----------
     let t = Instant::now();

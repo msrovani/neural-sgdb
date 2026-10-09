@@ -6,7 +6,7 @@ repo. **Read `codemap.md` (atlas), `docs/api.md` (contract) and
 Storage, Cognitive API; typed hits from v1.1.6; current crate = `Cargo.toml`) and
 `docs/implementation-status.md` before editing code.**
 
-**Shipped crate is 1.4.5 (agentic MCP contract 1.4.5, hot test 177/0):** Vocabulário ÚNICO
+**Shipped crate is 1.4.5 (agentic MCP contract 1.4.6, hot test 185/0):** Vocabulário ÚNICO
 prosa/JSON (ADR-0017: `{:?}` fora do wire; tool `decide` 𝒥(S,𝒬) = 5º tool;
 `recall_candidates` sinais decompostos; validate tipado; k=0 erro). `Hit.type_scores`
 = **ADR-0016** (episódico/semântico/procedural/preferência sobrepostos,
@@ -52,6 +52,34 @@ policy. `MIGRATIONS.md` §MCP contract (1.2.1→1.3.0).
 [`docs/agent-self-program.md`](docs/agent-self-program.md) +
 [`docs/doctrine.md`](docs/doctrine.md); cold-start toda sessão; skill
 `.cursor/skills/nsgdb-full-usage/`.
+
+## Triagem do consumidor #2 — P0 de dados + verificabilidade (2026-10-08)
+
+Segundo relatório de uso real (6 papers / 86 memórias via MCP;
+`docs/consumer-report-triage-2.md`): 7 alegações, 6 confirmadas e CORRIGIDAS,
+1 rejeitada por design (ADR-0008, lexical default). Contrato MCP → **1.4.6** —
+pins no MESMO commit: `contract.json`, `mcp_client` serverInfo,
+`connectors/mcp_client/client.py` (`EXPECTED_CONTRACT`), `docs/MCP.md`.
+
+- **P0 `supersede` atômico**: valida que AMBAS as keys existem ANTES de mutar.
+  A ordem antiga gravava Superseded em `old` e marcava `new` Active (remove-only,
+  nunca erra em fantasma) → `Ok(())` com old escondido do recall e a sucessora
+  em lugar nenhum — o consumidor perdeu conteúdo lendo sucesso. `examples/audit.rs`
+  pinava a meia-mutação como design (atualizado); MCP devolve
+  `structuredContent {old,new,state}` (as KEYS, não o texto ecoado).
+- **P0 key `md/`**: `validate_written` recusa key iniciada em `md/` (namespace que o
+  SERVIDOR compõe — antes gravava `md/L3/md/L3/...`). `sys/` segue permitido (pinado
+  em `examples/audit.rs`).
+- **Verificabilidade**: `recall_entities`/`recall_temporal` ganharam sentinela `k+1` +
+  paginação (`truncated` + `nextCursor`), `structuredContent` SEMPRE (o routing
+  `recall`+`entities[]` respondia só `content[0].text`) e `format=json` → `[]` no vazio;
+  `recall` ganhou `truncated`; erros de mode/recall/rag ganharam `structuredContent`.
+- **`curate(op=hygiene)`** (nova, READ-ONLY): `Sgdb::hygiene()` / `HygieneReport` —
+  superseded sem sucessora, keys `md/` malformadas, entities órfãs, texto duplicado
+  (mesmos tokens + entities). REPORTA, não decide.
+- **Lições**: grep raso (glob `connectors/*.py`) perdeu o pin `EXPECTED_CONTRACT` em
+  subdiretório — `grep -rn` SEM glob; pin de versão tem casa própria (serverInfo,
+  contract.json, conector). Hot test **185/0** (+8 da fase "triagem consumidor #2").
 
 ## Release 1.4.5 — o gate do CI estava quebrado (2026-10-05)
 

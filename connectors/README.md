@@ -3,7 +3,7 @@
 Camada de host para integrar agentes ao `mcp_server` sem alterar o core Rust,
 NMD1 ou TKLV. **Não bumpa** o SemVer do crate (`VERSIONING.md` §Host
 connectors). Alinhar docs/adapters ao `MCP_CONTRACT_VERSION` atual do
-`examples/mcp_server.rs` (hoje **1.4.5** — 5 tools: `remember`/`recall`/
+`examples/mcp_server.rs` (hoje **1.4.6** — 5 tools: `remember`/`recall`/
 `health`/`curate`/`decide`; lexical-first).
 
 **Status:** Hermes provider executável + contract tests; OpenClaw esqueleto TS.

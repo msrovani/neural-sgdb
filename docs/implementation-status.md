@@ -155,7 +155,12 @@ author/layer/index_key`, `curate forget_purge|audit_resolve|audit_trail/
 export_delta|set_authority`, `error.code`), + `explain full=true` e
 `recall(mode=causal)`, seam `Storage::capacity_*`, seam de hash da audit chain
 (SHA-256 `no_std`, wire AUD1 intocado).
-MCP contract **1.4.5**.
+**Contract 1.4.6**: triagem do consumidor #2 — `supersede` ATÔMICO (new precisa
+existir; `structuredContent {old,new,state}`), `remember(key=)` recusa key com
+prefixo `md/`, recall family SEMPRE `structuredContent` + `truncated`/`nextCursor`
+(entities/temporal paginam) + `[]` no vazio de `format=json`, erros de recall com
+`structuredContent`, `curate(op=hygiene)` (relatório READ-ONLY de conteúdo).
+MCP contract **1.4.6**.
 
 ### Host connectors
 `connectors/` is host-side (not crate SemVer). Hermes `MemoryProvider` is

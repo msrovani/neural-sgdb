@@ -602,7 +602,7 @@ fn error_code_label(c: neural_sgdb::ErrorCode) -> &'static str {
 
 /// NÃºmero de tools em `tools/list` (aliases antigos ainda funcionam em tools/call).
 const EXPECTED_MCP_TOOL_COUNT: usize = 5;
-const MCP_CONTRACT_VERSION: &str = "1.4.5";
+const MCP_CONTRACT_VERSION: &str = "1.4.6";
 const BUILD_GIT: &str = env!("NEURAL_SGDB_BUILD_GIT");
 
 /// Lista pÃºblica: 4 tools. Os 23 nomes antigos continuam vÃ¡lidos em `tools/call`.
@@ -853,7 +853,7 @@ fn mcp_listed_tools() -> Value {
          "description":"Write. Sem embedding= grava L3 lexical (ADR-0008, nao abre era BQ). embedding= ou NEURAL_SGDB_EMBEDDER=demo → L4. user+response= episodico L2. scope/scope_user/agent/app/run nao vaza no recall global. Devolve storage key + recall_hint.",
          "inputSchema":{"type":"object","properties":{
            "text":{"type":"string"},
-           "key":{"type":"string","description":"key explicita opt-in (ex.: prefixo do sandbox run p/ promote_run). Default: gerada"},
+           "key":{"type":"string","description":"key CRUA opt-in (ex.: prefixo do sandbox run p/ promote_run) — SEM prefixo md/: o servidor compoe md/L3/<key> e key iniciada em md/ e RECUSADA (nada gravado). Para follow-ups (curate/explain/supersede) use a storage key completa devolvida aqui. Default: gerada"},
            "user":{"type":"string","description":"Com `response`: episodio L2 verbatim"},
            "response":{"type":"string"},
            "now":{"type":"integer"},
@@ -909,9 +909,9 @@ fn mcp_listed_tools() -> Value {
          }},
          "annotations":{"readOnlyHint":true}},
         {"name":"curate",
-         "description":"Mutacao pontual / grafo L6 + metadado cognitivo. op= explain|reinforce|feedback|forget|forget_purge|expire_old|decay|consolidate|diary|profile|associate|related_to|contradicts|supersede|conflicts|resolve_conflict|merge_memories|audit_checkpoint|audit_verify|audit_resolve|audit_trail|rollback_to|set_ttl|expire_ttl|set_event|close_event|timeline|gc|recall_ann|commit_run|deprecate_run|promote_run|export_delta|set_authority. ADR-0010: commit_run/deprecate_run usam scope_run (+ facts/anti_patterns). promote_run: merge do sandbox run no escopo base (keys do run com prefixo <run>/; estrategias fail|ours|theirs via merge_strategy; base_dims via base_user/base_agent/base_app). v1.4.4: explain(full=true) junta a proveniencia completa (authority/clock/audit_refs); forget_purge = forget COMPURGADO (tombstone→delete→elo FORGET, nesta ordem); audit_resolve deixa a decisao HITL na chain; audit_trail LE a trilha (key?/since?/limit?); export_delta = pull direcionado do anti-entropy (node/since/max); set_authority marca a memoria como HITL (0..=255, MDM1 v8). Use uma storage key completa md/L4/.... Nao hoarde: so depois de evidencia.",
+         "description":"Mutacao pontual / grafo L6 + metadado cognitivo. op= explain|reinforce|feedback|forget|forget_purge|expire_old|decay|consolidate|diary|profile|associate|related_to|contradicts|supersede|conflicts|resolve_conflict|merge_memories|audit_checkpoint|audit_verify|audit_resolve|audit_trail|rollback_to|set_ttl|expire_ttl|set_event|close_event|timeline|gc|recall_ann|commit_run|deprecate_run|promote_run|export_delta|set_authority|hygiene. ADR-0010: commit_run/deprecate_run usam scope_run (+ facts/anti_patterns). promote_run: merge do sandbox run no escopo base (keys do run com prefixo <run>/; estrategias fail|ours|theirs via merge_strategy; base_dims via base_user/base_agent/base_app). v1.4.4: explain(full=true) junta a proveniencia completa (authority/clock/audit_refs); forget_purge = forget COMPURGADO (tombstone→delete→elo FORGET, nesta ordem); audit_resolve deixa a decisao HITL na chain; audit_trail LE a trilha (key?/since?/limit?); export_delta = pull direcionado do anti-entropy (node/since/max); set_authority marca a memoria como HITL (0..=255, MDM1 v8). hygiene = relatorio READ-ONLY de conteudo (superseded sem sucessora, key com md/ duplicado, entity orfa, texto duplicado) — REPORTA, nao decide. Use uma storage key completa md/L4/.... Nao hoarde: so depois de evidencia.",
          "inputSchema":{"type":"object","properties":{
-           "op":{"type":"string","enum":["explain","reinforce","feedback","forget","forget_purge","expire_old","decay","consolidate","diary","profile","associate","related_to","contradicts","supersede","conflicts","resolve_conflict","merge_memories","audit_checkpoint","audit_verify","audit_resolve","audit_trail","rollback_to","set_ttl","expire_ttl","set_event","close_event","timeline","gc","recall_ann","commit_run","deprecate_run","promote_run","export_delta","set_authority"]},
+           "op":{"type":"string","enum":["explain","reinforce","feedback","forget","forget_purge","expire_old","decay","consolidate","diary","profile","associate","related_to","contradicts","supersede","conflicts","resolve_conflict","merge_memories","audit_checkpoint","audit_verify","audit_resolve","audit_trail","rollback_to","set_ttl","expire_ttl","set_event","close_event","timeline","gc","recall_ann","commit_run","deprecate_run","promote_run","export_delta","set_authority","hygiene"]},
            "key":{"type":"string"},
            "delta":{"type":"number"},
            "positive":{"type":"boolean"},
@@ -929,8 +929,8 @@ fn mcp_listed_tools() -> Value {
            "a":{"type":"string"},
            "b":{"type":"string"},
            "kind":{"type":"string"},
-           "old":{"type":"string"},
-           "new":{"type":"string"},
+           "old":{"type":"string","description":"storage key COMPLETA da memoria a aposentar (ex.: md/L3/...). Precisa EXISTIR — o servidor valida antes de mutar (sem meia-mutacao)."},
+           "new":{"type":"string","description":"storage key COMPLETA do SUCESSOR — a memoria nova precisa EXISTIR (grave-a antes com remember; texto nao e aceito). Os dois existem -> muta; senao, erro e nada muda."},
            "conflict_id":{"type":"string"},
            "winner_version_id":{"type":"string"},
            "target":{"type":"string"},
@@ -988,6 +988,17 @@ fn binary_runtime_info() -> (String, Option<u64>) {
             (p.display().to_string(), mtime)
         })
         .unwrap_or_else(|| ("unknown".into(), None))
+}
+
+/// Lista de keys em prosa, capada em 20 — higiene pode achar muita sujeira
+/// e a prosa é para leitura humana (o payload completo vai no structuredContent).
+fn fmt_key_list(keys: &[String]) -> String {
+    let n = keys.len();
+    if n > 20 {
+        format!("{} … (+{} mais)", keys[..20].join(", "), n - 20)
+    } else {
+        keys.join(", ")
+    }
 }
 
 fn mcp_tool_result(text: &str, structured: Value, is_error: bool) -> Value {
@@ -2037,8 +2048,8 @@ fn main() {
                         let mode = match resolve_retrieval_mode(args, &embedder_effective) {
                             Ok(m) => m,
                             Err(e) => {
-                                send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                    "content":[{"type":"text","text":e}],"isError":true}}));
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":mcp_tool_result(
+                                    &e, json!({"error": e}), true)}));
                                 continue;
                             }
                         };
@@ -2085,8 +2096,8 @@ fn main() {
                         ) {
                             Ok(h) => h,
                             Err(e) => {
-                                send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                    "content":[{"type":"text","text":e}],"isError":true}}));
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":mcp_tool_result(
+                                    &e, json!({"error": e}), true)}));
                                 continue;
                             }
                         };
@@ -2127,13 +2138,16 @@ fn main() {
                             "app": dims_filter.app,
                             "run": dims_filter.run
                         });
+                        // Triagem #2 ISSUE 3: `truncated` declara o corte em
+                        // relação ao pool — hit_count sozinho nao distingue
+                        // "20 de 20" de "20 de 65".
                         let structured = if json_fmt {
                             match &causal_rows_json {
-                                Some(rows) => json!({"hits": rows, "scope": scope, "mode": mode, "scope_dims": filter_echo}),
-                                None => json!({"hits": page.iter().map(hit_json).collect::<Vec<_>>(), "scope": scope, "mode": mode, "scope_dims": filter_echo}),
+                                Some(rows) => json!({"hits": rows, "scope": scope, "mode": mode, "scope_dims": filter_echo, "truncated": next.is_some()}),
+                                None => json!({"hits": page.iter().map(hit_json).collect::<Vec<_>>(), "scope": scope, "mode": mode, "scope_dims": filter_echo, "truncated": next.is_some()}),
                             }
                         } else {
-                            json!({"hit_count": page.len(), "scope": scope, "mode": mode, "scope_dims": filter_echo})
+                            json!({"hit_count": page.len(), "scope": scope, "mode": mode, "scope_dims": filter_echo, "truncated": next.is_some()})
                         };
                         let mut result = mcp_tool_result(&text, structured, false);
                         if let Some(n) = next {
@@ -2151,8 +2165,8 @@ fn main() {
                         let mode = match resolve_retrieval_mode(args, &embedder_effective) {
                             Ok(m) => m,
                             Err(e) => {
-                                send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                    "content":[{"type":"text","text":e}],"isError":true}}));
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":mcp_tool_result(
+                                    &e, json!({"error": e}), true)}));
                                 continue;
                             }
                         };
@@ -2283,27 +2297,48 @@ fn main() {
                         // v1.1.26: dims nao tem rota neste sub-modo — recusa
                         // explicita em vez de responder o pool global.
                         if !mcp_scope_filter(args).is_global_only() {
-                            send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":ERR_DIMS_TEMPORAL}],"isError":true}}));
+                            send(&json!({"jsonrpc":"2.0","id":id,"result":mcp_tool_result(
+                                ERR_DIMS_TEMPORAL, json!({"error": ERR_DIMS_TEMPORAL}), true)}));
                             continue;
                         }
+                        // Triagem #2 ISSUES 3/4/5: sentinela k+1 + paginação,
+                        // structuredContent SEMPRE (inclusive vazio/erro) e
+                        // format=json vale no vazio — "[]" nunca prosa.
+                        let size = args["pageSize"].as_u64().unwrap_or(k as u64).max(1) as usize;
+                        let off = args["cursor"]
+                            .as_str()
+                            .and_then(|c| c.parse::<usize>().ok())
+                            .unwrap_or(0);
+                        let need = off.saturating_add(size).saturating_add(1);
                         let hits = if scope.is_empty() {
-                            db.recall_temporal(&emb, k, at, w_sem, w_time)
+                            db.recall_temporal(&emb, need, at, w_sem, w_time)
                         } else {
-                            db.recall_temporal_scoped(&emb, k, at, w_sem, w_time, scope)
+                            db.recall_temporal_scoped(&emb, need, at, w_sem, w_time, scope)
                         };
                         match hits {
-                            Ok(hs) if hs.is_empty() => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":"nenhuma memoria valida em at"}],"isError":false}})),
                             Ok(hs) => {
+                                let (page, next) = paginate(&hs, args["cursor"].as_str(), size);
                                 let json_fmt = args["format"].as_str().unwrap_or("") == "json";
                                 let text = if json_fmt {
-                                    hits_json(&hs)
+                                    hits_json(&page)
+                                } else if page.is_empty() {
+                                    "nenhuma memoria valida em at".into()
                                 } else {
-                                    hs.iter().map(fmt_hit).collect::<Vec<_>>().join("\n")
+                                    page.iter().map(fmt_hit).collect::<Vec<_>>().join("\n")
                                 };
-                                send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                    "content":[{"type":"text","text":text}],"isError":false}}))
+                                let structured = json!({
+                                    "hits": page.iter().map(hit_json).collect::<Vec<_>>(),
+                                    "scope": scope,
+                                    "mode": "temporal",
+                                    "at": at,
+                                    "hit_count": page.len(),
+                                    "truncated": next.is_some()
+                                });
+                                let mut result = mcp_tool_result(&text, structured, false);
+                                if let Some(n) = next {
+                                    result["nextCursor"] = json!(n);
+                                }
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":result}))
                             }
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true,"structuredContent":mcp_error_data(&e)}})),
@@ -2322,32 +2357,55 @@ fn main() {
                         let scope = args["scope"].as_str().unwrap_or("");
                         let historical = args["historical"].as_bool().unwrap_or(false);
                         let dims_filter = mcp_scope_filter(args);
+                        // Triagem #2 ISSUES 3/4/5: sentinela k+1 + paginação
+                        // (o corte era invisível: sem cursor/total/flag),
+                        // structuredContent SEMPRE (o routing recall+entities
+                        // respondia só content[0].text) e format=json vale no
+                        // vazio — "[]", nunca prosa.
+                        let size = args["pageSize"].as_u64().unwrap_or(k as u64).max(1) as usize;
+                        let off = args["cursor"]
+                            .as_str()
+                            .and_then(|c| c.parse::<usize>().ok())
+                            .unwrap_or(0);
+                        let need = off.saturating_add(size).saturating_add(1);
                         let hits = if !dims_filter.is_global_only() {
                             // ADR-0010 / v1.1.14: scope_user|agent|app|run
-                            db.recall_entities_dims(&entities, k, &dims_filter)
+                            db.recall_entities_dims(&entities, need, &dims_filter)
                         } else if scope.is_empty() {
                             if historical {
-                                db.recall_entities_historical(&entities, k)
+                                db.recall_entities_historical(&entities, need)
                             } else {
-                                db.recall_entities(&entities, k)
+                                db.recall_entities(&entities, need)
                             }
                         } else if historical {
-                            db.recall_entities_scoped_historical(&entities, k, scope)
+                            db.recall_entities_scoped_historical(&entities, need, scope)
                         } else {
-                            db.recall_entities_scoped(&entities, k, scope)
+                            db.recall_entities_scoped(&entities, need, scope)
                         };
                         match hits {
-                            Ok(hs) if hs.is_empty() => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":"nenhuma memoria com essas entidades"}],"isError":false}})),
                             Ok(hs) => {
+                                let (page, next) = paginate(&hs, args["cursor"].as_str(), size);
                                 let json_fmt = args["format"].as_str().unwrap_or("") == "json";
                                 let text = if json_fmt {
-                                    hits_json(&hs)
+                                    hits_json(&page)
+                                } else if page.is_empty() {
+                                    "nenhuma memoria com essas entidades".into()
                                 } else {
-                                    hs.iter().map(fmt_hit).collect::<Vec<_>>().join("\n")
+                                    page.iter().map(fmt_hit).collect::<Vec<_>>().join("\n")
                                 };
-                                send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                    "content":[{"type":"text","text":text}],"isError":false}}))
+                                let structured = json!({
+                                    "hits": page.iter().map(hit_json).collect::<Vec<_>>(),
+                                    "entities": entities,
+                                    "scope": scope,
+                                    "mode": "entities",
+                                    "hit_count": page.len(),
+                                    "truncated": next.is_some()
+                                });
+                                let mut result = mcp_tool_result(&text, structured, false);
+                                if let Some(n) = next {
+                                    result["nextCursor"] = json!(n);
+                                }
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":result}))
                             }
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true,"structuredContent":mcp_error_data(&e)}})),
@@ -2644,6 +2702,66 @@ fn main() {
                     // v1.4.4 (ISSUE 6c): LER a trilha. `audit_verify` só
                     // resumia contagens; quem quer a trilha de UMA memória
                     // tinha de decodificar a chain inteira.
+                    // Triagem consumidor #2, ISSUE 7: higiene de conteúdo.
+                    // READ-ONLY: REPORTA as 4 classes (superseded sem
+                    // sucessora / keys malformadas / entities órfãs / texto
+                    // duplicado) — quem decide é o consumidor, ADD-only intacto.
+                    "hygiene" => {
+                        match db.hygiene() {
+                            Ok(r) => {
+                                let mut lines: Vec<String> = Vec::new();
+                                if !r.superseded_without_successor.is_empty() {
+                                    lines.push(format!("- superseded sem sucessora: {}",
+                                        fmt_key_list(&r.superseded_without_successor)));
+                                }
+                                if !r.malformed_keys.is_empty() {
+                                    lines.push(format!("- key com namespace de camada duplicado: {}",
+                                        fmt_key_list(&r.malformed_keys)));
+                                }
+                                if !r.orphan_entities.is_empty() {
+                                    let pairs: Vec<String> = r.orphan_entities.iter()
+                                        .map(|(e, k)| format!("{e} -> {k}")).collect();
+                                    lines.push(format!("- entity orfa: {}", fmt_key_list(&pairs)));
+                                }
+                                if !r.duplicate_texts.is_empty() {
+                                    let g: Vec<String> = r.duplicate_texts.iter()
+                                        .map(|grp| grp.join(" = ")).collect();
+                                    lines.push(format!("- {} grupo(s) de texto duplicado: {}",
+                                        g.len(), fmt_key_list(&g)));
+                                }
+                                let c_sup = r.superseded_without_successor.len();
+                                let c_mal = r.malformed_keys.len();
+                                let c_orp = r.orphan_entities.len();
+                                let c_dup = r.duplicate_texts.len();
+                                let total = c_sup + c_mal + c_orp + c_dup;
+                                let text = if lines.is_empty() {
+                                    "higiene limpa (0 problemas)".to_string()
+                                } else {
+                                    format!("higiene ({total} problema(s)):\n{}", lines.join("\n"))
+                                };
+                                let structured = json!({
+                                    "superseded_without_successor": r.superseded_without_successor,
+                                    "malformed_keys": r.malformed_keys,
+                                    "orphan_entities": r.orphan_entities.iter()
+                                        .map(|(e, k)| json!({"entity": e, "key": k}))
+                                        .collect::<Vec<_>>(),
+                                    "duplicate_texts": r.duplicate_texts,
+                                    "counts": {
+                                        "superseded_without_successor": c_sup,
+                                        "malformed_keys": c_mal,
+                                        "orphan_entities": c_orp,
+                                        "duplicate_texts": c_dup,
+                                    },
+                                    "clean": total == 0,
+                                    "note": "read-only: REPORTA, nao decide (ADD-only intacto)"
+                                });
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":mcp_tool_result(
+                                    &text, structured, false)}));
+                            }
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true,"structuredContent":mcp_error_data(&e)}})),
+                        }
+                    }
                     "audit_trail" => {
                         let key = args["key"].as_str().unwrap_or("");
                         let since = args["since"].as_u64().unwrap_or(0);
@@ -2797,9 +2915,16 @@ fn main() {
                             send(&error_response(&id, -32602, "parametros 'old' e 'new' obrigatorios"));
                             continue;
                         }
+                        // Triagem #2 ISSUE 1 (P0): o core valida que AMBAS as
+                        // keys existem ANTES de mutar (a meia-mutação que
+                        // reportava sucesso era perda de conteúdo). Sucesso
+                        // devolve as KEYS no structuredContent — não o texto
+                        // ecoado do parâmetro new.
                         match db.supersede(old, new) {
-                            Ok(()) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                "content":[{"type":"text","text":format!("{old} superseded por {new}")}],"isError":false}})),
+                            Ok(()) => send(&json!({"jsonrpc":"2.0","id":id,"result":mcp_tool_result(
+                                &format!("{old} superseded por {new}"),
+                                json!({"old": old, "new": new, "state": "superseded"}),
+                                false)})),
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true,"structuredContent":mcp_error_data(&e)}})),
                         }

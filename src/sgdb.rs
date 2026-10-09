@@ -1590,6 +1590,21 @@ impl Sgdb {
     pub fn supersede(&mut self, old: &str, new: &str) -> Result<(), SgdbError> {
         let old_sk = self.resolve_known_key(old);
         let new_sk = self.resolve_known_key(new);
+        // Triagem consumidor #2, ISSUE 1 (P0): valida ANTES de mutar. A ordem
+        // antiga gravava Superseded em `old` primeiro e só então tocava `new` —
+        // `Active` é remove-only (nunca erra em chave fantasma), então um
+        // sucessor INEXISTENTE resultava em `Ok(())` com `old` escondido do
+        // recall e `new` em lugar nenhum: meia-mutação com mensagem de
+        // sucesso é perda de conteúdo silenciosa. Regra nova: existem os DOIS
+        // ou nada muda.
+        if self.engine.get_by_storage_key(&old_sk)?.is_none() {
+            return Err(SgdbError::Invalid("supersede: no memory at old key"));
+        }
+        if self.engine.get_by_storage_key(&new_sk)?.is_none() {
+            return Err(SgdbError::Invalid(
+                "supersede: no memory at new key (write the successor with remember FIRST, then supersede)",
+            ));
+        }
         self.engine.set_state(&old_sk, MemoryState::Superseded)?;
         self.engine.set_state(&new_sk, MemoryState::Active)?;
         if let Some(old_meta) = self.engine.meta(&old_sk)? {
@@ -1602,6 +1617,88 @@ impl Sgdb {
             }
         }
         Ok(())
+    }
+
+    /// Relatório de higiene de CONTEÚDO (triagem consumidor #2, ISSUE 7).
+    /// READ-ONLY e determinístico: reporta as quatro classes de sujeira que o
+    /// `validate` (integridade estrutural) não cobre — nunca decide nem muta
+    /// (mesma postura do `stale_candidates`; ADD-only intacto). Custo O(docs):
+    /// opt-in, nunca no health default.
+    pub fn hygiene(&mut self) -> Result<HygieneReport, SgdbError> {
+        use alloc::collections::{BTreeMap, BTreeSet};
+        let mut out = HygieneReport::default();
+        // 1) varredura única de md/: estado, parents (linhagem) e assinatura
+        //    de texto — as 3 primeiras classes saem desta passada.
+        let all = self.scan_prefix("md/")?;
+        let mut parents: BTreeSet<String> = BTreeSet::new();
+        let mut metas: Vec<(String, String, MemoryState, Vec<String>)> = Vec::new();
+        for (sk, _) in &all {
+            // 1a) namespace de camada duplicado (md/L3/md/... — ISSUE 2 no
+            //     read-side: só é possível existir de antes do guard de escrita)
+            if let Some(rest) = sk.strip_prefix("md/") {
+                if let Some((_, inner)) = rest.split_once('/') {
+                    if inner.starts_with("md/") {
+                        out.malformed_keys.push(sk.clone());
+                    }
+                }
+            }
+            let st = self.engine.get_state(sk);
+            match self.engine.meta(sk)? {
+                Some(m) => {
+                    for p in &m.parent_ids {
+                        parents.insert(p.clone());
+                    }
+                    metas.push((sk.clone(), m.version_id, st, m.entities));
+                }
+                None => metas.push((sk.clone(), String::new(), st, Vec::new())),
+            }
+        }
+        // 1b) superseded sem substituta: NINGUÉM aponta para o version_id —
+        //     é o rastro da meia-mutação (ISSUE 1) e de delete pós-supersede.
+        for (sk, vid, st, _) in &metas {
+            if *st == MemoryState::Superseded && !vid.is_empty() && !parents.contains(vid) {
+                out.superseded_without_successor.push(sk.clone());
+            }
+        }
+        // 1c) duplicatas: assinatura = tokens BM25 do texto (ordenados) +
+        //     entities idênticas — o probe do `if_exists` lido de trás p/ frente.
+        let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (sk, _, _, ents) in &metas {
+            // companion L2 de primário L4/L5 não é doc à parte (o texto do
+            // primário já cobre) — senão todo L4 viraria "duplicata" dele
+            if let Some(id) = sk.strip_prefix("md/L2/") {
+                if self.engine.art.get(&alloc::format!("md/L3/{id}")).is_some()
+                    || self.engine.art.get(&alloc::format!("md/L4/{id}")).is_some()
+                    || self.engine.art.get(&alloc::format!("md/L5/{id}")).is_some()
+                {
+                    continue;
+                }
+            }
+            let text = self.text_of(sk)?;
+            if text.trim().is_empty() {
+                continue; // embedding/binário sem companion: sem texto, sem assinatura
+            }
+            let mut toks = crate::lexical::tokenize(&text);
+            toks.sort();
+            let mut es = ents.clone();
+            es.sort();
+            let sig = alloc::format!("{}\u{1f}{}", toks.join(" "), es.join(","));
+            groups.entry(sig).or_default().push(sk.clone());
+        }
+        for keys in groups.into_values() {
+            if keys.len() >= 2 {
+                out.duplicate_texts.push(keys);
+            }
+        }
+        // 2) entities órfãs: índice derivado apontando para doc ausente.
+        for (ent, keys) in &self.engine.entity_index {
+            for sk in keys {
+                if self.engine.art.get(sk).is_none() {
+                    out.orphan_entities.push((ent.clone(), sk.clone()));
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// Identidade estável da memória (v0.6). `None` = sem doc na chave ou
@@ -6172,9 +6269,37 @@ fn normalize_text(s: &str) -> String {
 /// control chars (quebram ordenação/UTF-8/log), (c) o separador reservado `#`
 /// (sys/rel/) e (d) strings acima de `MAX_KLEN`. Nada é gravado — `Invalid`.
 /// `SgdbError::Invalid` com mensagem ESTÁTICA (variante não carrega String).
+/// Relatório da higiene de conteúdo (`Sgdb::hygiene`, triagem #2 ISSUE 7).
+/// REPORTA, não decide — consumidor (humano ou IA) é quem age.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct HygieneReport {
+    /// `Superseded` cujo `version_id` não é parent de nenhum doc: a
+    /// substituição aconteceu pela metade (o caso do relatório).
+    pub superseded_without_successor: Vec<String>,
+    /// Storage keys com namespace de camada duplicado (`md/L3/md/...`).
+    pub malformed_keys: Vec<String>,
+    /// `(entity, storage_key)` — entrada do índice derivado apontando para
+    /// doc que não existe mais.
+    pub orphan_entities: Vec<(String, String)>,
+    /// Grupos (≥2 keys) com MESMA assinatura de texto (tokens BM25) e
+    /// mesmas entities — duplicatas de lote re-executado.
+    pub duplicate_texts: Vec<Vec<String>>,
+}
+
 fn validate_written(s: &str) -> Result<(), SgdbError> {
     if s.is_empty() {
         return Err(SgdbError::Invalid("empty written string"));
+    }
+    // Triagem consumidor #2, ISSUE 2 (P0): `md/` é o namespace de camada que o
+    // SERVIDOR compõe (`md/L{N}/<key>`). Uma key crua já começando com `md/`
+    // produz `md/L3/md/L3/...` (prefixo duplicado) e a key deixa de
+    // round-tripar — o consumidor confundiu a "full storage key" do curate
+    // com a key crua do remember. Recusa em vez de gravar torto. `sys/` NÃO é
+    // recusado: doc normal em qualquer camada (pinado em examples/audit.rs).
+    if s.starts_with("md/") {
+        return Err(SgdbError::Invalid(
+            "raw key must not start with md/ (the server composes md/L{N}/<key>; pass the raw key to remember, the full storage key only to curate/explain/follow-ups)",
+        ));
     }
     if s.len() > crate::limits::MAX_KLEN {
         return Err(SgdbError::Invalid("written string exceeds MAX_KLEN"));
@@ -7505,6 +7630,8 @@ mod tests {
             let key = "md/L3/ts/0000000000000001";
             // default é Active
             assert_eq!(db.get_state(key).unwrap(), MemoryState::Active);
+            // sucessor precisa EXISTIR (triagem #2 ISSUE 1: supersede atômico)
+            db.remember_fact("fato v2", 2).unwrap();
             // supersede: old → Superseded, new → Active (histórico preservado)
             db.supersede(key, "md/L3/ts/0000000000000002").unwrap();
             assert_eq!(db.get_state(key).unwrap(), MemoryState::Superseded);
@@ -8009,6 +8136,92 @@ mod tests {
             db.set_importance("md/L4/nao-existe", 0.5),
             Err(SgdbError::Invalid(_))
         ));
+    }
+
+    #[test]
+    fn hygiene_reports_four_classes_read_only() {
+        // Triagem consumidor #2, ISSUE 7: relatório READ-ONLY das quatro
+        // classes pedidas. As duas impossíveis pelo guard de escrita novo
+        // são semeadas via engine (fora do guard) — é o read-side que tem
+        // de achar sujeira já existente em bancos antigos.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        // (1) superseded sem sucessora: estado setado direto, sem par
+        db.remember_text_with("fato", "watchdog v1", RememberOptions::default())
+            .unwrap();
+        db.set_state("md/L3/fato", MemoryState::Superseded).unwrap();
+        // (2) key com prefixo duplicado (burla o guard de escrita de propósito)
+        let ghost = MemoryDoc::new(
+            MemoryLayer::L3EpisodicLong,
+            "md/L3/torto",
+            b"dado orfao".to_vec(),
+        );
+        db.engine.put(ghost).unwrap();
+        // (3) entity orfa: índice derivado apontando para doc ausente
+        db.engine
+            .entity_index
+            .insert("ent/orfa".into(), vec!["md/L4/fantasma".into()]);
+        // (4) texto duplicado: mesmo texto + mesmas entities, keys diferentes
+        for k in ["dup/1", "dup/2"] {
+            db.remember_text_with(
+                k,
+                "mesmo texto identico",
+                RememberOptions {
+                    entities: &["ent/x"],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let r = db.hygiene().unwrap();
+        assert_eq!(
+            r.superseded_without_successor,
+            vec!["md/L3/fato".to_string()],
+            "(1) superseded sem substituta"
+        );
+        assert_eq!(
+            r.malformed_keys,
+            vec!["md/L3/md/L3/torto".to_string()],
+            "(2) prefixo de camada duplicado"
+        );
+        assert_eq!(
+            r.orphan_entities,
+            vec![("ent/orfa".to_string(), "md/L4/fantasma".to_string())],
+            "(3) entity orfa"
+        );
+        let g = r
+            .duplicate_texts
+            .iter()
+            .find(|g| g.iter().any(|k| k.ends_with("dup/1")))
+            .expect("(4) grupo de duplicatas achado");
+        assert!(g.iter().any(|k| k.ends_with("dup/2")), "duas chaves no grupo: {g:?}");
+        // READ-ABLE apenas: nada mudou
+        assert_eq!(db.get_state("md/L3/fato").unwrap(), MemoryState::Superseded);
+        assert!(db.validate().is_empty(), "hygiene nao muta (validate limpo)");
+    }
+
+    #[test]
+    fn supersede_is_atomic_no_half_mutation() {
+        // Triagem consumidor #2, ISSUE 1 (P0): com `old` existente e `new`
+        // fantasma, a ordem antiga gravava Superseded em old e o set_state
+        // (Active) do new era no-op silencioso → Ok(()) com old escondido do
+        // recall e a sucessora em lugar nenhum (o consumidor leu sucesso e
+        // perdeu conteúdo). MORRE sem o fix: o Err é a primeira asserção.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("old", "v1", &[1.0, -1.0, 1.0, -1.0]).unwrap();
+        let e = db.supersede("md/L4/old", "md/L4/ghost-new").unwrap_err();
+        assert!(matches!(e, SgdbError::Invalid(_)), "{e:?}");
+        // nada mutou: old segue Active (visível no recall default)
+        assert_eq!(db.get_state("md/L4/old").unwrap(), MemoryState::Active);
+        assert!(
+            db.meta("md/L4/ghost-new").unwrap().is_none(),
+            "sucessora fantasma não pode ganhar estado/meta"
+        );
+        assert!(db.validate().is_empty(), "sem side-table órfã");
+        // o caminho legítimo (sucessora existente) segue intacto
+        db.remember_semantic("new", "v2", &[1.0, -1.0, 1.0, -1.0]).unwrap();
+        db.supersede("md/L4/old", "md/L4/new").unwrap();
+        assert_eq!(db.get_state("md/L4/old").unwrap(), MemoryState::Superseded);
+        assert_eq!(db.get_state("md/L4/new").unwrap(), MemoryState::Active);
     }
 
     #[test]
@@ -9849,13 +10062,19 @@ mod tests {
         // camada externa são hostis até prova em contrário — nada é gravado.
         let mut db = Sgdb::open(InMemory::new()).unwrap();
         let emb = [1.0f32, -1.0, 1.0, -1.0];
-        for bad in ["../evil", ".", "a#b", "a\x00b", "a\x01b", "a\x7fb"] {
+        for bad in ["../evil", ".", "a#b", "a\x00b", "a\x01b", "a\x7fb", "md/L3/dup"] {
             assert!(db.remember_semantic(bad, "t", &emb).is_err(), "semantic {bad:?}");
             assert!(
                 db.remember_text_with(bad, "t", RememberOptions::default()).is_err(),
                 "text {bad:?}"
             );
         }
+        // Triagem consumidor #2, ISSUE 2 (P0): a key com namespace de camada
+        // recusada NUNCA vira o prefixo duplicado (md/L3/md/L3/...).
+        assert!(
+            db.scan_prefix("md/L3/md/").unwrap().is_empty(),
+            "nada gravado sob o prefixo duplicado"
+        );
         assert!(db.remember_semantic("", "t", &emb).is_err(), "chave vazia");
         db.remember_semantic("ok", "t", &emb).unwrap();
         assert!(db.set_scope("md/L4/ok", "../x").is_err(), "scope traversal");
