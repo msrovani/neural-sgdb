@@ -4,6 +4,52 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [Unreleased] — lote pós-1.4.5 (contrato MCP 1.4.6 + consolidação)
+
+### Triagem do consumidor #2 (contrato MCP → 1.4.6; pins no mesmo commit)
+
+Seis de sete alegações de uso real (6 papers / 86 memórias via MCP)
+confirmadas e corrigidas; a sétima (default lexical) rejeitada por design
+(ADR-0008). Pins no mesmo commit: `contract.json`, `serverInfo.version`,
+`EXPECTED_CONTRACT` do conector, `docs/MCP.md`. Detalhe em
+`docs/consumer-report-triage-2.md`.
+
+- **P0 `supersede` atômico**: AMBAS as keys validadas ANTES de mutar (a ordem
+  antiga marcava old e reportava sucesso sem sucessora — perda de conteúdo).
+  Sucesso devolve `structuredContent {old,new,state}` (as keys, não o texto).
+- **P0 key `md/`**: `validate_written` recusa key iniciada em `md/` (namespace
+  que o servidor compõe; antes gravava `md/L3/md/L3/...`).
+- **Verificabilidade**: `recall_entities`/`recall_temporal` com sentinela k+1
+  (`truncated` + `nextCursor`), `structuredContent` SEMPRE,
+  `format=json` → `[]` no vazio; `recall` ganha `truncated`; erros de
+  mode/recall/rag com `structuredContent`.
+- **`curate(op=hygiene)`** (nova, READ-ONLY) + `Sgdb::hygiene()` /
+  `HygieneReport`: superseded sem sucessora, keys `md/` malformadas, entities
+  órfãs, texto duplicado. REPORTA, não decide.
+
+### Consolidação pós-revisão arquitetural externa (2026-10-09)
+
+- **Fix 8.1 — `tie_margin` por instância**: o override era um `static` de
+  processo e `set_tie_margin` de um banco alterava o ranking de todos os
+  outros. Campo em `Sgdb` + teste de 2 instâncias (mutação provada).
+  **Quebra de API lib ainda não-relançada: `set_tie_margin(&self)` →
+  `(&mut self)`.** Superfície MCP intocada (sem bump de contrato por isso).
+- **P1 — invariantes**: delete físico limpa relações/entidades/lexical e o
+  `validate` segue limpo; export→import preserva `memory_id` e entidades
+  (mutação provada contra aresta pendurada; `validate` §3 não cobre
+  `sys/rel/` — o teste cobre).
+- **P2 — convergência**: writes independentes particionados convergem a
+  `MemoryRecord` byte-idêntico por key; duplicata em nível de record →
+  `Duplicate`. Limite honesto em Doc 04 §7: **delete físico NÃO propaga**
+  (rejoin re-adota a cópia do peer); estado/validade viajam.
+- **P3 — isolamento**: sweep escopado nos 3 paths (semântico/lexical/
+  entidades concordam na pertinência); `recall_weighted_full` documentado
+  como pool GLOBAL (isolar antes de ponderar).
+
+Gates do lote: lib **431** (+2 doc-tests), p2p **447**, no_std **364**,
+integração **21**, goldens **4**, hot test **185/0**; clippy/rustdoc
+`-D warnings`; `x86_64-unknown-none` + `wasm32` ok.
+
 ## [1.4.5] — 2026-10-05 (o gate do CI estava quebrado desde o 1.4.4)
 
 Release de conserto. Nenhuma API nova: o que mudou foi um **gate que nunca

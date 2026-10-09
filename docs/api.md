@@ -74,6 +74,14 @@ surface is the contract.
 - `Sgdb::hygiene() -> Result<HygieneReport, SgdbError>` — content-hygiene
   report (same four classes as `curate(op=hygiene)`); O(docs), opt-in, never
   in the default health.
+- `Sgdb::set_tie_margin(&mut self, Option<u32>)` / `tie_margin_of()` —
+  per-instance state-first tie margin (`None` = default 50 ≈ 0.005 cosine).
+  Was process-global; calibrating one DB leaked into every other DB in the
+  process. **Lib-breaking change (unreleased): `&self` → `&mut self`.**
+- `Sgdb::recall_weighted_full` pools GLOBALLY (no scope filter — same posture
+  as MCP `hybrid`/`temporal`, which refuse dims rather than leak silently):
+  isolate first via a scoped recall, then weigh; never weigh the raw pool for
+  a tenant.
 - `Sgdb::set_authority(key, u8)` / `authority_of(key)`.
 - `Sgdb::storage_capacity()` / `storage_used()`; the `Storage` trait gains
   `capacity_bytes()` / `used_bytes()` (default `None`); `validate` §7.

@@ -20,7 +20,7 @@ Default retrieval: **lexical** without a vector; **hybrid** (RRF) with a real
 host embedder; **semantic** with a caller `embedding`. Unset `NEURAL_SGDB_EMBEDDER` = none;
 `=demo` only if requested (não setar no `mcp.json` global). `remember(text=)`
 without a vector → L3 (`remember_text_with`). Resources: `nsgdb://doctrine` +
-`nsgdb://session`. Hot test **158/0**. Lib tests **412+2 / 428 / 349+2** (+ **21** de integração
+`nsgdb://session`. Hot test **185/0**. Lib tests **431+2 / 447 / 364+2** (+ **21** de integração
 multi-agente em `tests/multi_agent.rs`, isolamento/estado — roda no gate no_std)
 (default / p2p / no_std). Bump `MCP_CONTRACT_VERSION` ⇒ pin `mcp_client`
 `serverInfo.version` no mesmo commit (senão hot test falha). **v1.1.17:**
@@ -80,6 +80,26 @@ pins no MESMO commit: `contract.json`, `mcp_client` serverInfo,
 - **Lições**: grep raso (glob `connectors/*.py`) perdeu o pin `EXPECTED_CONTRACT` em
   subdiretório — `grep -rn` SEM glob; pin de versão tem casa própria (serverInfo,
   contract.json, conector). Hot test **185/0** (+8 da fase "triagem consumidor #2").
+
+## Sessão pós-1.4.6 — revisão externa + consolidação P0–P3 (2026-10-09)
+
+Revisão arquitetural externa achou 1 bug real de código (**8.1**,
+`TIE_MARGIN_OVERRIDE` global com doc "por instância") + 3 divergências de
+prosa/números. Executado em 4 commits, gate verde em todos:
+
+- **P0.2 fix 8.1**: `tie_margin` virou campo de `Sgdb`
+  (`set_tie_margin(&mut self)` — quebra lib não-relançada); teste de 2
+  instâncias com mutação provada.
+- **P1**: delete-limpa-derivados e export-import-preserva-`memory_id`
+  (mutação provada; `validate` §3 não cobre `sys/rel/` — o teste cobre).
+- **P2**: convergência byte-idêntica particionada + duplicata em nível de
+  record; limite honesto: **delete físico NÃO propaga** (Doc 04 §7).
+- **P3**: sweep de isolamento nos 3 paths escopados; `recall_weighted_full`
+  = pool global por construção (isolar antes de ponderar).
+- **Docs**: matriz **431+2 / 447 / 364+2**, hot **185/0**; `[Unreleased]` no
+  CHANGELOG (triagem nunca tinha sido registrada); `implementation-status`
+  com linhas da sessão. Lição: `[Unreleased]` existe para isso — a triagem
+  1.4.6 foi commitada sem registro e só apareceu aqui.
 
 ## Release 1.4.5 — o gate do CI estava quebrado (2026-10-05)
 
@@ -1062,9 +1082,9 @@ Apache-2.0**. OS interop via byte-identical NMD1 and TKLV formats.
    rustdoc + goldens + wire_fuzz + target no_std + conectores + host crates +
    hot test, imprime o resumo de **todas** as quebras (não para na primeira) e
    sai != 0 se qualquer uma falhar. `SKIP_HOT=1` pula o hot test (o lento).
-   Matriz atual: **423** default, **439** `--features p2p`, **356**
-   `--no-default-features`, **21** integração, **4** goldens, hot test
-   **177/0**. Clippy/rustdoc com `-D warnings`; `cargo fmt` **não** é gate (o
+    Matriz atual: **431** default (+2 doc-tests), **447** `--features p2p`,
+    **364** `--no-default-features`, **21** integração, **4** goldens, hot test
+    **185/0**. Clippy/rustdoc com `-D warnings`; `cargo fmt` **não** é gate (o
    repo não é rustfmt-clean).
    *Por que um script e não "lembre-se de rodar": na 1.4.5, três gates do CI
    estavam vermelhos e nenhum tinha rodado (job `--shuffle` quebrado,
@@ -1131,9 +1151,9 @@ hash, not a semantic model). Restart opencode after changing the config.
 ## Running tests
 
 ```bash
-cargo test                                 # 412+2 tests (InMemory/FileStorage/TickvFile)
-cargo test --features p2p                  # 428 (includes CRDT sync + mesh harness)
-cargo test --no-default-features           # 349+2 (no_std core, host test harness)
+cargo test                                 # 431+2 tests (InMemory/FileStorage/TickvFile)
+cargo test --features p2p                  # 447 (includes CRDT sync + mesh harness)
+cargo test --no-default-features           # 364+2 (no_std core, host test harness)
 cargo check --no-default-features --target x86_64-unknown-none   # no_std gate
 cargo clippy --all-targets --all-features -- -D warnings          # lint gate (P0-5)
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-6/P0-10)

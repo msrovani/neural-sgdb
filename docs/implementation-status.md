@@ -1,6 +1,6 @@
 # neural-sgdb — Implementation Status
 
-> **Current snapshot (2026-10-05, v1.4.5).** Capability matrix vs the shipped
+> **Current snapshot (2026-10-09, v1.4.5 + unreleased batch).** Capability matrix vs the shipped
 > codebase. For the public contract see [`docs/api.md`](api.md); for architecture
 > narrative see [`docs/architecture/README.md`](architecture/README.md).
 > v1.4.3 = DX release (P0.1 semantic-on with a real embedder; P0.3 structured
@@ -21,12 +21,12 @@
 
 | Check | Command | Result |
 |---|---|---|
-| Default tests | `cargo test --lib` | **422** (+2 doc-tests) |
-| P2P tests | `cargo test --features p2p --lib` | **438** |
-| no_std tests | `cargo test --no-default-features --lib` | **355** |
+| Default tests | `cargo test --lib` | **431** (+2 doc-tests) |
+| P2P tests | `cargo test --features p2p --lib` | **447** |
+| no_std tests | `cargo test --no-default-features --lib` | **364** |
 | Multi-agent integration | `cargo test --test multi_agent` | **21** (também no gate no_std) |
 | no_std target | `cargo check --no-default-features --target x86_64-unknown-none` | **ok** |
-| Hot test (MCP) | `cargo run --release --example mcp_client` | **170/0 exit 0** |
+| Hot test (MCP) | `cargo run --release --example mcp_client` | **185/0 exit 0** |
 | AI-user sim | `cargo run --release --example agent_sim` | loop real, scope isolado |
 | Machine protocol | `cargo run --release --example two_ai_protocol` | **16/16 exit 0** |
 | Agent protocol | `cargo run --release --example agent_protocol` | **25/25 exit 0** |
@@ -92,6 +92,11 @@
 | Honestidade do recall (v1.4.4) | IMPLEMENTED | `Sgdb::recall_degraded_reason()` → `bq_unmounted`/`mixed_eras`; `health.recall_degraded` |
 | Authority HITL (v1.4.4) | IMPLEMENTED | `Sgdb::set_authority`/`authority_of` (MDM1 v8); MCP `curate op=set_authority` |
 | Write-path hardening (v1.1.10) | IMPLEMENTED | `validate_written` on all write seams |
+| Tie margin per-instance (unreleased, fix 8.1) | IMPLEMENTED | `tie_margin` moved off the process-global `static` into `Sgdb`; `set_tie_margin(&mut self)`; 2-DB isolation test (mutation-proven) |
+| Delete/invariant properties (unreleased, P1) | IMPLEMENTED | delete clears rel/entity/lexical + `validate` stays clean; export→import preserves `memory_id`/entities (mutation-proven vs dangling edge) |
+| Byte-identical mesh convergence (unreleased, P2) | IMPLEMENTED | partitioned independent writes converge to identical `MemoryRecord` bytes per key; record-level duplicate → `Duplicate` |
+| Delete propagation | REMAINING | physical delete does NOT replicate — rejoin re-adopts the peer copy; state/validity DO travel (see Doc 04 §7) |
+| Cross-mode scope sweep (unreleased, P3) | IMPLEMENTED | semantic/lexical/entities scoped recalls agree on membership; `recall_weighted_full` documented global-pool (isolate-then-weigh) |
 | Host scheduler (v1.1.11) | IMPLEMENTED | `examples/host_scheduler.rs` (expire/decay/consolidate/audit) |
 | Backfill helper (v1.1.11) | IMPLEMENTED | `examples/backfill_helper.rs` (L3→L4 re-embed + rebuild) |
 | Storage batch (v1.1.11) | IMPLEMENTED | `Storage::put_many` + `FileStorage::put_batch` (1 write por remember_exchange) |

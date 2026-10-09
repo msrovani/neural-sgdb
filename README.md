@@ -47,8 +47,8 @@ derivado** (`index_fingerprint`, ADR-0011) + **recall adaptativo** (ADR-0012) +
 agêntico** (v1.2.0). Extensão de browser / Store **estacionadas**. Crate em
 `Cargo.toml`: **1.4.5**. 
 
-- `cargo test --lib` on host: **412** (p2p **428**, no_std **349**)
-- hot test MCP: **158/0**; `agent_protocol`: **25/0**
+- `cargo test --lib` on host: **431** (+2 doc-tests; p2p **447**, no_std **364**)
+- hot test MCP: **185/0**; `agent_protocol`: **25/0**
 - `cargo check --no-default-features --target x86_64-unknown-none`: **clean**
 - **Concorrência** (`bench_concurrent`, Gap 0 do seekdb): mediana sub-ms em
   write E recall (write→search imediato confirmado), P50 write ~0.5 ms /
