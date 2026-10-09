@@ -77,6 +77,12 @@ is edge-directed per round (see ROADMAP.md).
 - **`node_versions` gossip** — partial in directed topologies; does not
   necessarily converge (content does).
 - **`ConflictRecord`** — local merge evidence; not a replicated MDR1 unit.
+- **Physical delete does NOT propagate** — `forget_purge`/`delete` remove the
+  doc and its side-tables locally, but `merge_remote` re-adopts a peer copy
+  on the next sync (missing local + live remote record = clean adoption).
+  State/validity changes (invalidate-not-delete) DO travel via side-metadata;
+  tombstones do not — there is no replicated tombstone set yet. Deleting
+  shared memory requires out-of-band coordination (or per-node purge).
 - **Multi-value in one storage key** — conflicts preserved as evidence, not
   co-located value lists inside NMD1 (see Doc 01 §8).
 - **Rate limit:** `Option<u64>` — 0 sentinel fails first sync at now=0 (fixed).

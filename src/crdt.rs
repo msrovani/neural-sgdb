@@ -1570,6 +1570,55 @@ mod tests {
     }
 
     #[test]
+    fn partition_independent_writes_converge_byte_identical() {
+        // P2 (§5.2, convergência de CONTEÚDO): A e B escrevem chaves DISTINTAS
+        // particionados entre si (só via relay C); no rejoin o conteúdo por
+        // chave é byte-idêntico em todos os nós — não só a contagem de docs.
+        let mut m = Mesh::new(&[1, 2, 3]);
+        m.connect(0, 2); // A↔C
+        m.connect(1, 2); // B↔C (A e B SEM conexão direta)
+        m.remember(0, "k1", "fato exclusivo do no A", &emb16(11));
+        m.remember(1, "k2", "fato exclusivo do no B", &emb16(22));
+        m.converge(6).unwrap();
+        // reconexão total + convergência
+        m.connect(0, 1);
+        m.converge(8).unwrap();
+        for i in 0..3 {
+            assert_eq!(m.doc_count(i), 4, "nó {i} deveria ter 2 memórias × (L4+L2)");
+        }
+        // conteúdo byte-idêntico por storage key em todos os pares de nós
+        for sk in ["md/L4/k1", "md/L4/k2", "md/L2/k1", "md/L2/k2"] {
+            let b0 = m.nodes[0].db.export_record(sk).unwrap().expect("sk em A").encode();
+            let b1 = m.nodes[1].db.export_record(sk).unwrap().expect("sk em B").encode();
+            let b2 = m.nodes[2].db.export_record(sk).unwrap().expect("sk em C").encode();
+            assert_eq!(b0, b1, "conteúdo de {sk} diverge A×B");
+            assert_eq!(b0, b2, "conteúdo de {sk} diverge A×C");
+        }
+        // ponto-fixo: mais rondas não aplicam nada
+        assert_eq!(m.converge(4).unwrap(), 0);
+    }
+
+    #[test]
+    fn record_level_duplicate_delivery_is_duplicate() {
+        // P2: entregar o MESMO record 2x via merge_remote é idempotente no
+        // nível do record (Duplicate na 2ª), não só no anúncio de versão — e
+        // o conteúdo armazenado não muda.
+        let mut a = Sgdb::open_with_node_id(1, InMemory::new()).unwrap();
+        a.remember_semantic("r1", "fato replicavel", &emb16(5)).unwrap();
+        let bytes = a.export_record("md/L4/r1").unwrap().expect("record").encode();
+        let mut b = Sgdb::open_with_node_id(2, InMemory::new()).unwrap();
+        let rec = a.export_record("md/L4/r1").unwrap().expect("record");
+        assert_eq!(b.merge_remote(rec).unwrap(), MergeVerdict::Applied);
+        let rec_again = a.export_record("md/L4/r1").unwrap().expect("record");
+        assert_eq!(b.merge_remote(rec_again).unwrap(), MergeVerdict::Duplicate);
+        assert_eq!(
+            b.export_record("md/L4/r1").unwrap().expect("record").encode(),
+            bytes,
+            "duplicata não reescreve o conteúdo"
+        );
+    }
+
+    #[test]
     fn fresh_node_catches_up_after_restart() {
         // A e B convergem; C entra NOVO (db vazio + relógio zerado — simula
         // restart sem estado durável) e alcança tudo.
