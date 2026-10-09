@@ -55,20 +55,6 @@ fn resolve_content_type(
 /// resposta certa, longe o bastante para nunca mascarar conteúdo distinto.
 const SCORE_TIE_MARGIN: u32 = 50;
 
-/// Margem de empate POR INSTÂNCIA (v1.1.28, D9): `SCORE_TIE_MARGIN` é o
-/// default; o host calibra a própria via `set_tie_margin` (0 = sempre
-/// state-first puro; alto = quase tudo é empate). `None` = usar o default.
-static TIE_MARGIN_OVERRIDE: core::sync::atomic::AtomicU32 =
-    core::sync::atomic::AtomicU32::new(u32::MAX);
-
-/// Lê a margem efetiva (override se setado, senão o default).
-fn tie_margin() -> u32 {
-    match TIE_MARGIN_OVERRIDE.load(core::sync::atomic::Ordering::Relaxed) {
-        u32::MAX => SCORE_TIE_MARGIN,
-        v => v,
-    }
-}
-
 /// Quantos `open` este PROCESSO já fez (v1.1.21, ADR-0009 §4, dor #2 — hosts
 /// que reabrem a DB por chat/reload). Contador de processo, NÃO durável: o
 /// histórico entre restarts é do HOST (o ADR atribui `opens_per_hour` a ele).
@@ -103,8 +89,7 @@ fn hit_tick(h: &Hit) -> u64 {
 /// O grupo (`score / (MARGIN+1)`) aproxima "scores próximos"; dentro dele a
 /// memória mais recente (sucessora de `supersede`) vence; entre grupos o
 /// conteúdo (score) continua dominando.
-fn rank_hits_by_score_state(ranked: &mut [(u32, Hit)]) {
-    let margin = tie_margin();
+fn rank_hits_by_score_state(ranked: &mut [(u32, Hit)], margin: u32) {
     ranked.sort_by(|a, b| {
         let ga = a.0 / (margin + 1);
         let gb = b.0 / (margin + 1);
@@ -792,6 +777,10 @@ pub struct Sgdb {
     pub(crate) metrics: crate::metrics::Metrics,
     /// Escopo default quando o caller omite `scope` (ex.: env no MCP launcher).
     default_scope: Option<String>,
+    /// Override da margem de empate do state-first (v1.1.28 D9, v1.4.7 fix
+    /// 8.1): `None` = default `SCORE_TIE_MARGIN` (50 ≈ 0.005 de cosseno).
+    /// POR INSTÂNCIA — dois bancos no mesmo processo calibram sem interferir.
+    tie_margin: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -853,6 +842,7 @@ impl Sgdb {
             engine,
             metrics,
             default_scope: None,
+            tie_margin: None,
         })
     }
 
@@ -869,20 +859,23 @@ impl Sgdb {
     /// v1.1.28 (D9): calibração da margem de empate do state-first pelo
     /// host — o `SCORE_TIE_MARGIN` era constante interna e o controlador
     /// não podia ajustá-la ao próprio corpus. `None` = volta ao default
-    /// (50 ≈ 0.005 de cosseno). Processo-inteiro (é seam de ranking, não
-    /// estado do banco — a doutrina de seams proíbne global por DB here).
+    /// (50 ≈ 0.005 de cosseno). POR INSTÂNCIA (v1.4.7, fix 8.1) — antes era
+    /// um `static` de processo e calibrar um banco alterava o ranking de
+    /// todos os outros no mesmo processo. `&mut self` como os demais
+    /// setters (antes `&self`, que só compilava por ser global).
     /// `0` = NENHUM empate: state-first só vence em score EXATAMENTE igual.
-    pub fn set_tie_margin(&self, margin: Option<u32>) {
-        let v = margin.unwrap_or(u32::MAX);
-        TIE_MARGIN_OVERRIDE.store(v, core::sync::atomic::Ordering::Relaxed);
+    pub fn set_tie_margin(&mut self, margin: Option<u32>) {
+        self.tie_margin = margin;
     }
 
-    /// Margem de empate efetiva (`None` = default 50 em uso).
+    /// Margem de empate configurada (`None` = default 50 em uso).
     pub fn tie_margin_of(&self) -> Option<u32> {
-        match TIE_MARGIN_OVERRIDE.load(core::sync::atomic::Ordering::Relaxed) {
-            u32::MAX => None,
-            v => Some(v),
-        }
+        self.tie_margin
+    }
+
+    /// Margem de empate efetiva (override se setado, senão o default).
+    fn tie_margin_effective(&self) -> u32 {
+        self.tie_margin.unwrap_or(SCORE_TIE_MARGIN)
     }
 
     /// Resolve escopo: explícito não-vazio vence; senão default; senão global (`""`).
@@ -2336,8 +2329,9 @@ impl Sgdb {
             now,
         )?;
         let mut buckets: BTreeMap<u32, Vec<(f32, Hit)>> = BTreeMap::new();
+        let margin = self.tie_margin_effective();
         for h in pool {
-            let bucket = ((h.dist * 10_000.0) as u32) / (SCORE_TIE_MARGIN + 1);
+            let bucket = ((h.dist * 10_000.0) as u32) / (margin + 1);
             let p = h.provenance.as_ref();
             let imp = 1.0 - p.map(|p| p.importance).unwrap_or(0.0);
             let conf = 1.0 - p.map(|p| p.confidence).unwrap_or(1.0);
@@ -2710,6 +2704,7 @@ impl Sgdb {
             engine,
             metrics,
             default_scope: None,
+            tie_margin: None,
         })
     }
 
@@ -3359,7 +3354,7 @@ impl Sgdb {
                 // `abs_diff` cobre os dois sentidos (o state-first pode adiantar
                 // uma versão corrente de score levemente pior).
                 score_u32_of(&hits[k - 1]).abs_diff(score_u32_of(&hits[k]))
-                    > tie_margin()
+                    > self.tie_margin_effective()
             };
             hits.truncate(k);
             out = AdaptiveRecall {
@@ -3600,7 +3595,7 @@ impl Sgdb {
             budget,
         };
         let mut ranked: Vec<(u32, Hit)> = best.into_values().collect();
-        rank_hits_by_score_state(&mut ranked);
+        rank_hits_by_score_state(&mut ranked, self.tie_margin_effective());
         Ok((
             ranked.into_iter().take(k).map(|(_, h)| h).collect(),
             probe,
@@ -5099,10 +5094,11 @@ impl Sgdb {
             companion_keys.push(ck);
         }
         // state-first v1.1.16 (paridade com `recall_impl`): grupo de score,
-        // created_tick desc, score asc.
+        // created_tick desc, score asc. Margem por instância (fix 8.1).
+        let margin = self.tie_margin_effective();
         pending.sort_by(|a, b| {
-            let ga = a.0 / (SCORE_TIE_MARGIN + 1);
-            let gb = b.0 / (SCORE_TIE_MARGIN + 1);
+            let ga = a.0 / (margin + 1);
+            let gb = b.0 / (margin + 1);
             ga.cmp(&gb)
                 .then_with(|| b.4.cmp(&a.4))
                 .then_with(|| a.0.cmp(&b.0))
@@ -6770,6 +6766,36 @@ mod tests {
         assert_eq!(db.tie_margin_of(), None);
         let hits = db.recall(&q, 2).unwrap();
         assert_eq!(hits[0].key, "md/L4/v2");
+    }
+
+    #[test]
+    fn tie_margin_is_per_instance_not_process_global() {
+        // Fix 8.1: calibrar um banco NÃO altera o ranking de outro banco no
+        // mesmo processo (antes era `static` global). Morre sem o fix: com o
+        // global, `db_b.set_tie_margin(Some(0))` reordenaria `db_a` para v1.
+        let e = [1.0f32, 0.0, 0.0, 0.0];
+        let e2 = [0.999f32, 0.018, 0.0, 0.0]; // dist ≈ 0.003 < margem default
+        let q = [1.0f32, 0.0, 0.0, 0.0];
+        let mut db_a = Sgdb::open(InMemory::new()).unwrap();
+        db_a.remember_semantic("v1", "fato antigo", &e).unwrap();
+        db_a.remember_semantic("v2", "fato corrente", &e2).unwrap();
+        let mut db_b = Sgdb::open(InMemory::new()).unwrap();
+        db_b.remember_semantic("v1", "fato antigo", &e).unwrap();
+        db_b.remember_semantic("v2", "fato corrente", &e2).unwrap();
+        // default nos dois: corrente primeiro
+        assert_eq!(db_a.recall(&q, 2).unwrap()[0].key, "md/L4/v2");
+        assert_eq!(db_b.recall(&q, 2).unwrap()[0].key, "md/L4/v2");
+        // calibra SÓ o B para margem 0: score domina, v1 vence — no B
+        db_b.set_tie_margin(Some(0));
+        assert_eq!(db_b.tie_margin_of(), Some(0));
+        assert_eq!(db_b.recall(&q, 2).unwrap()[0].key, "md/L4/v1");
+        // A segue no default, intocado pela calibração do B
+        assert_eq!(db_a.tie_margin_of(), None);
+        assert_eq!(
+            db_a.recall(&q, 2).unwrap()[0].key,
+            "md/L4/v2",
+            "margem do B vazou para o A (override global)"
+        );
     }
 
     #[test]
