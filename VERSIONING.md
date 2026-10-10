@@ -80,9 +80,8 @@ migrations in `MIGRATIONS.md` and never silently reinterpreted old bytes
 
 ## Current line (1.4.x)
 
-Crate version in `Cargo.toml` is **1.4.5** (MCP contract **1.4.6** shipped
-unreleased — pins in `contract.json`/`serverInfo`/`EXPECTED_CONTRACT`; the
-batch lives under `[Unreleased]` in `CHANGELOG.md` until the release); the DX release (P0.1 semantic-on
+Crate version in `Cargo.toml` is **1.4.6** (MCP contract **1.4.6** — crate e
+contrato alinhados neste release; o lote vive em `CHANGELOG.md` §1.4.6); the DX release (P0.1 semantic-on
 with a real embedder, P0.3 structured scope_dim_labels + scope_issues, P0.2
 `contract.json` + alias classification + `nsgdb://contract`, P1.1 docs gate,
 P1.2 cold-start `next_actions`, P1.3 negative-results, P2.2 this policy).

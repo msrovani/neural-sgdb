@@ -4,7 +4,7 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
-## [Unreleased] — lote pós-1.4.5 (contrato MCP 1.4.6 + consolidação)
+## [1.4.6] — 2026-10-10 (triagem do consumidor #2 + consolidação)
 
 ### Triagem do consumidor #2 (contrato MCP → 1.4.6; pins no mesmo commit)
 
