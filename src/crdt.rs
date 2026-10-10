@@ -1324,6 +1324,11 @@ mod tests {
             self.edges[j][i] = true;
         }
 
+        fn disconnect(&mut self, i: usize, j: usize) {
+            self.edges[i][j] = false;
+            self.edges[j][i] = false;
+        }
+
         fn remember(&mut self, i: usize, key: &str, text: &str, emb: &[f32]) {
             self.nodes[i].db.remember_semantic(key, text, emb).unwrap();
             self.nodes[i].crdt.record_change();
@@ -1616,6 +1621,111 @@ mod tests {
             bytes,
             "duplicata não reescreve o conteúdo"
         );
+    }
+
+    /// Estado completo de um nó para comparação pós-ensaio: keys `md/` +
+    /// bytes do record por key + subjects de conflitos abertos.
+    type NodeSnapshot = (Vec<String>, Vec<(String, Vec<u8>)>, Vec<String>);
+    fn node_snapshot(node: &mut MeshNode) -> NodeSnapshot {
+        let mut keys: Vec<String> =
+            node.db.scan_prefix("md/").unwrap().into_iter().map(|(k, _)| k).collect();
+        keys.sort();
+        let mut recs = Vec::new();
+        for sk in &keys {
+            if let Ok(Some(rec)) = node.db.export_record(sk) {
+                recs.push((sk.clone(), rec.encode()));
+            }
+        }
+        let mut conflicts: Vec<String> =
+            node.db.conflicts().into_iter().map(|c| c.subject).collect();
+        conflicts.sort();
+        (keys, recs, conflicts)
+    }
+
+    #[test]
+    fn three_node_fault_injection_essay_converges() {
+        // P2 (ensaio determinístico): partição + writes concorrentes na MESMA
+        // key e independentes em keys distintas + entrega duplicada + versão
+        // atrasada (Stale) + restart de um nó com estado zerado + rejoin — e
+        // a comparação do ESTADO COMPLETO de cada nó no fim.
+        let mut m = Mesh::new(&[1, 2, 3]);
+        m.connect(0, 1);
+        m.connect(1, 2);
+        m.connect(0, 2);
+        // base comum
+        m.remember(0, "base", "fato base do mesh", &emb16(100));
+        m.converge(6).unwrap();
+        // B avança 2 versões (para a injeção Stale ter um "velho" e um "novo")
+        m.remember(1, "w1", "primeiro fato do no B", &emb16(101));
+        m.converge(4).unwrap();
+        m.remember(1, "w2", "segundo fato do no B", &emb16(102));
+        m.converge(4).unwrap();
+        // versão atrasada de B em C → Stale, sem regressão
+        assert_eq!(m.nodes[2].crdt.apply_remote_version(2, 1), MergeVerdict::Stale);
+        // PARTIÇÃO: A isolado; A e B escrevem a MESMA key (concorrentes) +
+        // keys independentes em cada lado. C é relay/aprendiz PURO (nunca
+        // escreve): o restart dele com estado zerado é o caminho suportado
+        // (catch-up first-hand, como um nó novo). Reiniciar um AUTOR com
+        // amnésia total e mesmo id NÃO é suportado — as versões "próprias"
+        // nunca são puxadas de volta (pull pula node==dst) e o registro
+        // conhecido-sem-doc não é re-puxado: gap deliberado, ver Doc 04 §7.
+        m.disconnect(0, 1);
+        m.disconnect(0, 2);
+        m.remember(0, "pref", "usuario prefere DARK", &emb16(1));
+        m.remember(0, "ka", "fato exclusivo do no A", &emb16(11));
+        m.remember(1, "pref", "usuario prefere LIGHT", &emb16(2));
+        m.remember(1, "kb", "fato exclusivo um do no B", &emb16(22));
+        m.remember(1, "kc", "fato exclusivo dois do no B", &emb16(33));
+        // B↔C com entrega DUPLICADA (ainda particionados de A)
+        m.round(0, true).unwrap();
+        m.converge(4).unwrap();
+        // C só viu UMA versão de pref (a de B) — sem concorrência observada,
+        // sem conflito: conflito é evidência LOCAL do merge, não estado
+        // global. (É por isso que a asserção final pós-rejoin importa.)
+        assert_eq!(m.l2_text(2, "pref"), "usuario prefere LIGHT");
+        assert!(
+            !m.nodes[2].db.conflicts().iter().any(|c| c.subject == "md/L4/pref"),
+            "C ainda não viu concorrência — conflito aqui seria falso"
+        );
+        // RESTART de C com estado zerado (sem CrdtState durável)
+        m.nodes[2] = MeshNode {
+            db: Sgdb::open_with_node_id(3, InMemory::new()).unwrap(),
+            crdt: CrdtMemorySync::new(3),
+        };
+        // REJOIN total + convergência
+        m.connect(0, 1);
+        m.connect(0, 2);
+        m.converge(12).unwrap();
+        // estado completo: mesmos docs em todos (7 memórias × L4+L2 = 14)
+        let s0 = node_snapshot(&mut m.nodes[0]);
+        let s1 = node_snapshot(&mut m.nodes[1]);
+        let s2 = node_snapshot(&mut m.nodes[2]);
+        assert_eq!(s0.0, s1.0, "key sets A×B");
+        assert_eq!(s0.0, s2.0, "key sets A×C");
+        assert_eq!(s0.0.len(), 14, "7 memórias × (L4+L2)");
+        // conteúdo byte-idêntico em TUDO, exceto o slot em conflito (cada
+        // autor preserva a sua versão por design — nunca LWW cego)
+        for (sk, b0) in &s0.1 {
+            if sk.ends_with("/pref") {
+                continue;
+            }
+            let b1 = s1.1.iter().find(|(k, _)| k == sk).expect("sk em B");
+            let b2 = s2.1.iter().find(|(k, _)| k == sk).expect("sk em C");
+            assert_eq!(b0, &b1.1, "conteúdo de {sk} diverge A×B");
+            assert_eq!(b0, &b2.1, "conteúdo de {sk} diverge A×C");
+        }
+        // o slot em conflito: cada autor mantém a sua, e TODOS (inclusive o
+        // C reiniciado) têm a evidência aberta
+        assert_eq!(m.l2_text(0, "pref"), "usuario prefere DARK");
+        assert_eq!(m.l2_text(1, "pref"), "usuario prefere LIGHT");
+        for (i, s) in [&s0, &s1, &s2].into_iter().enumerate() {
+            assert!(
+                s.2.iter().any(|sub| sub.as_str() == "md/L4/pref"),
+                "nó {i} sem o conflito aberto de pref"
+            );
+        }
+        // ponto-fixo
+        assert_eq!(m.converge(4).unwrap(), 0);
     }
 
     #[test]

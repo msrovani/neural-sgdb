@@ -6182,6 +6182,13 @@ impl Sgdb {
             }
         }
 
+        // 8. relações L6 (v1.4.7): cada `sys/rel/` decodifica e tem as duas
+        //    entradas ART derivadas. Pontas-fantasma NÃO são acusadas
+        //    (`associate` cru é por design) — só estrutura e paridade.
+        for (key, message) in self.engine.validate_relations() {
+            issues.push(ValidateIssue { key, message });
+        }
+
         issues
     }
 
@@ -6924,6 +6931,33 @@ mod tests {
         );
         // vizinho intacto
         assert!(db.recall_lexical("ledger", 5).unwrap().iter().any(|h| h.key == "md/L3/b"));
+    }
+
+    #[test]
+    fn validate_flags_malformed_relation_but_not_ghost_endpoints() {
+        // `validate` §8: aresta com pontas-fantasma é DESIGN do `associate`
+        // cru (calado); lixo cru em `sys/rel/` e ART derivada faltando são
+        // acusados. Mutação: remover o §8 deixa o lixo invisível.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.associate("md/L4/ghost-a", RelationKind::Supports, "md/L4/ghost-b").unwrap();
+        assert!(db.validate().is_empty(), "fantasma por design não é corrupção");
+        // lixo cru (só via escrita manual — o associate valida na escrita)
+        db.engine.storage_put_raw(b"sys/rel/nonsense", &[0]).unwrap();
+        let issues = db.validate();
+        assert!(
+            issues.iter().any(|i| i.key == "sys/rel/nonsense" && i.message == "malformed relation key"),
+            "lixo acusado: {issues:?}"
+        );
+        // ART derivada faltando numa aresta legítima
+        let fwd: Vec<String> =
+            db.engine.art.scan_prefix("rel/").into_iter().map(|(k, _)| k).collect();
+        assert!(!fwd.is_empty());
+        db.engine.art.delete(&fwd[0]);
+        let issues = db.validate();
+        assert!(
+            issues.iter().any(|i| i.message == "relation missing derived ART entry"),
+            "paridade ART acusada: {issues:?}"
+        );
     }
 
     #[test]
@@ -12004,6 +12038,85 @@ mod v144_tests {
         db.remember_text_with("pur/12", "vizinho", RememberOptions::default())
             .unwrap();
         assert_eq!(db.audit_for_key("pur/1").unwrap().len(), 1, "suffix exato");
+    }
+
+    /// Paridade de backend (P1): o invariante delete-limpa-derivados vale no
+    /// FileStorage ATRAVÉS de restart — derivados reconstruídos do storage,
+    /// sem órfãos, sem ressurreição, vizinho intacto.
+    #[test]
+    fn delete_invariants_hold_on_filestorage_across_reopen() {
+        let dir = std::env::temp_dir().join(format!("nsgdb_p1_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("p1.db");
+        let ea = ["svc/auth"];
+        {
+            let mut db = Sgdb::open(crate::storage::FileStorage::open(&path).unwrap()).unwrap();
+            db.remember_text_with(
+                "a",
+                "o quasar gira no halo distante",
+                RememberOptions { entities: &ea, ..Default::default() },
+            )
+            .unwrap();
+            db.remember_text_with("b", "o ledger fecha no fim do dia", RememberOptions::default())
+                .unwrap();
+            db.associate_checked("a", RelationKind::Supports, "b").unwrap();
+            assert!(db.validate().is_empty(), "baseline limpo");
+        }
+        // restart 1: derivados reconstruídos; delete; tudo limpo
+        {
+            let mut db = Sgdb::open(crate::storage::FileStorage::open(&path).unwrap()).unwrap();
+            assert!(db.validate().is_empty(), "reopen limpo antes do delete");
+            assert!(db.delete("md/L3/a").unwrap());
+            assert!(db.validate().is_empty(), "validate limpo após delete");
+            assert!(!db.related_to("md/L3/b").iter().any(|(_, t)| t == "md/L3/a"), "aresta some");
+            assert!(!db.recall_lexical("quasar", 5).unwrap().iter().any(|h| h.key == "md/L3/a"), "lexical não ressuscita");
+            assert!(!db.recall_entities(&["svc/auth"], 5).unwrap().iter().any(|h| h.key == "md/L3/a"), "entidade não ressuscita");
+        }
+        // restart 2: o deletado segue morto, o vizinho vivo
+        {
+            let mut db = Sgdb::open(crate::storage::FileStorage::open(&path).unwrap()).unwrap();
+            assert!(db.validate().is_empty(), "reopen limpo após delete");
+            assert!(db.recall_lexical("ledger", 5).unwrap().iter().any(|h| h.key == "md/L3/b"), "vizinho intacto");
+            assert!(!db.recall_lexical("quasar", 5).unwrap().iter().any(|h| h.key == "md/L3/a"), "deletado segue morto");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Paridade de backend (P1): o mesmo invariante no TickvFile (formato
+    /// TKLV do OS) — delete limpa derivados e sobrevive ao remount.
+    #[test]
+    fn delete_invariants_hold_on_tickv_across_remount() {
+        let dir = std::env::temp_dir().join(format!("nsgdb_p1tk_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("p1.tk");
+        let ea = ["svc/auth"];
+        {
+            let mut db = Sgdb::open(crate::tickv::TickvFile::open(&path).unwrap()).unwrap();
+            db.remember_text_with(
+                "a",
+                "o quasar gira no halo distante",
+                RememberOptions { entities: &ea, ..Default::default() },
+            )
+            .unwrap();
+            db.remember_text_with("b", "o ledger fecha no fim do dia", RememberOptions::default())
+                .unwrap();
+            db.associate_checked("a", RelationKind::Supports, "b").unwrap();
+            assert!(db.validate().is_empty(), "baseline limpo");
+            assert!(db.delete("md/L3/a").unwrap());
+            assert!(db.validate().is_empty(), "validate limpo após delete");
+        }
+        // remount: derivados reconstruídos do volume, nada órfão, nada vivo
+        {
+            let mut db = Sgdb::open(crate::tickv::TickvFile::open(&path).unwrap()).unwrap();
+            assert!(db.validate().is_empty(), "remount limpo");
+            assert!(!db.related_to("md/L3/b").iter().any(|(_, t)| t == "md/L3/a"), "aresta some");
+            assert!(!db.recall_lexical("quasar", 5).unwrap().iter().any(|h| h.key == "md/L3/a"), "lexical não ressuscita");
+            assert!(!db.recall_entities(&["svc/auth"], 5).unwrap().iter().any(|h| h.key == "md/L3/a"), "entidade não ressuscita");
+            assert!(db.recall_lexical("ledger", 5).unwrap().iter().any(|h| h.key == "md/L3/b"), "vizinho intacto");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

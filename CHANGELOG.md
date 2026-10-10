@@ -4,6 +4,17 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
+## [Unreleased] — consolidação pós-1.4.6 (revisão externa, só itens aderentes)
+
+- **P1**: paridade FileStorage/TickvFile dos invariantes (delete + reopen/
+  remount); `validate` §8 cobre `sys/rel/` estruturalmente (fantasma por
+  design segue calado).
+- **P2**: ensaio mesh de 3 nós (partição/duplicata/Stale/restart) com
+  comparação de estado completo; limite honesto: restart-amnésico de AUTOR
+  não suportado (Doc 04 §7).
+- **8.3/P0**: matriz de rastreabilidade por subsistema + julgamento de
+  aderência em `docs/implementation-status.md`.
+
 ## [1.4.6] — 2026-10-10 (triagem do consumidor #2 + consolidação)
 
 ### Triagem do consumidor #2 (contrato MCP → 1.4.6; pins no mesmo commit)

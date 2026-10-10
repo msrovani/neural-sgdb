@@ -83,6 +83,13 @@ is edge-directed per round (see ROADMAP.md).
   State/validity changes (invalidate-not-delete) DO travel via side-metadata;
   tombstones do not — there is no replicated tombstone set yet. Deleting
   shared memory requires out-of-band coordination (or per-node purge).
+- **Amnesiac restart of an author is NOT supported** — a node that loses its
+  DB *and* its CRDT state but rejoins with the same id can never recover its
+  own prior versions: the pull skips `node == dst`, and a
+  version-known-without-record is never re-pulled (same root as above).
+  Supported restarts: durable storage reopen (RAM indexes rebuild, `sys/crdt/`
+  survives) or a fresh node with a NEW id (catch-up first-hand). Covered by
+  `three_node_fault_injection_essay_converges`, which restarts a pure learner.
 - **Multi-value in one storage key** — conflicts preserved as evidence, not
   co-located value lists inside NMD1 (see Doc 01 §8).
 - **Rate limit:** `Option<u64>` — 0 sentinel fails first sync at now=0 (fixed).

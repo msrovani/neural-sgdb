@@ -97,6 +97,9 @@
 | Byte-identical mesh convergence (unreleased, P2) | IMPLEMENTED | partitioned independent writes converge to identical `MemoryRecord` bytes per key; record-level duplicate → `Duplicate` |
 | Delete propagation | REMAINING | physical delete does NOT replicate — rejoin re-adopts the peer copy; state/validity DO travel (see Doc 04 §7) |
 | Cross-mode scope sweep (unreleased, P3) | IMPLEMENTED | semantic/lexical/entities scoped recalls agree on membership; `recall_weighted_full` documented global-pool (isolate-then-weigh) |
+| Backend parity (v1.4.7, P1) | IMPLEMENTED | delete/invariant properties on FileStorage + TickvFile across reopen/remount |
+| `validate` §8 relations (v1.4.7, P1) | IMPLEMENTED | `sys/rel/` structural check (malformed key/encoding, ART parity); ghost endpoints stay silent by design |
+| Mesh fault-injection essay (v1.4.7, P2) | IMPLEMENTED | 3-node partition/dup/Stale/author-restart with full-state compare; amnesiac-author restart NOT supported (Doc 04 §7) |
 | Host scheduler (v1.1.11) | IMPLEMENTED | `examples/host_scheduler.rs` (expire/decay/consolidate/audit) |
 | Backfill helper (v1.1.11) | IMPLEMENTED | `examples/backfill_helper.rs` (L3→L4 re-embed + rebuild) |
 | Storage batch (v1.1.11) | IMPLEMENTED | `Storage::put_many` + `FileStorage::put_batch` (1 write por remember_exchange) |
@@ -180,6 +183,44 @@ notes in sync with `MCP_CONTRACT_VERSION` (not frozen at 1.1.9).
 2. **no_std core** — verified on `x86_64-unknown-none`.
 3. **Zero lib dependencies** — only `alloc`/`std`.
 4. **Additive API** — v1.1.x features do not break v1.0 signatures.
+
+## Rastreabilidade por subsistema (revisão 2026-10-10, v1.4.6 — item 8.3/P0)
+
+Cada linha liga contrato → código exportado → testes → docs. Estado segue os
+rótulos acima; "histórico" = número de versão de subsistema inalterado (não é
+drift — drift é número de *release* em doc vivo, pego pelo docs-version-gate).
+
+| Subsistema | Contrato | Código exportado | Testes | Docs | Estado |
+|---|---|---|---|---|---|
+| Modelo L0–L7 + transição | `docs/api.md`, Doc 01 | `MemoryLayer`, `lifecycle::tick`, `consolidate_recurrences` | lifecycle tests, `memory_arena_eval` 3/3 | Doc 01/02, ADR-0010 | IMPLEMENTED |
+| Identidade/proveniência | `docs/api.md` §Lib, Doc 01 | `memory_id`, `Hit.provenance`, MDM1 v8 (`authority`) | `export_import_roundtrip_preserves_identity…`, authority tests | Doc 01, `MIGRATIONS.md` | IMPLEMENTED |
+| Escopo multi-agente | `recall(scope=/dims)` schema, Doc 01 | `ScopeDims`, `ScopeFilter`, `*_scoped(_dims)` | `scoped_paths_agree_on_isolation…`, blind-spot regressions | ADR-0013/0015 | IMPLEMENTED |
+| Retrieval (BQ/lexical/entities/weighted) | `recall(mode=)` schema | `recall*`, `recall_adaptive`, `recall_weighted_full`, `MihIndex` | recall benches + isolation sweep; `tie_margin` per-instance (2-DB) | Doc 03, `BENCHMARKS.md`, ADR-0012 | IMPLEMENTED (weighted = pool global, documentado) |
+| Ciclo de vida + retenção | `curate(op=decay/consolidate/…)` | `decay_importance`, `collect_garbage`, `expire_old`, `forget/forget_purge` | lifecycle + `delete_cleans_relations…` (3 backends) | Doc 02 | IMPLEMENTED |
+| Relações L6 | `associate` (sem endpoint MCP próprio) | `associate(_checked)`, `related_to`, `sys/rel/` | relations tests + `validate` §8 | Doc 01 §8 | IMPLEMENTED |
+| CRDT/replicação | `export_delta`, `MemoryRecord` (MDR1) | `merge_remote`, `CrdtMemorySync`, `MemoryDelta` | mesh essay (3 nós, falhas) + byte-identical + dup record-level | Doc 04, §7 limites | IMPLEMENTED c/ limites |
+| Conflitos | `curate(op=conflicts/audit_resolve)` | `ConflictRecord` (CFL1), `resolve_conflict`, `RejectedByAuthority` | partition/conflict/authority tests | Doc 04 §5 | IMPLEMENTED |
+| Auditoria | `curate(op=audit_*)` | `audit_checkpoint/verify/rollback_to/audit_forget`, `Hasher` | audit tests, AUD1 golden | ADR-0006 | IMPLEMENTED |
+| Storage backends | `Storage` trait (`docs/api.md`) | `InMemory`, `FileStorage`, `TickvFile`, IDX2 snapshot | parity tests + recovery/compaction tests | Doc 05 | IMPLEMENTED |
+| MCP surface | `contract.json` + `nsgdb://contract` (1.4.6) | `examples/mcp_server.rs` (5 tools + `ALIAS_SURFACE`) | hot test **185/0** (anunciado==servido) | `docs/MCP.md`, `docs/doctrine.md` | IMPLEMENTED |
+| `no_std` + zero-dep | `VERSIONING.md`, `SECURITY.md` | `alloc`-only lib, `x86_64-unknown-none` | gate no_std **364+2** + target check | `docs/api.md` §compat | IMPLEMENTED |
+| Observabilidade | `health(view=*)`, `validate` §§1-8 | `HealthReport`, `ValidateIssue`, `HygieneReport`, metrics | validate/hygiene tests | Doc 06 | IMPLEMENTED |
+| Delete replicado (tombstone set) | — | — | — | Doc 04 §7 | REMAINING (exige desenho de formato) |
+| Transporte autenticado | `SignedEnvelope` seam | referência em `signed_peer` | reference flow | `SECURITY.md`, ADR-0006 | REMAINING (host-side) |
+| Avaliação agêntica (P4) | — | `memory_arena_eval` (protocolo v2) | quiz 3/3 + SR/sPS | `docs/doctrine.md` | PARTIAL (harness ok, sem eval real) |
+
+### Julgamento de aderência do backlog (2026-10-10 — memorizado)
+
+Nada do backlog aberto exige violar regra; dois itens têm forma de
+implementação proibida e forma aderente: **transporte autenticado** (proibido
+no core por ADR-0006/zero-dep → implementar no host via `SignedEnvelope`) e
+**corpus real com embeddings** (proibido no core por zero-dep/`no_std` → host
+fornece `&[f32]`, contrato da era ADR-0007). **Tombstone replicado** só é
+aderente com desenho de formato versionado + goldens + `MIGRATIONS.md` no
+mesmo commit. **P4** só é aderente em `examples/`+harness (o core nunca
+decide). Todo o resto acima (docs, matriz, paridade de backend, `validate`
+em `sys/rel/`, ensaio mesh) é integralmente aderente — executado nos commits
+desta sessão.
 
 ## How this document is maintained
 

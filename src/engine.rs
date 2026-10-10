@@ -1741,6 +1741,40 @@ impl AiosDatabaseEngine {
         self.ram_l0l1.len()
     }
 
+    /// Validação estrutural das relações L6 (`validate` §8): cada
+    /// `sys/rel/<kind>/<a>#<b>` decodifica (kind conhecido, lados não-vazios)
+    /// com encoding `[fmt u8]` conhecido, e tem as DUAS entradas derivadas na
+    /// ART (`rel/…` + `rev/…`). Pontas-fantasma NÃO são acusadas: o
+    /// `associate` cru afirma sem validar existência por design — só o delete
+    /// limpa, e fantasma ≠ corrupção.
+    pub(crate) fn validate_relations(&mut self) -> Vec<(String, &'static str)> {
+        let mut out = Vec::new();
+        let Ok(rows) = self.storage.scan_prefix(b"sys/rel/") else {
+            return out;
+        };
+        for (kb, vb) in rows {
+            let sk = String::from_utf8_lossy(&kb).into_owned();
+            let Some((kind, a, b)) = parse_rel_storage_key(&sk) else {
+                out.push((sk, "malformed relation key"));
+                continue;
+            };
+            if a.is_empty() || b.is_empty() {
+                out.push((sk, "malformed relation key"));
+                continue;
+            }
+            if vb.first() != Some(&0) {
+                out.push((sk, "unknown relation encoding"));
+                continue;
+            }
+            let fwd = rel_art_key(false, kind, &a, &b);
+            let rev = rel_art_key(true, kind, &b, &a);
+            if self.art.get(&fwd).is_none() || self.art.get(&rev).is_none() {
+                out.push((sk, "relation missing derived ART entry"));
+            }
+        }
+        out
+    }
+
     /// BQ mutável — só para teste interno (simula mount degradado).
     #[cfg(test)]
     pub(crate) fn bq_mut(&mut self) -> &mut BqFlatIndex {
