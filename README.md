@@ -36,8 +36,11 @@ filesystem, no external runtime.
 
 ## Status
 
-**v1.4.6** — substrate **agêntico** (MCP 5 tools contract **1.4.6**, doutrina,
-hits tipados, TTL/GC, timeline, ANN) + **ADC-lite** + telepatia **2-DB** +
+**v1.5.0** — substrate **agêntico** (MCP 5 tools contract **1.5.0**, doutrina,
+hits tipados, TTL/GC, timeline, ANN) + **ativação por contexto** (**trigger
+rules por caminho de arquivo** — `curate op=set_trigger` + `recall(path=)`,
+ADR-0020) + **aprendizado por trajetória** (`remember_episodic` + `feedback`
+pelo desfecho real, ADR-0019) + **ADC-lite** + telepatia **2-DB** +
 **host harvest** + **ADR-0010 harness** (`commit_run` / `deprecate_run` /
 **`promote_run`** — fork/merge de memória por scope run, `mom/anti-pattern`) +
 **null-scoping `ScopeDims`** + **integridade do índice
@@ -45,10 +48,10 @@ derivado** (`index_fingerprint`, ADR-0011) + **recall adaptativo** (ADR-0012) +
 **`ScopeDims` autoritativo** (ADR-0013), **ledger de negativos** (ADR-0014),
 **batch write + dedup guard** (`memories[]`, `if_exists`) e **write path
 agêntico** (v1.2.0). Extensão de browser / Store **estacionadas**. Crate em
-`Cargo.toml`: **1.4.6**. 
+`Cargo.toml`: **1.5.0**. 
 
-- `cargo test --lib` on host: **431** (+2 doc-tests; p2p **447**, no_std **364**)
-- hot test MCP: **185/0**; `agent_protocol`: **25/0**
+- `cargo test --lib` on host: **448** (+2 doc-tests; p2p **464**, no_std **378**)
+- hot test MCP: **210/0**; `agent_protocol`: **25/0**
 - `cargo check --no-default-features --target x86_64-unknown-none`: **clean**
 - **Concorrência** (`bench_concurrent`, Gap 0 do seekdb): mediana sub-ms em
   write E recall (write→search imediato confirmado), P50 write ~0.5 ms /
@@ -103,7 +106,7 @@ agêntico** (v1.2.0). Extensão de browser / Store **estacionadas**. Crate em
    `profile`/`expire_old`) and **MCP 5 tools** (`remember`/`recall`/`health`/`curate`/`decide`;
    `health`/`validate` observability, `era_report`, `remember_episodic`,
    retrieval modes semantic/lexical/hybrid, `recall_temporal`,
-   `recall_entities`, ServerInfo v1.1.12, curate ops de metadado cognitivo: `decay`/`consolidate`/`audit_checkpoint`/`audit_verify`/`rollback_to`) + **write-side era guard** (S1 no
+   `recall_entities`, ServerInfo v1.5.0, curate ops de metadado cognitivo: `decay`/`consolidate`/`audit_checkpoint`/`audit_verify`/`rollback_to`, + `set_trigger`/`forget_trigger`/`triggers` e `recall(path=)` — **ativação por contexto**, ADR-0020) + **write-side era guard** (S1 no
    write também — `remember_semantic` fora da era do corpus vivo é `Invalid`)
    + **seams de conteúdo** (`Embedder` trait, `entities`, `content_type` —
    quem fornece declara) + **security hardening 11→1** (`engine.put_inner` choke central, `validate_written`, `WasmStorage` bounds, `MCP -32601`)
@@ -210,11 +213,13 @@ vector writes **L3**. Semantic/hybrid and L4 need `embedding=` or a host
 embedder. Typed hits: `format=json`. `health(view=era)` is era_report;
 `view=tensions` lists conflicts / superseded / unseen scopes / `scope_issues`;
 `health` exposes `semantic_ready`/`retrieval_default`/`scope_dim_labels`.
+`recall(path=…)` resolve as regras de ativação do arquivo em foco e recalla
+pelos namespaces delas (`curate op=set_trigger`; ADR-0020).
 
 Host adapters for claw-like apps (Hermes provider, OpenClaw skeleton, shared
 MCP client) live in [`connectors/`](connectors/README.md) — **outside** crate
-SemVer; `crates/nsgdb-embed` (LocalEmbedder 384-dim, `cargo run --manifest-path crates/nsgdb-embed/Cargo.toml --example demo`) and `crates/nsgdb-wasm` (`Storage` stub) are host crates — core SemVer = `Cargo.toml` (**1.4.6**).
-Protocolo do agente: `examples/agent_protocol.rs` (25 checks), `two_ai_protocol.rs` (16), `memory_arena_eval.rs`. Fim de tarefa: `curate(op=commit_run)` (ADR-0010).
+SemVer; `crates/nsgdb-embed` (LocalEmbedder 384-dim, `cargo run --manifest-path crates/nsgdb-embed/Cargo.toml --example demo`) and `crates/nsgdb-wasm` (`Storage` stub) are host crates — Core SemVer = `Cargo.toml` (**1.5.0**).
+Protocolo do agente: `examples/agent_protocol.rs` (25 checks), `two_ai_protocol.rs` (16), `memory_arena_eval.rs`, `trajectory_learning.rs` (aprendizado pelo desfecho, ADR-0019). Ativação por arquivo em foco: `curate(op=set_trigger)` + `recall(path=…)` (ADR-0020). Fim de tarefa: `curate(op=commit_run)` (ADR-0010).
 
 ### Cursor (Windows)
 
@@ -308,7 +313,7 @@ Licensed under **MIT** **or** **Apache-2.0** (dual license), your choice.
 - [x] Published benchmarks (`cargo run --release --example bench` — ART
       P50/P99, BQ top-k, recall BQ vs FP32) — `BENCHMARKS.md` + `BENCH_STABLE_1.1.10.txt` + `BENCH_COMPARE_1.1.10_vs_1.1.11.md`
 - [x] MCP server layer (`cargo run --release --example mcp_server` — 5 tools
-      `remember`/`recall`/`health`/`curate`; default retrieval lexical;
+      `remember`/`recall`/`health`/`curate`/`decide`; default retrieval lexical;
       optional explicit `NEURAL_SGDB_EMBEDDER=demo`)
 - [x] **Byte-exact TKLV/TKCK storage interop with the OS** (`src/tickv.rs`:
       byte-exact codec + OS-readable `TickvFile` backend; golden test +
@@ -325,6 +330,8 @@ Licensed under **MIT** **or** **Apache-2.0** (dual license), your choice.
 - [x] **v1.1.23 revisão de documentação + fix do schema anunciado** — `health(view=index)` funcionava mas o `enum` do `tools/list` não o anunciava (feature invisível ao modelo); versões/números de teste alinhados em README/VERSIONING/api/architecture
 - [x] **v1.1.25 `payload_type` honra a camada** — prosa L3 deixou de ser reportada como `Embedding(len/4)` (a regra antiga marcava TODO texto de tamanho múltiplo de 4 como vetor); a decisão duplicada em 4 call sites virou `payload_content_type`
 - [x] **v1.1.24 escopo unificado + ledger de negativos** — `ScopeDims` autoritativo (o `scope` legado vira espelho de `user`, write-through canônico + `validate` §6; ADR-0013); ledger `sys/negative/` do que já foi procurado e não estava lá, com self-healing e 4 aliases MCP (ADR-0014)
+- [x] **v1.5.0 ativação por contexto** — trigger rules por caminho de arquivo (`sys/trigger/`, glob no_std zero-dep; `curate op=set_trigger|forget_trigger|triggers` + `recall(path=)`) — ADR-0020
+- [x] **v1.5.0 aprendizado por trajetória** — `remember_episodic` (verbatim) + `feedback` pelo desfecho real: SR 50% → 100% (`examples/trajectory_learning.rs`, ADR-0019)
 - [x] **Host crates** — `crates/nsgdb-embed` + `crates/nsgdb-wasm` (sem quebrar core `no_std` zero deps)
 - [ ] **Browser extension** — estacionada (`extension/` stub; auto-captura comentada). Produto = agente via MCP, não scraper de abas.
 

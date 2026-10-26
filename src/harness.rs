@@ -272,7 +272,7 @@ impl Sgdb {
 
         // Fonte: scan de L3 + L4 + L5, filtra por dims e estado Active.
         let mut source: Vec<String> = Vec::new();
-        for prefix in ["md/L3/", "md/L4/", "md/L5/"] {
+        for prefix in crate::ctype::FACT_LAYER_PREFIXES {
             let rows = self.engine.scan_prefix_storage(prefix.as_bytes())?;
             for (k, _) in rows {
                 let sk = String::from_utf8_lossy(&k).into_owned();
@@ -306,9 +306,7 @@ impl Sgdb {
             let bsk = alloc::format!("md/{layer}/{bk}");
             let run_text = self.text_of(&sk)?;
             // Companion do run acompanha a promoção (identidade de texto).
-            let run_companion = sk
-                .replacen("/L4/", "/L2/", 1)
-                .replacen("/L5/", "/L2/", 1);
+            let run_companion = crate::sgdb::companion_key(&sk);
             let base_companion = alloc::format!("md/L2/{bk}");
 
             match self.engine.get_by_storage_key(&bsk) {

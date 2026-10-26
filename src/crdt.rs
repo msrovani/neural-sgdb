@@ -1460,7 +1460,7 @@ mod tests {
                             applied += 1;
                         }
                     }
-                    let companion = sk.replacen("/L4/", "/L2/", 1);
+                    let companion = crate::sgdb::companion_key(&sk);
                     if companion != sk {
                         if let Ok(Some(rec)) = src.db.export_record(&companion) {
                             if dst.db.merge_remote(rec)? == MergeVerdict::Applied {

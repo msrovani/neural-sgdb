@@ -82,8 +82,8 @@ returns typed Hits; **you** choose prompt contents and writes.
 - Hard cost/budget guards (anti-runaway token loops).
 
 ### ⑥ Tool & MCP Protocol Adherence
-- Call MCP tools only by schema. neural-sgdb: 4 tools
-  (`remember`/`recall`/`health`/`curate`); follow-ups need full keys
+- Call MCP tools only by schema. neural-sgdb: 5 tools
+  (`remember`/`recall`/`health`/`curate`/`decide`); follow-ups need full keys
   `md/L3|L4/...`. End of atomic task:
   `curate(op=commit_run, scope_run=…, facts=…, anti_patterns=…,
   archive_remaining_episodic=true)` (ADR-0010). Soft-close:

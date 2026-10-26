@@ -32,7 +32,7 @@ protocols that codify HOW to use the DB.
 
 ## mcp_client.rs — HOT TEST
 - `cargo run --release --example mcp_client` — drives `mcp_server` like an IDE;
-  **119/0 checks exit 0** (v1.1.26). Covers 4-tool surface + aliases, lexical
+  **202/0 checks exit 0**. Covers 5-tool surface + aliases, lexical
   default (ADR-0008), `format=json`, `remember(type=)`, temporal, entities,
   lazy pagination, scope, persistence across restart, metadado cognitivo
   (`consolidate`/`audit_*`/`decay`), **fase harness** (`commit_run` /
@@ -40,7 +40,10 @@ protocols that codify HOW to use the DB.
   `recall_ledger`/`recall_absences`/`note_absence`/`forget_absence`) e **fase 7
   com o guard de descoberta de escopo** (v1.1.26: `scope_run` alcanca o doc
   gravado, recusa de dims em hybrid/temporal, `scopes_to_probe_dims`, e a
-  invariante `scope`+dims na escrita — ADR-0015).
+  invariante `scope`+dims na escrita — ADR-0015) e a **fase trigger rules**
+  (v1.5.0: `curate op=set_trigger`/`triggers`, `recall(path=)` acha so o que a
+  regra ativa para AQUELE caminho — `src/kernel/mod.rs` ativa, `tests/a.rs`
+  nao —, `path`+`entities` juntos recusa, e `forget_trigger` desativa).
   Episódicos L2 precisam de `now` DISTINTO por chamada (senão as chaves
   `md/L2/ts/<hex>` colidem no mesmo ms); e a query de um probe "vazio" precisa
   de TODOS os tokens inéditos — o BM25 casa por sobreposição parcial (a 1ª
@@ -50,7 +53,7 @@ protocols that codify HOW to use the DB.
 - `cargo run --release --example mcp_server` — connectable to Claude Code/Cursor/OpenCode
 - MCP (Model Context Protocol) over stdio: JSON-RPC 2.0, one message per `\n`
   line, stdout JSON-RPC ONLY (logs → stderr), legacy `2025-11-25` handshake
-- Tools (4): `remember`, `recall`, `health`, `curate` (aliases: **38** nomes no call — `ALIAS_SURFACE`, tabela pinada por teste)
+- Tools (5): `remember`, `recall`, `health`, `curate`, `decide` (aliases: **40** nomes no call — `ALIAS_SURFACE`, tabela pinada por teste)
 - **v1.1.24 (ledger)**: aliases `recall_ledger`/`recall_absences`/`note_absence`/
   `forget_absence` com **JSON próprio** (não é a lista de hits do `format=json`)
 - **Hits TIPADOS (v1.1.6)**: `format=json` devolve hits ESTRUTURADOS
@@ -62,6 +65,10 @@ protocols that codify HOW to use the DB.
 - **v1.1.9 ADR-0008**: default recall **lexical**; `remember` sem vetor → L3;
   `NEURAL_SGDB_EMBEDDER` unset = none; `=demo` explícito. Resources
   `nsgdb://doctrine` + `nsgdb://session`. `health(view=tensions)`.
+- **v1.5.0 (ativação por caminho)**: `curate op=set_trigger` (`pattern`,
+  `namespaces`)/`forget_trigger`/`triggers` (`path` opcional) + `recall(path=)`
+  — o host diz em que arquivo está, o core devolve/ativa os namespaces
+  (`entities` do 1-hop); sem regra que case = vazio (nunca o pool global).
 - **v1.1.10 (curate ops)**: `decay` (Ebbinghaus), `consolidate`, 
   `audit_checkpoint`/`audit_verify` (ledger hash-chain + structuredContent),
   `rollback_to` (cognitivo — payloads intocados).
@@ -107,6 +114,15 @@ protocols that codify HOW to use the DB.
   subtasks across sessions; Config A (naive hoarder) vs Config B (protocol v2).
   Deterministic; exit 0 sse quiz ties AND SR(B) > SR(A) AND sPS(B) > sPS(A).
 
+## trajectory_learning.rs — APRENDIZADO POR TRAJETÓRIA (ADR-0019, v1.5.0)
+- `cargo run --release --example trajectory_learning` — a convenção do HOST:
+  `remember_episodic` guarda a trajetória **verbatim** (tarefa + desfecho) e
+  `feedback` re-pondera importance **e** confidence da memória que foi USADA.
+  Config A (hoarder, sem re-ponderação) vs Config B (trajetória) na MESMA
+  bateria determinística: SR 50% vs 100%, e a sessão 2 de B acerta desde a 1ª
+  tarefa. Auto-checks de contraste (vencedor sobe, perdedor desce), trilha
+  verbatim contável e exploração como política do host. Exit 0 sse A < B.
+
 ## two_ai_protocol.rs — MÁQUINA→MÁQUINA (v1.1.6 item 5)
 - `cargo run --release --example two_ai_protocol` — the COMPLETE
   machine→machine contract end-to-end (16 auto-checks): IA-A (writer) stores
@@ -132,3 +148,10 @@ protocols that codify HOW to use the DB.
 - Depends on: `neural_sgdb` (lib), `serde_json` (dev-dep, mcp_server only)
 - MCP gotchas: do not gate tools on `initialized` (Claude Code sends tools/list
   first); echo the `id` verbatim; trim `\r\n`; stdin EOF = shutdown
+- Layer/prefix gotchas (single source in `src/codemap.md` §Gotchas): text
+  companion = `sgdb::companion_key` (`pub(crate)` — the ONLY L4/L5→L2 mapping;
+  an inline `replacen("/L4/", …)` that forgets `/L5/` is the bug that returned
+  twice), "carries embedding?" = `ctype::key_carries_embedding` (L4∨L5, `pub`
+  — the only one an example can call), fact trio = `ctype::FACT_LAYER_PREFIXES`
+  + `key_is_fact` (`pub(crate)`). Examples that scan `md/L{N}/` prefixes should
+  reuse `key_carries_embedding` and avoid retyping `for p in ["md/L3/", …]`.

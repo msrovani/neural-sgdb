@@ -9,8 +9,8 @@ use alloc::vec::Vec;
 
 use crate::bq::{quantize_f32, BqFlatIndex};
 use crate::ctype::{
-    detect_content_type, parse_stable_label, payload_content_type, renders_prose, ContentType,
-    RecallPath,
+    detect_content_type, key_carries_embedding, key_is_fact, parse_stable_label,
+    payload_content_type, renders_prose, ContentType, RecallPath, FACT_LAYER_PREFIXES,
 };
 use crate::engine::AiosDatabaseEngine;
 use crate::era::{estimate_era_migration, era_report_lines, EraReport};
@@ -19,6 +19,7 @@ use crate::memory_doc::{
     LineageEntry, MemoryDoc, MemoryLayer, MemoryMeta, MemoryRecord, MemoryState, RelationKind,
     ScopeDims, ScopeFilter,
 };
+use crate::trigger::{glob_match, trigger_key, TriggerRule, TRIGGER_PREFIX};
 use crate::negative::AbsenceEntry;
 use crate::storage::{Storage, SgdbError};
 
@@ -675,14 +676,13 @@ pub struct ValidateIssue {
 /// O replacen SÓ em `/L4/` era no-op para keys L5 — o batch lia o PRÓPRIO
 /// doc L5 e projetava o payload (floats/binário) como prosa lossy (bugfix
 /// v1.1.6). Keys não-L4/L5 retornam a própria key (sem companion).
-fn companion_key(sk: &str) -> String {
-    if sk.starts_with("md/L4/") {
-        sk.replacen("/L4/", "/L2/", 1)
-    } else if sk.starts_with("md/L5/") {
-        sk.replacen("/L5/", "/L2/", 1)
-    } else {
-        sk.to_string()
+pub(crate) fn companion_key(sk: &str) -> String {
+    if !key_carries_embedding(sk) {
+        return sk.to_string();
     }
+    // `md/L4/` e `md/L5/` têm o MESMO tamanho: troca do segmento de camada,
+    // id preservado (o predicado acima garante o prefixo ASCII).
+    alloc::format!("md/L2/{}", &sk["md/L4/".len()..])
 }
 
 /// Hit de retrieval causal (v1.4.4, Lote D) — ver [`Sgdb::recall_causal`].
@@ -924,7 +924,7 @@ impl Sgdb {
                 Some(s) => String::from_utf8_lossy(s).into_owned(),
                 None => continue,
             };
-            if !(sk.starts_with("md/L3/") || sk.starts_with("md/L4/") || sk.starts_with("md/L5/")) {
+            if !key_is_fact(&sk) {
                 continue;
             }
             let Ok(m) = MemoryMeta::decode(&bytes) else {
@@ -981,7 +981,7 @@ impl Sgdb {
                 Some(s) => String::from_utf8_lossy(s).into_owned(),
                 None => continue,
             };
-            if !(sk.starts_with("md/L3/") || sk.starts_with("md/L4/") || sk.starts_with("md/L5/")) {
+            if !key_is_fact(&sk) {
                 continue;
             }
             let Ok(m) = MemoryMeta::decode(&bytes) else {
@@ -1049,7 +1049,7 @@ impl Sgdb {
                 Some(s) => String::from_utf8_lossy(s).into_owned(),
                 None => continue,
             };
-            if !(sk.starts_with("md/L3/") || sk.starts_with("md/L4/") || sk.starts_with("md/L5/")) {
+            if !key_is_fact(&sk) {
                 continue;
             }
             let Ok(m) = MemoryMeta::decode(&bytes) else {
@@ -1178,11 +1178,7 @@ impl Sgdb {
                 continue;
             }
             let doc = self.engine.get_by_storage_key(&sk)?.unwrap();
-            let ck = if sk.starts_with("md/L4/") {
-                sk.replacen("/L4/", "/L2/", 1)
-            } else {
-                sk.replacen("/L5/", "/L2/", 1)
-            };
+            let ck = companion_key(&sk);
             let text = self
                 .engine
                 .get_texts_batch(&alloc::vec![ck])
@@ -1337,7 +1333,7 @@ impl Sgdb {
     /// (`md/L2/<key>`, mesma convenção do recall).
     pub fn profile(&mut self, node_id: u8, limit: usize) -> Result<Vec<(String, f32, f32, String)>, SgdbError> {
         let mut facts = Vec::new();
-        for layer in ["md/L3/", "md/L4/", "md/L5/"] {
+        for layer in FACT_LAYER_PREFIXES {
             for (sk, _) in self.engine.art.scan_prefix(layer) {
                 let m = match self.engine.meta(&sk) {
                     Ok(Some(m)) => m,
@@ -1352,7 +1348,7 @@ impl Sgdb {
                         // payload é o embedding — mesmo path do recall)
                         let mut text = String::from_utf8_lossy(&doc.payload).into_owned();
                         if doc.bitvec.is_some() || text.is_empty() {
-                            let csk = sk.replacen("/L4/", "/L2/", 1);
+                            let csk = companion_key(&sk);
                             if let Ok(Some(cdoc)) = self.engine.get_by_storage_key(&csk) {
                                 text = String::from_utf8_lossy(&cdoc.payload).into_owned();
                             }
@@ -1825,7 +1821,7 @@ impl Sgdb {
             }
         }
         // companion do primário L4/L5
-        let csk = sk.replacen("/L4/", "/L2/", 1).replacen("/L5/", "/L2/", 1);
+        let csk = companion_key(&sk);
         if csk != sk {
             if let Some(doc) = self.engine.get_by_storage_key(&csk)? {
                 return Ok(String::from_utf8_lossy(&doc.payload).into_owned());
@@ -1906,6 +1902,136 @@ impl Sgdb {
         let sk = self.resolve_known_key(key);
         Ok(self.engine.meta(&sk)?.map(|m| m.entities).unwrap_or_default())
     }
+    // ---- Trigger rules (Ruflo: ativação condicional por caminho de arquivo) ----
+
+    /// Grava ou sobrescreve uma regra de ativação. Quando um caminho casa com
+    /// `pattern` (glob), os `namespaces` (strings de entity) são ativados no
+    /// recall. Um padrão igual reescreve a regra. Valida cada componente do
+    /// padrão e de cada namespace (nenhum `#`, `..`, NUL ou controle).
+    pub fn set_trigger(&mut self, pattern: &str, namespaces: &[&str]) -> Result<(), SgdbError> {
+        // regra sem namespace nao ativa nada: recusa em voz alta em vez de
+        // gravar um no-op (a doutrina da casa — nao fingir).
+        if namespaces.is_empty() {
+            return Err(SgdbError::Invalid("trigger needs at least one namespace"));
+        }
+        for n in namespaces {
+            validate_written(n)?;
+        }
+        if pattern.is_empty() || pattern.len() > crate::limits::MAX_KLEN {
+            return Err(SgdbError::Invalid("trigger pattern length"));
+        }
+        // o padrao vira IDENTIDADE (key fnv1a64) e e casado contra caminhos:
+        // nenhum controle/NUL e nenhum componente `.`/`..` (o host nunca monta
+        // um padrao que atravessa diretorio).
+        for c in pattern.chars() {
+            let b = c as u32;
+            if c == '\0' || b < 0x20 || b == 0x7f {
+                return Err(SgdbError::Invalid("control/NUL char in trigger pattern"));
+            }
+        }
+        for comp in pattern.split('/') {
+            if comp == "." || comp == ".." {
+                return Err(SgdbError::Invalid("path traversal component in trigger pattern"));
+            }
+        }
+        // namespaces repetidos nao mudam a ativacao (a lista iria repetir a
+        // mesma entity no pool do 1-hop): guarda a lista SEM repeticao.
+        let mut uniq: Vec<String> = Vec::with_capacity(namespaces.len());
+        for n in namespaces {
+            if !uniq.iter().any(|x| x == n) {
+                uniq.push((*n).to_string());
+            }
+        }
+        let sk = trigger_key(pattern);
+        let rule = TriggerRule {
+            pattern: pattern.to_string(),
+            namespaces: uniq,
+        };
+        self.engine.storage_put(sk.as_bytes(), &rule.encode())?;
+        Ok(())
+    }
+
+    /// Remove uma regra de ativação pelo padrão (`true` se existia).
+    pub fn forget_trigger(&mut self, pattern: &str) -> Result<bool, SgdbError> {
+        if pattern.is_empty() || pattern.len() > crate::limits::MAX_KLEN {
+            return Err(SgdbError::Invalid("trigger pattern length"));
+        }
+        let sk = trigger_key(pattern);
+        let existed = self.engine.storage_get(sk.as_bytes())?.is_some();
+        if existed {
+            self.engine.storage_delete(sk.as_bytes())?;
+        }
+        Ok(existed)
+    }
+
+    /// Lista todas as regras ativas (cláusula LIKE `sys/trigger/`).
+    pub fn trigger_rules(&mut self) -> Result<Vec<TriggerRule>, SgdbError> {
+        let mut out = Vec::new();
+        let mut seen = alloc::collections::BTreeSet::new();
+        for (_, v) in self.engine.scan_prefix_storage(TRIGGER_PREFIX)? {
+            let Some((rule, used)) = TriggerRule::decode(&v) else {
+                continue;
+            };
+            if rule.pattern.is_empty() || used != v.len() {
+                continue;
+            }
+            if seen.insert(rule.pattern.clone()) {
+                out.push(rule);
+            }
+        }
+        // Ordem deterministica: o scan do storage vem na ordem de HASH da key
+        // (fnv1a64 do padrao), nao na ordem do padrao. Ordem e contrato
+        // (state-first e pinado por teste) — sem o sort a lista muda entre
+        // execucoes e o host ativa em ordem diferente.
+        out.sort_by(|a, b| a.pattern.cmp(&b.pattern));
+        Ok(out)
+    }
+
+    /// Devolve as regras cujo padrão casa com `path`. Útil no IDE: `path=
+    /// src/kernel/mod.rs` → regras `src/kernel/*` e `src/kernel/**` ativam,
+    /// sem carregar a base toda a cada prompt.
+    pub fn triggers_for_path(&mut self, path: &str) -> Result<Vec<TriggerRule>, SgdbError> {
+        let mut out = Vec::new();
+        for r in self.trigger_rules()? {
+            if glob_match(&r.pattern, path) {
+                out.push(r);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Namespaces ATIVADOS por um caminho: a uniao das regras que casam, sem
+    /// repeticao e na ordem de `trigger_rules` (padrao asc). E o "o que ativar"
+    /// que o host monta no proprio prompt — o core devolve a decisao MATERIAL,
+    /// nunca decide o que fazer com ela. Lista vazia = nenhuma regra casa.
+    pub fn namespaces_for_path(&mut self, path: &str) -> Result<Vec<String>, SgdbError> {
+        let mut out: Vec<String> = Vec::new();
+        for r in self.triggers_for_path(path)? {
+            for n in r.namespaces {
+                if !out.iter().any(|x| x == &n) {
+                    out.push(n);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Recall ativado por um caminho de arquivo: resolve as regras que casam
+    /// com o arquivo em foco e recalla pelos namespaces delas — o MESMO 1-hop de
+    /// `recall_entities`, logo a MESMA escala de `dist` (o path novo nao inventa
+    /// uma terceira escala). Sem regra que case devolve vazio (nunca cai para o
+    /// pool global: ativar por caminho nao e um recall sem filtro). Null-scoping
+    /// intacto — memoria de outro escopo nao vira evidencia por caminho.
+    pub fn recall_for_path(&mut self, path: &str, k: usize) -> Result<Vec<Hit>, SgdbError> {
+        let namespaces = self.namespaces_for_path(path)?;
+        if namespaces.is_empty() {
+            return Ok(Vec::new());
+        }
+        let refs: Vec<&str> = namespaces.iter().map(|n| n.as_str()).collect();
+        // `true` no ultimo arg: o filtro de escopo do 1-hop VALE (null-scoping)
+        self.recall_entities_impl(&refs, k, None, true, true)
+    }
+
 
     /// Tipo de conteúdo DECLARADO da memória (v1.1.6 item 2 — seam de WRITE):
     /// o writer declara o rótulo estável (`text`/`json`/`code`/`embedding`/
@@ -1928,7 +2054,7 @@ impl Sgdb {
         self.engine.write_meta(&sk, &m)?;
         // propaga para o companion `/L2/` do primário, se existir (o mesmo
         // datum, só que na forma de texto — o lexical indexa a /L2/).
-        if sk.starts_with("md/L4/") || sk.starts_with("md/L5/") {
+        if key_carries_embedding(&sk) {
             let ck = companion_key(&sk);
             if let Ok(Some(_)) = self.engine.get_by_storage_key(&ck) {
                 let mut cm = self.engine.ensure_meta(&ck)?;
@@ -2784,6 +2910,27 @@ impl Sgdb {
 
     /// Indexa embedding L4 (BQ). `emb` vazio = no-op. O texto é armazenado em
     /// L2 (companion `md/L2/<key>`) para recall trazer texto legível.
+    /// ADR-0007 write-side era guard: `BqFlatIndex` locks `words_per_vec` on
+    /// the first insert — a different-dim embedding in a live BQ is silently
+    /// truncated (bughunt #11). The FIRST write of an empty corpus defines
+    /// the era; after that only matching dims are accepted. A deliberate era
+    /// migration goes through the raw `put` + `rebuild_indices()` path (see
+    /// `examples/era_migration_bench.rs`) — the high-level APIs stay loud.
+    ///
+    /// v1.5.0: a regra vive AQUI e é chamada pelos DOIS caminhos de escrita
+    /// (cognitiva e operacional). Antes só a cognitiva a tinha — o write
+    /// operacional entrava no BQ de outra era e era truncado em silêncio.
+    fn check_era_dims(&self, dim: usize) -> Result<(), SgdbError> {
+        if !self.engine.indexed_dims.is_empty() && !self.engine.indexed_dims.contains(&dim) {
+            return Err(SgdbError::Invalid(
+                "embedding dim does not match the indexed corpus era (BQ width-lock would \
+                 truncate it silently); run era_report() for the migration plan + cost \
+                 estimate, or write to a fresh DB (new era)",
+            ));
+        }
+        Ok(())
+    }
+
     /// Grava uma memória semântica (L4 + companion L2). **Política de entrada
     /// (P1-1)**: `emb` vazio, com NaN/±Inf ou com dim > `MAX_EMBEDDING_DIM`
     /// retorna `SgdbError::Invalid` — nunca grava embeddas corruptas.
@@ -2795,20 +2942,7 @@ impl Sgdb {
     ) -> Result<(), SgdbError> {
         validate_written(key)?;
         crate::bq::check_embedding(emb)?;
-        // ADR-0007 write-side era guard: `BqFlatIndex` locks `words_per_vec` on
-        // the first insert — a different-dim embedding in a live BQ is silently
-        // truncated (bughunt #11). The FIRST write of an empty corpus defines
-        // the era; after that only matching dims are accepted. A deliberate era
-        // migration goes through the raw `put` + `rebuild_indices()` path (see
-        // `examples/era_migration_bench.rs`) — this high-level API stays loud.
-        if !self.engine.indexed_dims.is_empty() && !self.engine.indexed_dims.contains(&emb.len())
-        {
-            return Err(SgdbError::Invalid(
-                "embedding dim does not match the indexed corpus era (BQ width-lock would \
-                 truncate it silently); run era_report() for the migration plan + cost \
-                 estimate, or write to a fresh DB (new era)",
-            ));
-        }
+        self.check_era_dims(emb.len())?;
         let mut payload = Vec::with_capacity(emb.len() * 4);
         for x in emb {
             payload.extend_from_slice(&x.to_le_bytes());
@@ -3711,8 +3845,7 @@ impl Sgdb {
         for (mk, bytes) in rows {
             // `sys/meta/<sk>` → sk (9 bytes de prefixo)
             let sk = String::from_utf8_lossy(&mk[9..]).into_owned();
-            if !(sk.starts_with("md/L3/") || sk.starts_with("md/L4/") || sk.starts_with("md/L5/"))
-            {
+            if !key_is_fact(&sk) {
                 continue;
             }
             let Ok(mut m) = MemoryMeta::decode(&bytes) else {
@@ -4292,7 +4425,7 @@ impl Sgdb {
         let mut out: Vec<StalenessHit> = Vec::new();
         for (sk_bytes, _) in rows {
             let sk = String::from_utf8_lossy(&sk_bytes).into_owned();
-            if !(sk.starts_with("md/L3/") || sk.starts_with("md/L4/") || sk.starts_with("md/L5/")) {
+            if !key_is_fact(&sk) {
                 continue;
             }
             if self.engine.get_by_storage_key(&sk)?.is_none() {
@@ -4700,7 +4833,7 @@ impl Sgdb {
     /// companion. `None` para keys não-L2 ou sem primário existente.
     fn primary_of(&mut self, sk: &str) -> Option<(String, ContentType)> {
         let rest = sk.strip_prefix("md/L2/")?;
-        for prim in ["md/L4/", "md/L5/", "md/L3/"] {
+        for prim in FACT_LAYER_PREFIXES {
             let cand = alloc::format!("{prim}{rest}");
             if let Ok(Some(doc)) = self.engine.get_by_storage_key(&cand) {
                 // tipo do payload do primário (Embedding(dim) p/ L4/L5; um
@@ -5088,14 +5221,7 @@ impl Sgdb {
                 .unwrap_or(0);
             pending.push((score, sk.clone(), dist, state, tick));
             // companion L2 para projeção prosa (mesma regra do recall_impl)
-            let ck = if sk.starts_with("md/L4/") {
-                sk.replacen("/L4/", "/L2/", 1)
-            } else if sk.starts_with("md/L5/") {
-                sk.replacen("/L5/", "/L2/", 1)
-            } else {
-                sk.clone()
-            };
-            companion_keys.push(ck);
+            companion_keys.push(companion_key(&sk));
         }
         // state-first v1.1.16 (paridade com `recall_impl`): grupo de score,
         // created_tick desc, score asc. Margem por instância (fix 8.1).
@@ -5109,15 +5235,10 @@ impl Sgdb {
         });
         pending.truncate(k);
         // batch de textos (map companion -> texto)
-        let keep: Vec<String> = pending.iter().map(|(_, sk, _, _, _)| {
-            if sk.starts_with("md/L4/") {
-                sk.replacen("/L4/", "/L2/", 1)
-            } else if sk.starts_with("md/L5/") {
-                sk.replacen("/L5/", "/L2/", 1)
-            } else {
-                sk.clone()
-            }
-        }).collect();
+        let keep: Vec<String> = pending
+            .iter()
+            .map(|(_, sk, _, _, _)| companion_key(sk))
+            .collect();
         let texts = self.engine.get_texts_batch(&keep);
         let mut out = Vec::new();
         for (score, sk, dist, state, _) in pending {
@@ -5144,13 +5265,7 @@ impl Sgdb {
                 .as_ref()
                 .and_then(|m| m.content_type.as_deref())
                 .and_then(parse_stable_label);
-            let ck = if sk.starts_with("md/L4/") {
-                sk.replacen("/L4/", "/L2/", 1)
-            } else if sk.starts_with("md/L5/") {
-                sk.replacen("/L5/", "/L2/", 1)
-            } else {
-                sk.clone()
-            };
+            let ck = companion_key(&sk);
             let raw_text = texts.get(&ck).cloned().unwrap_or_default();
             let content_type = resolve_content_type(declared, &raw_text, ct_fallback);
             let text = if renders_prose(content_type) {
@@ -5466,6 +5581,86 @@ impl Sgdb {
         let v = self.engine.put_operational(doc)?;
         self.metrics.memory_writes += 1;
         Ok(v)
+    }
+
+    /// Escrita OPERACIONAL com TEXTO + metadados (v1.5.0).
+    ///
+    /// `put_operational` recebe o doc JÁ montado e não tem onde guardar o
+    /// texto: em L4/L5 o payload É o embedding, então quem escrevia dado de
+    /// sistema com vetor perdia o texto — o caminho `author=system` do MCP
+    /// montava o doc com o texto e logo sobrescrevia `payload` com os f32.
+    /// Os metadados (`scope`/`scope_dims`/`entities`/`content_type`/
+    /// `model_id`/`index_key`) ficavam fora do caminho, e o `RememberOutcome`
+    /// entregue ao consumidor ECOAVA o `type` pedido sem que nada tivesse sido
+    /// gravado — o consumidor não tinha como saber que a declaração sumiu.
+    ///
+    /// Aqui o texto tem destino: em L4/L5 vai para o companion `/L2/<key>`
+    /// (exatamente como `remember_semantic` — é de lá que `Hit.text`,
+    /// `text_of` e o índice lexical leem). E os metadados passam pela MESMA
+    /// `finish_remember` das escritas cognitivas, devolvendo o que foi
+    /// GRAVADO, não o que foi pedido.
+    ///
+    /// Continua operacional: nada aqui ticka o relógio próprio
+    /// (`engine.put_operational` + `engine.put_companion` sem tick).
+    ///
+    /// Regras de camada (recusa em voz alta, nunca descarte silencioso):
+    /// - `L4/L5` EXIGEM `emb` (sem bitvec o ramo "sem bitvec" do `index_doc`
+    ///   reinterpretaria o payload de texto como f32 e poluiria o BQ);
+    /// - as outras camadas têm o payload como datum: `emb` ali é `Invalid`.
+    ///
+    /// **Chave `sys/…`**: o prefixo pertence ao namespace das side-tables
+    /// (`sys/meta/`, `sys/state/`). O doc é gravado em `md/L{N}/sys/…`, mas
+    /// `resolve_known_key("sys/…")` responde a chave de side-table — em
+    /// follow-ups (`explain`/`set_authority`/`text_of`) use o `storage_key`
+    /// CANÔNICO devolvido no outcome.
+    pub fn remember_operational(
+        &mut self,
+        layer: MemoryLayer,
+        key: &str,
+        text: &str,
+        emb: Option<&[f32]>,
+        opts: RememberOptions<'_>,
+    ) -> Result<RememberOutcome, SgdbError> {
+        validate_written(key)?;
+        let vector_layer = layer.carries_embedding();
+        let doc = if vector_layer {
+            let emb = emb.filter(|e| !e.is_empty()).ok_or(SgdbError::Invalid(
+                "L4/L5 exigem embedding explicito: sem bitvec o payload seria \
+                 reinterpretado como f32 e poluiria o BQ",
+            ))?;
+            crate::bq::check_embedding(emb)?;
+            self.check_era_dims(emb.len())?;
+            let mut payload = Vec::with_capacity(emb.len() * 4);
+            for x in emb {
+                payload.extend_from_slice(&x.to_le_bytes());
+            }
+            let mut d = MemoryDoc::new(layer, key, payload);
+            d.bitvec = Some(quantize_f32(emb));
+            d
+        } else {
+            if emb.is_some() {
+                return Err(SgdbError::Invalid(
+                    "embedding so vale em L4/L5: as outras camadas tem o payload como datum",
+                ));
+            }
+            MemoryDoc::new(layer, key, text.as_bytes().to_vec())
+        };
+        let sk = doc.storage_key();
+        let mut companion = sk.clone();
+        // PRIMÁRIO antes do companion (a ordem do `remember_semantic`): se o
+        // storage falhar no primário, não fica companion órfão no banco.
+        let _ = self.engine.put_operational(doc)?;
+        self.metrics.memory_writes += 1;
+        if vector_layer && !text.is_empty() {
+            // O texto NÃO cabe no payload (ele é o vetor): companion `/L2/`,
+            // o MESMO que `remember_semantic` grava. `put_companion` reusa o
+            // watermark do relógio — o write segue sem autoria causal.
+            let tdoc =
+                MemoryDoc::new(MemoryLayer::L2EpisodicShort, key, text.as_bytes().to_vec());
+            self.engine.put_companion(tdoc)?;
+            companion = format!("md/L2/{key}");
+        }
+        self.finish_remember(sk, companion, opts, !vector_layer)
     }
 
     /// Exporta uma memória como UNIDADE de replicação (P0-5): doc NMD1 (com
@@ -6063,10 +6258,13 @@ impl Sgdb {
         // 2. índices derivados: contagens BATEM com o storage
         // O BQ indexa L4 (semântica) E L5 (procedural) — engine.rs put_inner
         // (AUDIT 3.5: um doc L5 legítimo com embedding quebrava o validate,
-        // que só contava md/L4/). Regra replicada: layer ∈ {L4, L5} E
-        // (bitvec presente OU payload com ≥4 bytes — reinterpretado como f32).
+        // que só contava md/L4/). A CAMADA vem do helper (`key_carries_embedding`,
+        // a mesma fonte do put_inner); o que ainda espelha o index_doc é a
+        // aritmética do payload (bitvec OU ≥4 bytes como f32).
         let bq_doc_count = md.iter().filter(|(sk, bytes)| {
-            if !(sk.starts_with(b"md/L4/") || sk.starts_with(b"md/L5/")) {
+            // Mesma regra do `engine::index_doc`: quem carrega vetor é a CAMADA
+            // (L4/L5), não a aritmética do payload — `key_carries_embedding`.
+            if !core::str::from_utf8(sk).is_ok_and(key_carries_embedding) {
                 return false;
             }
             match MemoryDoc::decode(bytes) {
@@ -6165,10 +6363,7 @@ impl Sgdb {
         if let Ok(rows) = self.engine.scan_prefix_storage(b"sys/meta/") {
             for (mk, bytes) in rows {
                 let target = String::from_utf8_lossy(&mk[9..]).into_owned();
-                if !(target.starts_with("md/L3/")
-                    || target.starts_with("md/L4/")
-                    || target.starts_with("md/L5/"))
-                {
+                if !key_is_fact(&target) {
                     continue;
                 }
                 if let Ok(m) = MemoryMeta::decode(&bytes) {
@@ -6334,6 +6529,22 @@ mod tests {
     use alloc::string::ToString; // no_std test build
     use alloc::vec; // no_std test build: `vec!` não está no prelude
     use crate::storage::InMemory;
+
+    /// Regra unica do companion de texto (S3 / bugfix v1.1.6): L4 E L5 apontam
+    /// para `md/L2/<id>`; qualquer outra key retorna ela mesma. Antes esta regra
+    /// vivia copiada inline em ~8 sitios e duas copias so tratavam `/L4/` (a
+    /// divergencia que o bugfix de v1.1.6 fechou — e que voltou em `crdt.rs` e no
+    /// fallback de texto de facts). Pinar por teste aqui impede a N-esima copia.
+    #[test]
+    fn companion_key_maps_l4_and_l5_only() {
+        assert_eq!(companion_key("md/L4/agent/x"), "md/L2/agent/x");
+        assert_eq!(companion_key("md/L5/agent/x"), "md/L2/agent/x");
+        // nao-embedding: a propria key (sem companion)
+        assert_eq!(companion_key("md/L3/agent/x"), "md/L3/agent/x");
+        assert_eq!(companion_key("md/L2/agent/x"), "md/L2/agent/x");
+        // idempotente: o companion nao vira um novo companion
+        assert_eq!(companion_key(&companion_key("md/L5/agent/x")), "md/L2/agent/x");
+    }
 
     #[test]
     fn exchange_and_prompt() {
@@ -7290,6 +7501,122 @@ mod tests {
         // lista vazia limpa o índice (memory sem entidades não é recallável)
         db2.set_entities("k1", &[]).unwrap();
         assert!(db2.recall_entities(&["ent/gamma"], 10).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn trigger_rules_are_deterministic_and_match_paths() {
+        // Trigger rules (v1.5.0): ativacao condicional por caminho — o host diz
+        // em que arquivo esta, o core devolve os namespaces (entities).
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        // ordem de ESCRITA != ordem de leitura (a lista sai por padrao asc)
+        db.set_trigger("tests/*", &["ns/test"]).unwrap();
+        db.set_trigger("src/kernel/*.rs", &["ns/kernel"]).unwrap();
+        db.set_trigger("src/kernel/**", &["ns/kernel", "ns/no_std"])
+            .unwrap();
+        let rules: Vec<String> = db
+            .trigger_rules()
+            .unwrap()
+            .into_iter()
+            .map(|r| r.pattern)
+            .collect();
+        assert_eq!(
+            rules,
+            // ordem de BYTES do padrao ('*' < '.'): deterministica e pinada
+            vec!["src/kernel/**", "src/kernel/*.rs", "tests/*"],
+            "lista deterministica (padrao asc), nao ordem de hash"
+        );
+        // identidade = padrao: reescrever SUBSTITUI (nao duplica)
+        db.set_trigger("tests/*", &["ns/test2"]).unwrap();
+        assert_eq!(db.trigger_rules().unwrap().len(), 3);
+        // matching: single-star NAO atravessa '/', globstar atravessa
+        assert_eq!(db.triggers_for_path("src/kernel/mod.rs").unwrap().len(), 2);
+        assert_eq!(db.triggers_for_path("src/kernel/a/b.rs").unwrap().len(), 1);
+        assert!(db.triggers_for_path("src/kernel").unwrap().is_empty());
+        // ativacao = uniao sem repeticao, na ordem dos padroes
+        assert_eq!(
+            db.namespaces_for_path("src/kernel/mod.rs").unwrap(),
+            vec!["ns/kernel".to_string(), "ns/no_std".to_string()]
+        );
+        // forget e idempotente (segunda chamada = false, sem erro)
+        assert!(db.forget_trigger("tests/*").unwrap());
+        assert!(!db.forget_trigger("tests/*").unwrap());
+        assert_eq!(db.trigger_rules().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn set_trigger_refuses_rule_without_effect() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        // regra sem namespace / padrao vazio / traversal / controle / '#' na
+        // entity: tudo recusado EM VOZ ALTA e nada gravado.
+        assert!(matches!(db.set_trigger("src/*", &[]), Err(SgdbError::Invalid(_))));
+        assert!(matches!(db.set_trigger("", &["ns/a"]), Err(SgdbError::Invalid(_))));
+        assert!(matches!(db.set_trigger("src/../etc", &["ns/a"]), Err(SgdbError::Invalid(_))));
+        assert!(matches!(db.set_trigger("src/a\nb", &["ns/a"]), Err(SgdbError::Invalid(_))));
+        assert!(matches!(db.set_trigger("src/*", &["ns/a#b"]), Err(SgdbError::Invalid(_))));
+        assert!(db.trigger_rules().unwrap().is_empty());
+        // namespaces repetidos entram UMA vez (o pool 1-hop nao repete)
+        db.set_trigger("src/*", &["ns/a", "ns/a", "ns/b"]).unwrap();
+        assert_eq!(db.trigger_rules().unwrap()[0].namespaces.len(), 2);
+    }
+
+    #[test]
+    fn recall_for_path_activates_namespaces_and_does_not_leak_scopes() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic("k1", "kernel bare metal sem std", &[1.0, -1.0, 1.0, -1.0])
+            .unwrap();
+        db.set_entities("k1", &["ns/kernel"]).unwrap();
+        // a mesma entity em OUTRO escopo (nao pode virar evidencia global)
+        db.remember_text_with(
+            "outro",
+            "kernel de outro tenant",
+            RememberOptions::default(),
+        )
+        .unwrap();
+        db.set_entities("outro", &["ns/kernel"]).unwrap();
+        db.set_scope("outro", "tenant/x").unwrap();
+        db.set_trigger("src/kernel/*.rs", &["ns/kernel"]).unwrap();
+
+        let hits = db.recall_for_path("src/kernel/mod.rs", 5).unwrap();
+        assert_eq!(hits.len(), 1, "so o hit global do namespace");
+        assert!(hits[0].key.ends_with("/k1"));
+        // caminho sem regra que case → vazio (nao e um recall sem filtro)
+        assert!(db.recall_for_path("docs/readme.md", 5).unwrap().is_empty());
+        // a memoria escopada segue alcancavel pelo caminho escopado (mesma entity)
+        assert_eq!(
+            db.recall_entities_scoped(&["ns/kernel"], 5, "tenant/x")
+                .unwrap()
+                .len(),
+            1
+        );
+        // duas regras ativando o MESMO namespace devolvem UM hit (sem duplicar)
+        db.set_trigger("src/kernel/**", &["ns/kernel"]).unwrap();
+        assert_eq!(db.recall_for_path("src/kernel/a/b.rs", 5).unwrap().len(), 1);
+        assert_eq!(
+            db.namespaces_for_path("src/kernel/a/b.rs").unwrap(),
+            vec!["ns/kernel".to_string()]
+        );
+    }
+
+    #[cfg(feature = "file-storage")]
+    #[test]
+    fn trigger_rules_persist_across_reopen() {
+        // a regra vive na side-table `sys/trigger/<hex>` — side-table
+        // persistente, sem wire type novo (NMD1/TKLV intactos).
+        let dir = std::env::temp_dir().join(format!("nsgdb-trg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        {
+            let mut db = Sgdb::open(crate::storage::FileStorage::open(&dir).unwrap()).unwrap();
+            db.set_trigger("src/kernel/**", &["ns/kernel", "ns/no_std"])
+                .unwrap();
+            assert!(!db.forget_trigger("nunca-existiu").unwrap());
+        }
+        let mut db2 = Sgdb::open(crate::storage::FileStorage::open(&dir).unwrap()).unwrap();
+        assert_eq!(db2.triggers_for_path("src/kernel/a.rs").unwrap().len(), 1);
+        assert_eq!(
+            db2.namespaces_for_path("src/kernel/a.rs").unwrap(),
+            vec!["ns/kernel".to_string(), "ns/no_std".to_string()]
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -9353,6 +9680,162 @@ mod tests {
             .recall_scoped(&[1.0, -1.0, 1.0, -1.0], 5, "agent/a")
             .unwrap();
         assert_eq!(scoped.len(), 1);
+    }
+
+    /// v1.5.0 — a regressão do `author=system` em L4/L5.
+    ///
+    /// O caminho operacional montava o doc com o texto e logo SOBRESCREVIA
+    /// `payload` com os f32: o texto morria e nenhum companion `/L2/` era
+    /// gravado (`companion_key` voltava vazio). Os metadados nem eram
+    /// aplicados, mas o `RememberOutcome` ECOAVA o `type` pedido — o consumidor
+    /// não tinha como saber que a declaração sumiu. Sem as duas correções
+    /// (companion + `finish_remember`) as asserções abaixo falham.
+    #[test]
+    fn remember_operational_l4_keeps_text_and_metadata() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let emb = [1.0f32, 0.0, 0.0, 0.0];
+        let out = db
+            .remember_operational(
+                MemoryLayer::L4Semantic,
+                "hw/cpu",
+                "cpu suporta avx2 e avx512",
+                Some(&emb),
+                RememberOptions {
+                    scope: Some("ops/edge"),
+                    entities: &["hw/cpu", "hw/avx2"],
+                    content_type: Some("text"),
+                    scope_dims: None,
+                    model_id: Some("all-MiniLM-L6-v2-384"),
+                    index_key: true,
+                },
+            )
+            .expect("escrita operacional L4");
+
+        // 1. o TEXTO sobreviveu: em L4 o payload é o vetor, o texto vai p/ o
+        //    companion `/L2/` — de onde `text_of` (e `Hit.text`) leem.
+        assert_eq!(out.storage_key, "md/L4/hw/cpu");
+        assert_eq!(out.companion_key, "md/L2/hw/cpu");
+        assert_eq!(db.text_of("hw/cpu").unwrap(), "cpu suporta avx2 e avx512");
+
+        // 2. scope foi GRAVADO (e o outcome reporta o real, não vazio)
+        assert_eq!(out.scope, "ops/edge");
+        assert_eq!(db.scope_of("hw/cpu").unwrap(), "ops/edge");
+
+        // 3. entidades no índice 1-hop (antes: lista vazia, nunca chamado)
+        assert_eq!(
+            db.entities_of("hw/cpu").unwrap(),
+            alloc::vec!["hw/cpu".to_string(), "hw/avx2".to_string()]
+        );
+        // (escopado: o global é null-scoped e NÃO deve ver — ver §6)
+        let by_ent = db
+            .recall_entities_scoped(&["hw/avx2"], 5, "ops/edge")
+            .unwrap();
+        assert!(
+            by_ent.iter().any(|h| h.key.ends_with("hw/cpu")),
+            "recall_entities deve achar o doc operacional: {by_ent:?}"
+        );
+        assert!(
+            db.recall_entities(&["hw/avx2"], 5).unwrap().is_empty(),
+            "1-hop global não pode ver memória escopada (null-scoping)"
+        );
+
+        // 4. o `type` declarado foi GRAVADO (antes: só eco no outcome)
+        assert_eq!(out.content_type.as_deref(), Some("text"));
+        assert_eq!(
+            db.content_type_of("hw/cpu").unwrap().as_deref(),
+            Some("text")
+        );
+
+        // 5. o TEXTO é recuperável por lexical (via companion) no escopo
+        let hits = db.recall_lexical_scoped("avx2 avx512", 5, "ops/edge").unwrap();
+        assert!(
+            hits.iter().any(|h| h.key.ends_with("hw/cpu")),
+            "lexical deve achar o texto do L4 operacional: {hits:?}"
+        );
+
+        // 6. null-scoping: o global NÃO vê a memória escopada
+        let global = db.recall_lexical("avx2 avx512", 5).unwrap();
+        assert!(
+            global.iter().all(|h| !h.key.ends_with("hw/cpu")),
+            "recall global vazou memória escopada: {global:?}"
+        );
+    }
+
+    /// v1.5.0 — as recusas em voz alta do caminho operacional (nunca descarte
+    /// silencioso): camada/payload incompatíveis e embedding de outra era.
+    #[test]
+    fn remember_operational_refuses_layer_and_era_mismatch() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        // L4 sem vetor: o ramo "sem bitvec" do index_doc leria o texto como f32
+        assert!(matches!(
+            db.remember_operational(
+                MemoryLayer::L4Semantic,
+                "sys/sem-vetor",
+                "texto",
+                None,
+                RememberOptions::default()
+            ),
+            Err(SgdbError::Invalid(_))
+        ));
+        // vetor numa camada de payload-texto: recusa em vez de descartar
+        assert!(matches!(
+            db.remember_operational(
+                MemoryLayer::L3EpisodicLong,
+                "sys/com-vetor",
+                "texto",
+                Some(&[1.0, 0.0, 0.0, 0.0]),
+                RememberOptions::default()
+            ),
+            Err(SgdbError::Invalid(_))
+        ));
+        // era: o BQ trava a largura no primeiro insert — outra dim seria
+        // TRUNCADA em silêncio (bughunt #11). Antes o caminho operacional
+        // entrava sem o guard que o `remember_semantic` já tinha.
+        db.remember_operational(
+            MemoryLayer::L4Semantic,
+            "sys/era-a",
+            "a",
+            Some(&[1.0, 0.0, 0.0, 0.0]),
+            RememberOptions::default(),
+        )
+        .unwrap();
+        let other = [1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
+        assert!(matches!(
+            db.remember_operational(
+                MemoryLayer::L4Semantic,
+                "sys/era-b",
+                "b",
+                Some(&other),
+                RememberOptions::default()
+            ),
+            Err(SgdbError::Invalid(m)) if m.contains("era")
+        ));
+    }
+
+    /// v1.5.0 — escopo numa camada RAM (L0/L1) não pode virar side-table órfã:
+    /// a regra do v1.4.4 é "side-table persistente implica doc persistente",
+    /// então honrar `scope` num L1 materializa o doc. Sem isso o filtro de
+    /// escopo acharia uma meta sem doc (a classe do bug do v1.4.4).
+    #[test]
+    fn remember_operational_scoped_ram_layer_materializes_and_validates() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_operational(
+            MemoryLayer::L1Working,
+            "hw/boot-flag",
+            "true",
+            None,
+            RememberOptions {
+                scope: Some("ops/host"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(db.scope_of("hw/boot-flag").unwrap(), "ops/host");
+        assert!(
+            db.validate().is_empty(),
+            "validate deve ficar limpo: {:?}",
+            db.validate()
+        );
     }
 
     #[test]

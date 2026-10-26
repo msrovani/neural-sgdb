@@ -121,6 +121,28 @@ pub fn key_carries_embedding(storage_key: &str) -> bool {
     storage_key.starts_with("md/L4/") || storage_key.starts_with("md/L5/")
 }
 
+/// Camadas que guardam FATO recuperável — **L4 (semântico), L5 (procedural) e
+/// L3 (fato lexical), nesta ORDEM**: é a preferência de resolução do primário
+/// de um companion `/L2/<id>` (o companion não carrega conteúdo nem escopo).
+///
+/// Fonte única do trio: os scans de metadado (`scope_distribution`,
+/// `scope_distribution_dims`, `scope_dim_descriptors`, `decay_importance`,
+/// `staleness_report`, `validate` §6), o `profile`, o source do
+/// `promote_run` e a resolução de primário (`Sgdb::primary_of`,
+/// `Engine::effective_scope{,_dims}`) leem ESTA lista. Nove cópias digitadas
+/// do trio foram como a regra divergiu antes (codemap §Gotchas).
+pub(crate) const FACT_LAYER_PREFIXES: [&str; 3] = ["md/L4/", "md/L5/", "md/L3/"];
+
+/// O doc é de uma camada de FATO (L3/L4/L5)? Complemento de
+/// [`key_carries_embedding`]: L0/L1 são tier RAM, L2 é episódico curto,
+/// L6/L7 são grafo/identidade — nenhuma delas participa dos scans de
+/// metadado nem da resolução de primário.
+pub(crate) fn key_is_fact(storage_key: &str) -> bool {
+    FACT_LAYER_PREFIXES
+        .iter()
+        .any(|p| storage_key.starts_with(p))
+}
+
 /// Tipo do datum REAL do payload de um documento, honrando a CAMADA
 /// (v1.1.25): `Embedding(dim)` só para L4/L5 (com bitvec ou payload f32);
 /// fora delas o payload passa pelo detector normal (Text/Json/Code/Binary).

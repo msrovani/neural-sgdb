@@ -196,8 +196,8 @@ fn main() {
     rep.check("initialize responde", !r.get("error").is_some(), r.to_string());
     rep.check("protocolVersion 2025-11-25",
         r["result"]["protocolVersion"] == "2025-11-25", r.to_string());
-    rep.check("serverInfo version 1.4.6",
-        r["result"]["serverInfo"]["version"] == "1.4.6", r.to_string());
+    rep.check("serverInfo version 1.5.0",
+        r["result"]["serverInfo"]["version"] == "1.5.0", r.to_string());
     rep.check("serverInfo mcp_tool_count 5",
         r["result"]["serverInfo"]["mcp_tool_count"] == 5, r.to_string());
     let instr = r["result"]["instructions"].as_str().unwrap_or("");
@@ -205,7 +205,7 @@ fn main() {
         instr.to_ascii_lowercase().contains("null-scoping") && instr.contains("nsgdb/doctrine"), instr.to_string());
     rep.phase("handshake", &t);
 
-    // ---------- fase 2: tools/list (4 tools; aliases no call) ----------
+    // ---------- fase 2: tools/list (5 tools; aliases no call) ----------
     let t = Instant::now();
     let r = srv.rpc("tools/list", json!({}));
     let tools = r["result"]["tools"].as_array().cloned().unwrap_or_default();
@@ -885,6 +885,68 @@ fn main() {
     let (txt, is_err) = srv.tool("remember", json!({
         "text": "avx2", "key": "hot-op/cpu", "author": "system", "layer": "L1"}));
     rep.check("author=system aceita reescrita da mesma key", !is_err, txt.clone());
+    // v1.5.0: `author=system` em L4/L5 perdia o TEXTO (o payload virava o
+    // vetor e nenhum companion /L2/ era gravado) e dropava scope/entities/
+    // type/index_key EM SILENCIO - o outcome ainda ECOAVA o `type` pedido.
+    // Aqui o consumidor escreve com tudo e cobra cada peca de volta.
+    let op_text = "cpu do host suporta avx2 no boot";
+    let op_emb: Vec<f64> = demo_embed(op_text).iter().map(|x| *x as f64).collect();
+    let r = srv.rpc("tools/call", json!({"name": "remember", "arguments": {
+        "text": op_text,
+        "key": "hot-op/l4-semantico",
+        "author": "system",
+        "layer": "L4",
+        "embedding": op_emb,
+        "scope": "hot-op/scope",
+        "entities": ["hw/cpu"],
+        "type": "text",
+        "index_key": true
+    }}));
+    let sc = r["result"]["structuredContent"].clone();
+    rep.check("remember(author=system, layer=L4) aceita texto+embedding+meta",
+        r["result"]["isError"] == false, r.to_string());
+    rep.check("outcome operacional reporta o que GRAVOU (scope/entities/type/companion)",
+        sc["scope"] == "hot-op/scope"
+            && sc["entities"].as_array().is_some_and(|a| !a.is_empty())
+            && sc["content_type"] == "text"
+            && sc["companion_key"].as_str().unwrap_or("").contains("/L2/"),
+        sc.to_string());
+    // 1. o TEXTO sobreviveu: recall semantico com o MESMO vetor devolve a prosa
+    let (txt, is_err) = srv.tool("recall", json!({
+        "query": "cpu avx2 boot", "embedding": op_emb, "scope": "hot-op/scope", "k": 3}));
+    rep.check("texto da escrita operacional L4 e recuperavel (companion /L2/)",
+        !is_err && txt.contains(op_text), txt.clone());
+    // 2. o `type` declarado foi GRAVADO (antes era so eco no outcome)
+    let (txt, is_err) = srv.tool("recall", json!({
+        "query": "cpu avx2 boot", "embedding": op_emb, "scope": "hot-op/scope",
+        "k": 3, "format": "json"}));
+    let op_hits: Value = serde_json::from_str(&txt).unwrap_or(Value::Null);
+    rep.check("hit do L4 operacional e TIPADO e verbatim",
+        !is_err && op_hits.as_array().is_some_and(|a| a.iter().any(|h| {
+            h["key"].as_str().unwrap_or("").ends_with("hot-op/l4-semantico")
+                && h["type"] == "text"
+                && h["text"] == op_text
+        })), txt.clone());
+    // 3. entidades 1-hop (antes: set_entities nem era chamado)
+    let (txt, is_err) = srv.tool("recall_entities", json!({
+        "entities": ["hw/cpu"], "scope": "hot-op/scope", "k": 5}));
+    rep.check("entidades da escrita operacional entram no 1-hop",
+        !is_err && txt.contains("hot-op/l4-semantico"), txt.clone());
+    // 4. null-scoping: o global NAO ve (antes o doc ficava global)
+    let (txt, _) = srv.tool("recall", json!({"query": op_text, "k": 10}));
+    rep.check("escrita operacional escopada nao vaza no recall global",
+        !txt.contains("hot-op/l4-semantico"), txt.clone());
+    // 5. index_key: a KEY e pesquisavel no lexical
+    let (txt, is_err) = srv.tool("recall", json!({
+        "query": "l4-semantico", "k": 10, "scope": "hot-op/scope"}));
+    rep.check("index_key indexa os tokens da KEY na escrita operacional",
+        !is_err && txt.contains("hot-op/l4-semantico"), txt.clone());
+    // 6. era guard: vetor de outra dim e RECUSADO (antes era truncado no BQ)
+    let (txt, is_err) = srv.tool("remember", json!({
+        "text": "x", "key": "hot-op/l4-era", "author": "system", "layer": "L4",
+        "embedding": [1.0, 0.0, 0.0, 0.0]}));
+    rep.check("era guard vale tambem na escrita operacional",
+        is_err && txt.contains("era_report"), txt.clone());
     // `layer` com author=agent e recusado em voz alta (anunciado == servido).
     let (txt, is_err) = srv.tool("remember", json!({
         "text": "x", "key": "hot-op/recusado", "layer": "L1"}));
@@ -1220,6 +1282,176 @@ fn main() {
         sc["stale_candidates"].as_array().is_some_and(|a| !a.is_empty()),
         sc["stale_candidates"].to_string());
     rep.phase("preview+stale (v1.2.0 b)", &t);
+
+    // ---------- fase 7f: trigger rules por caminho (v1.5.0) ----------
+    // Ativacao condicional (Ruflo-style): o host diz em QUE ARQUIVO esta e o
+    // core resolve as regras globais que casam, devolvendo/ativando os
+    // namespaces (entities). O core nao le o arquivo nem decide o que fazer.
+    let t = Instant::now();
+    let tools_now = srv.rpc("tools/list", json!({}));
+    let curate_schema = tools_now["result"]["tools"]
+        .as_array()
+        .and_then(|ts| ts.iter().find(|x| x["name"] == "curate"))
+        .map(|x| x.to_string())
+        .unwrap_or_default();
+    rep.check(
+        "tools/list anuncia as ops de trigger (announced == served)",
+        ["set_trigger", "forget_trigger", "triggers"]
+            .iter()
+            .all(|o| curate_schema.contains(&format!("\"{o}\""))),
+        curate_schema.clone(),
+    );
+    let recall_schema = tools_now["result"]["tools"]
+        .as_array()
+        .and_then(|ts| ts.iter().find(|x| x["name"] == "recall"))
+        .map(|x| x.to_string())
+        .unwrap_or_default();
+    rep.check(
+        "tools/list anuncia recall(path=)",
+        recall_schema.contains("\"path\""),
+        recall_schema.clone(),
+    );
+
+    // a regra: `hot/kernel/*.rs` ativa os dois namespaces
+    let r = srv.rpc("tools/call", json!({"name": "curate", "arguments": {
+        "op": "set_trigger", "pattern": "hot/kernel/*.rs",
+        "namespaces": ["trig/kernel", "trig/no_std"]}}));
+    let sc = r["result"]["structuredContent"].clone();
+    rep.check(
+        "set_trigger grava a regra (side-table sys/trigger/<hex>)",
+        sc["pattern"] == "hot/kernel/*.rs"
+            && sc["namespaces"].as_array().map(|a| a.len()) == Some(2)
+            && sc["trigger_key"]
+                .as_str()
+                .is_some_and(|k| k.starts_with("sys/trigger/")),
+        sc.to_string(),
+    );
+
+    // duas memorias globais (uma por namespace) + UMA escopada na MESMA entity
+    let mut globals: Vec<String> = Vec::new();
+    for (text, ent) in [
+        ("hot trigger kernel bare metal", "trig/kernel"),
+        ("hot trigger constraint no std", "trig/no_std"),
+    ] {
+        let (txt, is_err) = srv.tool("remember", json!({"text": text, "entities": [ent]}));
+        rep.check(
+            &format!("trigger setup: memoria do namespace {ent} (L3)"),
+            !is_err && txt.contains("md/L3/"),
+            txt.clone(),
+        );
+        globals.push(storage_key_from_remember(&txt));
+    }
+    let (txt, is_err) = srv.tool(
+        "remember",
+        json!({"text": "hot trigger outro tenant", "entities": ["trig/kernel"],
+               "scope": "hot/tenant"}),
+    );
+    rep.check(
+        "trigger setup: mesma entity em OUTRO escopo",
+        !is_err && txt.contains("md/L3/"),
+        txt.clone(),
+    );
+
+    // ativacao: 2 hits (1 por namespace), com a escala de dist de entities
+    let r = srv.rpc("tools/call", json!({"name": "recall", "arguments": {
+        "path": "hot/kernel/mod.rs", "k": 10, "format": "json"}}));
+    let sc = r["result"]["structuredContent"].clone();
+    let hits = sc["hits"].as_array().cloned().unwrap_or_default();
+    let mut hit_keys: Vec<String> = hits
+        .iter()
+        .filter_map(|h| h["key"].as_str().map(String::from))
+        .collect();
+    hit_keys.sort();
+    let mut want = globals.clone();
+    want.sort();
+    rep.check(
+        "recall(path=) devolve EXATAMENTE as memorias dos namespaces (sem vazar escopo)",
+        sc["hit_count"] == 2 && sc["activated"] == true && hit_keys == want,
+        format!("sc={sc} hits={hit_keys:?} want={want:?}"),
+    );
+    rep.check(
+        "recall(path=) declara o caminho usado (mode=entities, namespaces ecoados)",
+        sc["mode"] == "entities"
+            && sc["path"] == "hot/kernel/mod.rs"
+            && sc["namespaces"].as_array().map(|a| a.len()) == Some(2)
+            && hits.iter().all(|h| h["path"] == "entities"),
+        sc.to_string(),
+    );
+
+    // glob: single-star NAO atravessa '/' (o arquivo aninhado nao ativa nada)
+    let (txt, is_err) = srv.tool("recall", json!({"path": "hot/kernel/sub/deep.rs", "k": 10}));
+    rep.check(
+        "recall(path=) com glob de um nivel nao atravessa '/'",
+        !is_err && txt.contains("nenhuma regra de ativacao casa"),
+        txt.clone(),
+    );
+
+    // leitura das regras: todas, e so as que casam com um caminho
+    let r = srv.rpc("tools/call", json!({"name": "curate", "arguments": {
+        "op": "triggers", "path": "hot/kernel/mod.rs"}}));
+    let sc = r["result"]["structuredContent"].clone();
+    rep.check(
+        "curate op=triggers(path=) lista as regras que casam com o arquivo",
+        sc["count"] == 1
+            && sc["path"] == "hot/kernel/mod.rs"
+            && sc["rules"][0]["pattern"] == "hot/kernel/*.rs",
+        sc.to_string(),
+    );
+    let r = srv.rpc("tools/call", json!({"name": "curate", "arguments": {"op": "triggers"}}));
+    rep.check(
+        "curate op=triggers lista a superficie inteira de regras",
+        r["result"]["structuredContent"]["count"]
+            .as_u64()
+            .unwrap_or(0)
+            >= 1,
+        r.to_string(),
+    );
+
+    // recusas EM VOZ ALTA (nunca um no-op silencioso)
+    let r = srv.rpc("tools/call", json!({"name": "recall", "arguments": {
+        "path": "hot/kernel/mod.rs", "entities": ["trig/kernel"], "k": 5}}));
+    rep.check(
+        "recall(path= + entities=) recusado (-32602: sem semantica definida)",
+        r["error"]["code"] == -32602,
+        r.to_string(),
+    );
+    let r = srv.rpc("tools/call", json!({"name": "recall", "arguments": {
+        "path": "hot/kernel/mod.rs", "mode": "semantic", "k": 5}}));
+    rep.check(
+        "recall(path= + mode=semantic) recusado (path= e o caminho de ENTIDADES)",
+        r["error"]["code"] == -32602,
+        r.to_string(),
+    );
+    let r = srv.rpc("tools/call", json!({"name": "curate", "arguments": {
+        "op": "set_trigger", "pattern": "hot/x/*", "namespaces": []}}));
+    rep.check(
+        "set_trigger sem namespace recusado (-32602)",
+        r["error"]["code"] == -32602,
+        r.to_string(),
+    );
+
+    // forget desliga a ativacao e e idempotente
+    let r = srv.rpc("tools/call", json!({"name": "curate", "arguments": {
+        "op": "forget_trigger", "pattern": "hot/kernel/*.rs"}}));
+    rep.check(
+        "forget_trigger remove a regra",
+        r["result"]["structuredContent"]["removed"] == true,
+        r.to_string(),
+    );
+    let (txt, is_err) = srv.tool("recall", json!({"path": "hot/kernel/mod.rs", "k": 10}));
+    rep.check(
+        "sem a regra o recall(path=) volta vazio (com o hint do set_trigger)",
+        !is_err && txt.contains("nenhuma regra de ativacao casa"),
+        txt.clone(),
+    );
+    let r = srv.rpc("tools/call", json!({"name": "curate", "arguments": {
+        "op": "forget_trigger", "pattern": "hot/kernel/*.rs"}}));
+    rep.check(
+        "forget_trigger idempotente (removed=false, sem erro)",
+        r["result"]["structuredContent"]["removed"] == false,
+        r.to_string(),
+    );
+    rep.phase("trigger rules por caminho (v1.5.0)", &t);
 
     // ---------- fase 8: resources + paginaÃ§Ã£o ----------
     let t = Instant::now();

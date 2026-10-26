@@ -69,6 +69,7 @@ command -v "$PY" >/dev/null 2>&1 || PY=python
 
 echo "== neural-sgdb release gate =="
 run "docs-version"  bash scripts/docs-version-gate.sh
+run "mcp-surface"   bash scripts/gen-mcp-surface.sh check
 run "clippy"        cargo clippy --all-targets --all-features -- -D warnings
 run "lib"           cargo test --lib
 run "lib-serial"    cargo test --lib -- --test-threads=1

@@ -90,6 +90,8 @@ pub mod staleness;
 pub mod storage;
 pub mod tickv;
 pub mod trust;
+
+pub mod trigger;
 pub mod wasm_storage;
 
 // s410f: core CRDT (MergePolicy/MergeVerdict/happens-before) é no_std — o

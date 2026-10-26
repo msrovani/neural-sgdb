@@ -152,7 +152,9 @@ Coerente com a doutrina (core reporta, nunca decide). Depende de fechar 5+7.
 Também avaliar via MCP (superfície agêntica) antes de travar trait Rust.
 
 ### ISSUE 21 — `MemoryMeta.authority` no merge — **ADIADO (migração de formato)**
-Requer **MDM1 v6→v7** com migração explícita (padrão das versões anteriores).
+Requer bump de formato com migração explícita (padrão das versões anteriores).
+Na implementação saiu como **MDM1 v8** (`authority`), porque o v7 foi usado por
+`scope_dims`+`model_id` — o plano aqui dizia `v6→v7`.
 O problema é real (peer barulhento pode antecipar decisão humana), mas bump de
 formato merece lote próprio com testes de mutação.
 
@@ -178,7 +180,7 @@ permitiu esta triagem item a item.
 | 3. Ciclo cognitivo auditado | #5 ForgetOutcome, #7 AUDIT_OP_RESOLVE, #6 audit_entries/for_key | M |
 | 4. Mesh | #10 framing (verificar MSNP), #23 export_delta | M |
 | 5. Infra | #3 capacity seam, #18 golden vectors + CI | S–M |
-| 6. 2.0 | #20 CognitiveOps, #21 MDM1 v7 authority, #22 explain_hit, #4 gc_policy opt-in | L |
+| 6. 2.0 | #20 CognitiveOps, #21 MDM1 v8 authority (planejado como v7), #22 explain_hit, #4 gc_policy opt-in | L |
 
 **Rejeitados/deslocados (com razão):** #4 (política do OS), #15 (formato),
 #17 (statics do kernel), #13 (adiado por design).

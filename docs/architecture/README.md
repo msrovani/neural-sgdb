@@ -1,11 +1,11 @@
 # Architecture — neural-sgdb
 
-> Status: **current (v1.4.6)** — these documents describe the **shipped**
-> cognitive memory system. Crate version in `Cargo.toml` is **1.4.6**; typed
+> Status: **current (v1.5.0)** — these documents describe the **shipped**
+> cognitive memory system. Crate version in `Cargo.toml` is **1.5.0**; typed
 > hits landed in **v1.1.6**; MCP is lexical-first (**ADR-0008**); recall quality
 > ADC-lite + state-first landed in **v1.1.17**; the derived-index oracle
 > (**ADR-0011**, v1.1.21) and adaptive recall (**ADR-0012**, v1.1.22) came after.
-> Feature releases through **v1.4.3** are documented in `CHANGELOG.md` and
+> Feature releases through **v1.5.0** are documented in `CHANGELOG.md` and
 > `docs/api.md`. Sections marked **implemented** reflect code + tests; **remaining**
 > marks honest gaps or deliberate non-goals.
 
@@ -13,7 +13,7 @@
 |-----|-------|---------------|
 | [01](01-memory-model.md) | Memory Model | What is a memory? |
 | [02](02-memory-lifecycle.md) | Memory Lifecycle | How does memory live, move, consolidate, die? |
-| [03](03-retrieval-architecture.md) | Retrieval Architecture | ART + BQ + lexical + entities + typed hits |
+| [03](03-retrieval-architecture.md) | Retrieval Architecture | ART + BQ + lexical + entities + typed hits (context activation by path since v1.5.0, ADR-0020) |
 | [04](04-distributed-memory.md) | Distributed Memory | VectorClock + CRDT + provenance + conflicts |
 | [05](05-storage-architecture.md) | Storage Architecture | Durability + WAL + checkpoint + compaction |
 | [06](06-cognitive-api.md) | Cognitive API | remember/recall/associate/… + MCP surface |

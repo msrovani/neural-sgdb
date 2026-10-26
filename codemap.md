@@ -19,10 +19,10 @@ O(k) ART index, pluggable storage, CRDT sync (`p2p` feature), MCP server.
 ## Directory Map (Aggregated)
 | Directory | Responsibility Summary | Detailed Map |
 |-----------|------------------------|--------------|
-| `src/` | **v1.4.3**: `harness.rs` `promote_run` (fork/merge por scope run, `MergeStrategy`), delete O(1) via índices reversos (`sk_clocks`/`sk_ids`/`remove_entities_exact`), TickvFile buffered opt-in, `impl Storage for Box<dyn Storage>`. **Descoberta de escopo (v1.1.26, ADR-0015)**: `scope_probes` com procedência (`legacy` vs `dims_only`), uma classificação única, `ScopeDims::label()`. Memory DB core: MemoryDoc NMD1 + MemoryMeta MDM1 v7, ART, BQ + Hamming SIMD (+ ADC-lite dual-path v1.1.17, adaptive effort ADR-0012), ctype (payload typing + camada no v1.1.25), engine, Sgdb facade, Embedder/era seams, `math.rs` (polyfills), `fingerprint.rs` (oráculo ADR-0011), `negative.rs` (ledger de negativos ADR-0014), Storage trait, TKLV codec, CRDT p2p | [View Map](src/codemap.md) |
-| `examples/` | Showcase: bench, MCP server (5 tools + aliases), stress, hot test, protocols | [View Map](examples/codemap.md) |
+| `src/` | **v1.5.0**: `trigger.rs` (ativação por caminho: `TriggerRule`/`glob_match`/`trigger_key` + `set_trigger`/`triggers_for_path`/`recall_for_path`, ADR-0020), side-table `sys/trigger/`. **v1.4.3**: `harness.rs` `promote_run` (fork/merge por scope run, `MergeStrategy`), delete O(1) via índices reversos (`sk_clocks`/`sk_ids`/`remove_entities_exact`), TickvFile buffered opt-in, `impl Storage for Box<dyn Storage>`. **Descoberta de escopo (v1.1.26, ADR-0015)**: `scope_probes` com procedência (`legacy` vs `dims_only`), uma classificação única, `ScopeDims::label()`. Memory DB core: MemoryDoc NMD1 + MemoryMeta MDM1 v8, ART, BQ + Hamming SIMD (+ ADC-lite dual-path v1.1.17, adaptive effort ADR-0012), ctype (payload typing + camada no v1.1.25), engine, Sgdb facade, Embedder/era seams, `math.rs` (polyfills), `fingerprint.rs` (oráculo ADR-0011), `negative.rs` (ledger de negativos ADR-0014), `trigger.rs` (ativação por caminho ADR-0020), Storage trait, TKLV codec, CRDT p2p | [View Map](src/codemap.md) |
+| `examples/` | Showcase: bench, MCP server (5 tools + aliases), stress, hot test, protocols (+ `trajectory_learning` = aprendizado pelo desfecho, ADR-0019) | [View Map](examples/codemap.md) |
 | `connectors/` | Host adapters (Hermes provider, OpenClaw skeleton, shared Python MCP client) — **outside** crate SemVer; no `src/` changes | [`connectors/README.md`](connectors/README.md) |
-| `docs/` | API (`api.md`), doutrina, self-program, harness-prompts, interop-os (NMD1↔AIOS), architecture (6 docs), ADRs **0001–0012**; `hot_test.md` = log de auditoria por release; `browser-extension.md` **estacionado** | — |
+| `docs/` | API (`api.md`), doutrina, self-program, harness-prompts, interop-os (NMD1↔AIOS), architecture (6 docs), ADRs **0001–0020**; `hot_test.md` = log de auditoria por release; `browser-extension.md` **estacionado** | — |
 
 ## Format Contracts (interop with neural-os-core)
 - **NMD1** (`src/memory_doc.rs`): memory document — magic `NMD1`, layer u8,
@@ -30,6 +30,17 @@ O(k) ART index, pluggable storage, CRDT sync (`p2p` feature), MCP server.
 - **TKLV/TKCK** (`src/tickv.rs`): storage — 16B header (`TKLV` + klen/vlen/crc32
   u32 LE), IEEE CRC32 over key‖val, body pad 16, record pad 512, tombstone
   `TKL\0`/`vlen=0`, checkpoint `TKCK` + FNV-1a 64
+
+## Gotchas (layer/prefix — single source, don't retype)
+- Companion text: `sgdb::companion_key` (`pub(crate)`) is the ONLY L4/L5→L2
+  mapping (`md/L4/<id>` ∨ `md/L5/<id>` → `md/L2/<id>`; anything else returns
+  itself). Never re-create inline — an `replacen("/L4/", …)` that forgets
+  `/L5/` is the bug that returned twice (see `src/codemap.md` §Gotchas).
+- "Does this key carry an embedding?" is `ctype::key_carries_embedding`
+  (L4∨L5, `pub`). The fact trio (L3/L4/L5, ordered L4→L5→L3 for primary
+  resolution) is `ctype::FACT_LAYER_PREFIXES` + `key_is_fact` (`pub(crate)`).
+  Retyping `for p in ["md/L3/", "md/L4/", "md/L5/"]` is a maintenance bug,
+  not style.
 
 ## Seams (injectable — replace the origin kernel)
 - Clock: methods take `now: u64` (no internal clock)

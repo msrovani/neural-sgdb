@@ -15,6 +15,103 @@ All notable changes to this project. Format based on
 - **8.3/P0**: matriz de rastreabilidade por subsistema + julgamento de
   aderência em `docs/implementation-status.md`.
 
+## [1.5.0] — 2026-10-26 (ativação por contexto + aprendizado por trajetória)
+
+Duas dores do agente que USA o DB (levantamento Ruflo): (1) o `recall` exigia
+que EU escolhesse scope/entities mesmo quando o ARQUIVO EM FOCO já determinava
+metade da decisão — o host sabe onde está o cursor e o DB não perguntava; (2) o
+DESFECHO real de uma tarefa não voltava para o peso das memórias que eu usei —
+acumular não é aprender. **Nenhuma mudança de formato:** NMD1 / MDM1 (v8) /
+TKLV / AUD1 intocados. As regras de ativação são side-table DERIVADA
+(`sys/trigger/`, valor `TRG1` — **não** é wire type) e o aprendizado por
+trajetória é disciplina de uso de duas APIs que já existiam
+(`remember_episodic` + `feedback`), documentada por ADR + exemplo determinista.
+
+### Added
+
+- **Trigger rules por caminho de arquivo (ADR-0020, `src/trigger.rs`)** —
+  "em que arquivo o cursor está ⇒ quais namespaces ativar". Core:
+  `set_trigger(pattern, namespaces)` / `forget_trigger` / `trigger_rules` /
+  `triggers_for_path` / `namespaces_for_path` / `recall_for_path(path, k)`.
+  Matching glob no core (`no_std`, zero-dep): `*` **não** atravessa `/`, `**`
+  atravessa, `?` um char — nenhuma crate de regex. Identidade da regra = o
+  **padrão** (regravar o mesmo padrão sobrescreve; key
+  `sys/trigger/<fnv1a64(pattern):016x>`, largura fixa 16 hex — regra 4/ART).
+  `namespaces` são strings de **entity**: o recall por caminho é o MESMO 1-hop
+  de `recall_entities`, logo a MESMA escala de `dist` (o path novo não inventa
+  uma terceira) e o null-scoping continua valendo — sem regra que case,
+  `recall_for_path` devolve **vazio**, nunca o pool global.
+  `trigger_rules()` ordena por padrão (ordem é contrato; o scan do storage vem
+  na ordem do HASH e sem o sort o host ativaria em ordem diferente a cada
+  execução). MCP: `curate op=set_trigger|forget_trigger|triggers` +
+  `recall(path=)`.
+- **Aprendizado por trajetória (ADR-0019, `examples/trajectory_learning.rs`)** —
+  a convenção do HOST: `remember_episodic` guarda a trajetória **verbatim**
+  (tarefa + desfecho, nunca resumida) e `feedback(key, positivo, amount)`
+  re-pondera importance **e** confidence da memória que foi USADA. O exemplo
+  mede o efeito na MESMA bateria determinística: Config A (hoarder, sem
+  re-ponderação) fica em SR 50% em toda época; Config B (trajetória) paga o
+  custo de exploração UMA vez e satura em 100%, acertando desde a PRIMEIRA
+  tarefa na sessão seguinte. Auto-checks: contraste nos dois sentidos
+  (vencedor sobe, perdedor desce abaixo do inicial), trilha verbatim contável
+  por braço, e exploração como política do host (o core nunca explora sozinho).
+
+### Changed
+
+- MCP contract **1.4.6 → 1.5.0** (superfície aditiva: 3 ops de `curate` +
+  `path=` no `recall`; nenhum alias novo, nenhum tool novo). O default do
+  `recall` permanece **lexical** sem vetor (ADR-0008) — ativação por caminho é
+  opt-in e exclusiva com `entities=`/`embedding=`/`mode=semantic|hybrid|causal`
+  (recusa em voz alta em vez de ignorar o argumento).
+
+
+
+Fix de um caminho de escrita que **mentia** para o consumidor: `remember` com
+`author=system` em L4/L5. Nenhuma mudanca de formato (NMD1/MDM1/TKLV
+intocados); o contrato MCP sobe porque os VALORES devolvidos pelo `remember`
+mudaram de "vazio/eco" para o que foi gravado.
+
+### Fixed — escrita operacional
+
+- **`author=system` em L4/L5 perdia o TEXTO.** O handler montava o
+  `MemoryDoc` com o texto e logo SOBRESCREVIA `payload` com os f32 do vetor —
+  em L4/L5 o payload É o embedding — e nao gravava companion `/L2/`, que é de
+  onde `Hit.text`, `text_of` e o índice lexical leem. A memória virava um
+  vetor mudo: o recall semântico achava, o consumidor recebia `text=""`.
+- **os metadados eram dropados em silêncio.** `scope`, `scope_dims`,
+  `entities`, `content_type`, `model_id` e `index_key` nunca chegavam ao
+  `finish_remember`: a memória ia para o escopo GLOBAL (vazava no recall
+  global e desaparecia do `recall(scope=...)`), sem entidades (invisível ao
+  1-hop), sem tipo declarado e sem os tokens da key no lexical. Pior: o
+  `RememberOutcome` **ecoava** `content_type` — o consumidor não tinha como
+  saber que a declaração sumiu.
+- **o `storage_key` do outcome não era o canônico.** O handler devolvia
+  `resolve_known_key(&key)`; para uma chave `sys/…` (que o próprio schema
+  sugere como dado de sistema) isso responde a chave de SIDE-TABLE, e o
+  consumidor que seguisse o outcome acertava um path vazio. Agora o outcome
+  carrega `md/L{N}/<key>` — a chave do doc.
+- **era guard ausente no caminho operacional.** `remember_semantic` recusava
+  embedding de outra dim (o BQ trunca em silêncio, bughunt #11); o caminho
+  operacional entrava direto no `put_operational`. A regra virou
+  `Sgdb::check_era_dims`, chamada pelos DOIS caminhos.
+
+### Added — escrita operacional
+
+- **`Sgdb::remember_operational(layer, key, text, emb, opts)`**: escrita
+  operacional com texto + metadados, devolvendo o que foi GRAVADO. Em L4/L5 o
+  texto vai para o companion `/L2/` (o mesmo lugar que `remember_semantic`
+  usa); `emb` em camada de payload-texto é recusado em voz alta. Continua sem
+  tick do relógio — uma escrita de boot não cria duas autorias causais.
+
+### Testes — escrita operacional
+
+- lib: `remember_operational_l4_keeps_text_and_metadata` e
+  `remember_operational_refuses_layer_and_era_mismatch` (texto, scope,
+  entidades, type, lexical, null-scoping e as recusas).
+- hot test (MCP), o mesmo caminho ponta a ponta: outcome com
+  scope/entities/type/companion reais, hit tipado e verbatim, 1-hop,
+  null-scoping, `index_key` e o era guard.
+
 ## [1.4.6] — 2026-10-10 (triagem do consumidor #2 + consolidação)
 
 ### Triagem do consumidor #2 (contrato MCP → 1.4.6; pins no mesmo commit)

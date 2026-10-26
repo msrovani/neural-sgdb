@@ -3,13 +3,13 @@
 Guia de instalação, contrato e troubleshooting do servidor MCP
 (`examples/mcp_server.rs`).
 
-## Contrato atual (v1.4.3)
+## Contrato atual (v1.5.0)
 
 | Campo | Valor |
 |-------|-------|
 | Protocolo | JSON-RPC 2.0 over **stdio** (uma linha JSON por mensagem) |
 | Handshake | `initialize` → `protocolVersion: 2025-11-25` |
-| `serverInfo.version` | `1.4.6` (`MCP_CONTRACT_VERSION` em `examples/mcp_server.rs`) |
+| `serverInfo.version` | `1.5.0` (`MCP_CONTRACT_VERSION` em `examples/mcp_server.rs`) |
 | Tools | **5** (`remember`, `recall`, `health`, `curate`, `decide`) — 40 nomes antigos/alias ainda funcionam em `tools/call` (`ALIAS_SURFACE`, `stable`/`deprecated` em `contract.json` + resource `nsgdb://contract`) |
 | Retrieval default (v1.3.0) | `lexical` sem vetor; `hybrid` (RRF) com embedder de host REAL; `semantic` com `embedding=` do caller — `health.semantic_ready`/`retrieval_default` |
 | Embedding (via B, v1.4.3) | `NEURAL_SGDB_EMBEDDER=multilingual\|candle\|onnx\|local` → modelo `paraphrase-multilingual-MiniLM-L12-v2` (384, in-process em `crates/nsgdb-embed`); `model_id` auto-declarado no `remember`. Cadeia de fallback: caller `embedding=` (A) → host in-process (B) → `embedder_http`/ollama (C) → lexical (honesto, ADR-0008) |
@@ -24,18 +24,21 @@ Guia de instalação, contrato e troubleshooting do servidor MCP
 | Observabilidade | `health(view=era)` = era_report; `health(view=tensions)` = conflitos / superseded / scopes invisíveis; `health(view=staleness)` = TTL/Decay/contradicts/aging (read-only) |
 | Resources | `nsgdb://doctrine`, **`nsgdb://session`** (cold-start JSON) |
 | Harness (ADR-0010) | `curate(op=commit_run|deprecate_run)` + entities `mom/anti-pattern` |
+| Ativação por caminho (v1.5.0, ADR-0020) | `curate op=set_trigger` (`pattern`, `namespaces`)/`forget_trigger`/`triggers` (`path` opcional) + `recall(path=)`: o host diz em que arquivo está, o core devolve/ativa os namespaces (as MESMAS strings de entity do `remember`). Sem regra que case = **vazio** (nunca o pool global) |
 | DB default | `NEURAL_SGDB_DB=.nsgdb/memory.db` (relativo ao cwd do processo) |
 | Default scope | Preferir **por workspace** (`.cursor/mcp.json`). Global `~\.cursor\mcp.json` **não** deve forçar `DEFAULT_SCOPE` de outro repo no mesmo DB. |
 
-### Tools (4 + aliases)
+### Tools (5 + aliases)
 
-Lista: `remember`, `recall`, `health`, `curate`.
+Lista: `remember`, `recall`, `health`, `curate`, `decide`.
 
 Dispatch: `remember(user+response)` → episódico L2; `remember(text=)` sem vetor →
-L3; `recall(entities|at|rag=true|mode=causal)` → 1-hop / temporal / rag / **causal**
+L3; `recall(entities|at|rag=true|mode=causal|path=)` → 1-hop / temporal / rag /
+**causal** / **ativação por caminho** (v1.5.0: glob do arquivo em foco → as
+entities que as regras ligam a ele; mesmo `dist` do 1-hop; sem regra = vazio)
 (v1.4.4: o hit vem com `ancestry` = a linha de versão que o produziu;
 `causal_depth` limita quantos elos, default 4); `health(view=era|validate|tensions)`;
-`curate(op=explain|reinforce|decay|consolidate|audit_checkpoint|audit_verify|audit_resolve|audit_trail|forget_purge|export_delta|set_authority|rollback_to|commit_run|deprecate_run|hygiene|…)`
+`curate(op=explain|reinforce|decay|consolidate|audit_checkpoint|audit_verify|audit_resolve|audit_trail|forget_purge|export_delta|set_authority|rollback_to|commit_run|deprecate_run|hygiene|set_trigger|forget_trigger|triggers|…)`
 (v1.1.10: metadado cognitivo; **v1.1.19+**: harness ADR-0010 `commit_run`/`deprecate_run`;
 `audit_verify` expõe `structuredContent` com o `AuditReport`;
 **v1.4.4**: `op=explain` aceita `full=true`, que compõe numa resposta só a
@@ -43,23 +46,23 @@ proveniência completa — `authority` (MDM1 v8), `clock` causal, `audit_refs`
 (elos da chain que tocam a memória, via `audit_for_key`) e o `version_dag`
 (da `VectorClock`) — no lugar de 4 chamadas separadas).
 
-Aliases (ainda aceitos no call): **40** nomes — a lista vive em `ALIAS_SURFACE`
-(`examples/mcp_server.rs`) e e pinada por teste, em vez de prosa (a contagem
-"23" era do rework v1.1.8 e envelheceu com as ops cognitivas de v1.1.10 e o
-harness de v1.1.19):
+Aliases (ainda aceitos no call): a lista abaixo e GERADA das constantes do
+servidor por `scripts/gen-mcp-surface.sh` — nao editar a mao (o `check` do
+gate de release falha se estiver stale):
 
-```text
-associate  audit_checkpoint  audit_verify  close_event  commit_run  conflicts
-consolidate  contradicts  decay  deprecate_run  diary  era_report
-expire_old  expire_ttl  explain  feedback  forget  gc  merge_memories
-profile  rag_context  recall_ann  recall_entities  recall_temporal  reinforce
-related_to  remember_episodic  resolve_conflict  rollback_to  set_event
-set_ttl  supersede  timeline  validate
-```
+<!-- BEGIN GENERATED: mcp-surface -->
+**MCP contract `1.5.0`** · **5** tools em `tools/list` · **40** aliases em `tools/call` (20 stable, 20 deprecated)
+
+Tools (`tools/list`): `remember`, `recall`, `health`, `curate`, `decide`
+
+Aliases `stable` (20): `associate`, `conflicts`, `consolidate`, `decay`, `diary`, `era_report`, `expire_old`, `explain`, `feedback`, `forget`, `profile`, `rag_context`, `recall_entities`, `recall_temporal`, `reinforce`, `related_to`, `remember_episodic`, `resolve_conflict`, `supersede`, `validate`
+
+Aliases `deprecated` (20): `audit_checkpoint`, `audit_verify`, `close_event`, `commit_run`, `contradicts`, `deprecate_run`, `expire_ttl`, `forget_absence`, `gc`, `merge_memories`, `note_absence`, `promote_run`, `recall_absences`, `recall_ann`, `recall_candidates`, `recall_ledger`, `rollback_to`, `set_event`, `set_ttl`, `timeline`
+<!-- END GENERATED: mcp-surface -->
 
 **v1.1.21 — erro de tool desconhecida e util:** a falha continua sendo erro
 `-32602`, mas passa a carregar `data.did_you_mean` (ate 3 sugestoes
-deterministicas), `data.listed_tools` (as 4) e `data.alias_count`. Um agente que
+deterministicas), `data.listed_tools` (as 5) e `data.alias_count`. Um agente que
 errou o nome conserta o schema em uma chamada em vez de queimar um turno.
 
 **v1.1.26 — descoberta de escopo (ADR-0015).** `nsgdb://session` ganhou
@@ -103,7 +106,7 @@ schema. Feature invisível, corrigida no `enum` + descrição, com guard no hot 
 `status` | `validate` | `era` | `tensions` | `staleness` | `index`.
 
 **v1.1.22 — nenhuma mudança de superfície.** O contrato subiu junto com a versão
-do crate (o `serverInfo.version` identifica a BUILD do server), mas as 4 tools,
+do crate (o `serverInfo.version` identifica a BUILD do server), mas as 5 tools,
 os aliases, os parâmetros e os resources ficaram idênticos. O que entrou foi lib:
 `recall_adaptive` (ADR-0012) — deliberadamente **não** exposto como tool/param
 enquanto um host não medir que vale: o bench mostra que o threshold default faz
@@ -283,6 +286,35 @@ Invalid: query dims not in indexed_embedding_dims()
 
 acao: chame `health(view=era)` (alias `era_report`) para veredito empty/ok/mixed_dims...
 ```
+
+## Ativação por caminho (v1.5.0, ADR-0020)
+
+O `recall` normal exige que você ESCOLHA scope/entities. Numa sessão de código
+metade dessa escolha já está decidida: o arquivo em foco. Registre a associação
+UMA vez e pergunte por caminho:
+
+```json
+{"name":"curate","arguments":{"op":"set_trigger",
+  "pattern":"crates/**/kernel/*.rs","namespaces":["rule/no_std","rule/bare-metal"]}}
+```
+
+```json
+{"name":"recall","arguments":{"path":"crates/k_nano/src/kernel/mod.rs","k":5}}
+```
+
+- `pattern` é glob: `*` **não** atravessa `/`, `**` atravessa, `?` um char.
+  A identidade da regra é o **padrão** (regravar o mesmo padrão sobrescreve).
+- `namespaces` são strings de **entity** — as MESMAS usadas em `remember`
+  (`entities=`) e em `recall(entities=…)`: o recall por caminho é o mesmo 1-hop,
+  com a mesma escala de `dist`.
+- Sem regra que case, `recall(path=…)` devolve **vazio** — não é o recall
+  global, e o null-scoping continua valendo (memória de outro escopo não vira
+  evidência por caminho).
+- `path=` é exclusivo com `entities=`/`embedding=`/`mode=semantic|hybrid|causal`
+  (recusa em voz alta em vez de ignorar o argumento).
+- `curate op=triggers` lista as regras; `op=triggers` com `path` mostra só as
+  que casam; `op=forget_trigger` desativa.
+- O core **nunca** adivinha o caminho: quem sabe onde o cursor está é o host.
 
 ## Scope e entidades (multi-agente)
 

@@ -47,6 +47,13 @@ jobs:
       - name: build examples
         run: cargo build --release --examples
 
+      - name: MCP surface docs gate (generated)
+        # A superficie MCP (tools/aliases/contrato) em docs/generated e o bloco
+        # marcado de docs/MCP.md sao GERADOS das constantes do mcp_server
+        # (`--print-surface`); falha se estiverem stale. A prosa derivava
+        # sozinha (23/34/38/40 aliases em releases anteriores).
+        run: bash scripts/gen-mcp-surface.sh check
+
       - name: MCP smoke (5 tools + structured health)
         run: bash scripts/mcp-smoke.sh
 

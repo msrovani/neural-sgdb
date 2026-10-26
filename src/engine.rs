@@ -370,10 +370,7 @@ impl AiosDatabaseEngine {
         // ADC-lite: overwrite de L4/L5 subtrai o vetor ANTIGO da média antes
         // de somar o novo (sem isso o overwrite contaria 2x). Um get a mais
         // no write (não-hot) mantém a média exata sem scan.
-        if matches!(
-            doc.layer,
-            MemoryLayer::L4Semantic | MemoryLayer::L5Procedural
-        ) {
+        if doc.layer.carries_embedding() {
             if let Ok(Some(old)) = self.storage.get(sk.as_bytes()) {
                 if let Ok(old_doc) = MemoryDoc::decode(&old) {
                     if let Some(v) = Self::payload_floats(&old_doc.payload) {
@@ -589,59 +586,65 @@ impl AiosDatabaseEngine {
     /// se vazia e a key é um companion `/L2/`, resolve o scope do primário
     /// `/L4/`/`/L5/`/`/L3/` do mesmo id (a meta do companion não carrega
     /// scope — quem o carrega é o doc dono do conteúdo). `""` = global.
+    ///
+    /// As DUAS variantes (legado e `ScopeDims`) derivam do mesmo traversal —
+    /// ver [`Self::resolve_scope_meta`].
     pub fn effective_scope(&mut self, sk: &str) -> String {
-        if let Some(m) = self.read_meta(sk) {
-            if !m.scope.is_empty() {
-                return m.scope;
-            }
-        }
-        if let Some(rest) = sk.strip_prefix("md/L2/") {
-            for prim in ["md/L4/", "md/L5/", "md/L3/"] {
-                if let Some(m) = self.read_meta(&format!("{prim}{rest}")) {
-                    if !m.scope.is_empty() {
-                        return m.scope;
-                    }
-                }
-            }
-        }
-        String::new()
+        self.resolve_scope_meta(sk, |m| (!m.scope.is_empty()).then(|| m.scope.clone()))
+            .unwrap_or_default()
     }
 
     /// Escopo multi-dim EFETIVO (v1.1.14): mesma regra do companion que
     /// `effective_scope`, mas sobre `ScopeDims`. Legado `scope!=""` com dims
     /// vazias já foi mapeado para `user` no decode — aqui basta herdar.
     pub fn effective_scope_dims(&mut self, sk: &str) -> crate::memory_doc::ScopeDims {
-        if let Some(m) = self.read_meta(sk) {
+        self.resolve_scope_meta(sk, |m| {
             if !m.scope_dims.is_global() {
-                return m.scope_dims;
-            }
-            if !m.scope.is_empty() {
-                return crate::memory_doc::ScopeDims {
-                    user: m.scope,
+                Some(m.scope_dims.clone())
+            } else if !m.scope.is_empty() {
+                Some(crate::memory_doc::ScopeDims {
+                    user: m.scope.clone(),
                     agent: String::new(),
                     app: String::new(),
                     run: String::new(),
-                };
+                })
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default()
+    }
+
+    /// Traversal ÚNICO por trás de `effective_scope` e `effective_scope_dims`:
+    /// a meta do próprio `sk` primeiro; se ela não produz valor e a key é um
+    /// companion `/L2/<id>`, os primários de fato do mesmo id na ordem de
+    /// `FACT_LAYER_PREFIXES` (L4→L5→L3). `extract` devolve `Some` quando a
+    /// meta carrega o escopo que o caller busca (scope legado vs `ScopeDims`)
+    /// e `None` quando ela não responde — aí tenta a próxima candidata.
+    ///
+    /// Antes a ordem de primários e o "companion herda do dono" estavam
+    /// DIGITADOS DUAS VEZES (uma por variante); a divergência entre elas é
+    /// exatamente o bug que este helper fecha (lição v1.1.25/v1.1.26).
+    fn resolve_scope_meta<T>(
+        &mut self,
+        sk: &str,
+        extract: impl Fn(&MemoryMeta) -> Option<T>,
+    ) -> Option<T> {
+        if let Some(m) = self.read_meta(sk) {
+            if let Some(v) = extract(&m) {
+                return Some(v);
             }
         }
         if let Some(rest) = sk.strip_prefix("md/L2/") {
-            for prim in ["md/L4/", "md/L5/", "md/L3/"] {
+            for prim in crate::ctype::FACT_LAYER_PREFIXES {
                 if let Some(m) = self.read_meta(&format!("{prim}{rest}")) {
-                    if !m.scope_dims.is_global() {
-                        return m.scope_dims;
-                    }
-                    if !m.scope.is_empty() {
-                        return crate::memory_doc::ScopeDims {
-                            user: m.scope,
-                            agent: String::new(),
-                            app: String::new(),
-                            run: String::new(),
-                        };
+                    if let Some(v) = extract(&m) {
+                        return Some(v);
                     }
                 }
             }
         }
-        crate::memory_doc::ScopeDims::new()
+        None
     }
 
     /// Resolve um `version_id` à (storage key, meta DAQUELA VERSÃO) — DAG
@@ -1257,7 +1260,7 @@ impl AiosDatabaseEngine {
                 Ok(d) => d,
                 Err(_) => continue,
             };
-            if !matches!(doc.layer, MemoryLayer::L4Semantic | MemoryLayer::L5Procedural) {
+            if !doc.layer.carries_embedding() {
                 continue;
             }
             if doc.bitvec.is_some() {
@@ -1961,7 +1964,7 @@ impl AiosDatabaseEngine {
         let existed = self.ram_l0l1.contains_key(sk) || old_bytes.is_some();
         // ADC-lite: o vetor morto sai da média (média exata sem scan).
         if let Some(b) = old_bytes {
-            if sk.starts_with("md/L4/") || sk.starts_with("md/L5/") {
+            if crate::ctype::key_carries_embedding(sk) {
                 if let Ok(d) = MemoryDoc::decode(&b) {
                     if let Some(v) = Self::payload_floats(&d.payload) {
                         self.unnote_vec(&v);

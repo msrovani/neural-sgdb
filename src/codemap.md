@@ -12,14 +12,14 @@ Layered architecture with injectable seams (replacing the origin kernel):
 | Module | Responsibility | Pattern |
 |---|---|---|
 | `lib.rs` | Crate root, `cfg_attr(not(feature="std"), no_std)`, public re-exports | Facade |
-| `memory_doc.rs` | `MemoryDoc` (NMD1 format), zero-copy `MemoryDocView`, `VectorClock`, `MemoryLayer` L0–L7, `MemoryMeta`/`MemoryRecord` (MDM1 **v6**: version_id, last_reinforced, scope, entities, content_type) | Binary contract byte-identical to the OS |
+| `memory_doc.rs` | `MemoryDoc` (NMD1 format), zero-copy `MemoryDocView`, `VectorClock`, `MemoryLayer` L0–L7, `MemoryMeta`/`MemoryRecord` (MDM1 **v8**: version_id, last_reinforced, scope, entities, content_type, scope_dims, model_id, authority) | Binary contract byte-identical to the OS |
 | `art.rs` | `ArtIndex` — Adaptive Radix Tree Node4/16/48/256, prefix scan, tombstone delete | Radix Tree (Leis 2013) |
 | `bq.rs` | `BqFlatIndex` — binary quantization (1-bit) + top-k by Hamming, `MihIndex` | Quantized flat scan |
 | `hamming_dispatch.rs` | SIMD dispatch scalar/AVX2/AVX-512 (`#[target_feature]`), `#[inline(always)]` hot (v1.1.11), seam `cpu_caps()`/`set_cpu_caps()` | Runtime strategy |
 | **Escopo/descoberta (v1.1.26)** | `sgdb::scan_scope_metas` (global = `scope==""` **e** dims globais) → `scope_distribution` / `scope_probes` (`ScopeProbes{legacy,dims_only}`); `memory_doc::ScopeDims::label()` = "user/agent/app/run" (fonte única do rótulo); `finish_remember` preenche `dims.user` a partir do `scope` legado (ADR-0013) | ADR-0015 |
 | `ctype.rs` | **v1.1.6**: `ContentType` (Text/Json/Code/Embedding(dim)/Binary), `RecallPath`, `detect_content_type`, `stable_label`/`parse_stable_label`/`renders_prose` — tipagem do datum p/ consumidor máquina; **v1.1.25**: `payload_content_type`/`key_carries_embedding` (só L4/L5 rendem `Embedding` — prosa de `len % 4 == 0` NÃO é vetor) | HINT derivation (no_std-safe) |
 | `engine.rs` | `AiosDatabaseEngine` — RAM L0/L1 + Storage L2–L7, ART/BQ indexing, rebuild, side-tables, relations, `entity_index` | Persistence engine |
-| `sgdb.rs` | `Sgdb` — public facade; `remember_text_with` (v1.1.9 lexical write); `remember_semantic_with`/`RememberOutcome`/`recall_empty_hint` (v1.1.7); `Hit` tipado v1.1.6; **v1.1.10**: `decay_importance`/`consolidate_recurrences`/`recall_weighted_full` (`Hit.score_breakdown`)/`audit_checkpoint`/`audit_verify`/`rollback_to` + `validate_written`; **v1.1.11**: `Storage::put_many` batch, `recall_weighted_full` select_nth, `search_fast`; **v1.1.24**: `set_scope` write-through (ADR-0013) + `validate` §6 (escopo) e ledger de negativos (`note_absence`/`forget_absence`/`recall_absences`/`recall_with_ledger`/`prune_absences`, ADR-0014) | Facade |
+| `sgdb.rs` | `Sgdb` — public facade; `remember_text_with` (v1.1.9 lexical write); `remember_semantic_with`/`RememberOutcome`/`recall_empty_hint` (v1.1.7); `Hit` tipado v1.1.6; **v1.1.10**: `decay_importance`/`consolidate_recurrences`/`recall_weighted_full` (`Hit.score_breakdown`)/`audit_checkpoint`/`audit_verify`/`rollback_to` + `validate_written`; **v1.1.11**: `Storage::put_many` batch, `recall_weighted_full` select_nth, `search_fast`; **v1.1.24**: `set_scope` write-through (ADR-0013) + `validate` §6 (escopo) e ledger de negativos (`note_absence`/`forget_absence`/`recall_absences`/`recall_with_ledger`/`prune_absences`, ADR-0014); **v1.5.0**: `set_trigger`/`forget_trigger`/`trigger_rules`/`triggers_for_path`/`namespaces_for_path`/`recall_for_path` (ativação por caminho, ADR-0020 — `trigger_rules` ordena por padrão, ordem é contrato); `companion_key` (`pub(crate)`) = **fonte única** da regra de companion `md/L4|L5/<id> → md/L2/<id>` (ver Gotchas) | Facade |
 | `audit.rs` | **v1.1.10**: ledger hash-chain `sys/audit/<seq:016x>` (wire `AUD1`), `AuditEntry`/`AuditSnapshotItem`, `audit_key`/`audit_seq_from_key` — base do rollback cognitivo | Append-only ledger |
 | `doctrine.rs` | **v1.1.8**: agent doctrine (`DOCTRINE`, key/scope/entities) — source `docs/doctrine.md` | Compile-time include |
 | `staleness.rs` | **v1.1.18**: `StalenessLevel`/`Reason`/`Config`/`Hit` — classify only (TTL/Decay/contradicts/aging) | Read-only report |
@@ -30,6 +30,7 @@ Layered architecture with injectable seams (replacing the origin kernel):
 | `conflict.rs` | `ConflictRecord` (CFL1), conflict detection/preservation/resolution | CRDT adjunct |
 | `fingerprint.rs` | **v1.1.21**: `index_fingerprint` — oráculo do estado DERIVADO (ADR-0011); ids/órfãos do BQ/floats FORA do hash | Integrity oracle |
 | `math.rs` | **v1.1.22**: polyfills `sqrt_f32`/`ln_f32`/`exp_f32` (core não tem `f32::sqrt`/`ln`/`exp`); testes host-only (`#[cfg(all(test, feature = "std"))]`) | Core-safe math |
+| `trigger.rs` | **v1.5.0** (ADR-0020): ativação por caminho — `TriggerRule` (valor `TRG1`, decode bounds-checked), `glob_match` (`*` sem `/`, `**` atravessa, `?` um char), `trigger_key` (`sys/trigger/<fnv1a64(pattern):016x>`, largura fixa — regra 4/ART). Side-table, **não** wire type; identidade da regra = o padrão | Conditional activation |
 | `negative.rs` | **v1.1.24** (ADR-0014): ledger de negativos — `AbsenceEntry` (wire de valor `NDG1`), `normalize_query` (tokens BM25), `negative_key` (`sys/negative/<fnv1a64(scope‖0x1f‖query):016x>`, largura fixa). Side-table, **não** wire type; decode truncation-safe | Append-only registry |
 | `harness.rs` | **v1.1.19**: ADR-0010 harness (`CommitRunPlan`/`DeprecateRunReport`, `MOM_ANTI_PATTERN`) | Host harness |
 | `limits.rs` | **P1-3**: centralized storage/embedding ceilings | Constants |
@@ -45,7 +46,7 @@ Layered architecture with injectable seams (replacing the origin kernel):
    `rebuild_indices_from_storage` (scan `md/`, re-index ART/BQ/lexical/entities)
 2. `remember_*` → `MemoryDoc::encode` (NMD1) → RAM L0/L1 or `Storage::put`
    (L2–L7) → `index_doc` (ART for keys, BQ for L4/L5 with bitvec, lexical for
-   L2/L3 texts) → meta side-table `sys/meta/` (MDM1 v6)
+   L2/L3 texts) → meta side-table `sys/meta/` (MDM1 v8)
 3. `recall(query: &[f32], k)` → `BqFlatIndex::top_k_f32` (coarse BQ) → FP32
    rescore (1−cos distance) → fine top-k → `Hit { key, text, dist, path,
    content_type, payload_type, score, matched_terms, validity, rel }` (tipado
@@ -69,3 +70,17 @@ Layered architecture with injectable seams (replacing the origin kernel):
 - CRDT rate-limit uses `Option<u64>` (the 0 sentinel fails on first sync at now=0)
 - `deny(warnings)` in no_std elevates dead-code to error → explicit
   `#[allow(dead_code)]` on port-parity
+- **Companion de texto — fonte única: `sgdb::companion_key`** (`pub(crate)`):
+  mapeia `md/L4/<id>` E `md/L5/<id>` → `md/L2/<id>`; qualquer outra key volta
+  ela mesma. **NÃO recriar inline** — um `replacen("/L4/", …)` que esquece o
+  `/L5/` é exatamente o bug que voltou em `crdt.rs` e no fallback de texto de
+  facts (fechado por centralização; teste `companion_key_maps_l4_and_l5_only`).
+  O predicado "é camada de embedding?" já tem nome: `ctype::key_carries_embedding`
+  (`md/L4/`∨`md/L5/`), e o `matches!(layer, L4Semantic|L5Procedural)` do `engine`
+  expressa o mesmo — **reuse**, não digite o trio `md/L3/|md/L4/|md/L5/` de novo.
+  Para o trio, os nomes são `ctype::FACT_LAYER_PREFIXES` (a lista, na ordem de
+  resolução de primário: L4→L5→L3) e `ctype::key_is_fact` (o predicado);
+  `companion_key` é a única tradução L4/L5→L2. Nove cópias digitadas do trio
+  (profile, staleness, promote_run, effective_scope{,_dims}, primary_of, validate)
+  era como a regra divergia — se aparecer um `for p in ["md/L3/", …]` novo, é bug
+  de manutenção, não estilo.

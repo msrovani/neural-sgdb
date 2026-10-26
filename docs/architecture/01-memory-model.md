@@ -24,13 +24,13 @@ MemoryDoc (on disk: NMD1 — byte-identical to neural-os-core)
 Golden test `golden_nmd1_bytes` pins the layout. **The NMD1 blob does not
 change** when metadata evolves — new fields live in side-tables (ADR-0003).
 
-### 1.2 Side-table metadata (implemented — MDM1 v7)
+### 1.2 Side-table metadata (implemented — MDM1 v8)
 
 Semantic state and provenance travel in `sys/meta/` (MDM1), not inside NMD1.
-v1–v6 decode with safe defaults; v7 adds scope dims + `model_id` (ADR-0007):
+v1–v7 decode with safe defaults; v8 adds `authority` (HITL); v7 added scope dims + `model_id` (ADR-0007):
 
 ```text
-MemoryMeta (MDM1 v7, side-table sys/meta/)
+MemoryMeta (MDM1 v8, side-table sys/meta/)
  ├── memory_id          stable 32-hex identity
  ├── version_id         per-version identity (v2+)
  ├── source             creating node_id
@@ -43,8 +43,13 @@ MemoryMeta (MDM1 v7, side-table sys/meta/)
  ├── entities           (v5+, declared entity strings)
  ├── content_type       (v6+, declared stable label)
  ├── scope_dims         (v7+, user/agent/app/run)
- └── model_id           (v7+, embedding era label — mixed_models in era_report)
+ ├── model_id           (v7+, embedding era label — mixed_models in era_report)
+ ├── clock_overflow     (v1, VectorClock >8 nodes — overflow of the fixed NMD1)
+ └── authority          (v8+, 0 = learned / 255 = HITL-approved)
 ```
+
+O mapa autoritativo "versão → campo → default de decode" (fonte única dos
+rótulos `vN`) vive em `MIGRATIONS.md` §"MDM1 — evolução dos campos".
 
 Additional side-tables (same pattern — NMD1 untouched):
 

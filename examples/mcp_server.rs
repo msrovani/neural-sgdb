@@ -142,22 +142,33 @@ fn resolve_retrieval_mode(args: &Value, embedder_label: &str) -> Result<String, 
 
 /// Embedding para um texto: usa o fornecido pelo agente (payload) se
 /// presente/validÃ¡vel, senÃ£o o embedder ativo do server.
-fn embed_for(host: Option<&dyn Embedder>, text: &str, payload: &Value) -> Result<Vec<f32>, String> {
-    if let Some(arr) = payload["embedding"].as_array() {
-        if !arr.is_empty() && arr.len() <= neural_sgdb::MAX_EMBEDDING_DIM {
-            let v: Vec<f32> = arr
-                .iter()
-                .filter_map(|x| x.as_f64().map(|f| f as f32))
-                .collect();
-            if v.len() == arr.len() {
-                return Ok(v);
-            }
-            return Err("parametro 'embedding' deve conter apenas numeros".into());
-        }
+/// Vetor do PROPRIO chamador (payload `embedding`): unico aceito na escrita
+/// operacional (a camada e declarada, entao o vetor tambem e). Parse unico —
+/// `embed_for` usa o mesmo, para o contrato de erro nao divergir entre "vetor
+/// do agente" e "vetor do agente com fallback do host".
+fn caller_embedding(params: &Value) -> Result<Option<Vec<f32>>, String> {
+    let Some(arr) = params["embedding"].as_array() else {
+        return Ok(None);
+    };
+    if arr.is_empty() || arr.len() > neural_sgdb::MAX_EMBEDDING_DIM {
         return Err(format!(
             "parametro 'embedding' deve ter 1..={} dimensoes",
             neural_sgdb::MAX_EMBEDDING_DIM
         ));
+    }
+    let v: Vec<f32> = arr
+        .iter()
+        .filter_map(|x| x.as_f64().map(|f| f as f32))
+        .collect();
+    if v.len() != arr.len() {
+        return Err("parametro 'embedding' deve conter apenas numeros".into());
+    }
+    Ok(Some(v))
+}
+
+fn embed_for(host: Option<&dyn Embedder>, text: &str, payload: &Value) -> Result<Vec<f32>, String> {
+    if let Some(v) = caller_embedding(payload)? {
+        return Ok(v);
     }
     match host {
         Some(e) => e.embed(text).map_err(|e| format!("embedding falhou: {e}")),
@@ -244,47 +255,21 @@ fn remember_one(
             Some(l) => neural_sgdb::MemoryLayer::from_label(l)
                 .ok_or_else(|| format!("layer invalido (use L0..L7 ou L4Semantic): {l}"))?,
         };
-        // L4/L5 SEM embedding NAO: o ramo sem bitvec reinterpreta o payload como
-        // f32 e insere no BQ — texto viraria geometria (mesma classe do bug do
-        // payload_type, v1.1.25). Recusa em voz alta em vez de polluir.
-        if matches!(
+        // v1.5.0: o caminho operacional tem UM dono (o core). Antes o handler
+        // montava o doc, SOBRESCREVIA `payload` com os f32 (o texto de um
+        // L4/L5 morria ali) e ignorava scope/entities/type/index_key — e o
+        // outcome ainda ECOAVA o `type` pedido, como se tivesse sido gravado.
+        // O core agora: grava o texto no companion `/L2/` do primário vetorial,
+        // aplica os metadados pela `finish_remember` e devolve o que GRAVOU.
+        let emb = caller_embedding(params)?;
+        let semantic = matches!(
             layer,
             neural_sgdb::MemoryLayer::L4Semantic | neural_sgdb::MemoryLayer::L5Procedural
-        ) && !has_caller_embedding(params)
-        {
-            return Err(
-                "author=system em L4/L5 exige embedding= explicito: sem bitvec o payload \
-                 seria reinterpretado como f32 e pollui o BQ com ruido"
-                    .into(),
-            );
-        }
-        let mut doc = neural_sgdb::MemoryDoc::new(layer, &key, text.as_bytes().to_vec());
-        if let Some(arr) = params["embedding"].as_array() {
-            let emb: Vec<f32> = arr.iter().filter_map(|x| x.as_f64().map(|f| f as f32)).collect();
-            if emb.is_empty() {
-                return Err("embedding deve conter apenas numeros".into());
-            }
-            doc.bitvec = Some(neural_sgdb::quantize_f32(&emb));
-            doc.payload = emb.iter().flat_map(|f| f.to_le_bytes()).collect::<Vec<u8>>();
-        }
-        db.put_operational(doc).map_err(mcp_actionable_error)?;
-        let sk = db.resolve_known_key(&key);
-        return Ok((
-            neural_sgdb::RememberOutcome {
-                storage_key: sk,
-                // escrita operacional nao grava companion `/L2/` (o texto E o
-                // payload; a duplicaria sem ganho de retrieval).
-                companion_key: String::new(),
-                scope: String::new(),
-                entities: Vec::new(),
-                content_type: params["type"].as_str().map(String::from),
-                scope_dims: neural_sgdb::ScopeDims::default(),
-                model_id: params["model_id"].as_str().unwrap_or("").to_string(),
-                recall_hint: "escrita operacional: sem autoria causal (nao entra no export_delta)"
-                    .into(),
-            },
-            false,
-        ));
+        );
+        let out = db
+            .remember_operational(layer, &key, text, emb.as_deref(), opts)
+            .map_err(mcp_actionable_error)?;
+        return Ok((out, semantic));
     }
     let semantic = has_caller_embedding(params) || host.is_some();
     let written = if semantic {
@@ -602,11 +587,11 @@ fn error_code_label(c: neural_sgdb::ErrorCode) -> &'static str {
 
 /// NÃºmero de tools em `tools/list` (aliases antigos ainda funcionam em tools/call).
 const EXPECTED_MCP_TOOL_COUNT: usize = 5;
-const MCP_CONTRACT_VERSION: &str = "1.4.6";
+const MCP_CONTRACT_VERSION: &str = "1.5.0";
 const BUILD_GIT: &str = env!("NEURAL_SGDB_BUILD_GIT");
 
-/// Lista pÃºblica: 4 tools. Os 23 nomes antigos continuam vÃ¡lidos em `tools/call`.
-/// As 4 tools LISTADAS no contrato `tools/list` (v1.1.21).
+/// Lista pÃºblica: 5 tools. Os 40 nomes antigos continuam vÃ¡lidos em `tools/call`.
+/// As 5 tools LISTADAS no contrato `tools/list` (v1.4.5).
 const LISTED_TOOLS: &[&str] = &["remember", "recall", "health", "curate", "decide"];
 
 /// Superfície de ALIAS (v1.1.21): nomes aceitos em `tools/call` que NAO
@@ -713,6 +698,37 @@ const ALIAS_SURFACE: &[&str] = &[
     "validate",
 ];
 
+/// Fragmento Markdown GERADO da superficie MCP (tools/aliases/contrato) — a
+/// contraparte em prosa do `contract.json`. `scripts/gen-mcp-surface.sh`
+/// escreve isto em `docs/generated/mcp-surface.md` e no bloco marcado de
+/// `docs/MCP.md`; `--print-surface` imprime para o script. As contagens sao
+/// DERIVADAS das constantes, nao digitadas — a prosa derivou varias vezes
+/// (38 vs 40 aliases em v1.1.21/v1.4.5); aqui ela nasce do codigo.
+fn mcp_surface_fragment() -> String {
+    let quoted = |xs: &[&str]| -> String {
+        xs.iter()
+            .map(|t| format!("`{t}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    format!(
+        "**MCP contract `{}`** · **{}** tools em `tools/list` · **{}** aliases em `tools/call` ({} stable, {} deprecated)\n\n\
+Tools (`tools/list`): {}\n\n\
+Aliases `stable` ({}): {}\n\n\
+Aliases `deprecated` ({}): {}",
+        MCP_CONTRACT_VERSION,
+        EXPECTED_MCP_TOOL_COUNT,
+        ALIAS_SURFACE.len(),
+        CORE_ALIASES.len(),
+        DEPRECATED_ALIASES.len(),
+        quoted(LISTED_TOOLS),
+        CORE_ALIASES.len(),
+        quoted(CORE_ALIASES),
+        DEPRECATED_ALIASES.len(),
+        quoted(DEPRECATED_ALIASES),
+    )
+}
+
 /// Distancia de edicao (Levenshtein, duas linhas). Determinística e sem deps;
 /// so roda no caminho de ERRO (nome desconhecido), nunca num recall.
 fn edit_distance(a: &str, b: &str) -> usize {
@@ -808,6 +824,11 @@ fn expand_tool(name: &str, args: &Value) -> String {
         {
             "remember_episodic".into()
         }
+        // v1.5.0: `path=` e resolvido DENTRO do arm do recall (ele recusa
+        // `entities=` junto) — sem esta linha o dispatch cairia em
+        // `recall_entities` e a recusa nunca rodaria (o bug de "a regra mora em
+        // dois handlers e o segundo esquece", licao v1.1.25/v1.4.4).
+        "recall" if args["path"].as_str().is_some_and(|p| !p.is_empty()) => "recall".into(),
         "recall" if args["entities"].as_array().is_some_and(|a| !a.is_empty()) => {
             "recall_entities".into()
         }
@@ -868,13 +889,13 @@ fn mcp_listed_tools() -> Value {
            "type":{"type":"string","enum":["text","json","code","embedding","binary"]},
            "memories":{"type":"array","items":{"type":"object"},"description":"Batch (v1.2.0): N memórias num round trip (teto 64). Cada item aceita text/entities/scope/type/embedding — override sobre os params do topo."},
            "if_exists":{"type":"string","enum":["add","reinforce","supersede","reject"],"description":"v1.2.0: quando o probe acha memória equivalente (mesma entity 1-hop ou tokens + texto igual). Default add = doutrina ADD-only intacta."},
-           "author":{"type":"string","enum":["agent","system"],"default":"agent","description":"v1.4.4 (ISSUE 2): system = escrita OPERACIONAL — dado de sistema próprio (sys/, hw/, config): indexa mas NAO ticka o relógio (sem inflação causal por overwrite de boot). Exige layer=. L4/L5 exigem embedding=."},
-           "layer":{"type":"string","enum":["L0","L1","L2","L3","L4","L5","L6","L7"],"description":"v1.4.4: camada EXPLICITA, só com author=system (com author=agent é recusado — memória cognitiva tem camada por tipo, ADR-0008)."},
+           "author":{"type":"string","enum":["agent","system"],"default":"agent","description":"v1.4.4 (ISSUE 2): system = escrita OPERACIONAL - dado de sistema proprio (sys/, hw/, config): indexa mas NAO ticka o relogio (sem inflacao causal por overwrite de boot). Exige layer=. v1.5.0: em L4/L5 o texto vai para o companion /L2/ (nao se perde) e scope/entities/type/index_key sao APLICADOS; embedding= so vale em L4/L5."},
+           "layer":{"type":"string","enum":["L0","L1","L2","L3","L4","L5","L6","L7"],"description":"v1.4.4: camada EXPLICITA, so com author=system (com author=agent e recusado - memoria cognitiva tem camada por tipo, ADR-0008). v1.5.0: L4/L5 exigem embedding= e gravam o texto no companion /L2/ (Hit.text/text_of)."},
            "index_key":{"type":"boolean","default":false,"description":"v1.4.4 (ISSUE 12): indexa os tokens da KEY no lexical — busca pelo NOME da key acha o que o payload não contém. Default false = só payload."}
          }},
          "annotations":{"destructiveHint":true,"idempotentHint":true}},
         {"name":"recall",
-         "description":"Read. Default mode=lexical (ADR-0008) se nao houver embedding=. semantic/hybrid exigem vetor (hybrid usa RRF). entities[]= 1-hop; at= temporal; rag=true. Sem scope= so globais. format=json hits tipados. Session: resource nsgdb://session.",
+         "description":"Read. Default mode=lexical (ADR-0008) se nao houver embedding=. semantic/hybrid exigem vetor (hybrid usa RRF). entities[]= 1-hop; at= temporal; rag=true; path= ativacao por caminho (trigger rules). Sem scope= so globais. format=json hits tipados. Session: resource nsgdb://session.",
          "inputSchema":{"type":"object","properties":{
            "query":{"type":"string"},
            "mode":{"type":"string","enum":["semantic","lexical","hybrid","causal"],"default":"lexical"},
@@ -896,7 +917,8 @@ fn mcp_listed_tools() -> Value {
            "w_time":{"type":"number","default":10.0},
            "rag":{"type":"boolean","default":false},
            "rerank":{"type":"boolean","default":false},
-           "historical":{"type":"boolean","default":false}
+           "historical":{"type":"boolean","default":false},
+           "path":{"type":"string","description":"v1.5.0 (trigger rules): o caminho do arquivo em foco. O core resolve as regras GLOBAIS que casam (curate op=set_trigger) e recalla pelos namespaces delas - retrieval 1-hop por entity, a MESMA escala de dist de entities=. Exclusivo com entities=/embedding=/mode=semantic|hybrid|causal."}
          }},
          "annotations":{"readOnlyHint":true}},
         {"name":"health",
@@ -909,9 +931,9 @@ fn mcp_listed_tools() -> Value {
          }},
          "annotations":{"readOnlyHint":true}},
         {"name":"curate",
-         "description":"Mutacao pontual / grafo L6 + metadado cognitivo. op= explain|reinforce|feedback|forget|forget_purge|expire_old|decay|consolidate|diary|profile|associate|related_to|contradicts|supersede|conflicts|resolve_conflict|merge_memories|audit_checkpoint|audit_verify|audit_resolve|audit_trail|rollback_to|set_ttl|expire_ttl|set_event|close_event|timeline|gc|recall_ann|commit_run|deprecate_run|promote_run|export_delta|set_authority|hygiene. ADR-0010: commit_run/deprecate_run usam scope_run (+ facts/anti_patterns). promote_run: merge do sandbox run no escopo base (keys do run com prefixo <run>/; estrategias fail|ours|theirs via merge_strategy; base_dims via base_user/base_agent/base_app). v1.4.4: explain(full=true) junta a proveniencia completa (authority/clock/audit_refs); forget_purge = forget COMPURGADO (tombstone→delete→elo FORGET, nesta ordem); audit_resolve deixa a decisao HITL na chain; audit_trail LE a trilha (key?/since?/limit?); export_delta = pull direcionado do anti-entropy (node/since/max); set_authority marca a memoria como HITL (0..=255, MDM1 v8). hygiene = relatorio READ-ONLY de conteudo (superseded sem sucessora, key com md/ duplicado, entity orfa, texto duplicado) — REPORTA, nao decide. Use uma storage key completa md/L4/.... Nao hoarde: so depois de evidencia.",
+         "description":"Mutacao pontual / grafo L6 + metadado cognitivo. op= explain|reinforce|feedback|forget|forget_purge|expire_old|decay|consolidate|diary|profile|associate|related_to|contradicts|supersede|conflicts|resolve_conflict|merge_memories|audit_checkpoint|audit_verify|audit_resolve|audit_trail|rollback_to|set_ttl|expire_ttl|set_event|close_event|timeline|gc|recall_ann|commit_run|deprecate_run|promote_run|export_delta|set_authority|hygiene. ADR-0010: commit_run/deprecate_run usam scope_run (+ facts/anti_patterns). promote_run: merge do sandbox run no escopo base (keys do run com prefixo <run>/; estrategias fail|ours|theirs via merge_strategy; base_dims via base_user/base_agent/base_app). v1.4.4: explain(full=true) junta a proveniencia completa (authority/clock/audit_refs); forget_purge = forget COMPURGADO (tombstone→delete→elo FORGET, nesta ordem); audit_resolve deixa a decisao HITL na chain; audit_trail LE a trilha (key?/since?/limit?); export_delta = pull direcionado do anti-entropy (node/since/max); set_authority marca a memoria como HITL (0..=255, MDM1 v8). hygiene = relatorio READ-ONLY de conteudo (superseded sem sucessora, key com md/ duplicado, entity orfa, texto duplicado) — REPORTA, nao decide. v1.5.0: set_trigger pattern+namespaces|forget_trigger pattern|triggers [path] = ativacao condicional por caminho (o host diz em que arquivo esta, o core devolve/ativa os namespaces). Use uma storage key completa md/L4/.... Nao hoarde: so depois de evidencia.",
          "inputSchema":{"type":"object","properties":{
-           "op":{"type":"string","enum":["explain","reinforce","feedback","forget","forget_purge","expire_old","decay","consolidate","diary","profile","associate","related_to","contradicts","supersede","conflicts","resolve_conflict","merge_memories","audit_checkpoint","audit_verify","audit_resolve","audit_trail","rollback_to","set_ttl","expire_ttl","set_event","close_event","timeline","gc","recall_ann","commit_run","deprecate_run","promote_run","export_delta","set_authority","hygiene"]},
+           "op":{"type":"string","enum":["explain","reinforce","feedback","forget","forget_purge","expire_old","decay","consolidate","diary","profile","associate","related_to","contradicts","supersede","conflicts","resolve_conflict","merge_memories","audit_checkpoint","audit_verify","audit_resolve","audit_trail","rollback_to","set_ttl","expire_ttl","set_event","close_event","timeline","gc","recall_ann","commit_run","deprecate_run","promote_run","export_delta","set_authority","hygiene","set_trigger","forget_trigger","triggers"]},
            "key":{"type":"string"},
            "delta":{"type":"number"},
            "positive":{"type":"boolean"},
@@ -957,7 +979,9 @@ fn mcp_listed_tools() -> Value {
            "merge_strategy":{"type":"string","enum":["fail","ours","theirs"]},
            "base_user":{"type":"string"},
            "base_agent":{"type":"string"},
-           "base_app":{"type":"string"}
+           "base_app":{"type":"string"},
+           "pattern":{"type":"string","description":"v1.5.0 (op=set_trigger|forget_trigger|triggers): padrao glob do caminho - '*' nao atravessa '/', '**' atravessa, '?' um char"},
+           "namespaces":{"type":"array","items":{"type":"string"},"description":"v1.5.0 (op=set_trigger): entities ativadas quando o padrao casa (as MESMAS strings usadas no remember/entities=)"}
          },"required":["op"]}},
         {"name":"decide",
          "description":"System-One control (ADR-0017): N perguntas com espacos de resposta FECHADOS -> respostas tipadas num round trip (Jev-Mem J(S,Q)). ask=evidence_sufficient (adaptive stop do ADR-0012 como resposta), temporal_relation (before/after/same_time por timestamp), valid_at (janela bi-temporal), candidate_relevance (sinais DECOMPOSTOS: sim_vec, lex_overlap, shared_entities, recency, rrf). Deterministico — o core responde, nunca gera texto.",
@@ -1601,6 +1625,13 @@ fn recall_for_mcp(
 }
 
 fn main() {
+    // --print-surface: fragmento GERADO da superficie MCP (tools/aliases/
+    // contrato) para `scripts/gen-mcp-surface.sh` — porta unica da prosa dos
+    // docs. Sai ANTES de abrir DB/rede: so imprime e retorna.
+    if std::env::args().any(|a| a == "--print-surface") {
+        println!("{}", mcp_surface_fragment());
+        return;
+    }
     let db_path = std::env::var("NEURAL_SGDB_DB").unwrap_or_else(|_| "sgdb_memory.db".into());
 
     // v1.2.1 (passo 1 do plano de otimizações): TickvFile BUFFERED opt-in —
@@ -2031,6 +2062,76 @@ fn main() {
                         }
                     }
                     "recall" => {
+                        // v1.5.0 (trigger rules): `path=` e o caminho do arquivo
+                        // em foco — o core resolve as regras globais que casam e
+                        // recalla pelos namespaces delas. `query` NAO e exigido
+                        // nesse modo (a ativacao e por ENTITY, nao por termo).
+                        if let Some(path) = args["path"].as_str().filter(|p| !p.is_empty()) {
+                            if args["entities"].as_array().is_some_and(|a| !a.is_empty()) {
+                                send(&error_response(&id, -32602,
+                                    "use 'entities' OU 'path': os dois juntos nao tem semantica definida (o path resolve entities por conta propria)"));
+                                continue;
+                            }
+                            // o path= e o caminho de ENTIDADES: um vetor (ou um
+                            // mode vetorial) junto dele seria ignorado em
+                            // silencio — recusa em voz alta (a doutrina da casa).
+                            let vec_mode = matches!(args["mode"].as_str(), Some("semantic" | "hybrid" | "causal"));
+                            if vec_mode || has_caller_embedding(args) {
+                                send(&error_response(&id, -32602,
+                                    "path= usa o retrieval por ENTIDADES (1-hop): nao aceita embedding=/mode=semantic|hybrid|causal — remova o vetor ou use entities= explicitamente"));
+                                continue;
+                            }
+                            let k = args["k"].as_u64().unwrap_or(5) as usize;
+                            if k == 0 {
+                                send(&error_response(&id, -32602,
+                                    "k=0 e invalido: para sondar existencia use k=1 e leia hits[] (vazio = nao havia nada)"));
+                                continue;
+                            }
+                            let namespaces = match db.namespaces_for_path(path) {
+                                Ok(ns) => ns,
+                                Err(e) => {
+                                    send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                        "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true,"structuredContent":mcp_error_data(&e)}}));
+                                    continue;
+                                }
+                            };
+                            let mut hits = match db.recall_for_path(path, k) {
+                                Ok(h) => h,
+                                Err(e) => {
+                                    send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                        "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true,"structuredContent":mcp_error_data(&e)}}));
+                                    continue;
+                                }
+                            };
+                            if let Some(mb) = args["max_payload_bytes"].as_u64() {
+                                preview_text(&mut hits, mb as usize);
+                            }
+                            let json_fmt = args["format"].as_str().unwrap_or("") == "json";
+                            // sem regra que case != regra que casou sem hit: as
+                            // duas vazio, mas a CAUSA e diferente e o consumidor
+                            // precisa distinguir (nao inventamos evidencia).
+                            let text = if json_fmt {
+                                hits_json(&hits)
+                            } else if namespaces.is_empty() {
+                                format!("nenhuma regra de ativacao casa com '{path}' (registre com curate op=set_trigger)")
+                            } else if hits.is_empty() {
+                                format!("regras casaram com '{path}' ({}) mas nenhuma memoria carrega esses namespaces", namespaces.join(", "))
+                            } else {
+                                hits.iter().map(fmt_hit).collect::<Vec<_>>().join("\n")
+                            };
+                            // `hits` no structuredContent: mesma forma do
+                            // recall (quem le o JSON nao depende da prosa).
+                            let structured = json!({
+                                "hits": hits.iter().map(hit_json).collect::<Vec<_>>(),
+                                "hit_count": hits.len(),
+                                "path": path,
+                                "namespaces": namespaces,
+                                "activated": !namespaces.is_empty(),
+                                "mode": "entities"
+                            });
+                            send(&json!({"jsonrpc":"2.0","id":id,"result":mcp_tool_result(&text, structured, false)}));
+                            continue;
+                        }
                         let query = args["query"].as_str().unwrap_or("");
                         let k = args["k"].as_u64().unwrap_or(5) as usize;
                         if query.is_empty() {
@@ -3567,6 +3668,91 @@ fn main() {
                     }
                     // v1.1.28 (Movimento 3): prefetch de candidatos com sinais
                     // decompostos — o write path do paper, direto no MCP.
+                    // ---- Trigger rules (v1.5.0): ativacao condicional ----
+                    "set_trigger" => {
+                        let pattern = args["pattern"].as_str().unwrap_or("");
+                        if pattern.is_empty() {
+                            send(&error_response(&id, -32602,
+                                "parametro 'pattern' obrigatorio (glob: 'src/kernel/*.rs', 'src/kernel/**', 'tests/*')"));
+                            continue;
+                        }
+                        let namespaces: Vec<&str> = args["namespaces"]
+                            .as_array()
+                            .map(|a| a.iter().filter_map(|n| n.as_str()).collect())
+                            .unwrap_or_default();
+                        if namespaces.is_empty() {
+                            send(&error_response(&id, -32602,
+                                "parametro 'namespaces' obrigatorio (lista nao-vazia de entities)"));
+                            continue;
+                        }
+                        match db.set_trigger(pattern, &namespaces) {
+                            Ok(()) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":format!("regra de ativacao gravada: {pattern} -> {}", namespaces.join(", "))}],
+                                "structuredContent": json!({
+                                    "pattern": pattern,
+                                    "namespaces": namespaces,
+                                    "trigger_key": neural_sgdb::trigger::trigger_key(pattern)
+                                }),
+                                "isError": false}})),
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true,"structuredContent":mcp_error_data(&e)}})),
+                        }
+                    }
+                    "forget_trigger" => {
+                        let pattern = args["pattern"].as_str().unwrap_or("");
+                        if pattern.is_empty() {
+                            send(&error_response(&id, -32602, "parametro 'pattern' obrigatorio"));
+                            continue;
+                        }
+                        match db.forget_trigger(pattern) {
+                            Ok(removed) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":if removed {
+                                    format!("regra de ativacao removida: {pattern}")
+                                } else {
+                                    format!("nenhuma regra para o padrao '{pattern}' (idempotente)")
+                                }}],
+                                "structuredContent": json!({"pattern": pattern, "removed": removed}),
+                                "isError": false}})),
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true,"structuredContent":mcp_error_data(&e)}})),
+                        }
+                    }
+                    "triggers" => {
+                        // leitura das regras: todas, ou so as que casam com `path`
+                        // (o "por que este arquivo ativou isso" do host).
+                        let path = args["path"].as_str().filter(|p| !p.is_empty());
+                        let listed = match path {
+                            Some(p) => db.triggers_for_path(p),
+                            None => db.trigger_rules(),
+                        };
+                        match listed {
+                            Ok(rules) => {
+                                let rows: Vec<Value> = rules.iter().map(|r| json!({
+                                    "pattern": r.pattern,
+                                    "namespaces": r.namespaces
+                                })).collect();
+                                let text = if rules.is_empty() {
+                                    match path {
+                                        Some(p) => format!("nenhuma regra de ativacao casa com '{p}'"),
+                                        None => "nenhuma regra de ativacao registrada (curate op=set_trigger)".into(),
+                                    }
+                                } else {
+                                    rules.iter().map(|r| format!("- {} -> {}", r.pattern, r.namespaces.join(", ")))
+                                        .collect::<Vec<_>>().join("\n")
+                                };
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                    "content":[{"type":"text","text":text}],
+                                    "structuredContent": json!({
+                                        "rules": rows,
+                                        "count": rules.len(),
+                                        "path": path.unwrap_or("")
+                                    }),
+                                    "isError": false}}))
+                            }
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true,"structuredContent":mcp_error_data(&e)}})),
+                        }
+                    }
                     "recall_candidates" => {
                         let query = args["query"].as_str().unwrap_or("");
                         let ents: Vec<String> = args["entities"].as_array()
@@ -3772,6 +3958,38 @@ mod tests {
             ),
             "recall_entities"
         );
+        // v1.5.0: as ops de trigger sao curate ops (nao tools novas)
+        assert_eq!(
+            expand_tool("curate", &serde_json::json!({"op":"set_trigger"})),
+            "set_trigger"
+        );
+        assert_eq!(
+            expand_tool("curate", &serde_json::json!({"op":"triggers"})),
+            "triggers"
+        );
+    }
+
+    /// v1.5.0 (licao v1.1.23/v1.4.4): o modelo le o SCHEMA, nao o codigo. Toda
+    /// op/arg servido pelo handler tem de estar anunciado em `tools/list`.
+    #[test]
+    fn trigger_surface_is_announced() {
+        let tools = mcp_listed_tools();
+        let find = |name: &str| -> String {
+            tools
+                .as_array()
+                .and_then(|ts| ts.iter().find(|t| t["name"] == name))
+                .map(|t| t.to_string())
+                .unwrap_or_default()
+        };
+        let curate = find("curate");
+        for op in ["set_trigger", "forget_trigger", "triggers"] {
+            assert!(curate.contains(&format!("\"{op}\"")), "op {op} nao anunciada");
+        }
+        for arg in ["pattern", "namespaces"] {
+            assert!(curate.contains(&format!("\"{arg}\"")), "arg {arg} nao anunciado");
+        }
+        let recall = find("recall");
+        assert!(recall.contains("\"path\""), "arg path nao anunciado no recall");
     }
 
     /// A superficie de alias e uma TABELA, nao prosa. Antes isto era "os 23
@@ -3785,7 +4003,7 @@ mod tests {
         let before = seen.len();
         seen.dedup();
         assert_eq!(seen.len(), before, "alias duplicado em ALIAS_SURFACE");
-        // as 4 tools LISTADAS nao podem aparecer como alias
+        // as 5 tools LISTADAS nao podem aparecer como alias
         for t in LISTED_TOOLS {
             assert!(
                 !ALIAS_SURFACE.contains(t),
@@ -3822,6 +4040,29 @@ mod tests {
             "alias em ambas as listas"
         );
         assert_eq!(LISTED_TOOLS.len(), EXPECTED_MCP_TOOL_COUNT);
+    }
+
+    /// v1.4.5 (fragmento de superficie): a prosa dos docs nasce das constantes.
+    #[test]
+    fn surface_fragment_derives_from_constants() {
+        let f = mcp_surface_fragment();
+        assert!(
+            f.contains(&format!("`{}`", MCP_CONTRACT_VERSION)),
+            "versao do contrato no fragmento"
+        );
+        assert!(f.contains(&format!("**{}** tools", EXPECTED_MCP_TOOL_COUNT)));
+        assert!(f.contains(&format!("**{}** aliases", ALIAS_SURFACE.len())));
+        for t in LISTED_TOOLS {
+            assert!(f.contains(&format!("`{t}`")), "tool {t} ausente do fragmento");
+        }
+        for t in ALIAS_SURFACE {
+            assert!(f.contains(&format!("`{t}`")), "alias {t} ausente do fragmento");
+        }
+        // a particao curada/deprecada cobre EXATAMENTE a surface
+        assert_eq!(
+            CORE_ALIASES.len() + DEPRECATED_ALIASES.len(),
+            ALIAS_SURFACE.len()
+        );
     }
 
     /// P0.2: `contract.json` é o contrato publicado — pinado contra drift.

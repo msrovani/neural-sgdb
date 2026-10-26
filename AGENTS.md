@@ -6,13 +6,15 @@ repo. **Read `codemap.md` (atlas), `docs/api.md` (contract) and
 Storage, Cognitive API; typed hits from v1.1.6; current crate = `Cargo.toml`) and
 `docs/implementation-status.md` before editing code.**
 
-**Shipped crate is 1.4.6 (agentic MCP contract 1.4.6, hot test 185/0):** Vocabulário ÚNICO
+**Shipped crate is 1.5.0 (agentic MCP contract 1.5.0, hot test 210/0):** Vocabulário ÚNICO
 prosa/JSON (ADR-0017: `{:?}` fora do wire; tool `decide` 𝒥(S,𝒬) = 5º tool;
 `recall_candidates` sinais decompostos; validate tipado; k=0 erro). `Hit.type_scores`
 = **ADR-0016** (episódico/semântico/procedural/preferência sobrepostos,
 derivados na leitura de layer+entities, nunca persistidos — Jev-Mem). MCP lists **5 tools**
 (`remember`/`recall`/`health`/`curate`; **40** alias names live in
-`ALIAS_SURFACE` em `examples/mcp_server.rs` — tabela pinada por teste, não prosa).
+`ALIAS_SURFACE` em `examples/mcp_server.rs` — tabela pinada por teste, não prosa; a
+superfície de `docs/MCP.md` e `docs/generated/mcp-surface.md` é GERADA por
+`scripts/gen-mcp-surface.sh` (a partir das constantes), com `check` no gate).
 `curate` ganhou ops de metadado cognitivo (decay/consolidate/audit_checkpoint/
 audit_verify/rollback_to) e harness ADR-0010 (`commit_run`/`deprecate_run`/
 `promote_run` — fork/merge de memória por scope run, v1.2.1).
@@ -20,7 +22,7 @@ Default retrieval: **lexical** without a vector; **hybrid** (RRF) with a real
 host embedder; **semantic** with a caller `embedding`. Unset `NEURAL_SGDB_EMBEDDER` = none;
 `=demo` only if requested (não setar no `mcp.json` global). `remember(text=)`
 without a vector → L3 (`remember_text_with`). Resources: `nsgdb://doctrine` +
-`nsgdb://session`. Hot test **185/0**. Lib tests **431+2 / 447 / 364+2** (+ **21** de integração
+`nsgdb://session`. Hot test **210/0**. Lib tests **448+2 / 464 / 378+2** (+ **21** de integração
 multi-agente em `tests/multi_agent.rs`, isolamento/estado — roda no gate no_std)
 (default / p2p / no_std). Bump `MCP_CONTRACT_VERSION` ⇒ pin `mcp_client`
 `serverInfo.version` no mesmo commit (senão hot test falha). **v1.1.17:**
@@ -31,7 +33,11 @@ harness `commit_run` / `deprecate_run` / `mom/anti-pattern`. **v1.1.20:**
 null-scoping honra `ScopeDims`; `recall_*_dims` pool unfiltered;
 consolidate herda dims. **v1.1.24:** `ScopeDims` é AUTORITATIVO (o `scope`
 legado vira espelho de `user`, write-through) + ledger de negativos
-(`sys/negative/`).
+(`sys/negative/`). **v1.5.0:** ativação por contexto — trigger rules por
+caminho (`src/trigger.rs`, ADR-0020; `curate op=set_trigger|forget_trigger|
+triggers` + `recall(path=)`, side-table `sys/trigger/`, **não** é wire type) e
+aprendizado por trajetória (`examples/trajectory_learning.rs`, ADR-0019:
+`remember_episodic` verbatim + `feedback` pelo desfecho).
 
 **v1.3.0 — DX release (dores do usuário-IA, 2026-10-01):** P0.1 retrieval default
 sobe para `hybrid`/`semantic` conforme a fonte de vetor (`resolve_retrieval_mode`
@@ -52,6 +58,37 @@ policy. `MIGRATIONS.md` §MCP contract (1.2.1→1.3.0).
 [`docs/agent-self-program.md`](docs/agent-self-program.md) +
 [`docs/doctrine.md`](docs/doctrine.md); cold-start toda sessão; skill
 `.cursor/skills/nsgdb-full-usage/`.
+
+## Release 1.5.0 — ativação por contexto + trajetória (2026-10-26)
+
+Duas dores do agente que USA o DB, ambas vindas do uso real (levantamento
+Ruflo) e não de leitura de código:
+
+1. **O `recall` não perguntava onde o cursor estava.** Num IDE metade da
+   escolha de contexto já está decidida pelo arquivo em foco, e o agente
+   tinha que adivinhar scope/entities a cada prompt. **Trigger rules por
+   caminho (ADR-0020, `src/trigger.rs`)**: `curate op=set_trigger`
+   (`pattern` glob + `namespaces`), `recall(path=)` resolve as regras e recalla
+   pelo 1-hop das entities delas. Side-table `sys/trigger/` (valor `TRG1`) —
+   **não** é wire type, nenhum formato muda. Três decisões que valem registro:
+   (a) **glob no core**, zero-dep e `no_std` — `*` sem `/`, `**` atravessa, `?`
+   um char (nenhuma crate de regex num crate sem dependências); (b) **ordem é
+   contrato** — o scan do storage vem na ordem do HASH da key (`fnv1a64`), então
+   `trigger_rules()` ordena por padrão (sem o sort o host ativaria namespaces em
+   ordem diferente a cada execução, e há teste pinando); (c) **sem regra que
+   case o recall por caminho devolve VAZIO** — nunca cai para o pool global
+   (ativar por caminho não é um recall sem filtro, e o null-scoping continua).
+2. **O desfecho não voltava para o peso da memória.** **Aprendizado por
+   trajetória (ADR-0019, `examples/trajectory_learning.rs`)**: `remember_episodic`
+   guarda a trajetória VERBATIM (tarefa + desfecho) e `feedback` re-pondera
+   importance **e** confidence da memória que foi usada. Nada de primitivo novo
+   — a disciplina é do host, medida na mesma bateria: A (hoarder) 50% em toda
+   época; B (trajetória) satura em 100% e acerta desde a 1ª tarefa na sessão 2.
+
+A lição de release que se repetiu: o hot test pegou (de novo) o que a leitura
+não pegaria — a fase nova só existiu de verdade depois de o `mcp_client` provar
+o caminho inteiro (`curate op=set_trigger` → `recall(path=)` acha só o caminho
+certo → `path`+`entities` juntos recusa em voz alta → `forget_trigger` desativa).
 
 ## Triagem do consumidor #2 — P0 de dados + verificabilidade (2026-10-08)
 
@@ -1082,9 +1119,9 @@ Apache-2.0**. OS interop via byte-identical NMD1 and TKLV formats.
    rustdoc + goldens + wire_fuzz + target no_std + conectores + host crates +
    hot test, imprime o resumo de **todas** as quebras (não para na primeira) e
    sai != 0 se qualquer uma falhar. `SKIP_HOT=1` pula o hot test (o lento).
-    Matriz atual: **431** default (+2 doc-tests), **447** `--features p2p`,
-    **364** `--no-default-features`, **21** integração, **4** goldens, hot test
-    **185/0**. Clippy/rustdoc com `-D warnings`; `cargo fmt` **não** é gate (o
+   Matriz atual: **448** default, **464** `--features p2p`, **378**
+   `--no-default-features`, **21** integração, **4** goldens, hot test
+   **210/0**. Clippy/rustdoc com `-D warnings`; `cargo fmt` **não** é gate (o
    repo não é rustfmt-clean).
    *Por que um script e não "lembre-se de rodar": na 1.4.5, três gates do CI
    estavam vermelhos e nenhum tinha rodado (job `--shuffle` quebrado,
@@ -1127,10 +1164,11 @@ let facts = db.scan_prefix("md/L3/")?;                 // ART prefix scan
 ```bash
 cargo run --release --example bench        # benchmarks (ART/BQ/recall vs FP32)
 cargo run --release --example mcp_server   # MCP server for AI agents
-cargo run --release --example mcp_client   # HOT TEST: drives mcp_server like an IDE (119/0)
+cargo run --release --example mcp_client   # HOT TEST: drives mcp_server like an IDE (210/0)
 cargo run --release --example agent_protocol  # DECISION PROTOCOL (itens 2–6 + P1–P6): como o agente USA o DB
 cargo run --release --example two_ai_protocol # PROTOCOLO MÁQUINA→MÁQUINA (v1.1.6 itens 1–5): IA-A grava datum declarado, IA-B lê tipado
 cargo run --release --example memory_arena_eval # MEMORY-ARENA EVAL (P7): utilidade da memória em tarefas interdependentes
+cargo run --release --example trajectory_learning # APRENDIZADO POR TRAJETÓRIA (ADR-0019): desfecho real re-pondera a memória usada
 cargo run --release --example mesh_simulation --features p2p  # layered AI telepathy mesh
 cargo run --release --example signed_peer --features p2p      # signed-transport seam flow
 ```
@@ -1151,9 +1189,9 @@ hash, not a semantic model). Restart opencode after changing the config.
 ## Running tests
 
 ```bash
-cargo test                                 # 431+2 tests (InMemory/FileStorage/TickvFile)
-cargo test --features p2p                  # 447 (includes CRDT sync + mesh harness)
-cargo test --no-default-features           # 364+2 (no_std core, host test harness)
+cargo test                                 # 448+2 tests (InMemory/FileStorage/TickvFile)
+cargo test --features p2p                  # 464 (includes CRDT sync + mesh harness)
+cargo test --no-default-features           # 378+2 (no_std core, host test harness)
 cargo check --no-default-features --target x86_64-unknown-none   # no_std gate
 cargo clippy --all-targets --all-features -- -D warnings          # lint gate (P0-5)
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-6/P0-10)

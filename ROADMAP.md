@@ -1,8 +1,8 @@
 # Roadmap — neural-sgdb
 
-Status: **v1.4.x line (crate v1.4.3)** —
+Status: **v1.5.x line (crate v1.5.0)** —
 stable API, zero deps, `no_std` + `std`, CI gates green. Crate version
-**1.4.3**; histórico v1.1.2–v1.4.3 no `CHANGELOG.md`. This roadmap is honest
+**1.5.0**; histórico v1.1.2–v1.5.0 no `CHANGELOG.md`. This roadmap is honest
 about what is DONE, what is NEXT, and what is deliberately NOT planned.
 
 Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
@@ -112,9 +112,23 @@ Legend: ✅ done · 🔜 next · 💤 deliberate non-goal
    (v1.1.15); FAISS/HNSW externo continua 💤 (ADR-0002). Próximo salto =
    host-side / oversample / ANN, não deps no core.
 
-🔜 **Re-sync vendored crate no neural-os-core** — OS tree
-   (`neural-os-core-latest/crates/neural-sgdb`) ainda em **1.1.16**; NMD1
-   golden já bate. Ver [`docs/interop-os.md`](docs/interop-os.md).
+✅ **Re-sync no neural-os-core — por SUBMODULE pinado (2026-10-21)** — o OS
+   consome `crates/neural-sgdb` como submodule em **v1.4.5** (`16c0c29`), com
+   `META_VERSION = 8` dos dois lados. O pin vive em `tools/sgdb_pin.toml` do OS
+   e é verificado por `tools/check_sgdb_pin.py` (CI): gitlink, checkout limpo,
+   versão, `META_VERSION` e `sha256` do codec. A junction/pull-tip + cópia
+   gitignored que deixou o OS em 1.1.13/v6 foi aposentada. Ver
+   [`docs/interop-os.md`](docs/interop-os.md) §"Pin do codec MDM1".
+
+✅ **Ativação por contexto (v1.5.0, ADR-0020)** — trigger rules por caminho de
+   arquivo: `curate op=set_trigger` grava `pattern` glob → `namespaces` (strings
+   de entity) em side-table `sys/trigger/`, e `recall(path=)` resolve as regras
+   do arquivo em foco (mesmo 1-hop de `recall_entities`; sem regra que case =
+   vazio, nunca o pool global). Glob no core, zero-dep e `no_std`.
+
+✅ **Aprendizado por trajetória (v1.5.0, ADR-0019)** — `remember_episodic`
+   (trajetória verbatim) + `feedback` pelo DESFECHO real re-ponderam a memória
+   que foi usada; medido em `examples/trajectory_learning.rs` (SR 50% → 100%).
 
 ## v1.x maintenance (2026-08-13 — ongoing)
 

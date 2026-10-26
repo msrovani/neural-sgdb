@@ -1,7 +1,7 @@
 ﻿# 06 — Cognitive API
 
-> Status: **current (v1.1.26)** — the cognitive surface ships in `Sgdb` +
-> MCP server (**4 tools**, aliases for the 23 legacy names). **implemented** =
+> Status: **current (v1.5.0)** — the cognitive surface ships in `Sgdb` +
+> MCP server (**5 tools**, aliases for the 40 legacy names). **implemented** =
 > code + tests; **remaining** = honest gap. All English per repo policy.
 
 ## 1. Principle
@@ -70,15 +70,16 @@ material for the agent/LLM above.
 | `era_report()` | embedding era diagnostic (ADR-0007) |
 | `index_fingerprint()` | oracle of the DERIVED state, `fp(open) == fp(rebuild_indices())` (ADR-0011) — O(n log n), so never in the default `health`; MCP `health(view=index)` |
 | `recall_adaptive()` | report *why* a recall stopped escalating (`oversample_used`/`escalations`/`boundary_decisive`/`probe`, ADR-0012) |
+| `set_trigger()` / `recall_for_path()` | context activation (v1.5.0): the file in focus → entities. Side-table `sys/trigger/` (`TRG1`, not a wire type); same 1-hop as `recall_entities`; no matching rule ⇒ **empty** (never the global pool) — ADR-0020 |
 
-## 6. MCP surface (implemented — 4 tools + aliases)
+## 6. MCP surface (implemented — 5 tools + aliases)
 
 `cargo run --release --example mcp_server` — JSON-RPC 2.0 stdio, handshake
-`2025-11-25`. `serverInfo.version` = `MCP_CONTRACT_VERSION` = **1.2.1**, e o
+`2025-11-25`. `serverInfo.version` = `MCP_CONTRACT_VERSION` = **1.5.0**, e o
 `examples/mcp_client.rs` é pinado no MESMO commit — o hot test falha alto se
 divergirem.
 
-**Listed tools:** `remember`, `recall`, `health`, `curate`. Dispatch by args
+**Listed tools:** `remember`, `recall`, `health`, `curate`, `decide`. Dispatch by args
 (`user+response` → episodic L2; `entities` / `at` / `rag=true`;
 `health(view=status|validate|era|tensions|staleness|index)`; `curate.op=…`).
 The previous names remain valid aliases on `tools/call` (the alias table lives in
@@ -102,7 +103,7 @@ The previous names remain valid aliases on `tools/call` (the alias table lives i
 the product default — set `NEURAL_SGDB_EMBEDDER=demo` only if requested.
 Same model on write and query (S1 guard).
 
-Hot test: `mcp_client` — **84/0** checks (v1.1.10).
+Hot test: `mcp_client` — **202/0** checks (v1.5.0).
 
 ## 7. Machine→machine contract (v1.1.6)
 

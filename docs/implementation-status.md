@@ -1,12 +1,15 @@
 # neural-sgdb — Implementation Status
 
-> **Current snapshot (2026-10-10, v1.4.6).** Capability matrix vs the shipped
+> **Current snapshot (2026-10-26, v1.5.0).** Capability matrix vs the shipped
 > codebase. For the public contract see [`docs/api.md`](api.md); for architecture
 > narrative see [`docs/architecture/README.md`](architecture/README.md).
 > v1.4.3 = DX release (P0.1 semantic-on with a real embedder; P0.3 structured
 > `scope_dim_labels` + `scope_issues`; P0.2 `contract.json` + alias
 > classification + `nsgdb://contract`; P1.1 docs gate; P1.2 cold-start
 > `next_actions`; P1.3 `docs/negative-results.md`; P2.2 deprecation policy).
+> v1.5.0 = ativação por contexto (trigger rules por caminho de arquivo,
+> `recall(path=)`, ADR-0020) + aprendizado por trajetória (`remember_episodic` +
+> `feedback`, ADR-0019).
 
 ## Status labels
 
@@ -21,12 +24,12 @@
 
 | Check | Command | Result |
 |---|---|---|
-| Default tests | `cargo test --lib` | **431** (+2 doc-tests) |
-| P2P tests | `cargo test --features p2p --lib` | **447** |
-| no_std tests | `cargo test --no-default-features --lib` | **364** |
+| Default tests | `cargo test --lib` | **448** (+2 doc-tests) |
+| P2P tests | `cargo test --features p2p --lib` | **464** |
+| no_std tests | `cargo test --no-default-features --lib` | **378** |
 | Multi-agent integration | `cargo test --test multi_agent` | **21** (também no gate no_std) |
 | no_std target | `cargo check --no-default-features --target x86_64-unknown-none` | **ok** |
-| Hot test (MCP) | `cargo run --release --example mcp_client` | **185/0 exit 0** |
+| Hot test (MCP) | `cargo run --release --example mcp_client` | **210/0 exit 0** |
 | AI-user sim | `cargo run --release --example agent_sim` | loop real, scope isolado |
 | Machine protocol | `cargo run --release --example two_ai_protocol` | **16/16 exit 0** |
 | Agent protocol | `cargo run --release --example agent_protocol` | **25/25 exit 0** |
@@ -38,8 +41,10 @@
 | Capability | State | Evidence |
 |---|---|---|
 | MemoryDoc NMD1 | IMPLEMENTED | `src/memory_doc.rs`, golden tests |
-| MDM1 v6 side-table meta | IMPLEMENTED | scope, entities, content_type, version_id, … |
-| MDM1 v7 scope_dims+model_id (v1.1.14/15) | IMPLEMENTED | `ScopeDims{user,agent,app,run}`, `model_id`, `mixed_models` verdict |
+| Trigger rules por caminho (ADR-0020, v1.5.0) | IMPLEMENTED | `src/trigger.rs` (`TRG1`, value codec); glob no_std zero-dep (`*` sem `/`, `**` atravessa, `?` um char); `set_trigger`/`forget_trigger`/`trigger_rules`/`triggers_for_path`/`namespaces_for_path`/`recall_for_path`; side-table `sys/trigger/` (não é wire type); ordem determinística + matching + persistência no reopen (2 testes de lib) + fase própria no hot test |
+| Aprendizado por trajetória (ADR-0019, v1.5.0) | IMPLEMENTED | `examples/trajectory_learning.rs` — `remember_episodic` (trajetória verbatim) + `feedback` (contraste nos dois sentidos); Config A SR 50% vs Config B 100%, sessão 2 acerta desde a 1ª tarefa; determinístico |
+| MDM1 v8 side-table meta (corrente) | IMPLEMENTED | v1–v8 decodificam com migração explícita: `scope` [v4], `entities` [v5], `content_type` [v6], `scope_dims`+`model_id` [v7], `authority` [v8]; mapa autoritativo em `MIGRATIONS.md` §"MDM1 — evolução dos campos" |
+| MDM1 v7 scope_dims+model_id (v1.1.14) | IMPLEMENTED | `ScopeDims{user,agent,app,run}`, `model_id`, `mixed_models` verdict |
 | Harness commit_run (ADR-0010, v1.1.19) | IMPLEMENTED | `src/harness.rs`: `commit_run`/`deprecate_run`/`consolidate_recurrences_scoped`/`remember_episodic_scoped`; MCP `curate` ops; `mom/anti-pattern` |
 | Fork/merge de memória (v1.2.1, seekdb item 1) | IMPLEMENTED | `promote_run` + `MergeStrategy` (Fail/Ours/Theirs): promove memórias ativas do run (sandbox) ao escopo base; dedup sem version bump; keys `<run>/<base>`; MCP `curate op=promote_run` + `remember(key=)` |
 | Delete O(1) — reversos (v1.2.1, bench_delete_cost) | IMPLEMENTED | `sk_clocks` + `sk_ids` + `remove_entities_exact` (3 scans O(N) eliminados do delete); 30k deletes @ 60k docs 265s→43s; teste de invariante+mutação |
@@ -80,7 +85,7 @@
 | Derived-index oracle (v1.1.21) | IMPLEMENTED | ADR-0011: `index_fingerprint` (`fp(open)==fp(rebuild)`), `health(view=index)`; ids/órfãos/floats fora |
 | `corpus_mean` invariant (v1.1.21) | IMPLEMENTED | `validate` §5: counts exatos + somas com tolerância relativa `1e-9` |
 | Open cost metrics (v1.1.21) | IMPLEMENTED | ADR-0009 §4: `open_rebuild_ms_last`/`_max`/`opens` no core, health e bench |
-| MCP alias surface (v1.1.21) | IMPLEMENTED | `ALIAS_SURFACE` (34) + `did_you_mean` no erro de tool desconhecida |
+| MCP alias surface (v1.1.21) | IMPLEMENTED | `ALIAS_SURFACE` (40) + `did_you_mean` no erro de tool desconhecida |
 | Consolidated math (v1.1.22) | IMPLEMENTED | `src/math.rs`: `sqrt_f32`/`ln_f32`/`exp_f32` movidos sem tocar a aritmética; ranking BM25 congelado por teste; doc do `ln_f32` corrigida (~1e-5 → **5.9e-2** medido) |
 | Adaptive recall (v1.1.22) | EXPERIMENTAL | ADR-0012: `recall_adaptive` + `AdaptiveRecall` + `RecallProbe`; opt-in, default intacto. **O bench mostra que o threshold default escala quase sempre** — o valor é o instrumento, não um ganho medido |
 | Score breakdown (v1.1.10) | IMPLEMENTED | `recall_weighted_full`, `Hit.score_breakdown`, trust weights |
@@ -163,12 +168,19 @@ author/layer/index_key`, `curate forget_purge|audit_resolve|audit_trail/
 export_delta|set_authority`, `error.code`), + `explain full=true` e
 `recall(mode=causal)`, seam `Storage::capacity_*`, seam de hash da audit chain
 (SHA-256 `no_std`, wire AUD1 intocado).
-**Contract 1.4.6**: triagem do consumidor #2 — `supersede` ATÔMICO (new precisa
-existir; `structuredContent {old,new,state}`), `remember(key=)` recusa key com
-prefixo `md/`, recall family SEMPRE `structuredContent` + `truncated`/`nextCursor`
-(entities/temporal paginam) + `[]` no vazio de `format=json`, erros de recall com
-`structuredContent`, `curate(op=hygiene)` (relatório READ-ONLY de conteúdo).
-MCP contract **1.4.6**.
+**Contract 1.5.0**: une as duas entregas anteriores — a triagem do consumidor
+#2 (publicada na v1.4.6: `supersede` ATÔMICO com `structuredContent
+{old,new,state}`, `remember(key=)` recusa prefixo `md/`, recall family SEMPRE
+`structuredContent` + `truncated`/`nextCursor` + `[]` no vazio de
+`format=json`, `curate(op=hygiene)` READ-ONLY) e a ativação por contexto
+(v1.5.0: `curate op=set_trigger|forget_trigger|triggers` + `recall(path=)` — o
+arquivo em foco ativa namespaces, mesmas strings de entity, sem varrer a base
+a cada prompt). `author=system` em L4/L5 não perde mais o texto (companion
+`/L2/`) nem dropa scope/entities/type/index_key em silêncio — a escrita
+operacional é `Sgdb::remember_operational` (outcome = o que foi GRAVADO) e o
+era guard vale nos dois caminhos. A convenção de aprendizado por trajetória
+(ADR-0019) é exemplo determinista, não primitivo novo.
+MCP contract corrente = **1.5.0**.
 
 ### Host connectors
 `connectors/` is host-side (not crate SemVer). Hermes `MemoryProvider` is
@@ -202,7 +214,7 @@ drift — drift é número de *release* em doc vivo, pego pelo docs-version-gate
 | Conflitos | `curate(op=conflicts/audit_resolve)` | `ConflictRecord` (CFL1), `resolve_conflict`, `RejectedByAuthority` | partition/conflict/authority tests | Doc 04 §5 | IMPLEMENTED |
 | Auditoria | `curate(op=audit_*)` | `audit_checkpoint/verify/rollback_to/audit_forget`, `Hasher` | audit tests, AUD1 golden | ADR-0006 | IMPLEMENTED |
 | Storage backends | `Storage` trait (`docs/api.md`) | `InMemory`, `FileStorage`, `TickvFile`, IDX2 snapshot | parity tests + recovery/compaction tests | Doc 05 | IMPLEMENTED |
-| MCP surface | `contract.json` + `nsgdb://contract` (1.4.6) | `examples/mcp_server.rs` (5 tools + `ALIAS_SURFACE`) | hot test **185/0** (anunciado==servido) | `docs/MCP.md`, `docs/doctrine.md` | IMPLEMENTED |
+| MCP surface | `contract.json` + `nsgdb://contract` (1.5.0) | `examples/mcp_server.rs` (5 tools + `ALIAS_SURFACE`) | hot test **210/0** (anunciado==servido) | `docs/MCP.md`, `docs/doctrine.md` | IMPLEMENTED |
 | `no_std` + zero-dep | `VERSIONING.md`, `SECURITY.md` | `alloc`-only lib, `x86_64-unknown-none` | gate no_std **364+2** + target check | `docs/api.md` §compat | IMPLEMENTED |
 | Observabilidade | `health(view=*)`, `validate` §§1-8 | `HealthReport`, `ValidateIssue`, `HygieneReport`, metrics | validate/hygiene tests | Doc 06 | IMPLEMENTED |
 | Delete replicado (tombstone set) | — | — | — | Doc 04 §7 | REMAINING (exige desenho de formato) |

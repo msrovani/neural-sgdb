@@ -959,6 +959,17 @@ impl MemoryLayer {
             MemoryLayer::L6Reserved => 0.5,
         }
     }
+
+    /// Esta camada carrega um vetor indexável pelo BQ (L4 semântica ou L5
+    /// procedural)? Forma ENUM do predicado — mesma regra de
+    /// `ctype::key_carries_embedding` (que testa a storage key) e do
+    /// `matches!(layer, L4Semantic | L5Procedural)` que estava digitado em
+    /// 4 lugares (`engine::put_inner`, `engine::recompute_corpus_sums`,
+    /// `Sgdb::remember_semantic`/`remember_operational`, `text_of`). L3 é
+    /// fato LEXICAL (texto), não vetor — não entra aqui.
+    pub fn carries_embedding(&self) -> bool {
+        matches!(self, MemoryLayer::L4Semantic | MemoryLayer::L5Procedural)
+    }
 }
 
 /// Documento de memória — encode length-prefixed (magic "NMD1").

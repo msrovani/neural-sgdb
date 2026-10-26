@@ -1,11 +1,26 @@
 # neural-sgdb — API Contract
 
 > Contract document for the extraction of the SGDB core from neural-os-core.
-> Status: **current public contract (crate v1.4.6)** —
+> Status: **current public contract (crate v1.5.0)** —
 > this document is the current public contract; roadmap items are explicitly
 > marked as such. The internal API lives in `crates/k_ai/src/sgdb/` of the
 > parent OS; this doc defines the public surface the community crate exposes
 > (and already ships).
+
+## v1.5.0 — ativação por contexto + trajetória (aditivo)
+
+O `recall` sempre exigiu que o CHAMADOR escolhesse scope/entities. Num IDE
+metade dessa escolha já está decidida pelo ambiente: o arquivo em foco. O
+v1.5.0 deixa o host declarar essa associação UMA vez (`curate op=set_trigger`)
+e perguntar por caminho (`recall(path=…)`) sem carregar a base inteira a cada
+prompt. O core resolve o glob e devolve os namespaces ativados — ele **não**
+adivinha o caminho nem decide o que entra no prompt (mesma postura de
+`entities`/`Embedder`: quem fornece usa as mesmas strings na escrita e na
+leitura).
+
+Additive: MCP contract sobe para **1.5.0** (3 ops de `curate` + `path=` no
+`recall`). Nenhum formato binário muda (`sys/trigger/` é side-table derivada,
+valor `TRG1`, fora do registry de formatos wire).
 
 ## v1.4.4 — the s413 lib finally reaches the wire
 
@@ -45,15 +60,15 @@ surface is the contract.
   (`0` learned on the mesh, `255` HITL-approved); ties a causal draw.
 - `curate(op=conflicts, open_only=, limit=)` — the host no longer filters in
   memory; `health(view=tensions).open_conflicts` now counts in the core.
-- `curate(op=hygiene)` — content-hygiene report (contract 1.4.6): READ-ONLY,
+- `curate(op=hygiene)` — content-hygiene report (contract v1.4.6): READ-ONLY,
   reports never decides — `superseded_without_successor`, `malformed_keys`
   (`md/`-doubled layer namespace), `orphan_entities`, `duplicate_texts` (same
   BM25 tokens + same entities). Structured payload + capped prose.
-- `remember(key=)` **rejects raw keys starting with `md/`** (contract 1.4.6):
+- `remember(key=)` **rejects raw keys starting with `md/`** (contract v1.4.6):
   the server composes `md/L{N}/<key>` — passing a full storage key used to
   write `md/L3/md/L3/...`. Full storage keys belong to `curate`/`explain`
   follow-ups, not to `remember`.
-- `supersede(old, new)` is **atomic** (contract 1.4.6): both keys must resolve
+- `supersede(old, new)` is **atomic** (contract v1.4.6): both keys must resolve
   to existing memories BEFORE any mutation; the old half-mutation (old marked,
   missing successor reported as success) is rejected. Success returns
   `structuredContent {old, new, state}` (the keys, not the echoed text).
@@ -253,6 +268,18 @@ impl Sgdb {
     /// L3 lexical write (v1.1.9 / ADR-0008) — no BQ era. MCP `remember(text=)` without embedding.
     pub fn remember_text_with(
         &mut self, key: &str, text: &str, opts: RememberOptions<'_>,
+    ) -> Result<RememberOutcome, SgdbError>;
+    /// Escrita OPERACIONAL com texto + metadados (v1.5.0; `remember_operational`): dado de SISTEMA do
+    /// host (`sys/`, `hw/`, config) — indexa mas NAO ticka o relogio (sem
+    /// autoria causal: nao entra no `export_delta`). Em L4/L5 `emb` e
+    /// OBRIGATORIO e o TEXTO vai para o companion `/L2/` (e de la que
+    /// `Hit.text`, `text_of` e o lexical leem — antes se perdia); nas outras
+    /// camadas o payload e o texto e `emb` e recusado. Aplica
+    /// scope/scope_dims/entities/content_type/model_id/index_key e devolve o
+    /// que foi GRAVADO (`RememberOutcome`).
+    pub fn remember_operational(
+        &mut self, layer: MemoryLayer, key: &str, text: &str, emb: Option<&[f32]>,
+        opts: RememberOptions<'_>,
     ) -> Result<RememberOutcome, SgdbError>;
 
     /// L4 recall: coarse BQ top-k -> FP32 rescore -> fine top-k.
@@ -458,10 +485,13 @@ pub fn renders_prose(ct: ContentType) -> bool;
 
 pub struct MemoryMeta { /* memory_id, source, confidence, importance,
     created_tick, parent_ids, clock_overflow, scope, entities,
-    content_type: Option<String>,  // MDM1 v6
+    content_type: Option<String>,  // MDM1 v6 — rótulo declarado (None = detector)
     scope_dims: ScopeDims,         // MDM1 v7 — user/agent/app/run
-    model_id: String               // MDM1 v7 — era/model (ADR-0007)
-    — persisted in `sys/meta/` (MDM1 current = v7; older versions migrate) */ }
+    model_id: String,              // MDM1 v7 — era/model (ADR-0007)
+    authority: u8                  // MDM1 v8 — 0 = learned, 255 = HITL
+    — persisted in `sys/meta/` (MDM1 current = v8; v1–v8 decodificam com
+      migração explícita — mapa autoritativo em `MIGRATIONS.md`
+      §"MDM1 — evolução dos campos") */ }
 
 /// Deterministic memory id: FNV-1a 128 over (node_id, created_tick, layer,
 /// key) → 32 hex chars. Assigned once at creation, never re-derived.
@@ -512,12 +542,31 @@ código, binários). Duas regras tornam o consumo determinístico:
    `scope_user/agent/app/run`). A label sozinha não identifica a rota — um
    `scope` legado pode conter `/`.
 
-## Additive public surface (v1.1.2–v1.1.26)
+## Additive public surface (v1.1.2–v1.5.0)
 
 Everything below is **additive** (MINOR per VERSIONING.md) — no signature of a
-v1.0 method changed; crate version **1.4.6** in `Cargo.toml`. Key additions since the contract above:
+v1.0 method changed; crate version **1.5.0** in `Cargo.toml`. Key additions since the contract above:
 
 ```rust
+// ---- trigger rules por caminho (v1.5.0, ADR-0020; src/trigger.rs) ----
+// "em que arquivo o cursor esta => quais namespaces ativar". `namespaces` sao
+// strings de ENTITY: `recall_for_path` = o MESMO 1-hop de `recall_entities`
+// (mesma escala de `dist`), e sem regra que case devolve VAZIO (nunca o pool
+// global). Side-table `sys/trigger/<fnv1a64(pattern):016x>` (valor `TRG1`,
+// NAO e wire type); identidade da regra = o PADRAO (regravar sobrescreve).
+pub struct TriggerRule { pub pattern: String, pub namespaces: Vec<String> }
+pub fn glob_match(pattern: &str, text: &str) -> bool; // '*' sem '/', '**' com, '?' um char
+impl Sgdb {
+    pub fn set_trigger(&mut self, pattern: &str, namespaces: &[&str]) -> Result<(), SgdbError>;
+    pub fn forget_trigger(&mut self, pattern: &str) -> Result<bool, SgdbError>;
+    pub fn trigger_rules(&mut self) -> Result<Vec<TriggerRule>, SgdbError>;   // ordem: padrao asc (contrato)
+    pub fn triggers_for_path(&mut self, path: &str) -> Result<Vec<TriggerRule>, SgdbError>;
+    pub fn namespaces_for_path(&mut self, path: &str) -> Result<Vec<String>, SgdbError>;
+    pub fn recall_for_path(&mut self, path: &str, k: usize) -> Result<Vec<Hit>, SgdbError>;
+}
+// MCP: curate op=set_trigger(pattern,namespaces)|forget_trigger(pattern)|triggers([path]);
+// recall(path=) — ativacao por caminho (exclusivo com entities=/embedding=/mode=semantic|hybrid|causal).
+
 // ---- fork/merge de memória (v1.2.1, seekdb item 1; src/harness.rs) ----
 pub enum MergeStrategy { Fail, Ours, Theirs }
 pub struct PromoteRunReport {
@@ -863,7 +912,7 @@ Binary layouts are contracts — documented by byte offsets in the source
 |--------|-------------|--------|
 | NMD1 | `golden_nmd1_bytes` | magic, layer, klen/key, VectorClock 72B, plen/payload, bitflag |
 | TKLV | `golden_record_bytes` | magic, klen/vlen u32le, CRC over key‖val, body pad 16, record pad 512 |
-| MDM1 | via `golden_record_bytes`/decode tests | side-table meta codec — **v6** (`version_id`, `last_reinforced`, `scope`, `entities`, `content_type`) |
+| MDM1 | `golden_mdm1_v8_layout_pins_authority_as_last_field` (+ `meta_v8_authority_roundtrip_and_v7_migration`, `meta_v1_decodes_with_slot_version_migration`) | side-table meta codec — **v8** (`version_id` [v2], `last_reinforced` [v3], `scope` [v4], `entities` [v5], `content_type` [v6], `scope_dims`+`model_id` [v7], `authority` [v8]) |
 | FNV-1a 64 | `fnv1a64_known_vector` | offset basis + prime (vector `"a"` = `0xaf63dc4c8601ec8c`) |
 
 **Cross-direction tests (P2):**
@@ -887,9 +936,13 @@ the golden tests in the same commit.
 v3 (v0.9) adds `last_reinforced` (v1/v2 decode → 0); **v4** (v1.1.4 item 7)
 adds `scope` (v1–v3 decode → `""`); **v5** (v1.1.4 item 10) adds `entities`
 (v1–v4 decode → empty list); **v6** (v1.1.6 item 2) adds `content_type`
-(v1–v5 decode → `None`). Decode discipline: EVERY field advances `off`, even
-when the value is the default (the v4/v5/v6 bugs were exactly this). NMD1 and
-TKLV/TKCK remain untouched.
+(v1–v5 decode → `None`); **v7** (v1.1.14, ADR-0007) adds `scope_dims` +
+`model_id` (v1–v6 decode → dims vazias + `""`, e `scope != ""` legado promove
+`user`); **v8** (1.2.2, triagem s413) adds `authority` (v1–v7 decode → `0`,
+learned). Decode discipline: EVERY field advances `off`, even when the value is
+the default (the v4/v5/v6 bugs were exactly this). NMD1 and TKLV/TKCK remain
+untouched. **Mapa autoritativo versão → campo → default: `MIGRATIONS.md`
+§"MDM1 — evolução dos campos".**
 
 ## Feature matrix (P2)
 

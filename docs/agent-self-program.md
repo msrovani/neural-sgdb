@@ -6,7 +6,7 @@
 > como se programar e que memória carregar.
 
 **Crate / MCP:** ver `Cargo.toml` e `MCP_CONTRACT_VERSION` (tools: `remember`,
-`recall`, `health`, `curate`). Instalação: [`MCP.md`](MCP.md).
+`recall`, `health`, `curate`, `decide`). Instalação: [`MCP.md`](MCP.md).
 
 ---
 
@@ -51,7 +51,11 @@ playbook são a rede de segurança.
 7. `recall_absences` (v1.1.24) — **o que já foi procurado e não estava lá**. Ler ANTES
    de re-probar: a lista diz a pergunta, o escopo, quantas vezes foi sondada e
    desde quando. Para sondar e registrar numa só chamada use `recall_ledger`.
-8. Só então agir / `remember`. **Gather → act. Não hoarde.**
+8. Se você está **editando um arquivo** (v1.5.0): `recall(path="crates/x/mod.rs")` —
+   as regras de ativação (`curate op=set_trigger`) ligam o caminho aos namespaces,
+   e o recall vem pelo 1-hop delas. Sem regra que case o resultado é **vazio** (não
+   é o recall global — null-scoping continua valendo). O core não adivinha o caminho.
+9. Só então agir / `remember`. **Gather → act. Não hoarde.**
 
 ---
 
