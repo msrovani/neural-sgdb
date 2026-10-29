@@ -299,6 +299,36 @@ memory → `promote_run`, v1.2.1) in
   [`MIGRATIONS.md`](MIGRATIONS.md) (format migrations),
   [`ROADMAP.md`](ROADMAP.md) (honest status + non-goals),
   [`docs/adr/`](docs/adr/) (architecture decision records)
+- **Plan** — [`docs/PLAN.md`](docs/PLAN.md) (approved incremental phases and
+  the current checkpoint)
+- **Sensitive memory** — [`docs/sensitive-agent-memory.md`](docs/sensitive-agent-memory.md)
+  (host responsibilities and limits) + [`docs/adr/0021-agent-protective-policy-connector.md`](docs/adr/0021-agent-protective-policy-connector.md)
+
+## Sensitive-memory host limits
+
+The core is a memory substrate, not a content classifier, consent engine or
+compliance layer. It stores, scopes, links, curates and recalls — it never
+evaluates what a memory says about a person, never decides consent and never
+blocks recall because the context is sensitive.
+
+If your product writes memories about other people — **minors, parental or
+_guardianship context, health, education, or any third-party behavioral/data
+trace** — or operates on vulnerable users, the system is **insufficient on its
+own**. The host owns:
+
+- classifying the memory before it reaches the connector
+- policy metadata (`memory_category`, `subject_type`, `requires_consent`,
+  `retention_rule`) — passed through by the connector, never interpreted by
+  the core
+- recall controls (`RecallPolicy.only_own_scope`, `allow_cross_scope=False`,
+  `vulnerable_context`) so cross-scope/subject recall is refused at the host
+- audit logging of sensitive writes, and `forget` / scope removal on consent
+  revocation or retention expiry
+
+See [`docs/sensitive-agent-memory.md`](docs/sensitive-agent-memory.md) for the
+full list of insufficient-by-itself cases and the minimum protective setup,
+and [`connectors/README.md`](connectors/README.md) for how the connector
+exposes this. Scenario test: `connectors/tests/test_contract.py`.
 
 ## License
 

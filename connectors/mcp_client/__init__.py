@@ -8,6 +8,10 @@ from .client import (
     ToolResult,
 )
 from .contract import (
+    MEMORY_KINDS,
+    HOSTS,
+    SENSITIVE_MEMORY_CATEGORIES,
+    THIRD_PARTY_SUBJECT_TYPES,
     MemoryConnector,
     RecallPolicy,
     ScopeIdentity,
@@ -20,6 +24,10 @@ __all__ = [
     "McpError",
     "SingleWriterError",
     "ToolResult",
+    "MEMORY_KINDS",
+    "HOSTS",
+    "SENSITIVE_MEMORY_CATEGORIES",
+    "THIRD_PARTY_SUBJECT_TYPES",
     "MemoryConnector",
     "RecallPolicy",
     "ScopeIdentity",

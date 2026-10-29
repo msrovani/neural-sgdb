@@ -3,7 +3,7 @@
 Camada de host para integrar agentes ao `mcp_server` sem alterar o core Rust,
 NMD1 ou TKLV. **Não bumpa** o SemVer do crate (`VERSIONING.md` §Host
 connectors). Alinhar docs/adapters ao `MCP_CONTRACT_VERSION` atual do
-`examples/mcp_server.rs` (hoje **1.4.6** — 5 tools: `remember`/`recall`/
+`examples/mcp_server.rs` (hoje **1.5.0** — 5 tools: `remember`/`recall`/
 `health`/`curate`/`decide`; lexical-first).
 
 **Status:** Hermes provider executável + contract tests; OpenClaw esqueleto TS.
@@ -40,6 +40,28 @@ Nenhuma dependência foi adicionada ao crate ou ao cliente Python.
 IDs são tratados como opacos e percent-encoded por segmento. Memória recuperada
 é delimitada como evidência histórica não confiável, nunca como instrução.
 
+## Limites e política de memória sensível
+
+O core não avalia conteúdo, classifica terceiros, decide consentimento ou
+garante proteção. Se o produto escrever memórias sobre outros sujeitos (menores,
+contexto parental, saúde, educação, comportamento de terceiros) ou operar em
+contexto vulnerável, o sistema é **insuficiente por si só**.
+
+- **Política no host**: use `MemoryConnector` com metadados opcionais
+  (`memory_category`, `subject_type`, `requires_consent`, `retention_rule`).
+  Esses campos são repassados/protegidos pelo host, sem interpretação pelo core.
+- **Recall sensível**: configure `RecallPolicy` com `only_own_scope`,
+  `allow_cross_scope=False`, `vulnerable_context=True` e use
+  `auto_recall_context(..., recall_context={"vulnerable_context": True})`.
+- **Rastreabilidade**: o connector registra logs leves em escritas sensíveis.
+  Use `forget` e remoção por escopo em caso de revogação de consentimento ou
+  expiração de retenção.
+- **Testes**: veja `connectors/tests/test_contract.py` para cenários sensíveis
+  (escrita sobre terceiro, recall indevido, recall fora de escopo).
+
+Consulte `docs/sensitive-agent-memory.md` e
+`docs/adr/0021-agent-protective-policy-connector.md` no repositório.
+
 ## Build e contract test
 
 No diretório raiz:
@@ -56,7 +78,7 @@ $env:NEURAL_SGDB_MCP_BIN = "C:\path\to\mcp_server.exe"
 python -m unittest discover -s connectors/tests -v
 ```
 
-O teste cobre handshake, lista exata das quatro tools, store/recall/forget,
+O teste cobre handshake, lista exata das cinco tools MCP, store/recall/forget,
 isolamento de scope, health e lock single-writer.
 
 ## Exclusão single-writer

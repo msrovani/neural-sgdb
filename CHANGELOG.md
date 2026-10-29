@@ -4,7 +4,40 @@ All notable changes to this project. Format based on
 [Keep a Changelog](https://keepachangelog.com/), versions follow
 [SemVer](https://semver.org/).
 
-## [Unreleased] — consolidação pós-1.4.6 (revisão externa, só itens aderentes)
+## [Unreleased]
+
+## [1.5.0] — 2026-10-29 (ativação por contexto + aprendizado por trajetória)
+
+### Sensitive-memory host policy (ADR-0021) — 2026-10-29
+
+O core permanece um SUBSTRATO de memória: não avalia conteúdo, não classifica
+terceiro, não decide consentimento e não bloqueia recall por sensibilidade.
+A política vive toda no host/connector (`VERSIONING.md` §Host connectors —
+sem bump de crate por isso; o contrato MCP segue 1.5.0 e a superfície não muda):
+
+- **Docs de limite visíveis**: `docs/sensitive-agent-memory.md` (o que o core
+  faz/não faz e os casos em que o sistema é INSUFICIENTE sozinho — menores,
+  contexto parental, saúde, educação, dado comportamental de terceiro) +
+  `docs/adr/0021-agent-protective-policy-connector.md` + seção no README raiz
+  e em `connectors/README.md`.
+- **Metadado de política opcional no connector** (`MemoryConnector.store`):
+  `memory_category`, `subject_type`, `requires_consent`, `retention_rule` —
+  repassado pelo connector, nunca interpretado pelo core. O host filtra,
+  expira e audita por categoria sem tocar no modelo do core.
+- **Controle de recall sensível** (`RecallPolicy`): `only_own_scope`,
+  `allow_cross_scope`, `block_sensitive_recall`, `vulnerable_context`,
+  `warn_on_sensitive`; `auto_recall_context` aceita `recall_context` e avisa
+  quando o host opera em contexto vulnerável. Escopo de fora é FILTRADO no
+  host antes de virar contexto do prompt.
+- **Rastreabilidade**: log leve quando a escrita é sobre terceiro/sensível
+  (categoria ou `requires_consent=true`); `forget`/remoção de escopo é o hook
+  de revogação de consentimento e fim de prazo de retenção.
+- **Cenario de teste host-side**: `connectors/tests/test_contract.py`
+  (`test_sensitive_policy_metadata_and_cross_scope_protection`) — escrita com
+  categoria sensível, recall fora de escopo filtrado e aviso de contexto
+  vulnerável. 5/5 verdes.
+
+### Aderentes (pós-1.4.6 — revisão externa, commits d2e869d)
 
 - **P1**: paridade FileStorage/TickvFile dos invariantes (delete + reopen/
   remount); `validate` §8 cobre `sys/rel/` estruturalmente (fantasma por
@@ -14,8 +47,6 @@ All notable changes to this project. Format based on
   não suportado (Doc 04 §7).
 - **8.3/P0**: matriz de rastreabilidade por subsistema + julgamento de
   aderência em `docs/implementation-status.md`.
-
-## [1.5.0] — 2026-10-26 (ativação por contexto + aprendizado por trajetória)
 
 Duas dores do agente que USA o DB (levantamento Ruflo): (1) o `recall` exigia
 que EU escolhesse scope/entities mesmo quando o ARQUIVO EM FOCO já determinava

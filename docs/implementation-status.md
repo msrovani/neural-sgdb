@@ -217,6 +217,7 @@ drift — drift é número de *release* em doc vivo, pego pelo docs-version-gate
 | MCP surface | `contract.json` + `nsgdb://contract` (1.5.0) | `examples/mcp_server.rs` (5 tools + `ALIAS_SURFACE`) | hot test **210/0** (anunciado==servido) | `docs/MCP.md`, `docs/doctrine.md` | IMPLEMENTED |
 | `no_std` + zero-dep | `VERSIONING.md`, `SECURITY.md` | `alloc`-only lib, `x86_64-unknown-none` | gate no_std **364+2** + target check | `docs/api.md` §compat | IMPLEMENTED |
 | Observabilidade | `health(view=*)`, `validate` §§1-8 | `HealthReport`, `ValidateIssue`, `HygieneReport`, metrics | validate/hygiene tests | Doc 06 | IMPLEMENTED |
+| Política de memória sensível (host) | — (core não interpreta conteúdo) | `MemoryConnector` policy metadata + `RecallPolicy` (only_own_scope / vulnerable_context) + log de escrita sobre terceiro | `connectors/tests/test_contract.py::test_sensitive_policy_metadata_and_cross_scope_protection` (5/5) | ADR-0021, `docs/sensitive-agent-memory.md` | IMPLEMENTED (host-side) |
 | Delete replicado (tombstone set) | — | — | — | Doc 04 §7 | REMAINING (exige desenho de formato) |
 | Transporte autenticado | `SignedEnvelope` seam | referência em `signed_peer` | reference flow | `SECURITY.md`, ADR-0006 | REMAINING (host-side) |
 | Avaliação agêntica (P4) | — | `memory_arena_eval` (protocolo v2) | quiz 3/3 + SR/sPS | `docs/doctrine.md` | PARTIAL (harness ok, sem eval real) |

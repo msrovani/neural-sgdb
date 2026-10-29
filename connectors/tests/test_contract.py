@@ -1,4 +1,4 @@
-"""Contract tests do adapter contra o mcp_server real v1.1.9."""
+"""Contract tests do adapter contra o mcp_server real (contrato MCP 1.5.0)."""
 
 from __future__ import annotations
 
@@ -125,6 +125,50 @@ class ContractTest(unittest.TestCase):
                 "entendido",
             )
         )
+
+    def test_sensitive_policy_metadata_and_cross_scope_protection(self) -> None:
+        # Escreve memória com metadado sensível (host-side only)
+        memory = MemoryConnector(
+            self.client,
+            ScopeIdentity("tenant-b", "agent-b", "workspace-b"),
+            host="hermes",
+            session_id="sensitive",
+        )
+        stored = memory.store(
+            "informação sensível sobre terceiro para teste",
+            "constraint",
+            memory_category="third_party_data",
+            subject_type="third_party",
+            requires_consent=True,
+            retention_rule="30d",
+        )
+        key = stored.get("storage_key")
+        self.assertIsInstance(key, str)
+
+        # Recall fora do escopo deve ser bloqueado pelo filtro host-side quando configurado
+        other = MemoryConnector(
+            self.client,
+            ScopeIdentity("tenant-b", "agent-b", "workspace-c"),
+            host="hermes",
+            session_id="other",
+            recall_policy=__import__("connectors.mcp_client.contract", fromlist=["RecallPolicy"]).RecallPolicy(only_own_scope=True, allow_cross_scope=False),
+        )
+        hits_other = other.recall("informação sensível sobre terceiro")
+        self.assertFalse(any(hit.get("key") == key for hit in hits_other))
+
+        # Em contexto vulnerável, auto_recall_context deve adicionar aviso
+        vulnerable = MemoryConnector(
+            self.client,
+            ScopeIdentity("tenant-b", "agent-b", "workspace-b"),
+            host="hermes",
+            session_id="vuln",
+            recall_policy=__import__("connectors.mcp_client.contract", fromlist=["RecallPolicy"]).RecallPolicy(vulnerable_context=True),
+        )
+        ctx = vulnerable.auto_recall_context("informação sensível", recall_context={"vulnerable_context": True})
+        self.assertIn("vulneráveis", ctx)
+
+        # Limpeza
+        memory.forget(key)
 
 
 if __name__ == "__main__":

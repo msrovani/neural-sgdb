@@ -82,7 +82,7 @@ class NeuralSgdbMemoryProvider(MemoryProvider):
     def unavailable_reason(self) -> str:
         return (
             "Defina NEURAL_SGDB_MCP_BIN ou NEURAL_SGDB_MCP_COMMAND com o "
-            "mcp_server v1.1.9."
+            "mcp_server v1.5.0."
         )
 
     def initialize(self, session_id: str, **kwargs: Any) -> None:
