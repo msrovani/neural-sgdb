@@ -587,7 +587,7 @@ fn error_code_label(c: neural_sgdb::ErrorCode) -> &'static str {
 
 /// NÃºmero de tools em `tools/list` (aliases antigos ainda funcionam em tools/call).
 const EXPECTED_MCP_TOOL_COUNT: usize = 5;
-const MCP_CONTRACT_VERSION: &str = "1.5.0";
+const MCP_CONTRACT_VERSION: &str = "1.5.6";
 const BUILD_GIT: &str = env!("NEURAL_SGDB_BUILD_GIT");
 
 /// Lista pÃºblica: 5 tools. Os 40 nomes antigos continuam vÃ¡lidos em `tools/call`.
@@ -829,6 +829,11 @@ fn expand_tool(name: &str, args: &Value) -> String {
         // `recall_entities` e a recusa nunca rodaria (o bug de "a regra mora em
         // dois handlers e o segundo esquece", licao v1.1.25/v1.4.4).
         "recall" if args["path"].as_str().is_some_and(|p| !p.is_empty()) => "recall".into(),
+        // v1.5.6: mesma licao do `path=` acima — `all_scopes` e resolvido no arm
+        // do recall (que recusa entities=/path=/mode vetorial). Sem esta linha o
+        // dispatch caia em `recall_entities`, que ignora o flag EM SILENCIO
+        // (achado pelo hot test: 223 assercoes, 1 falha).
+        "recall" if args["all_scopes"].as_bool().unwrap_or(false) => "recall".into(),
         "recall" if args["entities"].as_array().is_some_and(|a| !a.is_empty()) => {
             "recall_entities".into()
         }
@@ -918,7 +923,8 @@ fn mcp_listed_tools() -> Value {
            "rag":{"type":"boolean","default":false},
            "rerank":{"type":"boolean","default":false},
            "historical":{"type":"boolean","default":false},
-           "path":{"type":"string","description":"v1.5.0 (trigger rules): o caminho do arquivo em foco. O core resolve as regras GLOBAIS que casam (curate op=set_trigger) e recalla pelos namespaces delas - retrieval 1-hop por entity, a MESMA escala de dist de entities=. Exclusivo com entities=/embedding=/mode=semantic|hybrid|causal."}
+           "path":{"type":"string","description":"v1.5.0 (trigger rules): o caminho do arquivo em foco. O core resolve as regras GLOBAIS que casam (curate op=set_trigger) e recalla pelos namespaces delas - retrieval 1-hop por entity, a MESMA escala de dist de entities=. v1.5.6: honra scope= e scope_user/agent/app/run (antes o filtro era DESCARTADO e memoria escopada ficava invisivel). Exclusivo com entities=/embedding=/mode=semantic|hybrid|causal."},
+           "all_scopes":{"type":"boolean","default":false,"description":"v1.5.6 (cold-start em 1 round trip): varre os escopos que o nsgdb://session publica (scopes_to_probe + scopes_to_probe_dims) com recall LEXICAL e devolve os hits com o scope de origem de cada um. Exige query. Exclusivo com path=/entities=/embedding=/mode vetorial."}
          }},
          "annotations":{"readOnlyHint":true}},
         {"name":"health",
@@ -1030,6 +1036,69 @@ fn mcp_tool_result(text: &str, structured: Value, is_error: bool) -> Value {
         "content": [{"type": "text", "text": text}],
         "structuredContent": structured,
         "isError": is_error
+    })
+}
+
+/// A single error envelope for all tool-level failures. `isError` is supplied
+/// by the typed call site and never inferred from the human-readable message.
+fn mcp_error_result(message: &str, error: Value) -> Value {
+    json!({
+        "content": [{"type": "text", "text": message}],
+        "structuredContent": error,
+        "isError": true
+    })
+}
+
+fn mcp_core_error_result(e: &neural_sgdb::SgdbError) -> Value {
+    mcp_error_result(&mcp_actionable_error(e), mcp_error_data(e))
+}
+
+fn mcp_param_error_result(message: &str) -> Value {
+    mcp_error_result(message, mcp_param_error_data(message))
+}
+
+fn recall_result_status(hit_count: usize) -> &'static str {
+    if hit_count == 0 { "empty" } else { "ok" }
+}
+
+/// Echo dos filtros EFETIVOS: so os campos NAO-vazios viajam. O
+/// `filter_applied` derivado do proprio objeto impede a divergencia entre "o
+/// que foi aplicado" e "o que foi ecoado" (era um booleano calculado em
+/// paralelo, que podia mentir depois de um refactor do roteamento).
+fn scope_filter_echo(scope: &str, filter: &neural_sgdb::ScopeFilter) -> Value {
+    let mut out = serde_json::Map::new();
+    if !scope.is_empty() {
+        out.insert("scope".into(), json!(scope));
+    }
+    for (name, val) in [
+        ("user", &filter.user),
+        ("agent", &filter.agent),
+        ("app", &filter.app),
+        ("run", &filter.run),
+    ] {
+        if let Some(v) = val {
+            if !v.is_empty() {
+                out.insert(name.into(), json!(v));
+            }
+        }
+    }
+    Value::Object(out)
+}
+
+fn recall_route(
+    mode: &str,
+    route: &str,
+    hit_count: usize,
+    filter: Value,
+) -> Value {
+    let filter_applied = filter.as_object().is_some_and(|fields| !fields.is_empty());
+    json!({
+        "status": recall_result_status(hit_count),
+        "mode": mode,
+        "route": route,
+        "filter_applied": filter_applied,
+        "filter": filter,
+        "hit_count": hit_count
     })
 }
 
@@ -1488,9 +1557,11 @@ fn session_payload(db: &mut Sgdb, db_path: &str, embedder: &str) -> Value {
             scopes_to_probe.push(label.clone());
         }
     }
-    if !default_scope.is_empty() && !scopes_to_probe.iter().any(|s| s == &default_scope) {
-        scopes_to_probe.insert(0, default_scope.clone());
-    }
+    let default_scope_has_docs = scopes_to_probe.iter().any(|s| s == &default_scope);
+    // v1.5.6: DEFAULT_SCOPE configurado e VAZIO nao entra na lista de probes.
+    // Mandar sondar um escopo sem memoria custa um round trip por sessao (era o
+    // caso do `.cursor/mcp.json` deste repo: 0 de 96 docs). A lista continua
+    // sendo "onde HA memoria"; o descompasso vira next_action abaixo.
     // Always probe doctrine — seed exists even if scope_labels omitted it briefly.
     if !scopes_to_probe.iter().any(|s| s == neural_sgdb::DOCTRINE_SCOPE) {
         scopes_to_probe.push(neural_sgdb::DOCTRINE_SCOPE.to_string());
@@ -1525,6 +1596,17 @@ fn session_payload(db: &mut Sgdb, db_path: &str, embedder: &str) -> Value {
             "detail": format!("sondar {} scope(s) legado(s) por scope=", scopes_to_probe.len()),
             "scopes": scopes_to_probe.clone()
         }));
+        next_actions.push(json!({
+            "action": "recall_all_scopes",
+            "detail": "1 round trip: recall(all_scopes=true, query=..., k=...) varre scopes_to_probe + scopes_to_probe_dims e devolve hits com o scope de origem"
+        }));
+    }
+    if !default_scope.is_empty() && !default_scope_has_docs {
+        next_actions.push(json!({
+            "action": "default_scope_empty",
+            "detail": format!("default_scope=\"{default_scope}\" nao tem memoria neste DB; aponte NEURAL_SGDB_DEFAULT_SCOPE para um escopo de scopes_to_probe ou escreva no escopo padrao"),
+            "default_scope": default_scope.clone()
+        }));
     }
     if !scopes_to_probe_dims.is_empty() {
         next_actions.push(json!({
@@ -1547,15 +1629,40 @@ fn session_payload(db: &mut Sgdb, db_path: &str, embedder: &str) -> Value {
         "protocol": "gather-then-act",
         // v1.1.28 (D5): {step, text} tipado — o ordinal NÃO está mais dentro
         // da string; a ordem do array é a única fonte de sequência.
+        // Fase 2 (onboarding funcional): pré-requisitos explícitos para
+        // triggers/entities/scope + regra clara sobre recall(path=).
         "steps": [
-            {"step": "1", "text": "Ler este resource (nsgdb://session) e nsgdb://doctrine"},
-            {"step": "2", "text": "Para cada scope em scopes_to_probe: recall(mode=lexical, scope=..., k=5) OU recall(entities=[...], scope=...)"},
-            {"step": "2b", "text": "Para cada entrada de scopes_to_probe_dims: recall(mode=lexical, k=5, scope_user/agent/app/run=os campos dela) — estas NAO sao alcancaveis por scope= (nem hybrid/temporal: eles recusam dims)"},
+            {"step": "1", "text": "Ler este resource (nsgdb://session) e nsgdb://doctrine. Entender: core não extrai entidades nem cria regras; regras vêm só de curate op=set_trigger."},
+            {"step": "2", "text": "Pré-requisito SCOPE: recall(all_scopes=true, query=..., k=...) varre TODOS os escopos descobertos em 1 round trip (hits anotados com o scope de origem). Alternativa granular: para cada scope em scopes_to_probe usar recall(mode=lexical, scope=..., k=5) OU recall(entities=[...], scope=...). Para scopes_to_probe_dims usar scope_user/agent/app/run (não alcançáveis por scope=; hybrid/temporal recusam dims)."},
+            {"step": "2b", "text": "Pré-requisito ENTITIES: use entidades consistentes entre remember(entities=[...]) e recall(entities=[...]). Formato recomendado: kind/name canônico (ex.: pref/idioma, mom/constraint, adr/index, doc/protocol, nsgdb/usage). 1-hop casa strings idênticas."},
+            {"step": "2c", "text": "Pré-requisito TRIGGERS: registre regras com curate op=set_trigger{pattern,namespaces} (glob: * não atravessa '/', ** atravessa, ? 1 char). recall(path=...) resolve regras GLOBAIS por caminho e recalla pelos namespaces delas — NÃO cria regras nem extrai entidades. Sem regra que case → vazio (nunca pool global)."},
             {"step": "3", "text": "Preferencias IDE: entities pref/idioma, pref/memoria, nsgdb/usage, mom/pref no default_scope"},
             {"step": "4", "text": "Constraints de projeto: entities mom/constraint, adr/index, roadmap/non-goals, docs/telepathy no scope do repo (constraints primeiro)"},
             {"step": "5", "text": "health(view=staleness) — classifica aging/TTL/contradicts; curate manual (nao auto-forget)"},
             {"step": "6", "text": "So entao remember — MOM roles mom/*; fato identico → reinforce; nao hoarde; 1 writer por DB file"}
         ],
+        "entity_format": {
+            "rule": "kind/name canônico, strings idênticas na escrita e na busca (1-hop)",
+            "recommended": [
+                "pref/idioma",
+                "pref/memoria",
+                "nsgdb/usage",
+                "mom/pref",
+                "mom/constraint",
+                "mom/role",
+                "mom/anti-pattern",
+                "adr/index",
+                "roadmap/non-goals",
+                "docs/telepathy",
+                "doc/protocol"
+            ],
+            "note": "O core nunca extrai entidades de texto — quem fornece declara"
+        },
+        "triggers": {
+            "rule": "regras só via curate op=set_trigger; recall(path=...) NÃO cria regras nem extrai entidades",
+            "ops": ["set_trigger", "forget_trigger", "triggers"],
+            "path_behavior": "resolve regras globais que casam com o caminho e recalla pelos namespaces delas (1-hop); sem regra que case → vazio (nunca pool global)"
+        },
         "default_scope": default_scope,
         "next_actions": next_actions,
         "scopes_to_probe": scopes_to_probe,
@@ -1564,7 +1671,7 @@ fn session_payload(db: &mut Sgdb, db_path: &str, embedder: &str) -> Value {
         "unseen_scope_dims": tensions.get("unseen_scope_dims").cloned().unwrap_or(json!([])),
         "single_writer": "Um processo mcp_server por ficheiro NEURAL_SGDB_DB; dois writers no mesmo FileStorage e risco. Partilha de ficheiro = memorias comuns, nao sync CRDT.",
         "telepathy_when": "Dois ou mais Sgdb com DBs/nos distintos → cargo run --release --example p2p_telepathy --features p2p",
-        "embedder_host": "Semantic/hybrid: embedding= nas tools, ou NEURAL_SGDB_EMBEDDER=demo (trigrama), ou examples/embedder_http / crates/nsgdb-embed (ADR-0008 — nunca no core)"
+        "embedder_host": "Semantic/hybrid: embedding= nas tools, ou NEURAL_SGDB_EMBEDDER=demo (trigram, NAO semantico), ou examples/embedder_http / crates/nsgdb-embed (ADR-0008 — nunca no core)"
     });
     json!({
         "resource": "nsgdb://session",
@@ -1604,11 +1711,11 @@ fn recall_for_mcp(
     emb: &[f32],
     query: &str,
     need: usize,
-) -> Result<Vec<neural_sgdb::Hit>, String> {
-    let r = if !filter.is_global_only() {
+) -> Result<Vec<neural_sgdb::Hit>, neural_sgdb::SgdbError> {
+    if !filter.is_global_only() {
         match mode {
             "lexical" => db.recall_lexical_dims(query, need, filter),
-            "hybrid" => return Err(ERR_DIMS_HYBRID.into()),
+            "hybrid" => Err(neural_sgdb::SgdbError::Invalid(ERR_DIMS_HYBRID)),
             _ => db.recall_scoped_dims(emb, need, filter),
         }
     } else {
@@ -1620,8 +1727,45 @@ fn recall_for_mcp(
             (_, true) => db.recall(emb, need),
             _ => db.recall_scoped(emb, need, scope),
         }
+    }
+}
+
+fn rag_context_for_mcp(
+    db: &mut Sgdb,
+    mode: &str,
+    emb: &[f32],
+    query: &str,
+    k: usize,
+    rerank: bool,
+) -> Result<(String, Vec<neural_sgdb::Hit>, &'static str), neural_sgdb::SgdbError> {
+    let hits = match mode {
+        "lexical" => db.recall_lexical(query, k)?,
+        "hybrid" => db.recall_hybrid(emb, query, k)?,
+        "causal" => db.recall(emb, k)?,
+        _ => db.recall(emb, k)?,
     };
-    r.map_err(mcp_actionable_error)
+    let context = if hits.is_empty() {
+        String::new()
+    } else if mode == "semantic" && rerank {
+        db.rag_context_reranked(emb, query, k)?
+    } else if mode == "semantic" {
+        db.rag_context(emb, k)?
+    } else {
+        hits.iter()
+            .enumerate()
+            .filter(|(_, hit)| !hit.text.is_empty())
+            .map(|(i, hit)| format!("  #{}) d={:.4} {}", i + 1, hit.dist, hit.text))
+            .collect::<Vec<_>>()
+            .join("\\n")
+    };
+    let route = match (mode, rerank) {
+        ("lexical", _) => "lexical_hits",
+        ("hybrid", _) => "hybrid_hits",
+        ("causal", _) => "causal_semantic",
+        (_, true) => "semantic_reranked",
+        _ => "semantic_context",
+    };
+    Ok((context, hits, route))
 }
 
 fn main() {
@@ -2062,14 +2206,140 @@ fn main() {
                         }
                     }
                     "recall" => {
+                        // v1.5.6 — cold-start em UM round trip. O host nao sabe em
+                        // que escopo a memoria mora; em vez de N chamadas (uma por
+                        // probe do nsgdb://session) este modo varre os MESMOS probes
+                        // e devolve os hits com o scope de origem. null-scoping
+                        // intacto: o recall normal continua vendo so o seu escopo.
+                        if args["all_scopes"].as_bool().unwrap_or(false) {
+                            let query = args["query"].as_str().unwrap_or("");
+                            if query.is_empty() {
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":mcp_param_error_result(
+                                    "all_scopes=true exige query: e uma varredura LEXICAL pelos escopos descobertos")}));
+                                continue;
+                            }
+                            if args["path"].as_str().is_some_and(|p| !p.is_empty())
+                                || args["entities"].as_array().is_some_and(|a| !a.is_empty())
+                            {
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":mcp_param_error_result(
+                                    "all_scopes e exclusivo com path=/entities=: ele ja varre os escopos descobertos")}));
+                                continue;
+                            }
+                            if matches!(args["mode"].as_str(), Some("semantic" | "hybrid" | "causal"))
+                                || has_caller_embedding(args)
+                            {
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":mcp_param_error_result(
+                                    "all_scopes so faz varredura LEXICAL por escopo; passe mode=lexical sem embedding=")}));
+                                continue;
+                            }
+                            let k = args["k"].as_u64().unwrap_or(5).max(1) as usize;
+                            let mut rows: Vec<(String, neural_sgdb::Hit)> = Vec::new();
+                            let mut scanned: Vec<String> = Vec::new();
+                            let mut errors: Vec<String> = Vec::new();
+                            for (label, _) in db.scope_probes().unwrap_or_default().legacy {
+                                if label.is_empty() {
+                                    continue;
+                                }
+                                match db.recall_lexical_scoped(query, k, &label) {
+                                    Ok(hs) => {
+                                        scanned.push(label.clone());
+                                        for h in hs {
+                                            rows.push((label.clone(), h));
+                                        }
+                                    }
+                                    Err(e) => errors.push(format!("{label}: {e:?}")),
+                                }
+                            }
+                            for d in db.scope_dim_descriptors().unwrap_or_default() {
+                                let filter = ScopeFilter {
+                                    user: (!d.user.is_empty()).then(|| d.user.clone()),
+                                    agent: (!d.agent.is_empty()).then(|| d.agent.clone()),
+                                    app: (!d.app.is_empty()).then(|| d.app.clone()),
+                                    run: (!d.run.is_empty()).then(|| d.run.clone()),
+                                };
+                                match db.recall_lexical_dims(query, k, &filter) {
+                                    Ok(hs) => {
+                                        scanned.push(d.display.clone());
+                                        for h in hs {
+                                            rows.push((d.display.clone(), h));
+                                        }
+                                    }
+                                    Err(e) => errors.push(format!("{}: {e:?}", d.display)),
+                                }
+                            }
+                            // dedup por key (legacy e dims podem trazer o mesmo doc)
+                            // + ordem deterministica: dist asc, key asc, scope asc.
+                            rows.sort_by(|a, b| {
+                                a.1.dist
+                                    .total_cmp(&b.1.dist)
+                                    .then(a.1.key.cmp(&b.1.key))
+                                    .then(a.0.cmp(&b.0))
+                            });
+                            let mut seen: Vec<String> = Vec::new();
+                            rows.retain(|(_, h)| {
+                                if seen.iter().any(|s| s == &h.key) {
+                                    false
+                                } else {
+                                    seen.push(h.key.clone());
+                                    true
+                                }
+                            });
+                            let total = rows.len();
+                            rows.truncate(k.saturating_mul(4).max(k));
+                            let mut with_hits: Vec<(String, usize)> = Vec::new();
+                            for (s, _) in &rows {
+                                match with_hits.iter_mut().find(|(x, _)| x == s) {
+                                    Some(e) => e.1 += 1,
+                                    None => with_hits.push((s.clone(), 1)),
+                                }
+                            }
+                            let text = if rows.is_empty() {
+                                let mut m = format!(
+                                    "0 hits em {} escopo(s) varrido(s) (mode=lexical)",
+                                    scanned.len()
+                                );
+                                if !errors.is_empty() {
+                                    m.push_str(&format!("; erros: {}", errors.join("; ")));
+                                }
+                                m.push_str("; use health(view=tensions) p/ ver onde ha memoria");
+                                m
+                            } else {
+                                rows.iter()
+                                    .map(|(_, h)| fmt_hit(h))
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            };
+                            let structured = json!({
+                                "hit_count": rows.len(),
+                                "total_before_cap": total,
+                                "scopes_scanned": scanned,
+                                "scopes_with_hits": with_hits.iter().map(|(s, n)| json!({"scope": s, "hits": n})).collect::<Vec<_>>(),
+                                "truncated": total > rows.len(),
+                                "mode": "lexical",
+                                "all_scopes": true,
+                                "errors": errors,
+                                "hits": rows.iter().map(|(s, h)| {
+                                    let mut v = hit_json(h);
+                                    v["scope"] = json!(s);
+                                    v
+                                }).collect::<Vec<_>>()
+                            });
+                            send(&json!({"jsonrpc":"2.0","id":id,"result":
+                                mcp_tool_result(&text, structured, false)}));
+                            continue;
+                        }
                         // v1.5.0 (trigger rules): `path=` e o caminho do arquivo
                         // em foco — o core resolve as regras globais que casam e
                         // recalla pelos namespaces delas. `query` NAO e exigido
                         // nesse modo (a ativacao e por ENTITY, nao por termo).
                         if let Some(path) = args["path"].as_str().filter(|p| !p.is_empty()) {
+                            // v1.5.6: as recusas desta rota usam o MESMO envelope
+                            // de tool (isError + structuredContent) do resto da
+                            // Fase 1 — antes saiam como erro JSON-RPC e o
+                            // consumidor via dois formatos na mesma tool.
                             if args["entities"].as_array().is_some_and(|a| !a.is_empty()) {
-                                send(&error_response(&id, -32602,
-                                    "use 'entities' OU 'path': os dois juntos nao tem semantica definida (o path resolve entities por conta propria)"));
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":mcp_param_error_result(
+                                    "use 'entities' OU 'path': os dois juntos nao tem semantica definida (o path resolve entities por conta propria)")}));
                                 continue;
                             }
                             // o path= e o caminho de ENTIDADES: um vetor (ou um
@@ -2077,14 +2347,14 @@ fn main() {
                             // silencio — recusa em voz alta (a doutrina da casa).
                             let vec_mode = matches!(args["mode"].as_str(), Some("semantic" | "hybrid" | "causal"));
                             if vec_mode || has_caller_embedding(args) {
-                                send(&error_response(&id, -32602,
-                                    "path= usa o retrieval por ENTIDADES (1-hop): nao aceita embedding=/mode=semantic|hybrid|causal — remova o vetor ou use entities= explicitamente"));
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":mcp_param_error_result(
+                                    "path= usa o retrieval por ENTIDADES (1-hop): nao aceita embedding=/mode=semantic|hybrid|causal — remova o vetor ou use entities= explicitamente")}));
                                 continue;
                             }
                             let k = args["k"].as_u64().unwrap_or(5) as usize;
                             if k == 0 {
-                                send(&error_response(&id, -32602,
-                                    "k=0 e invalido: para sondar existencia use k=1 e leia hits[] (vazio = nao havia nada)"));
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":mcp_param_error_result(
+                                    "k=0 e invalido: para sondar existencia use k=1 e leia hits[] (vazio = nao havia nada)")}));
                                 continue;
                             }
                             let namespaces = match db.namespaces_for_path(path) {
@@ -2095,11 +2365,24 @@ fn main() {
                                     continue;
                                 }
                             };
-                            let mut hits = match db.recall_for_path(path, k) {
+                            // v1.5.6: o `scope=` e as dims do host VALEM aqui.
+                            // Antes a rota chamava o recall global de caminho e
+                            // descartava o filtro — a memoria escopada (o caso
+                            // normal de workspace) era invisivel ao
+                            // `recall(path=)`, mesmo com o escopo certo na mao.
+                            let scope = db.resolve_scope_param(args["scope"].as_str());
+                            let dims_filter = mcp_scope_filter(args);
+                            let retrieved = if !dims_filter.is_global_only() {
+                                db.recall_for_path_dims(path, k, &dims_filter)
+                            } else if !scope.is_empty() {
+                                db.recall_for_path_scoped(path, k, &scope)
+                            } else {
+                                db.recall_for_path(path, k)
+                            };
+                            let mut hits = match retrieved {
                                 Ok(h) => h,
                                 Err(e) => {
-                                    send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                        "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true,"structuredContent":mcp_error_data(&e)}}));
+                                    send(&json!({"jsonrpc":"2.0","id":id,"result":mcp_core_error_result(&e)}));
                                     continue;
                                 }
                             };
@@ -2115,7 +2398,16 @@ fn main() {
                             } else if namespaces.is_empty() {
                                 format!("nenhuma regra de ativacao casa com '{path}' (registre com curate op=set_trigger)")
                             } else if hits.is_empty() {
-                                format!("regras casaram com '{path}' ({}) mas nenhuma memoria carrega esses namespaces", namespaces.join(", "))
+                                // o filtro efetivo entra na CAUSA: "sem hit" com um
+                                // scope na mao nao e o mesmo que sem regra.
+                                let filter_note = if !scope.is_empty() {
+                                    format!(" (filtro: scope=\"{scope}\")")
+                                } else if !dims_filter.is_global_only() {
+                                    " (filtro: scope_user/agent/app/run)".to_string()
+                                } else {
+                                    String::new()
+                                };
+                                format!("regras casaram com '{path}' ({}) mas nenhuma memoria carrega esses namespaces{filter_note}", namespaces.join(", "))
                             } else {
                                 hits.iter().map(fmt_hit).collect::<Vec<_>>().join("\n")
                             };
@@ -2127,7 +2419,15 @@ fn main() {
                                 "path": path,
                                 "namespaces": namespaces,
                                 "activated": !namespaces.is_empty(),
-                                "mode": "entities"
+                                "mode": "entities",
+                                "scope": scope,
+                                "scope_dims": {
+                                    "user": dims_filter.user,
+                                    "agent": dims_filter.agent,
+                                    "app": dims_filter.app,
+                                    "run": dims_filter.run
+                                },
+                                "filter_applied": !scope.is_empty() || !dims_filter.is_global_only()
                             });
                             send(&json!({"jsonrpc":"2.0","id":id,"result":mcp_tool_result(&text, structured, false)}));
                             continue;
@@ -2149,8 +2449,8 @@ fn main() {
                         let mode = match resolve_retrieval_mode(args, &embedder_effective) {
                             Ok(m) => m,
                             Err(e) => {
-                                send(&json!({"jsonrpc":"2.0","id":id,"result":mcp_tool_result(
-                                    &e, json!({"error": e}), true)}));
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":mcp_error_result(
+                                    &e, mcp_param_error_data(&e))}));
                                 continue;
                             }
                         };
@@ -2196,9 +2496,12 @@ fn main() {
                             need,
                         ) {
                             Ok(h) => h,
+                            // falha de storage/corrupcao NAO e "sem memoria": o
+                            // erro sobe tipado (code/retryable) em vez de virar
+                            // um top-k vazio silencioso.
                             Err(e) => {
-                                send(&json!({"jsonrpc":"2.0","id":id,"result":mcp_tool_result(
-                                    &e, json!({"error": e}), true)}));
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":
+                                    mcp_core_error_result(&e)}));
                                 continue;
                             }
                         };
@@ -2242,13 +2545,24 @@ fn main() {
                         // Triagem #2 ISSUE 3: `truncated` declara o corte em
                         // relação ao pool — hit_count sozinho nao distingue
                         // "20 de 20" de "20 de 65".
+                        let route = if !dims_filter.is_global_only() {
+                            if mode == "lexical" { "lexical_dims" } else { "semantic_dims" }
+                        } else if !scope.is_empty() {
+                            if mode == "lexical" { "lexical_scope" } else if mode == "hybrid" { "hybrid_scope" } else { "semantic_scope" }
+                        } else if mode == "causal" { "causal_semantic" } else { mode.as_str() };
+                        let status = recall_route(
+                            &mode,
+                            route,
+                            page.len(),
+                            scope_filter_echo(&scope, &dims_filter),
+                        );
                         let structured = if json_fmt {
                             match &causal_rows_json {
-                                Some(rows) => json!({"hits": rows, "scope": scope, "mode": mode, "scope_dims": filter_echo, "truncated": next.is_some()}),
-                                None => json!({"hits": page.iter().map(hit_json).collect::<Vec<_>>(), "scope": scope, "mode": mode, "scope_dims": filter_echo, "truncated": next.is_some()}),
+                                Some(rows) => json!({"hits": rows, "scope": scope, "mode": mode, "scope_dims": filter_echo, "truncated": next.is_some(), "recall": status}),
+                                None => json!({"hits": page.iter().map(hit_json).collect::<Vec<_>>(), "scope": scope, "mode": mode, "scope_dims": filter_echo, "truncated": next.is_some(), "recall": status}),
                             }
                         } else {
-                            json!({"hit_count": page.len(), "scope": scope, "mode": mode, "scope_dims": filter_echo, "truncated": next.is_some()})
+                            json!({"hit_count": page.len(), "scope": scope, "mode": mode, "scope_dims": filter_echo, "truncated": next.is_some(), "recall": status})
                         };
                         let mut result = mcp_tool_result(&text, structured, false);
                         if let Some(n) = next {
@@ -2266,8 +2580,8 @@ fn main() {
                         let mode = match resolve_retrieval_mode(args, &embedder_effective) {
                             Ok(m) => m,
                             Err(e) => {
-                                send(&json!({"jsonrpc":"2.0","id":id,"result":mcp_tool_result(
-                                    &e, json!({"error": e}), true)}));
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":mcp_error_result(
+                                    &e, mcp_param_error_data(&e))}));
                                 continue;
                             }
                         };
@@ -2284,97 +2598,67 @@ fn main() {
                             }
                         };
                         let json_fmt = args["format"].as_str().unwrap_or("") == "json";
-                        let result_text = match mode.as_str() {
-                            "lexical" => {
-                                let hits = db.recall_lexical(query, k).unwrap_or_default();
-                                if json_fmt {
-                                    hits_json(&hits)
-                                } else if hits.is_empty() {
-                                    "nenhum contexto recuperado".into()
-                                } else {
-                                    hits.iter().map(fmt_hit).collect::<Vec<_>>().join("\n")
-                                }
-                            }
-                            "hybrid" => {
-                                let hits = db.recall_hybrid(&emb, query, k).unwrap_or_default();
-                                if json_fmt {
-                                    hits_json(&hits)
-                                } else if hits.is_empty() {
-                                    "nenhum contexto recuperado".into()
-                                } else {
-                                    hits.iter().map(fmt_hit).collect::<Vec<_>>().join("\n")
-                                }
-                            }
+                        let rerank = args["rerank"].as_bool().unwrap_or(false);
+                        let filter = mcp_scope_filter(args);
+                        // v1.5.x (Fase 1 do docs/PLAN.md): TODA falha de recall
+                        // sai como erro tipado com `structuredContent`. Antes,
+                        // lexical/hybrid faziam `.unwrap_or_default()` (falha de
+                        // storage virava "nenhum contexto recuperado" — o
+                        // consumidor lia ausencia de evidencia onde houve falha
+                        // de leitura) e o `isError` do caminho default era
+                        // INFERIDO de substring do texto. Agora o envelope e um
+                        // so e a rota vem declarada.
+                        let out = match mode.as_str() {
                             "causal" => {
                                 // o filtro de scope vem do `recall_for_mcp`
                                 // (o `recall_causal` do core nao filtra -
                                 // null-scoping e doutrina, nao opcao).
                                 let depth = args["causal_depth"].as_u64().unwrap_or(4) as usize;
-                                match recall_for_mcp(
-                                    &mut db,
-                                    "semantic",
-                                    "",
-                                    &mcp_scope_filter(args),
-                                    &emb,
-                                    query,
-                                    k,
-                                ) {
-                                    Err(e) => {
-                                        send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                            "content":[{"type":"text","text":e}],"isError":true}}));
-                                        continue;
-                                    }
-                                    Ok(hits) => {
-                                        if json_fmt {
+                                recall_for_mcp(&mut db, "semantic", "", &filter, &emb, query, k)
+                                    .map(|hits| (String::new(), hits, "causal_semantic"))
+                                    .map(|(_, hits, route)| {
+                                        let text = if json_fmt {
                                             json!({"hits": causal_rows(&mut db, &hits, depth)})
                                                 .to_string()
                                         } else if hits.is_empty() {
-                                            "nenhum contexto recuperado".into()
+                                            "nenhum contexto recuperado".to_string()
                                         } else {
                                             causal_prose(&mut db, &hits, depth)
-                                        }
-                                    }
-                                }
+                                        };
+                                        (text, hits, route)
+                                    })
                             }
-                            _ => {
-                                match recall_for_mcp(
-                                    &mut db,
-                                    "semantic",
-                                    "",
-                                    &mcp_scope_filter(args),
-                                    &emb,
-                                    query,
-                                    k,
-                                ) {
-                                    Err(e) => {
-                                        send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                                            "content":[{"type":"text","text":e}],"isError":true}}));
-                                        continue;
-                                    }
-                                    Ok(hits) => {
-                                        if json_fmt {
-                                            hits_json(&hits)
-                                        } else if hits.is_empty() {
-                                            "nenhum contexto recuperado".into()
-                                        } else if args["rerank"].as_bool().unwrap_or(false) {
-                                            db.rag_context_reranked(&emb, query, k)
-                                                .map_err(mcp_actionable_error)
-                                                .unwrap_or_else(|e| e)
-                                        } else {
-                                            db.rag_context(&emb, k)
-                                                .map_err(mcp_actionable_error)
-                                                .unwrap_or_else(|e| e)
-                                        }
-                                    }
-                                }
+                            _ => rag_context_for_mcp(&mut db, &mode, &emb, query, k, rerank)
+                                .map(|(context, hits, route)| {
+                                    let text = if json_fmt {
+                                        hits_json(&hits)
+                                    } else if hits.is_empty() {
+                                        "nenhum contexto recuperado".to_string()
+                                    } else if mode == "semantic" {
+                                        context
+                                    } else {
+                                        hits.iter().map(fmt_hit).collect::<Vec<_>>().join("\n")
+                                    };
+                                    (text, hits, route)
+                                }),
+                        };
+                        let (result_text, hits, route) = match out {
+                            Ok(v) => v,
+                            Err(e) => {
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":
+                                    mcp_core_error_result(&e)}));
+                                continue;
                             }
                         };
-                        let is_err = result_text.contains("acao: chame a tool `era_report`")
-                            || result_text.starts_with("contrato:")
-                            || result_text.starts_with("erro:");
-                        send(&json!({"jsonrpc":"2.0","id":id,"result":{
-                            "content":[{"type":"text","text":result_text}],
-                            "isError":is_err}}));
+                        let recall = recall_route(
+                            &mode,
+                            route,
+                            hits.len(),
+                            scope_filter_echo("", &filter),
+                        );
+                        let structured = json!({"context": result_text, "recall": recall});
+                        send(&json!({"jsonrpc":"2.0","id":id,"result":
+                            mcp_tool_result(&result_text, structured, false)}));
                     }
                     "recall_temporal" => {
                         let query = args["query"].as_str().unwrap_or("");
@@ -3521,9 +3805,47 @@ fn main() {
                                     if query.is_empty() {
                                         answers.push(fail("query obrigatoria")); continue 'outer;
                                     }
-                                    match db.recall_adaptive_lexical(query, 5) {
-                                        Ok(ar) => {
-                                            let top_keys: Vec<String> = ar.hits.iter().take(3).map(|h| h.key.clone()).collect();
+                                    // v1.5.6: o DEFAULT_SCOPE vale tambem aqui — e o
+                                    // filtro tem de estar no RECALL, nao DEPOIS dele.
+                                    // `recall_adaptive_lexical` e GLOBAL-ONLY (null-
+                                    // scoping): filtrar o resultado por scope devolvia 0
+                                    // para toda memoria escopada e o tool respondia
+                                    // "insufficient" para sempre. Era o `recall` e o
+                                    // `decide` discordando sobre o que existe.
+                                    let q_scope = db.resolve_scope_param(q["scope"].as_str());
+                                    let scan = if q_scope.is_empty() {
+                                        db.recall_adaptive_lexical(query, 5).map(|ar| {
+                                            (
+                                                ar.hits
+                                                    .iter()
+                                                    .map(|h| h.key.clone())
+                                                    .collect::<Vec<String>>(),
+                                                ar.boundary_decisive,
+                                                ar.escalations,
+                                                ar.oversample_used,
+                                            )
+                                        })
+                                    } else {
+                                        // Nao existe variante adaptive LEXICAL escopada
+                                        // (o ADR-0012 mede ambiguidade no BQ): aqui o
+                                        // orcamento nao-saturado faz o papel do
+                                        // boundary_decisive — mesmo criterio do
+                                        // RecallProbe::saturated.
+                                        db.recall_lexical_scoped(query, 5, &q_scope).map(|hs| {
+                                            let decisive = hs.len() < 5;
+                                            (
+                                                hs.iter().map(|h| h.key.clone()).collect::<Vec<String>>(),
+                                                decisive,
+                                                0u8,
+                                                1usize,
+                                            )
+                                        })
+                                    };
+                                    match scan {
+                                        Ok((kept_keys, boundary_decisive, escalations, oversample_used)) => {
+                                            let top_keys: Vec<String> =
+                                                kept_keys.iter().take(3).cloned().collect();
+                                            let scoped_hits = kept_keys.len();
                                             // c_d: contradição não-resolvida no corpus
                                             let unresolved: usize = db.conflicts().iter()
                                                 .filter(|c| matches!(c.status, neural_sgdb::ConflictStatus::Open))
@@ -3538,27 +3860,28 @@ fn main() {
                                                 .filter(|rk| {
                                                     let canon = db.resolve_known_key(rk);
                                                     !top_keys.contains(&canon)
-                                                        && !ar.hits.iter().any(|h| h.key == canon)
+                                                        && !kept_keys.contains(&canon)
                                                 })
                                                 .cloned()
                                                 .collect();
                                             // Eq. 21: s_d ≥ θ ∧ m_d < θ_cont ∧ c_d < θ_cont.
                                             // s_d exige EVIDÊNCIA (fronteira vazia é vacuous —
                                             // "sufficient" com 0 hits seria decidir no vácuo).
-                                            let sufficient = !ar.hits.is_empty()
-                                                && ar.boundary_decisive
+                                            let sufficient = scoped_hits > 0
+                                                && boundary_decisive
                                                 && missing.is_empty()
                                                 && unresolved == 0;
                                             json!({
                                                 "index": qi, "ask": ask,
                                                 "answer": {
                                                     "sufficient": sufficient,
-                                                    "boundary_decisive": ar.boundary_decisive,
+                                                    "boundary_decisive": boundary_decisive,
                                                     "unresolved_contradictions": unresolved,
                                                     "missing_required": missing,
-                                                    "hits": ar.hits.len(),
-                                                    "escalations": ar.escalations,
-                                                    "oversample_used": ar.oversample_used,
+                                                    "hits": scoped_hits,
+                                                    "scope": q_scope,
+                                                    "escalations": escalations,
+                                                    "oversample_used": oversample_used,
                                                     "top_keys": top_keys,
                                                 }
                                             })

@@ -526,9 +526,17 @@ impl AiosDatabaseEngine {
 
     /// Lê `sys/meta/<sk>` (None = sem metadados: registro pré-v0.6).
     pub fn read_meta(&mut self, sk: &str) -> Option<MemoryMeta> {
-        match self.storage.get(&meta_key(sk)) {
-            Ok(Some(b)) => MemoryMeta::decode(&b).ok(),
-            _ => None,
+        self.read_meta_checked(sk).ok().flatten()
+    }
+
+    /// Variante fallible para rotas de leitura que não podem confundir falha
+    /// de storage/corrupção com ausência de metadados.
+    pub(crate) fn read_meta_checked(&mut self, sk: &str) -> Result<Option<MemoryMeta>, SgdbError> {
+        match self.storage.get(&meta_key(sk))? {
+            Some(bytes) => MemoryMeta::decode(&bytes)
+                .map(Some)
+                .map_err(|_| SgdbError::Corrupt),
+            None => Ok(None),
         }
     }
 
@@ -590,29 +598,42 @@ impl AiosDatabaseEngine {
     /// As DUAS variantes (legado e `ScopeDims`) derivam do mesmo traversal —
     /// ver [`Self::resolve_scope_meta`].
     pub fn effective_scope(&mut self, sk: &str) -> String {
-        self.resolve_scope_meta(sk, |m| (!m.scope.is_empty()).then(|| m.scope.clone()))
-            .unwrap_or_default()
+        self.effective_scope_checked(sk).unwrap_or_default()
+    }
+
+    pub(crate) fn effective_scope_checked(&mut self, sk: &str) -> Result<String, SgdbError> {
+        Ok(self
+            .resolve_scope_meta_checked(sk, |m| (!m.scope.is_empty()).then(|| m.scope.clone()))?
+            .unwrap_or_default())
     }
 
     /// Escopo multi-dim EFETIVO (v1.1.14): mesma regra do companion que
     /// `effective_scope`, mas sobre `ScopeDims`. Legado `scope!=""` com dims
     /// vazias já foi mapeado para `user` no decode — aqui basta herdar.
     pub fn effective_scope_dims(&mut self, sk: &str) -> crate::memory_doc::ScopeDims {
-        self.resolve_scope_meta(sk, |m| {
-            if !m.scope_dims.is_global() {
-                Some(m.scope_dims.clone())
-            } else if !m.scope.is_empty() {
-                Some(crate::memory_doc::ScopeDims {
-                    user: m.scope.clone(),
-                    agent: String::new(),
-                    app: String::new(),
-                    run: String::new(),
-                })
-            } else {
-                None
-            }
-        })
-        .unwrap_or_default()
+        self.effective_scope_dims_checked(sk).unwrap_or_default()
+    }
+
+    pub(crate) fn effective_scope_dims_checked(
+        &mut self,
+        sk: &str,
+    ) -> Result<crate::memory_doc::ScopeDims, SgdbError> {
+        Ok(self
+            .resolve_scope_meta_checked(sk, |m| {
+                if !m.scope_dims.is_global() {
+                    Some(m.scope_dims.clone())
+                } else if !m.scope.is_empty() {
+                    Some(crate::memory_doc::ScopeDims {
+                        user: m.scope.clone(),
+                        agent: String::new(),
+                        app: String::new(),
+                        run: String::new(),
+                    })
+                } else {
+                    None
+                }
+            })?
+            .unwrap_or_default())
     }
 
     /// Traversal ÚNICO por trás de `effective_scope` e `effective_scope_dims`:
@@ -625,26 +646,26 @@ impl AiosDatabaseEngine {
     /// Antes a ordem de primários e o "companion herda do dono" estavam
     /// DIGITADOS DUAS VEZES (uma por variante); a divergência entre elas é
     /// exatamente o bug que este helper fecha (lição v1.1.25/v1.1.26).
-    fn resolve_scope_meta<T>(
+    fn resolve_scope_meta_checked<T>(
         &mut self,
         sk: &str,
         extract: impl Fn(&MemoryMeta) -> Option<T>,
-    ) -> Option<T> {
-        if let Some(m) = self.read_meta(sk) {
+    ) -> Result<Option<T>, SgdbError> {
+        if let Some(m) = self.read_meta_checked(sk)? {
             if let Some(v) = extract(&m) {
-                return Some(v);
+                return Ok(Some(v));
             }
         }
         if let Some(rest) = sk.strip_prefix("md/L2/") {
             for prim in crate::ctype::FACT_LAYER_PREFIXES {
-                if let Some(m) = self.read_meta(&format!("{prim}{rest}")) {
+                if let Some(m) = self.read_meta_checked(&format!("{prim}{rest}"))? {
                     if let Some(v) = extract(&m) {
-                        return Some(v);
+                        return Ok(Some(v));
                     }
                 }
             }
         }
-        None
+        Ok(None)
     }
 
     /// Resolve um `version_id` à (storage key, meta DAQUELA VERSÃO) — DAG
@@ -1125,13 +1146,13 @@ impl AiosDatabaseEngine {
         self.gets += 1;
         if let Some(bytes) = self.ram_l0l1.get(sk) {
             let mut doc = MemoryDoc::decode(bytes).map_err(|_| SgdbError::Corrupt)?;
-            self.attach_meta(sk, &mut doc);
+            self.attach_meta_checked(sk, &mut doc)?;
             return Ok(Some(doc));
         }
         match self.storage.get(sk.as_bytes()) {
             Ok(Some(bytes)) => {
                 let mut doc = MemoryDoc::decode(&bytes).map_err(|_| SgdbError::Corrupt)?;
-                self.attach_meta(sk, &mut doc);
+                self.attach_meta_checked(sk, &mut doc)?;
                 Ok(Some(doc))
             }
             Ok(None) => Ok(None),
@@ -1145,28 +1166,31 @@ impl AiosDatabaseEngine {
     /// RAM L0/L1 (companions L2/L3 vivem no storage). O `recall` usava um
     /// `get_by_storage_key` por hit para buscar o texto companion — com N hits
     /// isso era N×(doc + meta) reads. Aqui: N reads, deduplicados.
-    pub fn get_texts_batch(&mut self, keys: &[String]) -> BTreeMap<String, String> {
+    pub fn get_texts_batch(
+        &mut self,
+        keys: &[String],
+    ) -> Result<BTreeMap<String, String>, SgdbError> {
         let mut out = BTreeMap::new();
         for sk in keys {
             if out.contains_key(sk) {
                 continue;
             }
             self.gets += 1;
-            let text = match self.storage.get(sk.as_bytes()) {
-                Ok(Some(bytes)) => MemoryDoc::decode(&bytes)
-                    .ok()
-                    .map(|d| String::from_utf8_lossy(&d.payload).into_owned())
-                    .unwrap_or_default(),
-                _ => String::new(),
+            let text = match self.storage.get(sk.as_bytes())? {
+                Some(bytes) => {
+                    let doc = MemoryDoc::decode(&bytes).map_err(|_| SgdbError::Corrupt)?;
+                    String::from_utf8_lossy(&doc.payload).into_owned()
+                }
+                None => String::new(),
             };
             out.insert(sk.clone(), text);
         }
-        out
+        Ok(out)
     }
 
     /// Anexa meta + overflow do relógio ao doc recém-decodificado.
-    fn attach_meta(&mut self, sk: &str, doc: &mut MemoryDoc) {
-        if let Some(m) = self.read_meta(sk) {
+    fn attach_meta_checked(&mut self, sk: &str, doc: &mut MemoryDoc) -> Result<(), SgdbError> {
+        if let Some(m) = self.read_meta_checked(sk)? {
             let mut oc = VectorClock::new();
             for &(n, c) in &m.clock_overflow {
                 oc.set_counter(n, c);
@@ -1174,6 +1198,7 @@ impl AiosDatabaseEngine {
             doc.clock.merge(&oc);
             doc.meta = Some(m);
         }
+        Ok(())
     }
 
     /// Load por storage key canônica `md/Lx/...` (RAM L0/L1 ou Storage).
@@ -1791,9 +1816,16 @@ impl AiosDatabaseEngine {
     /// Estado lógico de um doc por storage key (default `Active`).
     /// Lê o side-table `sys/state/` (Storage cru) — não afeta o NMD1.
     pub fn get_state(&mut self, sk: &str) -> MemoryState {
-        match self.storage.get(&state_key(sk)) {
-            Ok(Some(b)) if b.len() == 1 => MemoryState::from_u8(b[0]).unwrap_or(MemoryState::Active),
-            _ => MemoryState::Active,
+        self.get_state_checked(sk).unwrap_or(MemoryState::Active)
+    }
+
+    pub(crate) fn get_state_checked(&mut self, sk: &str) -> Result<MemoryState, SgdbError> {
+        match self.storage.get(&state_key(sk))? {
+            Some(bytes) if bytes.len() == 1 => {
+                MemoryState::from_u8(bytes[0]).ok_or(SgdbError::Corrupt)
+            }
+            Some(_) => Err(SgdbError::Corrupt),
+            None => Ok(MemoryState::Active),
         }
     }
 
@@ -1846,12 +1878,20 @@ impl AiosDatabaseEngine {
     /// marcação (sempre válido). Usada na exportação de `MemoryRecord`
     /// (P0-5): a janela viaja com o doc na replicação.
     pub fn validity_window(&mut self, sk: &str) -> Option<(u64, u64)> {
-        match self.storage.get(&validity_key(sk)) {
-            Ok(Some(b)) if b.len() == 16 => Some((
-                u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]),
-                u64::from_le_bytes([b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]]),
-            )),
-            _ => None,
+        self.validity_window_checked(sk).ok().flatten()
+    }
+
+    pub(crate) fn validity_window_checked(
+        &mut self,
+        sk: &str,
+    ) -> Result<Option<(u64, u64)>, SgdbError> {
+        match self.storage.get(&validity_key(sk))? {
+            Some(bytes) if bytes.len() == 16 => Ok(Some((
+                u64::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]]),
+                u64::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]]),
+            ))),
+            Some(_) => Err(SgdbError::Corrupt),
+            None => Ok(None),
         }
     }
 

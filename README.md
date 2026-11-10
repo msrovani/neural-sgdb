@@ -36,11 +36,13 @@ filesystem, no external runtime.
 
 ## Status
 
-**v1.5.0** — substrate **agêntico** (MCP 5 tools contract **1.5.0**, doutrina,
+**v1.5.6** — substrate **agêntico** (MCP 5 tools contract **1.5.6**, doutrina,
 hits tipados, TTL/GC, timeline, ANN) + **ativação por contexto** (**trigger
 rules por caminho de arquivo** — `curate op=set_trigger` + `recall(path=)`,
 ADR-0020) + **aprendizado por trajetória** (`remember_episodic` + `feedback`
-pelo desfecho real, ADR-0019) + **ADC-lite** + telepatia **2-DB** +
+pelo desfecho real, ADR-0019) + **cold-start em 1 chamada**
+(`recall(all_scopes=true)` pelos escopos descobertos) + **escopo na ativação
+por caminho** (v1.5.6) + **ADC-lite** + telepatia **2-DB** +
 **host harvest** + **ADR-0010 harness** (`commit_run` / `deprecate_run` /
 **`promote_run`** — fork/merge de memória por scope run, `mom/anti-pattern`) +
 **null-scoping `ScopeDims`** + **integridade do índice
@@ -48,10 +50,10 @@ derivado** (`index_fingerprint`, ADR-0011) + **recall adaptativo** (ADR-0012) +
 **`ScopeDims` autoritativo** (ADR-0013), **ledger de negativos** (ADR-0014),
 **batch write + dedup guard** (`memories[]`, `if_exists`) e **write path
 agêntico** (v1.2.0). Extensão de browser / Store **estacionadas**. Crate em
-`Cargo.toml`: **1.5.0**. 
+`Cargo.toml`: **1.5.6**. 
 
 - `cargo test --lib` on host: **448** (+2 doc-tests; p2p **464**, no_std **378**)
-- hot test MCP: **210/0**; `agent_protocol`: **25/0**
+- hot test MCP: **223/0**; `agent_protocol`: **25/0**
 - `cargo check --no-default-features --target x86_64-unknown-none`: **clean**
 - **Concorrência** (`bench_concurrent`, Gap 0 do seekdb): mediana sub-ms em
   write E recall (write→search imediato confirmado), P50 write ~0.5 ms /
@@ -106,7 +108,7 @@ agêntico** (v1.2.0). Extensão de browser / Store **estacionadas**. Crate em
    `profile`/`expire_old`) and **MCP 5 tools** (`remember`/`recall`/`health`/`curate`/`decide`;
    `health`/`validate` observability, `era_report`, `remember_episodic`,
    retrieval modes semantic/lexical/hybrid, `recall_temporal`,
-   `recall_entities`, ServerInfo v1.5.0, curate ops de metadado cognitivo: `decay`/`consolidate`/`audit_checkpoint`/`audit_verify`/`rollback_to`, + `set_trigger`/`forget_trigger`/`triggers` e `recall(path=)` — **ativação por contexto**, ADR-0020) + **write-side era guard** (S1 no
+   `recall_entities`, ServerInfo v1.5.6, curate ops de metadado cognitivo: `decay`/`consolidate`/`audit_checkpoint`/`audit_verify`/`rollback_to`, + `set_trigger`/`forget_trigger`/`triggers` e `recall(path=)` — **ativação por contexto**, ADR-0020) + **write-side era guard** (S1 no
    write também — `remember_semantic` fora da era do corpus vivo é `Invalid`)
    + **seams de conteúdo** (`Embedder` trait, `entities`, `content_type` —
    quem fornece declara) + **security hardening 11→1** (`engine.put_inner` choke central, `validate_written`, `WasmStorage` bounds, `MCP -32601`)
@@ -218,7 +220,7 @@ pelos namespaces delas (`curate op=set_trigger`; ADR-0020).
 
 Host adapters for claw-like apps (Hermes provider, OpenClaw skeleton, shared
 MCP client) live in [`connectors/`](connectors/README.md) — **outside** crate
-SemVer; `crates/nsgdb-embed` (LocalEmbedder 384-dim, `cargo run --manifest-path crates/nsgdb-embed/Cargo.toml --example demo`) and `crates/nsgdb-wasm` (`Storage` stub) are host crates — Core SemVer = `Cargo.toml` (**1.5.0**).
+SemVer; `crates/nsgdb-embed` (LocalEmbedder 384-dim, `cargo run --manifest-path crates/nsgdb-embed/Cargo.toml --example demo`) and `crates/nsgdb-wasm` (`Storage` stub) are host crates — Core SemVer = `Cargo.toml` (**1.5.6**).
 Protocolo do agente: `examples/agent_protocol.rs` (25 checks), `two_ai_protocol.rs` (16), `memory_arena_eval.rs`, `trajectory_learning.rs` (aprendizado pelo desfecho, ADR-0019). Ativação por arquivo em foco: `curate(op=set_trigger)` + `recall(path=…)` (ADR-0020). Fim de tarefa: `curate(op=commit_run)` (ADR-0010).
 
 ### Cursor (Windows)

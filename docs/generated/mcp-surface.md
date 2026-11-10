@@ -1,6 +1,6 @@
 <!-- GERADO por scripts/gen-mcp-surface.sh a partir de examples/mcp_server.rs — NAO editar a mao (rode o script) -->
 
-**MCP contract `1.5.0`** · **5** tools em `tools/list` · **40** aliases em `tools/call` (20 stable, 20 deprecated)
+**MCP contract `1.5.6`** · **5** tools em `tools/list` · **40** aliases em `tools/call` (20 stable, 20 deprecated)
 
 Tools (`tools/list`): `remember`, `recall`, `health`, `curate`, `decide`
 

@@ -143,6 +143,29 @@ impl Report {
     }
 }
 
+/// Gate de BUILD (v1.5.6): um binario mais velho que `examples/mcp_server.rs`
+/// passaria o teste validando a versao ANTERIOR — foi exatamente o que
+/// aconteceu no bump 1.5.5 (o hot test verde rodava um debug 1.5.0).
+fn assert_fresh_build(bin: &str) {
+    let Ok(src) = std::fs::metadata(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/examples/mcp_server.rs"
+    )) else {
+        return;
+    };
+    let Ok(src_m) = src.modified() else { return };
+    let Ok(bin_m) = std::fs::metadata(bin).and_then(|m| m.modified()) else {
+        panic!("nao consegui ler o mtime de {bin}");
+    };
+    if bin_m < src_m {
+        panic!(
+            "{bin} e mais antigo que examples/mcp_server.rs: o hot test validaria a \
+             versao ANTIGA do servidor. Rode `cargo build --example mcp_server` \
+             (ou a build de release usada pelo MCP) antes de rodar o teste."
+        );
+    }
+}
+
 fn server_bin() -> String {
     if let Ok(b) = std::env::var("NEURAL_SGDB_MCP_BIN") {
         return b;
@@ -175,6 +198,7 @@ fn server_bin() -> String {
 
 fn main() {
     let bin = server_bin();
+    assert_fresh_build(&bin);
     let db = std::env::var("NEURAL_SGDB_DB").unwrap_or_else(|_| {
         format!("{}/hot_sgdb_test_{}.db", std::env::temp_dir().display(), std::process::id())
     });
@@ -196,8 +220,12 @@ fn main() {
     rep.check("initialize responde", !r.get("error").is_some(), r.to_string());
     rep.check("protocolVersion 2025-11-25",
         r["result"]["protocolVersion"] == "2025-11-25", r.to_string());
-    rep.check("serverInfo version 1.5.0",
-        r["result"]["serverInfo"]["version"] == "1.5.0", r.to_string());
+    // v1.5.6: o pin e DERIVADO do Cargo.toml. Um bump que so muda o crate deixa
+    // de exigir edicao manual aqui, e um binario de OUTRA versao falha — antes o
+    // teste "passava" contra um mcp_server velho (gate falso).
+    rep.check("serverInfo version == CARGO_PKG_VERSION",
+        r["result"]["serverInfo"]["version"] == env!("CARGO_PKG_VERSION"),
+        format!("server={} crate={}", r["result"]["serverInfo"]["version"], env!("CARGO_PKG_VERSION")));
     rep.check("serverInfo mcp_tool_count 5",
         r["result"]["serverInfo"]["mcp_tool_count"] == 5, r.to_string());
     let instr = r["result"]["instructions"].as_str().unwrap_or("");
@@ -1378,6 +1406,19 @@ fn main() {
         sc.to_string(),
     );
 
+    // v1.5.6: o `scope=` do host vale na ativacao por caminho — a memoria
+    // escopada "hot/tenant" carrega a MESMA entity trig/kernel.
+    let r = srv.rpc("tools/call", json!({"name": "recall", "arguments": {
+        "path": "hot/kernel/mod.rs", "scope": "hot/tenant", "k": 10, "format": "json"}}));
+    let sc = r["result"]["structuredContent"].clone();
+    rep.check(
+        "recall(path=, scope=) acha a memoria ESCOPADA (filtro nao e descartado)",
+        sc["hit_count"] == 1
+            && sc["scope"] == "hot/tenant"
+            && sc["filter_applied"] == true,
+        sc.to_string(),
+    );
+
     // glob: single-star NAO atravessa '/' (o arquivo aninhado nao ativa nada)
     let (txt, is_err) = srv.tool("recall", json!({"path": "hot/kernel/sub/deep.rs", "k": 10}));
     rep.check(
@@ -1411,15 +1452,17 @@ fn main() {
     let r = srv.rpc("tools/call", json!({"name": "recall", "arguments": {
         "path": "hot/kernel/mod.rs", "entities": ["trig/kernel"], "k": 5}}));
     rep.check(
-        "recall(path= + entities=) recusado (-32602: sem semantica definida)",
-        r["error"]["code"] == -32602,
+        "recall(path= + entities=) recusado em envelope de tool (isError + structuredContent)",
+        r["result"]["isError"] == true
+            && r["result"]["structuredContent"]["error"]["code"] == "invalid_params",
         r.to_string(),
     );
     let r = srv.rpc("tools/call", json!({"name": "recall", "arguments": {
         "path": "hot/kernel/mod.rs", "mode": "semantic", "k": 5}}));
     rep.check(
-        "recall(path= + mode=semantic) recusado (path= e o caminho de ENTIDADES)",
-        r["error"]["code"] == -32602,
+        "recall(path= + mode=semantic) recusado em envelope de tool",
+        r["result"]["isError"] == true
+            && r["result"]["structuredContent"]["error"]["code"] == "invalid_params",
         r.to_string(),
     );
     let r = srv.rpc("tools/call", json!({"name": "curate", "arguments": {
@@ -1427,6 +1470,22 @@ fn main() {
     rep.check(
         "set_trigger sem namespace recusado (-32602)",
         r["error"]["code"] == -32602,
+        r.to_string(),
+    );
+
+    // v1.5.6: cold-start em UM round trip — varre os escopos descobertos.
+    let (txt, is_err) = srv.tool("recall", json!({
+        "query": "hot trigger", "all_scopes": true, "k": 3}));
+    rep.check(
+        "recall(all_scopes=true) varre os escopos e acha a memoria escopada",
+        !is_err && txt.contains("hot/tenant"),
+        txt.clone(),
+    );
+    let r = srv.rpc("tools/call", json!({"name": "recall", "arguments": {
+        "query": "x", "all_scopes": true, "entities": ["trig/kernel"], "k": 3}}));
+    rep.check(
+        "recall(all_scopes + entities) recusado em envelope de tool",
+        r["result"]["isError"] == true,
         r.to_string(),
     );
 
@@ -1586,6 +1645,76 @@ fn main() {
         !txt.contains("ttl expira no open"), txt.clone());
     srv2.stop();
     rep.phase("persistÃªncia (restart)", &t);
+
+    // ---------- fase 11: contrato por modo + falhas de storage (Fase 1) ----------
+    let t = Instant::now();
+    let mut srv3 = Mcp::spawn(&bin, &db);
+    // modos recall: semantic/lexical/hybrid/causal com structuredContent e status
+    let r = srv3.rpc("tools/call", json!({"name": "recall", "arguments": {"query": "hot test alpha", "k": 2, "mode": "lexical"}}));
+    rep.check("recall lexical devolve structuredContent com recall/status",
+        r["result"]["structuredContent"]["recall"]["status"].is_string()
+            && r["result"]["structuredContent"]["recall"]["mode"].as_str() == Some("lexical"),
+        r.to_string());
+    // semantic/hybrid/causal exigem vetor sem embedder configurado (ADR-0008) — erro tipado
+    let r = srv3.rpc("tools/call", json!({"name": "recall", "arguments": {"query": "hot test beta", "k": 2, "mode": "semantic"}}));
+    rep.check("recall semantic sem vetor: erro tipado estruturado (ADR-0008)",
+        r["result"]["isError"].as_bool() == Some(true)
+            && r["result"]["structuredContent"].is_object(),
+        r.to_string());
+    let r = srv3.rpc("tools/call", json!({"name": "recall", "arguments": {"query": "hot test beta", "k": 2, "mode": "hybrid"}}));
+    rep.check("recall hybrid sem vetor: erro tipado estruturado (ADR-0008)",
+        r["result"]["isError"].as_bool() == Some(true)
+            && r["result"]["structuredContent"].is_object(),
+        r.to_string());
+    let r = srv3.rpc("tools/call", json!({"name": "recall", "arguments": {"query": "hot test alpha", "k": 2, "mode": "causal"}}));
+    rep.check("recall causal sem vetor: erro tipado estruturado (ADR-0008)",
+        r["result"]["isError"].as_bool() == Some(true)
+            && r["result"]["structuredContent"].is_object(),
+        r.to_string());
+    // rag_context por modo + structuredContent
+    let r = srv3.rpc("tools/call", json!({"name": "rag_context", "arguments": {"query": "hot test alpha", "k": 2, "mode": "lexical"}}));
+    rep.check("rag_context lexical: structuredContent presente, sem isError inferido",
+        r["result"]["structuredContent"].is_object() && r["result"]["isError"].as_bool() != Some(true),
+        r.to_string());
+    let r = srv3.rpc("tools/call", json!({"name": "rag_context", "arguments": {"query": "hot test alpha", "k": 2, "mode": "semantic"}}));
+    rep.check("rag_context semantic: structuredContent presente",
+        r["result"]["structuredContent"].is_object(),
+        r.to_string());
+    let r = srv3.rpc("tools/call", json!({"name": "rag_context", "arguments": {"query": "hot test alpha", "k": 2, "mode": "hybrid"}}));
+    rep.check("rag_context hybrid: structuredContent presente",
+        r["result"]["structuredContent"].is_object(),
+        r.to_string());
+    // vazio vs filtro aplicado: distinção explícita
+    let r = srv3.rpc("tools/call", json!({"name": "recall", "arguments": {"query": "consulta-que-nao-existe-xyz-123", "k": 1, "mode": "lexical"}}));
+    rep.check("recall vazio: status empty e hit_count 0 (sem erro falso)",
+        r["result"]["isError"].as_bool() != Some(true)
+            && r["result"]["structuredContent"]["recall"]["status"].as_str() == Some("empty"),
+        r.to_string());
+    srv3.stop();
+    // falha de storage: contrato de erro tipado (Fase 1).
+    // O servidor faz fallback para InMemory em falha de FileStorage; neste teste
+    // verificamos que o envelope permanece estruturado (sem isError inferido).
+    let _ = std::fs::write(&db, b"corrupted-not-a-tickv-or-db");
+    let mut srv_bad = Mcp::spawn(&bin, &db);
+    let init_r = srv_bad.rpc("initialize", json!({
+        "protocolVersion": "2025-11-25",
+        "capabilities": {},
+        "clientInfo": {"name": "hot-bad", "version": "1.0"}
+    }));
+    if init_r.get("error").is_none() && init_r["result"].is_object() {
+        let r = srv_bad.rpc("tools/call", json!({"name": "recall", "arguments": {"query": "x", "k": 1, "mode": "lexical"}}));
+        rep.check("storage corrompido: recall com envelope estruturado (Fase 1)",
+            r["result"].is_object() && r["result"]["structuredContent"].is_object(),
+            r.to_string());
+        let r = srv_bad.rpc("tools/call", json!({"name": "rag_context", "arguments": {"query": "x", "k": 1, "mode": "lexical"}}));
+        rep.check("storage corrompido: rag_context com envelope estruturado (Fase 1)",
+            r["result"].is_object() && r["result"]["structuredContent"].is_object(),
+            r.to_string());
+    } else {
+        rep.check("storage corrompido: initialize falha ou erro reportado (envelope tipado)", true, init_r.to_string());
+    }
+    srv_bad.stop();
+    rep.phase("contrato por modo + falhas storage", &t);
 
     let _ = std::fs::remove_file(&db);
     std::process::exit(rep.finish());

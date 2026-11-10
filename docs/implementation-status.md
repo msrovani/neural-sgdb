@@ -1,6 +1,6 @@
 # neural-sgdb — Implementation Status
 
-> **Current snapshot (2026-10-26, v1.5.0).** Capability matrix vs the shipped
+> **Current snapshot (2026-11-10, v1.5.6).** Capability matrix vs the shipped
 > codebase. For the public contract see [`docs/api.md`](api.md); for architecture
 > narrative see [`docs/architecture/README.md`](architecture/README.md).
 > v1.4.3 = DX release (P0.1 semantic-on with a real embedder; P0.3 structured
@@ -10,6 +10,10 @@
 > v1.5.0 = ativação por contexto (trigger rules por caminho de arquivo,
 > `recall(path=)`, ADR-0020) + aprendizado por trajetória (`remember_episodic` +
 > `feedback`, ADR-0019).
+> v1.5.6 = o que o uso real apontou: `recall(path=)` honra escopo, envelope
+> único de erro nas recusas de `path`, gate de build do hot test (pin derivado de
+> `CARGO_PKG_VERSION` + mtime), `DEFAULT_SCOPE` consistente (`decide` filtra no
+> recall, não depois) e `recall(all_scopes=true)` — cold-start em 1 chamada.
 
 ## Status labels
 
@@ -29,7 +33,7 @@
 | no_std tests | `cargo test --no-default-features --lib` | **378** |
 | Multi-agent integration | `cargo test --test multi_agent` | **21** (também no gate no_std) |
 | no_std target | `cargo check --no-default-features --target x86_64-unknown-none` | **ok** |
-| Hot test (MCP) | `cargo run --release --example mcp_client` | **210/0 exit 0** |
+| Hot test (MCP) | `cargo run --release --example mcp_client` | **223/0 exit 0** |
 | AI-user sim | `cargo run --release --example agent_sim` | loop real, scope isolado |
 | Machine protocol | `cargo run --release --example two_ai_protocol` | **16/16 exit 0** |
 | Agent protocol | `cargo run --release --example agent_protocol` | **25/25 exit 0** |
@@ -42,6 +46,8 @@
 |---|---|---|
 | MemoryDoc NMD1 | IMPLEMENTED | `src/memory_doc.rs`, golden tests |
 | Trigger rules por caminho (ADR-0020, v1.5.0) | IMPLEMENTED | `src/trigger.rs` (`TRG1`, value codec); glob no_std zero-dep (`*` sem `/`, `**` atravessa, `?` um char); `set_trigger`/`forget_trigger`/`trigger_rules`/`triggers_for_path`/`namespaces_for_path`/`recall_for_path`; side-table `sys/trigger/` (não é wire type); ordem determinística + matching + persistência no reopen (2 testes de lib) + fase própria no hot test |
+| Escopo na ativação por caminho (v1.5.6) | IMPLEMENTED | `Sgdb::recall_for_path_scoped`/`_dims`; MCP resolve `scope`/dims e ecoa `scope`+`scope_dims`+`filter_applied`; teste de lib com mutação provada (`Some(scope)`→`None` falha); sonda MCP: `proj/x`→1 hit, `proj/y`→1 hit, default vazio→0 |
+| Cold-start em 1 chamada (v1.5.6) | IMPLEMENTED | `recall(all_scopes=true, query)` percorre `scope_probes().legacy` + `scope_dim_descriptors()` com `recall_lexical_scoped`/`recall_lexical_dims`, dedupe por key, anota o scope de cada hit; banco real: 10 hits em 10 escopos varridos numa chamada (antes: 1 chamada por probe no `next_actions`) |
 | Aprendizado por trajetória (ADR-0019, v1.5.0) | IMPLEMENTED | `examples/trajectory_learning.rs` — `remember_episodic` (trajetória verbatim) + `feedback` (contraste nos dois sentidos); Config A SR 50% vs Config B 100%, sessão 2 acerta desde a 1ª tarefa; determinístico |
 | MDM1 v8 side-table meta (corrente) | IMPLEMENTED | v1–v8 decodificam com migração explícita: `scope` [v4], `entities` [v5], `content_type` [v6], `scope_dims`+`model_id` [v7], `authority` [v8]; mapa autoritativo em `MIGRATIONS.md` §"MDM1 — evolução dos campos" |
 | MDM1 v7 scope_dims+model_id (v1.1.14) | IMPLEMENTED | `ScopeDims{user,agent,app,run}`, `model_id`, `mixed_models` verdict |
@@ -214,7 +220,7 @@ drift — drift é número de *release* em doc vivo, pego pelo docs-version-gate
 | Conflitos | `curate(op=conflicts/audit_resolve)` | `ConflictRecord` (CFL1), `resolve_conflict`, `RejectedByAuthority` | partition/conflict/authority tests | Doc 04 §5 | IMPLEMENTED |
 | Auditoria | `curate(op=audit_*)` | `audit_checkpoint/verify/rollback_to/audit_forget`, `Hasher` | audit tests, AUD1 golden | ADR-0006 | IMPLEMENTED |
 | Storage backends | `Storage` trait (`docs/api.md`) | `InMemory`, `FileStorage`, `TickvFile`, IDX2 snapshot | parity tests + recovery/compaction tests | Doc 05 | IMPLEMENTED |
-| MCP surface | `contract.json` + `nsgdb://contract` (1.5.0) | `examples/mcp_server.rs` (5 tools + `ALIAS_SURFACE`) | hot test **210/0** (anunciado==servido) | `docs/MCP.md`, `docs/doctrine.md` | IMPLEMENTED |
+| MCP surface | `contract.json` + `nsgdb://contract` (1.5.6) | `examples/mcp_server.rs` (5 tools + `ALIAS_SURFACE`) | hot test **223/0** (anunciado==servido) | `docs/MCP.md`, `docs/doctrine.md` | IMPLEMENTED |
 | `no_std` + zero-dep | `VERSIONING.md`, `SECURITY.md` | `alloc`-only lib, `x86_64-unknown-none` | gate no_std **364+2** + target check | `docs/api.md` §compat | IMPLEMENTED |
 | Observabilidade | `health(view=*)`, `validate` §§1-8 | `HealthReport`, `ValidateIssue`, `HygieneReport`, metrics | validate/hygiene tests | Doc 06 | IMPLEMENTED |
 | Política de memória sensível (host) | — (core não interpreta conteúdo) | `MemoryConnector` policy metadata + `RecallPolicy` (only_own_scope / vulnerable_context) + log de escrita sobre terceiro | `connectors/tests/test_contract.py::test_sensitive_policy_metadata_and_cross_scope_protection` (5/5) | ADR-0021, `docs/sensitive-agent-memory.md` | IMPLEMENTED (host-side) |

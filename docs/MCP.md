@@ -3,13 +3,13 @@
 Guia de instalação, contrato e troubleshooting do servidor MCP
 (`examples/mcp_server.rs`).
 
-## Contrato atual (v1.5.0)
+## Contrato atual (v1.5.6)
 
 | Campo | Valor |
 |-------|-------|
 | Protocolo | JSON-RPC 2.0 over **stdio** (uma linha JSON por mensagem) |
 | Handshake | `initialize` → `protocolVersion: 2025-11-25` |
-| `serverInfo.version` | `1.5.0` (`MCP_CONTRACT_VERSION` em `examples/mcp_server.rs`) |
+| `serverInfo.version` | `1.5.6` (`MCP_CONTRACT_VERSION` em `examples/mcp_server.rs`) |
 | Tools | **5** (`remember`, `recall`, `health`, `curate`, `decide`) — 40 nomes antigos/alias ainda funcionam em `tools/call` (`ALIAS_SURFACE`, `stable`/`deprecated` em `contract.json` + resource `nsgdb://contract`) |
 | Retrieval default (v1.3.0) | `lexical` sem vetor; `hybrid` (RRF) com embedder de host REAL; `semantic` com `embedding=` do caller — `health.semantic_ready`/`retrieval_default` |
 | Embedding (via B, v1.4.3) | `NEURAL_SGDB_EMBEDDER=multilingual\|candle\|onnx\|local` → modelo `paraphrase-multilingual-MiniLM-L12-v2` (384, in-process em `crates/nsgdb-embed`); `model_id` auto-declarado no `remember`. Cadeia de fallback: caller `embedding=` (A) → host in-process (B) → `embedder_http`/ollama (C) → lexical (honesto, ADR-0008) |
@@ -24,7 +24,8 @@ Guia de instalação, contrato e troubleshooting do servidor MCP
 | Observabilidade | `health(view=era)` = era_report; `health(view=tensions)` = conflitos / superseded / scopes invisíveis; `health(view=staleness)` = TTL/Decay/contradicts/aging (read-only) |
 | Resources | `nsgdb://doctrine`, **`nsgdb://session`** (cold-start JSON) |
 | Harness (ADR-0010) | `curate(op=commit_run|deprecate_run)` + entities `mom/anti-pattern` |
-| Ativação por caminho (v1.5.0, ADR-0020) | `curate op=set_trigger` (`pattern`, `namespaces`)/`forget_trigger`/`triggers` (`path` opcional) + `recall(path=)`: o host diz em que arquivo está, o core devolve/ativa os namespaces (as MESMAS strings de entity do `remember`). Sem regra que case = **vazio** (nunca o pool global) |
+| Ativação por caminho (v1.5.0, ADR-0020) | `curate op=set_trigger` (`pattern`, `namespaces`)/`forget_trigger`/`triggers` (`path` opcional) + `recall(path=)`: o host diz em que arquivo está, o core devolve/ativa os namespaces (as MESMAS strings de entity do `remember`). Sem regra que case = **vazio** (nunca o pool global). **v1.5.6:** honra `scope=` e `scope_user/agent/app/run` (antes descartava o filtro e memória escopada ficava invisível) |
+| Cold-start em 1 chamada (v1.5.6) | `recall(all_scopes=true, query=...)`: percorre `scopes_to_probe` + `scopes_to_probe_dims` com retrieval LEXICAL e devolve cada hit com o `scope` de origem (`hit_count`, `total_before_cap`, `scopes_scanned`, `scopes_with_hits`, `errors`). Exclusivo com `path=`/`entities=`/`embedding=`/`mode` vetorial; null-scoping intacto |
 | DB default | `NEURAL_SGDB_DB=.nsgdb/memory.db` (relativo ao cwd do processo) |
 | Default scope | Preferir **por workspace** (`.cursor/mcp.json`). Global `~\.cursor\mcp.json` **não** deve forçar `DEFAULT_SCOPE` de outro repo no mesmo DB. |
 
@@ -33,9 +34,10 @@ Guia de instalação, contrato e troubleshooting do servidor MCP
 Lista: `remember`, `recall`, `health`, `curate`, `decide`.
 
 Dispatch: `remember(user+response)` → episódico L2; `remember(text=)` sem vetor →
-L3; `recall(entities|at|rag=true|mode=causal|path=)` → 1-hop / temporal / rag /
-**causal** / **ativação por caminho** (v1.5.0: glob do arquivo em foco → as
-entities que as regras ligam a ele; mesmo `dist` do 1-hop; sem regra = vazio)
+L3; `recall(entities|at|rag=true|mode=causal|path=|all_scopes=true)` → 1-hop /
+temporal / rag / **causal** / **ativação por caminho** (v1.5.0: glob do arquivo em
+foco → as entities que as regras ligam a ele; mesmo `dist` do 1-hop; sem regra =
+vazio) / **varredura de todos os escopos descobertos** (v1.5.6, lexical)
 (v1.4.4: o hit vem com `ancestry` = a linha de versão que o produziu;
 `causal_depth` limita quantos elos, default 4); `health(view=era|validate|tensions)`;
 `curate(op=explain|reinforce|decay|consolidate|audit_checkpoint|audit_verify|audit_resolve|audit_trail|forget_purge|export_delta|set_authority|rollback_to|commit_run|deprecate_run|hygiene|set_trigger|forget_trigger|triggers|…)`
@@ -51,7 +53,7 @@ servidor por `scripts/gen-mcp-surface.sh` — nao editar a mao (o `check` do
 gate de release falha se estiver stale):
 
 <!-- BEGIN GENERATED: mcp-surface -->
-**MCP contract `1.5.0`** · **5** tools em `tools/list` · **40** aliases em `tools/call` (20 stable, 20 deprecated)
+**MCP contract `1.5.6`** · **5** tools em `tools/list` · **40** aliases em `tools/call` (20 stable, 20 deprecated)
 
 Tools (`tools/list`): `remember`, `recall`, `health`, `curate`, `decide`
 
@@ -287,6 +289,34 @@ Invalid: query dims not in indexed_embedding_dims()
 acao: chame `health(view=era)` (alias `era_report`) para veredito empty/ok/mixed_dims...
 ```
 
+## Maintenance and operations policy (Phase 4)
+
+O host decide quando governar a memória. O core expõe operações explícitas; presets padronizados ajudam a automatizar sem hardcodificar no servidor.
+
+### Presets de host (recomendados)
+
+| Operação | Preset recomendado | Notas |
+|----------|-------------------|-------|
+| `expire_old(now)` | Ao abrir sessão / a cada 1h | Invalida janelas de validade fechadas (TTL/validity). Não deleta fisicamente. |
+| `decay_importance(now, cfg)` | Diário (ou a cada 24h) | Curva Ebbinghaus. Preset conservador: `half_life_ms = 7*24*3600*1000`, `floor = 0.05`, `decay_state_at = 0.05`, `decay_confidence = true`. Ajuste por domínio. |
+| `consolidate_recurrences(cfg)` | Diário | L2 episódicos verbatim repetidos → L3 fato determinístico. Preset: `min_repeats = 3`, `min_len = 24`, `max_new = 16` (limita churn). |
+| `audit_checkpoint(now)` + `audit_verify()` | Por ciclo / antes de operações críticas | Anexa elo à hash-chain; `audit_verify()` deve retornar `chain_intact=true`. |
+| GC/compactação | Sob demanda ou por pressão | Use `compact()` do backend quando houver tombstones/órfãos acumulados. `forget`/`forget_purge` são operações explícitas do host (não automáticas). |
+
+Veja `examples/host_scheduler.rs` para um daemon pronto com estes presets.
+
+### Backends, durabilidade e recuperação
+
+| Backend | Persistência | Durabilidade | Recuperação | Notas |
+|---------|--------------|--------------|-------------|-------|
+| `InMemory` | Nenhuma | VOLATILE | N/A | Testes/prototipagem. Dados perdidos ao encerrar processo. |
+| `FileStorage` | Arquivo append-log (`.db`) | FLUSHED por padrão; `sync_durable()` para fsync | CRC recovery: truncar tail corrupto, last-wins por chave, skip tombstones. Rebuild de índices derivado no `open()`. | Compaction atômica disponível. Lazy handle após writes. |
+| `TickvFile` | Volume TKLV/TKCK byte-exact | FLUSHED por padrão; `sync_durable()` para fsync | Fast-mount via TKCK quando válido; fallback para `scan_volume`. Invalidação in-place antes de append. | OS-readable, checkpoint como último registro. |
+
+**Semântica de retenção:** `set_state`/`supersede`/`forget` são lógicas (side-tables). `delete` é físico (tombstone + limpeza de índices/side-tables). `expire_old` invalida por janela temporal. Decay marca estado `Decayed` abaixo do limiar (recall `active-only` ignora; histórico via `recall_historical`).
+
+**Snapshot de índice:** `NEURAL_SGDB_INDEX_SNAPSHOT=off|auto|always` (default `off`). Auto-persist é *metrics-gated* (escreve quando `writes_stale >= MAX(8, open_rebuild_ms_last)`) desde v1.2.0. Com base em medições de churn/compaction/cold-open em DBs duráveis, **snapshot auto permanece opt-in por padrão** até haver evidência mais forte de ganho consistente em todos os backends; o host pode habilitar `auto` explicitamente por ambiente. Ver `BENCHMARKS.md` para custos medidos.
+
 ## Ativação por caminho (v1.5.0, ADR-0020)
 
 O `recall` normal exige que você ESCOLHA scope/entities. Numa sessão de código
@@ -302,6 +332,9 @@ UMA vez e pergunte por caminho:
 {"name":"recall","arguments":{"path":"crates/k_nano/src/kernel/mod.rs","k":5}}
 ```
 
+**Fase 2 (onboarding funcional) — regras importantes:**
+- **Regras só via `curate`**: `recall(path=...)` **NÃO** cria regras nem extrai entidades de texto. As regras só são registradas com `curate op=set_trigger{pattern,namespaces}`.
+- **Entities canônicos**: `namespaces` são strings de **entity** — as MESMAS usadas em `remember(entities=...)` e em `recall(entities=…)`. Formato recomendado: `kind/name` (ex.: `pref/idioma`, `mom/constraint`, `adr/index`, `doc/protocol`, `nsgdb/usage`). O core **nunca** extrai entidades de texto; quem fornece declara. 1-hop casa strings idênticas.
 - `pattern` é glob: `*` **não** atravessa `/`, `**` atravessa, `?` um char.
   A identidade da regra é o **padrão** (regravar o mesmo padrão sobrescreve).
 - `namespaces` são strings de **entity** — as MESMAS usadas em `remember`

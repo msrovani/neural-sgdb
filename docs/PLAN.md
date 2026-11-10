@@ -9,15 +9,51 @@ The crate README is the entry point; this file is the plan behind it.
 
 ## Status
 
-- Release line: **v1.5.0** (crate `version` in `Cargo.toml`, MCP contract
-  `1.5.0`). `ce5a5c7` carried the 1.5.0 features (trigger rules ADR-0020,
-  trajectory learning ADR-0019, operational write `remember_operational`).
+- Release line: **v1.5.6** (crate `version` in `Cargo.toml`, MCP contract
+  `1.5.6`). `1.5.5` entregou as fases 1-5; `1.5.6` fecha o que o uso real
+  apontou: `recall(path=)` honra scope, envelope único de erro nas recusas de
+  `path`, gate de build no hot test, `DEFAULT_SCOPE` consistente e
+  `recall(all_scopes=true)` (cold-start em 1 chamada).
 - Sensitive-memory host policy (ADR-0021) is **implemented** in
   `connectors/`: policy metadata pass-through, sensitive recall controls,
   third-party write logging, and the scenario test in
   `connectors/tests/test_contract.py`. Docs: `docs/sensitive-agent-memory.md`.
-- The 5-phase plan below is approved; only the sensitive-memory slice has been
-  executed so far.
+- **Phase 1 (Contract reliability)** is **implemented**: recall failures are no
+  longer converted silently to empty results; all MCP tool errors use a uniform
+  structured envelope (`isError` set by the call site, never inferred from text)
+  with `structuredContent` carrying error codes/data; `recall`/`rag_context`
+  propagate storage/corruption errors as typed failures; responses distinguish
+  empty result vs applied filter vs route/modality via `recall` metadata
+  (`status`/`mode`/`route`/`filter_applied`/`filter`); contract coverage added
+  for all modes and storage failure paths including `rag_context` (hot test
+  updated). Tool counts and MCP/cold-start instructions aligned with `1.5.0`.
+- **Phase 2 (Functional onboarding)** is **implemented**: cold-start ritual
+  (`nsgdb://session`) now states concrete prerequisites for triggers, entities
+  and scope; explicitly documents that `recall(path=...)` does **not** create
+  rules nor extract entities (rules only via `curate op=set_trigger`), reports
+  empty with reason when no rule matches (never global pool), and end-to-end
+  path is covered; recommended entity format (`kind/name`, canonical strings)
+  documented per application. `docs/MCP.md` aligned.
+- **Phase 3 (Real utility measurement)** is **implemented**: benchmark
+  `examples/utility_bench.rs` measures decision quality (not hit count) across
+  exact questions, paraphrases, conflicting evidence, scopes and temporal
+  evolution; compares lexical/semantic/hybrid/path; records latency and
+  candidate volume alongside quality; covers at least two domains (infra/ops,
+  produto/docs). Results show scope isolation and mode comparison.
+- **Phase 4 (Maintenance and operations policy)** is **implemented**: host
+  presets documented (decay/expire_old/consolidate/audit/checkpoint/GC) with
+  `examples/host_scheduler.rs`; durability/recovery semantics per backend
+  documented in `docs/MCP.md` (InMemory/FileStorage/TickvFile, retention
+  rules); churn/compaction and cold-open measurements added to
+  `BENCHMARKS.md`; snapshot auto remains **opt-in by default**
+  (`NEURAL_SGDB_INDEX_SNAPSHOT=off`) with metrics-gated auto-persist when
+  enabled.
+- **Phase 5 (Distribution)** is **addressed/documented**: distribution gaps
+  (tombstone/purge propagation, amnesiac-peer recovery, transport identity/
+  authentication, partial topologies/prolonged partitions) documented with
+  current constraints and seams; kept behind explicit requirement as intended.
+- The 5-phase plan below is approved; Phase 1 executed, Phase 2 executed,
+  Phase 3 executed, Phase 4 executed, Phase 5 addressed, sensitive-memory executed.
 
 ## Approved plan
 
@@ -37,15 +73,14 @@ The crate README is the entry point; this file is the plan behind it.
    semantic, hybrid and path on *decision quality*, not hit count; record
    latency and candidate volume alongside quality; corpora from at least two
    domains (real anonymizable corpus or representative tasks).
-4. **Maintenance and operations policy** — host presets for decay, expire_old,
-   consolidation, audit/checkpoint and GC; durability/recovery semantics per
-   backend documented in the MCP config; measure churn/compaction and
-   cold-open on durable DBs; only then decide whether snapshot auto leaves
-   opt-in for any default.
-5. **Distribution (only if a product requirement)** — tombstone/purge
-   propagation, amnesic-peer recovery, transport identity and authentication,
-   partial topologies and prolonged partitions. For local use this is not the
-   immediate bottleneck; keep behind an explicit requirement.
+4. **Maintenance and operations policy** — **implemented**: host presets
+   for decay, expire_old, consolidation, audit/checkpoint and GC documented
+   (`examples/host_scheduler.rs`, `docs/MCP.md`); durability/recovery semantics
+   per backend documented in the MCP config; churn/compaction and cold-open
+   on durable DBs measured in `BENCHMARKS.md`; snapshot auto remains opt-in
+   by default.
+5. **Distribution (only if a product requirement)** — **addressed/documented**:
+   tombstone/purge propagation path documented (see `docs/architecture/04-distributed-memory.md` §7; `forget_purge` writes audit evidence and storage tombstone; replication of tombstones via `MemoryDelta`/side-metadata tracked), amnesiac-peer recovery constraints documented, transport identity/authentication seams present (`SignedEnvelope`, `Signer`/`TrustStore` traits), partial topologies and prolonged partitions noted with reconciliation behavior; local use remains primary path.
 
 ## Sensitive-memory policy (executed — ADR-0021)
 

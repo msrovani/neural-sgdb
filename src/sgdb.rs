@@ -887,19 +887,17 @@ impl Sgdb {
             .unwrap_or_default()
     }
 
-    /// Filtro de scope legado + ScopeDims (ADR-0010 / v1.1.14):
-    /// - `None` (global): só memórias sem `scope` legado **e** com
-    ///   `ScopeDims` global — senão `scope_run`/`scope_user` vazam no
-    ///   recall lexical/semântico default.
-    /// - `Some(s)`: casa `effective_scope` **ou** `scope_dims.user` (alias
-    ///   mem0 da dimensão user).
-    fn allows_scope_filter(&mut self, sk: &str, scope: Option<&str>) -> bool {
-        let doc_scope = self.engine.effective_scope(sk);
-        let dims = self.engine.effective_scope_dims(sk);
-        match scope {
+    fn allows_scope_filter_checked(
+        &mut self,
+        sk: &str,
+        scope: Option<&str>,
+    ) -> Result<bool, SgdbError> {
+        let doc_scope = self.engine.effective_scope_checked(sk)?;
+        let dims = self.engine.effective_scope_dims_checked(sk)?;
+        Ok(match scope {
             Some(s) => doc_scope == s || dims.user == s,
             None => doc_scope.is_empty() && dims.is_global(),
-        }
+        })
     }
 
     /// Varre `sys/meta/` UMA vez e classifica os escopos com PROCEDÊNCIA
@@ -1174,14 +1172,17 @@ impl Sgdb {
                 Some((s, _)) => s.clone(),
                 None => continue,
             };
-            if self.engine.get_state(&sk) != MemoryState::Active {
+            if self.engine.get_state_checked(&sk)? != MemoryState::Active {
                 continue;
             }
-            let doc = self.engine.get_by_storage_key(&sk)?.unwrap();
+            let doc = self
+                .engine
+                .get_by_storage_key(&sk)?
+                .ok_or(SgdbError::Corrupt)?;
             let ck = companion_key(&sk);
             let text = self
                 .engine
-                .get_texts_batch(&alloc::vec![ck])
+                .get_texts_batch(&alloc::vec![ck])?
                 .values()
                 .next()
                 .cloned()
@@ -1203,7 +1204,7 @@ impl Sgdb {
                 model_id: m.model_id.clone(),
             });
             let dist = sqrt_f32(d2.max(0.0) / (query.len() as f32 * 4.0)).min(1.0);
-            let validity = self.engine.validity_window(&sk);
+            let validity = self.engine.validity_window_checked(&sk)?;
             let type_scores = doc
                 .meta
                 .as_ref()
@@ -2032,6 +2033,42 @@ impl Sgdb {
         self.recall_entities_impl(&refs, k, None, true, true)
     }
 
+    /// Recall por caminho DENTRO de um escopo legado (v1.5.6): o `scope=` que o
+    /// host passa tem de valer TAMBEM na ativacao por caminho. Antes a rota do
+    /// MCP chamava `recall_for_path` (escopo global) e descartava o filtro — uma
+    /// memoria escopada (o caso normal de workspace) ficava invisivel ao
+    /// `recall(path=)` mesmo com o escopo certo na mao.
+    pub fn recall_for_path_scoped(
+        &mut self,
+        path: &str,
+        k: usize,
+        scope: &str,
+    ) -> Result<Vec<Hit>, SgdbError> {
+        let namespaces = self.namespaces_for_path(path)?;
+        if namespaces.is_empty() {
+            return Ok(Vec::new());
+        }
+        let refs: Vec<&str> = namespaces.iter().map(|n| n.as_str()).collect();
+        self.recall_entities_impl(&refs, k, Some(scope), true, true)
+    }
+
+    /// Recall por caminho com filtro MULTI-DIM (`scope_user/agent/app/run`):
+    /// mesma regra do `recall_entities_dims` (o pool do 1-hop vem sem o filtro
+    /// legado e as dims decidem abaixo).
+    pub fn recall_for_path_dims(
+        &mut self,
+        path: &str,
+        k: usize,
+        filter: &ScopeFilter,
+    ) -> Result<Vec<Hit>, SgdbError> {
+        let namespaces = self.namespaces_for_path(path)?;
+        if namespaces.is_empty() {
+            return Ok(Vec::new());
+        }
+        let refs: Vec<&str> = namespaces.iter().map(|n| n.as_str()).collect();
+        self.recall_entities_dims(&refs, k, filter)
+    }
+
 
     /// Tipo de conteúdo DECLARADO da memória (v1.1.6 item 2 — seam de WRITE):
     /// o writer declara o rótulo estável (`text`/`json`/`code`/`embedding`/
@@ -2161,11 +2198,13 @@ impl Sgdb {
             for sk in &keys {
                 // item 7 — scope DENTRO do pool. `enforce_legacy_scope=false`
                 // para o pool de `recall_entities_dims` (filtro multi-dim depois).
-                if enforce_legacy_scope && !self.allows_scope_filter(sk, scope) {
+                if enforce_legacy_scope && !self.allows_scope_filter_checked(sk, scope)? {
                     continue;
                 }
                 // active-only — estado POR DOC (companions não são indexados)
-                if active_only && self.engine.get_state(sk) != MemoryState::Active {
+                if active_only
+                    && self.engine.get_state_checked(sk)? != MemoryState::Active
+                {
                     continue;
                 }
                 *pool.entry(sk.clone()).or_insert(0) += 1;
@@ -2173,19 +2212,15 @@ impl Sgdb {
         }
         let n_ents = entities.len().max(1);
         // rank: overlap desc → importância desc → key asc (determinístico)
-        let mut ranked: Vec<(usize, f32, String)> = pool
-            .into_iter()
-            .map(|(sk, overlap)| {
-                let imp = self
-                    .engine
-                    .meta(&sk)
-                    .ok()
-                    .flatten()
-                    .map(|m| m.importance)
-                    .unwrap_or(0.0);
-                (overlap, imp, sk)
-            })
-            .collect();
+        let mut ranked: Vec<(usize, f32, String)> = Vec::with_capacity(pool.len());
+        for (sk, overlap) in pool {
+            let imp = self
+                .engine
+                .read_meta_checked(&sk)?
+                .map(|m| m.importance)
+                .unwrap_or(0.0);
+            ranked.push((overlap, imp, sk));
+        }
         ranked.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.total_cmp(&a.1)).then(a.2.cmp(&b.2)));
         ranked.truncate(k);
         // companion L2 text em batch (S3 — mesma convenção do recall semântico)
@@ -2193,15 +2228,15 @@ impl Sgdb {
             .iter()
             .map(|(_, _, sk)| companion_key(sk))
             .collect();
-        let texts = self.engine.get_texts_batch(&companion_keys);
+        let texts = self.engine.get_texts_batch(&companion_keys)?;
         let mut out = Vec::with_capacity(ranked.len());
         for (i, (overlap, _imp, sk)) in ranked.into_iter().enumerate() {
             // dist = fração de entidades NÃO cobertas (0 = casa todas)
             let dist = 1.0 - (overlap as f32 / n_ents as f32);
             // provenance: layer do doc + estado + meta (v1.1.6: + reinforce/scope/entities)
-            let (prov, ct_fallback, declared, type_scores) = match self.engine.get_by_storage_key(&sk) {
-                Ok(Some(doc)) => {
-                    let st = self.engine.get_state(&sk);
+            let (prov, ct_fallback, declared, type_scores) = match self.engine.get_by_storage_key(&sk)? {
+                Some(doc) => {
+                    let st = self.engine.get_state_checked(&sk)?;
                     // v1.1.25: a camada decide se o payload é vetor — um L3 de
                     // prosa com len % 4 == 0 NÃO é Embedding(len/4).
                     let ct = payload_content_type(&sk, &doc.payload, doc.bitvec.is_some());
@@ -2236,11 +2271,12 @@ impl Sgdb {
                         ts,
                     )
                 }
-                _ => (None, ContentType::Binary, None, None),
+                None => return Err(SgdbError::Corrupt),
             };
             let text = texts.get(&companion_keys[i]).cloned().unwrap_or_default();
             let content_type = resolve_content_type(declared, &text, ct_fallback);
-            let text = if renders_prose(content_type) { text } else { String::new() };                let validity = self.engine.validity_window(&sk);
+            let text = if renders_prose(content_type) { text } else { String::new() };
+            let validity = self.engine.validity_window_checked(&sk)?;
                 // item 3 — primário L4/L5/L3: payload_type = Embedding(dim);
                 // companion `/L2/` (raro no índice de entidades): tipo do primário.
                 let (rel, payload_type) = if sk.starts_with("md/L2/") {
@@ -2336,7 +2372,7 @@ impl Sgdb {
             if depth > hops || !seen.insert(sk.clone()) {
                 continue;
             }
-            if depth > 0 && self.engine.get_state(&sk) == MemoryState::Active {
+            if depth > 0 && self.engine.get_state_checked(&sk)? == MemoryState::Active {
                 by_depth.entry(depth).or_default().push(sk.clone());
             }
             if depth < hops {
@@ -2360,13 +2396,13 @@ impl Sgdb {
         }
         let hops_n = hops.max(1) as f32;
         let companion_keys: Vec<String> = order.iter().map(|(_, sk)| companion_key(sk)).collect();
-        let texts = self.engine.get_texts_batch(&companion_keys);
+        let texts = self.engine.get_texts_batch(&companion_keys)?;
         let mut out = Vec::with_capacity(order.len());
         for (i, (depth, sk)) in order.into_iter().enumerate() {
-            let Ok(Some(doc)) = self.engine.get_by_storage_key(&sk) else {
+            let Some(doc) = self.engine.get_by_storage_key(&sk)? else {
                 continue;
             };
-            let state = self.engine.get_state(&sk);
+            let state = self.engine.get_state_checked(&sk)?;
             let prov = doc.meta.as_ref().map(|m| HitProvenance {
                 memory_id: m.memory_id.clone(),
                 version_id: m.version_id.clone(),
@@ -2404,6 +2440,7 @@ impl Sgdb {
             } else {
                 (None, ct_fallback)
             };
+            let validity = self.engine.validity_window_checked(&sk)?;
             out.push(Hit {
                 key: sk,
                 text,
@@ -2414,7 +2451,7 @@ impl Sgdb {
                 payload_type,
                 score: (hops.saturating_sub(depth)) as f32,
                 matched_terms: Vec::new(),
-                validity: self.engine.validity_window(&companion_key(&out.last().map(|h: &Hit| h.key.clone()).unwrap_or_default())),
+                validity,
                 rel,
                 score_breakdown: None,
                 type_scores: doc
@@ -3604,7 +3641,7 @@ impl Sgdb {
                     };
                     // v0.8 — estado lido UMA vez e filtrado ANTES do ranking:
                     // memória inativa não compete por vagas do top-k
-                    let state = self.engine.get_state(&sk);
+                    let state = self.engine.get_state_checked(&sk)?;
                     if active_only && state != MemoryState::Active {
                         continue;
                     }
@@ -3613,7 +3650,7 @@ impl Sgdb {
                     // compete por vagas do top-k do scope corrente). None =
                     // GLOBAL (filtro implícito mem0: busca sem scope não
                     // vaza de scopes escopados). v1.1.20: também ScopeDims.
-                    if !self.allows_scope_filter(&sk, scope) {
+                    if !self.allows_scope_filter_checked(&sk, scope)? {
                         continue;
                     }
                     // v0.6 — provenance exposta (Phase 9 parcial): quem/quando/
@@ -3659,10 +3696,11 @@ impl Sgdb {
                 // doc sumiu (delete físico) ou corrompeu: o BQ é índice
                 // DERIVADO — candidato sem doc vivo NUNCA vira hit (não
                 // ressuscita memória deletada nem mostra lixo, item 17/21)
-                Ok(None) | Err(_) => continue,
+                Ok(None) => continue,
+                Err(e) => return Err(e),
             };
             // v1.1.6 — janela de validade bi-temporal (antes de mover `sk`)
-            let validity = self.engine.validity_window(&sk);
+            let validity = self.engine.validity_window_checked(&sk)?;
             // L2 companion text: L4 E L5 apontam para o companion `md/L2/<id>`
             // (o replacen só /L4/ era no-op para L5 — o batch lia o PRÓPRIO doc
             // L5 e projetava floats como prosa lossy; bugfix v1.1.6).
@@ -3691,7 +3729,7 @@ impl Sgdb {
         // texto existe (companion real), o datum é o TEXTO (tipo re-detectado
         // sobre ele); sem companion → o datum é o payload (Embedding/Binary),
         // nunca prosa lossy.
-        let texts = self.engine.get_texts_batch(&companion_keys);
+        let texts = self.engine.get_texts_batch(&companion_keys)?;
         for (_, h, declared) in out.iter_mut() {
             if let Some(t) = texts.get(&companion_key(&h.key)) {
                 if !t.is_empty() {
@@ -4747,8 +4785,8 @@ impl Sgdb {
         let max = scored.first().map(|(_, s, _)| *s).unwrap_or(0.0).max(1e-6);
         let mut out = Vec::with_capacity(scored.len());
         for (sk, score, matched_terms) in scored {
-            if let Ok(Some(doc)) = self.engine.get_by_storage_key(&sk) {
-                let state = self.engine.get_state(&sk);
+            if let Some(doc) = self.engine.get_by_storage_key(&sk)? {
+                let state = self.engine.get_state_checked(&sk)?;
                 if active_only && state != MemoryState::Active {
                     continue;
                 }
@@ -4758,7 +4796,7 @@ impl Sgdb {
                 // scope efetivo vem do primário `/L4/`/`/L5/`/`/L3/`.
                 // v1.1.20: ScopeDims (scope_run/…) também bloqueiam o global.
                 // `enforce_legacy_scope=false` p/ pool de `recall_lexical_dims`.
-                if enforce_legacy_scope && !self.allows_scope_filter(&sk, scope) {
+                if enforce_legacy_scope && !self.allows_scope_filter_checked(&sk, scope)? {
                     continue;
                 }
                 let provenance = doc.meta.as_ref().map(|m| HitProvenance {
@@ -4803,7 +4841,7 @@ impl Sgdb {
                     Some((pk, pct)) => (Some(pk), pct),
                     None => (None, own_ct),
                 };
-                let validity = self.engine.validity_window(&sk);
+                let validity = self.engine.validity_window_checked(&sk)?;
                 let type_scores = doc
                     .meta
                     .as_ref()
@@ -4832,17 +4870,26 @@ impl Sgdb {
     /// follow-ups (`explain`/`supersede`) o alvo é o `md/L4|L5|L3/<id>`, não o
     /// companion. `None` para keys não-L2 ou sem primário existente.
     fn primary_of(&mut self, sk: &str) -> Option<(String, ContentType)> {
-        let rest = sk.strip_prefix("md/L2/")?;
+        self.primary_of_checked(sk).ok().flatten()
+    }
+
+    fn primary_of_checked(
+        &mut self,
+        sk: &str,
+    ) -> Result<Option<(String, ContentType)>, SgdbError> {
+        let Some(rest) = sk.strip_prefix("md/L2/") else {
+            return Ok(None);
+        };
         for prim in FACT_LAYER_PREFIXES {
             let cand = alloc::format!("{prim}{rest}");
-            if let Ok(Some(doc)) = self.engine.get_by_storage_key(&cand) {
+            if let Some(doc) = self.engine.get_by_storage_key(&cand)? {
                 // tipo do payload do primário (Embedding(dim) p/ L4/L5; um
                 // primário L3 responde com o tipo do TEXTO — v1.1.25)
                 let ct = payload_content_type(&cand, &doc.payload, doc.bitvec.is_some());
-                return Some((cand, ct));
+                return Ok(Some((cand, ct)));
             }
         }
-        None
+        Ok(None)
     }
 
     /// Recall **híbrido** semântico + lexical (Anthropic dual-path): semantic
@@ -4929,10 +4976,8 @@ impl Sgdb {
         query_text: &str,
         k: usize,
     ) -> Result<Vec<Hit>, SgdbError> {
-        let sem = self.recall_oversampled(query_emb, k.max(1) * 4, 4).unwrap_or_default();
-        let lex = self
-            .recall_lexical(query_text, k.max(1) * 4)
-            .unwrap_or_default();
+        let sem = self.recall_oversampled(query_emb, k.max(1) * 4, 4)?;
+        let lex = self.recall_lexical(query_text, k.max(1) * 4)?;
         Ok(Self::rrf_fuse(sem, lex, k, 60.0))
     }
 
@@ -4944,12 +4989,8 @@ impl Sgdb {
         k: usize,
         scope: &str,
     ) -> Result<Vec<Hit>, SgdbError> {
-        let sem = self
-            .recall_scoped(query_emb, k.max(1) * 4, scope)
-            .unwrap_or_default();
-        let lex = self
-            .recall_lexical_scoped(query_text, k.max(1) * 4, scope)
-            .unwrap_or_default();
+        let sem = self.recall_scoped(query_emb, k.max(1) * 4, scope)?;
+        let lex = self.recall_lexical_scoped(query_text, k.max(1) * 4, scope)?;
         Ok(Self::rrf_fuse(sem, lex, k, 60.0))
     }
 
@@ -4975,12 +5016,8 @@ impl Sgdb {
     ) -> Result<Vec<CandidateSignals>, SgdbError> {
         let k = k.max(1);
         // 3 caminhos de entrada, pool 4× para o fuse ter material.
-        let sem = self
-            .recall_oversampled(query_emb, k.max(1) * 4, 4)
-            .unwrap_or_default();
-        let lex = self
-            .recall_lexical(query_text, k.max(1) * 4)
-            .unwrap_or_default();
+        let sem = self.recall_oversampled(query_emb, k.max(1) * 4, 4)?;
+        let lex = self.recall_lexical(query_text, k.max(1) * 4)?;
         let q_tokens = crate::lexical::tokenize_for_rerank(query_text);
         // 1-hop: strings EXATAS fornecidas pelo caller (mesmo contrato de
         // `recall_entities` — o core não extrai entidade de texto).
@@ -4991,7 +5028,7 @@ impl Sgdb {
             self.recall_entities(
                 &ents.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
                 k.max(1) * 4,
-            ).unwrap_or_default()
+            )?
         };
         // RRF sobre os 3 rankings (mesmo κ=60 do hybrid).
         let mut acc: alloc::collections::BTreeMap<String, (f32, Hit)> =
@@ -5107,7 +5144,7 @@ impl Sgdb {
         let pool = self.recall_lexical_impl(query_text, k.max(1) * 16, true, None, false)?;
         let mut out = Vec::new();
         for h in pool {
-            let dims = self.engine.effective_scope_dims(&h.key);
+            let dims = self.engine.effective_scope_dims_checked(&h.key)?;
             if filter.is_global_only() {
                 if !dims.is_global() {
                     continue;
@@ -5133,7 +5170,7 @@ impl Sgdb {
         let pool = self.recall_entities_impl(entities, k.max(1) * 16, None, true, false)?;
         let mut out = Vec::new();
         for h in pool {
-            let dims = self.engine.effective_scope_dims(&h.key);
+            let dims = self.engine.effective_scope_dims_checked(&h.key)?;
             if filter.is_global_only() {
                 if !dims.is_global() {
                     continue;
@@ -5195,7 +5232,7 @@ impl Sgdb {
             let Some(sk) = self.engine.storage_key_of(id).map(String::from) else {
                 continue;
             };
-            let dims = self.engine.effective_scope_dims(&sk);
+            let dims = self.engine.effective_scope_dims_checked(&sk)?;
             if filter.is_global_only() {
                 if !dims.is_global() {
                     continue;
@@ -5203,14 +5240,14 @@ impl Sgdb {
             } else if !dims.matches(filter) {
                 continue;
             }
-            let Ok(Some(doc)) = self.engine.get_by_storage_key(&sk) else {
+            let Some(doc) = self.engine.get_by_storage_key(&sk)? else {
                 continue;
             };
             let (score, dist) = match Self::fp32_dist_u32(query, &doc.payload) {
                 Some(d) => (d, d as f32 / 10_000.0),
                 None => (ham, (ham as f32 / ham_max).min(1.0)),
             };
-            let state = self.engine.get_state(&sk);
+            let state = self.engine.get_state_checked(&sk)?;
             if active_only && state != MemoryState::Active {
                 continue;
             }
@@ -5239,10 +5276,13 @@ impl Sgdb {
             .iter()
             .map(|(_, sk, _, _, _)| companion_key(sk))
             .collect();
-        let texts = self.engine.get_texts_batch(&keep);
+        let texts = self.engine.get_texts_batch(&keep)?;
         let mut out = Vec::new();
         for (score, sk, dist, state, _) in pending {
-            let doc = self.engine.get_by_storage_key(&sk)?.unwrap();
+            let doc = self
+                .engine
+                .get_by_storage_key(&sk)?
+                .ok_or(SgdbError::Corrupt)?;
             let prov = doc.meta.as_ref().map(|m| HitProvenance {
                 memory_id: m.memory_id.clone(),
                 version_id: m.version_id.clone(),
@@ -5273,7 +5313,7 @@ impl Sgdb {
             } else {
                 String::new()
             };
-            let validity = self.engine.validity_window(&sk);
+            let validity = self.engine.validity_window_checked(&sk)?;
             out.push(Hit {
                 key: sk,
                 text,
@@ -5360,7 +5400,7 @@ impl Sgdb {
             // penalty temporal: janela de validade que cobre `at` → 0;
             // janela que NÃO cobre → 1 (não vigorava em `at`, memórias
             // suprimidas não competem); sem janela → recência relativa a `at`.
-            let tpen = match self.engine.validity_window(&h.key) {
+            let tpen = match self.engine.validity_window_checked(&h.key)? {
                 Some((from, until)) => {
                     if from <= at && at < until {
                         0.0
@@ -7588,6 +7628,21 @@ mod tests {
                 .unwrap()
                 .len(),
             1
+        );
+        // v1.5.6 (mutacao provada): o `scope=` do host vale na ativacao por
+        // caminho. Com o filtro descartado (Some(scope) -> None) este assert
+        // morre com 0 hits — era o bug real do recall(path=).
+        let scoped = db
+            .recall_for_path_scoped("src/kernel/mod.rs", 5, "tenant/x")
+            .unwrap();
+        assert_eq!(scoped.len(), 1, "o caminho escopado ve a memoria do escopo");
+        assert!(scoped[0].key.ends_with("/outro"));
+        // e continua sem ver o escopo alheio
+        assert_eq!(
+            db.recall_for_path_scoped("src/kernel/mod.rs", 5, "tenant/y")
+                .unwrap()
+                .len(),
+            0
         );
         // duas regras ativando o MESMO namespace devolvem UM hit (sem duplicar)
         db.set_trigger("src/kernel/**", &["ns/kernel"]).unwrap();

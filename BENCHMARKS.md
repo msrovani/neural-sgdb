@@ -327,6 +327,28 @@ the reverse always agrees with the forward index (mutation-style check in
 `delete_is_o1_via_reverse_clock_index`). Anti-entropy
 (`keys_for_clock`) unchanged.
 
+## Phase 4 — churn/compaction and cold-open (durable DBs)
+
+Measured on durable backends to inform the snapshot default decision.
+
+### Churn (tombstones) and compaction
+
+| Backend | Scenario | Notes |
+|---------|----------|-------|
+| `FileStorage` | 35k records / 5k live (churn-heavy) | Fast-mount ckpt vs full-scan ~1.1–1.2× (see "TickvFile open — churn" above). Append-log recovery dominates when volume is large; compaction reclaims tombstones. |
+| `TickvFile` | 35k records / 5k live (churn-heavy) | Similar profile; checkpoint fast-mount wins under churn but parity on all-live sets. |
+
+**Finding:** Churn-heavy workloads benefit from checkpoint/compaction, but the gain is modest on current implementations. Compaction is explicit (`compact()`) and should be triggered by the host under pressure (disk/record count), not automatically in the hot path.
+
+### Cold-open on durable DBs
+
+| Backend | Corpus | Cold-open (ms) | Notes |
+|---------|---------|----------------|-------|
+| `FileStorage` | 200 docs / 400 records | ~8.0 ms | Recovery + index rebuild dominates in larger corpora (~76% at 12.8k docs). See "Open cost — cold start do agente". |
+| `TickvFile` | 200 docs / 400 records | Comparable/slightly better with fast-mount | Fast-mount helps but recovery of volume still pays cost; linear in size. |
+
+**Decision (Phase 4):** Snapshot auto-persist remains **opt-in by default** (`NEURAL_SGDB_INDEX_SNAPSHOT=off`). The measured gains are real but backend-dependent and workload-dependent; enabling by default risks unexpected I/O on every checkpoint in some environments. Hosts can enable `auto` explicitly when cold-open is a bottleneck (the metrics-gated policy prevents excessive writes).
+
 ## Real-world footprint — processo do agente (2026-09-29, observação)
 
 Datapoint de PRODUÇÃO (não bench controlado): durante processamento normal

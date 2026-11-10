@@ -6,6 +6,34 @@ All notable changes to this project. Format based on
 
 ## [Unreleased]
 
+## [1.5.6] — 2026-11-10 (consumidor real: path+scope, envelope unico, cold-start em 1 chamada)
+
+### Fixed
+
+- **`recall(path=)` descartava o filtro de escopo.** A rota chamava `recall_for_path` (escopo global), entao memoria escopada — o caso normal de workspace — era invisivel mesmo com `scope=` explicito. Novos `Sgdb::recall_for_path_scoped` / `recall_for_path_dims`; o MCP resolve `scope`/dims e ecoa `scope`, `scope_dims` e `filter_applied`. Teste de lib com mutacao provada.
+- **Recusas de `path=` usavam erro JSON-RPC, nao envelope de tool.** `path+entities`, `path+mode=semantic` e `path+k=0` agora devolvem `isError` + `structuredContent.error.code = invalid_params`, como o resto da Fase 1 (dois formatos na mesma tool era o buraco).
+- **Gate de build do hot test.** O teste podia rodar contra um `mcp_server` mais antigo que o fonte (foi o que aconteceu no bump 1.5.5: passou 220/0 validando um debug 1.5.0). Agora o pin de versao e derivado de `CARGO_PKG_VERSION` e o mtime do binario e verificado contra `examples/mcp_server.rs`.
+- **`DEFAULT_SCOPE` inconsistente entre tools.** `recall` filtrava pelo default e `decide` varria o pool global; agora `decide` (evidence_sufficient) aplica o mesmo default e aceita `scope` por pergunta. `nsgdb://session` deixa de mandar sondar um default scope sem memoria e publica `next_actions.default_scope_empty`.
+
+### Added
+
+- **`recall(all_scopes=true, query=...)`**: varre `scopes_to_probe` + `scopes_to_probe_dims` numa chamada, com hits anotados pelo scope de origem (`hit_count`, `total_before_cap`, `scopes_scanned`, `scopes_with_hits`, `errors`). E o cold-start em 1 round trip; null-scoping intacto.
+
+## [1.5.5] — 2026-10-29 (phases 1-5 completas: contrato, onboarding, utilidade, manutenção, distribuição)
+
+### Changed
+
+- **Phase 1 (Contract reliability)**: erros de recall sem conversão silenciosa para vazio; erros MCP uniformes e estruturados com `structuredContent`; `recall`/`rag_context` propagam falhas de storage/corrupção; respostas distinguem vazio vs filtro aplicado vs rota/modalidade (`status`/`mode`/`route`/`filter_applied`/`filter`); cobertura de contrato para todos os modos e falhas de storage.
+- **Phase 2 (Functional onboarding)**: cold-start ritual com pré-requisitos para triggers/entities/scope; documentado que `recall(path=...)` não cria regras nem extrai entidades (só via `curate op=set_trigger`); caminho end-to-end verificado; formato recomendado de entities (`kind/name`).
+- **Phase 3 (Real utility measurement)**: `examples/utility_bench.rs` mede qualidade de decisão (não hit count) em perguntas exatas, paráfrases, evidência conflitante, escopos e evolução temporal; compara lexical/semantic/hybrid/path com latência e volume de candidatos; cobre ao menos dois domínios.
+- **Phase 4 (Maintenance and operations policy)**: presets de host para decay/expire_old/consolidate/audit/checkpoint/GC documentados em `examples/host_scheduler.rs` e `docs/MCP.md`; semânticas de durabilidade/recuperação por backend (InMemory/FileStorage/TickvFile); medições de churn/compaction/cold-open em `BENCHMARKS.md`; snapshot auto permanece **opt-in por padrão** (`NEURAL_SGDB_INDEX_SNAPSHOT=off`) com auto-persist metrics-gated quando habilitado.
+- **Phase 5 (Distribution)**: gaps de distribuição (tombstone/purge propagation, amnesiac-peer recovery, transport identity/authentication, partial topologies/prolonged partitions) documentados com restrições e pontos de extensão; mantido atrás de requisito explícito.
+
+### Documentation
+
+- Atualizados `docs/MCP.md`, `docs/PLAN.md`, `BENCHMARKS.md` com política de manutenção, backends/durabilidade e medições.
+- Versões alinhadas: crate `1.5.5`, MCP contract `1.5.5`.
+
 ## [1.5.0] — 2026-10-29 (ativação por contexto + aprendizado por trajetória)
 
 ### Sensitive-memory host policy (ADR-0021) — 2026-10-29

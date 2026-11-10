@@ -6,7 +6,7 @@ repo. **Read `codemap.md` (atlas), `docs/api.md` (contract) and
 Storage, Cognitive API; typed hits from v1.1.6; current crate = `Cargo.toml`) and
 `docs/implementation-status.md` before editing code.**
 
-**Shipped crate is 1.5.0 (agentic MCP contract 1.5.0, hot test 210/0):** Vocabulário ÚNICO
+**Shipped crate is 1.5.6 (agentic MCP contract 1.5.6, hot test 223/0):** Vocabulário ÚNICO
 prosa/JSON (ADR-0017: `{:?}` fora do wire; tool `decide` 𝒥(S,𝒬) = 5º tool;
 `recall_candidates` sinais decompostos; validate tipado; k=0 erro). `Hit.type_scores`
 = **ADR-0016** (episódico/semântico/procedural/preferência sobrepostos,
@@ -22,7 +22,7 @@ Default retrieval: **lexical** without a vector; **hybrid** (RRF) with a real
 host embedder; **semantic** with a caller `embedding`. Unset `NEURAL_SGDB_EMBEDDER` = none;
 `=demo` only if requested (não setar no `mcp.json` global). `remember(text=)`
 without a vector → L3 (`remember_text_with`). Resources: `nsgdb://doctrine` +
-`nsgdb://session`. Hot test **210/0**. Lib tests **448+2 / 464 / 378+2** (+ **21** de integração
+`nsgdb://session`. Hot test **223/0**. Lib tests **448+2 / 464 / 378+2** (+ **21** de integração
 multi-agente em `tests/multi_agent.rs`, isolamento/estado — roda no gate no_std)
 (default / p2p / no_std). Bump `MCP_CONTRACT_VERSION` ⇒ pin `mcp_client`
 `serverInfo.version` no mesmo commit (senão hot test falha). **v1.1.17:**
@@ -58,6 +58,44 @@ policy. `MIGRATIONS.md` §MCP contract (1.2.1→1.3.0).
 [`docs/agent-self-program.md`](docs/agent-self-program.md) +
 [`docs/doctrine.md`](docs/doctrine.md); cold-start toda sessão; skill
 `.cursor/skills/nsgdb-full-usage/`.
+
+## Release 1.5.6 — o que o uso real apontou (2026-11-10)
+
+Primeira release decidida pelo agente que USA o MCP (instalou 1.5.5, consumiu o
+DB real e reportou), não por leitura de código. Cinco correções, cada uma com
+evidência:
+
+- **`recall(path=)` descartava escopo.** A rota chamava `recall_for_path`
+  (global-only): memória escopada — o caso normal — era invisível mesmo com
+  `scope=` explícito. Entraram `Sgdb::recall_for_path_scoped`/`_dims`; o MCP
+  resolve `scope`/dims e ecoa `scope`+`scope_dims`+`filter_applied`. Mutação
+  provada (`Some(scope)`→`None` falha o teste de lib).
+- **Envelope único de erro**: as recusas de `path=` (`+entities`,
+  `+mode=semantic`, `k=0`) eram erro JSON-RPC solto; agora `isError` +
+  `error.code=invalid_params`, como o resto da superfície.
+- **Gate de build do hot test**: o pin de `serverInfo.version` deriva de
+  `CARGO_PKG_VERSION` e o `mcp_client` compara o mtime do binário com o fonte.
+  O gate nasceu do achado desta sessão: **220/0 passando contra um debug 1.5.0
+  obsoleto** — o teste existia e não olhava o que testava.
+- **`DEFAULT_SCOPE` consistente**: `decide` (evidence_sufficient) aplica o mesmo
+  default, com `scope` por pergunta — e o filtro tem de estar NO recall, não
+  depois: `recall_adaptive_lexical` é global-only, então pós-filtrar devolvia
+  `hits=0` para toda memória escopada. Sem variante adaptive lexical escopada,
+  o orçamento não-saturado faz o papel do `boundary_decisive` (ADR-0012).
+  `nsgdb://session` deixa de sondar default scope vazio e publica
+  `next_actions.default_scope_empty`.
+- **`recall(all_scopes=true, query=…)`**: cold-start em UMA chamada — varre
+  `scope_probes().legacy` + `scope_dim_descriptors()` com
+  `recall_lexical_scoped`/`recall_lexical_dims`, dedupe por key e hit anotado
+  com o scope de origem (`scopes_scanned`, `scopes_with_hits`, `errors`). No DB
+  real: **10 hits em 10 escopos varridos** contra 0 do recall default. Lexical
+  por desenho; combinar com `path`/`entities`/embedding/modo vetorial é recusa.
+
+Lição de rota (a mesma de v1.1.25/v1.4.4): flag novo precisa de linha própria no
+`expand_tool`, senão cai no handler vizinho e é ignorado EM SILÊNCIO — o hot test
+pegou (`all_scopes + entities` virava `recall_entities`); com a linha, a recusa
+roda. Estado verificado nesta sessão: lib **448/0**, hot test **223/0**, clippy
+`-D warnings` limpo, `gen-mcp-surface.sh check` e `docs-version-gate.sh` verdes.
 
 ## Release 1.5.0 — ativação por contexto + trajetória (2026-10-26)
 
@@ -1121,7 +1159,7 @@ Apache-2.0**. OS interop via byte-identical NMD1 and TKLV formats.
    sai != 0 se qualquer uma falhar. `SKIP_HOT=1` pula o hot test (o lento).
    Matriz atual: **448** default, **464** `--features p2p`, **378**
    `--no-default-features`, **21** integração, **4** goldens, hot test
-   **210/0**. Clippy/rustdoc com `-D warnings`; `cargo fmt` **não** é gate (o
+   **223/0**. Clippy/rustdoc com `-D warnings`; `cargo fmt` **não** é gate (o
    repo não é rustfmt-clean).
    *Por que um script e não "lembre-se de rodar": na 1.4.5, três gates do CI
    estavam vermelhos e nenhum tinha rodado (job `--shuffle` quebrado,
@@ -1164,7 +1202,7 @@ let facts = db.scan_prefix("md/L3/")?;                 // ART prefix scan
 ```bash
 cargo run --release --example bench        # benchmarks (ART/BQ/recall vs FP32)
 cargo run --release --example mcp_server   # MCP server for AI agents
-cargo run --release --example mcp_client   # HOT TEST: drives mcp_server like an IDE (210/0)
+cargo run --release --example mcp_client   # HOT TEST: drives mcp_server like an IDE (223/0)
 cargo run --release --example agent_protocol  # DECISION PROTOCOL (itens 2–6 + P1–P6): como o agente USA o DB
 cargo run --release --example two_ai_protocol # PROTOCOLO MÁQUINA→MÁQUINA (v1.1.6 itens 1–5): IA-A grava datum declarado, IA-B lê tipado
 cargo run --release --example memory_arena_eval # MEMORY-ARENA EVAL (P7): utilidade da memória em tarefas interdependentes
