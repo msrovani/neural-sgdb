@@ -9,8 +9,9 @@ The crate README is the entry point; this file is the plan behind it.
 
 ## Status
 
-- Release line: **v1.5.6** (crate `version` in `Cargo.toml`, MCP contract
-  `1.5.6`). `1.5.5` entregou as fases 1-5; `1.5.6` fecha o que o uso real
+- Release line: **v1.5.7** (crate `version` in `Cargo.toml`, MCP contract
+  `1.5.7`). `1.5.7` = fase 1 do plano de ideias copiadas (benchmark público
+  LongMemEval-S). `1.5.5` entregou as fases 1-5; `1.5.6` fecha o que o uso real
   apontou: `recall(path=)` honra scope, envelope único de erro nas recusas de
   `path`, gate de build no hot test, `DEFAULT_SCOPE` consistente e
   `recall(all_scopes=true)` (cold-start em 1 chamada).
@@ -97,6 +98,44 @@ ADR-0021 lives in the host/connector layer:
   consent revocation and retention expiry.
 - `connectors/tests/test_contract.py` pins the scenario: sensitive write →
   out-of-scope recall filtered → vulnerable-context warning present.
+
+
+## Ideias copiadas do ai-memory (aprovado 2026-11-12)
+
+Origem: estudo de `github.com/akitaonrails/ai-memory` (v3.3.x) — comparação em
+`docs/PLAN.md` §"O que é melhor que o nsgdb" registrada na sessão. Só entram os
+itens que sobrevivem ao critério deste repo: medem algo, não quebram `no_std`
+nem a paridade byte-exata, e o gate prova que falham quando devem falhar.
+
+**Versionamento (revisado pelo dono do repo):** a linha continua em **1.5.x**;
+o sexto item vira **1.6.0**. Cinco fases em 1.5.7–1.5.11, a sexta em 1.6.0.
+
+| # | fase | release | critério de aceite |
+|---|---|---|---|
+| 1 | Benchmark público LongMemEval-S | **1.5.7** | `hit@5`/`recall@5` medidos em modo `component` e `pipeline`, com proveniência (commit, sha256 do dataset, máquina, data), por fatia, reproduzível por comando documentado |
+| 2 | `explain` por stream no recall híbrido | **1.5.8** | `Hit.rrf` com rank+contribuição por stream; default byte-idêntico; mutação provada |
+| 3 | Escrita condicional (`expect_version`/`create_only`) | **1.5.9** | recusa `precondition_failed` com `expected` e `current`; nenhuma escrita parcial; mutação provada |
+| 4 | Feed incremental (`changes_since` + cursor) | **1.5.10** | upsert **e delete** visíveis; cursor estável e re-leitura sem repetição |
+| 5 | Retenção por tier + breadth | **1.5.11** | λ por camada com default bit-idêntico ao escalar; só executar se a fase 1 mostrar que aging importa |
+| 6 | Captura por hooks (`nsgdb-hook`) | **1.6.0** | hook grava → recall acha; orçamento de 200 ms; spool quando o DB está ocupado |
+
+**Fora de escopo, por decisão:** markdown como fonte da verdade (quebraria
+`no_std` e a paridade byte-exata; o princípio "índice derivado e reconstruível"
+já existe no `index_fingerprint`) e auth multi-usuário (não há servidor).
+
+### Regras que cada fase tem de respeitar
+
+- `bash scripts/gate-all.sh gen && bash scripts/gate-all.sh check` verdes, com a
+  matriz regerada no mesmo commit; contagem que mudar é atualizada em prosa.
+- Pin de contrato no **mesmo commit** quando a superfície MCP muda:
+  `MCP_CONTRACT_VERSION`, `contract.json`, `examples/mcp_client.rs`,
+  `connectors/mcp_client/client.py` (`EXPECTED_CONTRACT`), `docs/MCP.md`,
+  `docs/generated/mcp-surface.md`.
+- Teste de fix/comportamento novo só vale com **mutação provada**.
+- Arquivos CRLF: `encoding='utf-8', newline=''` em qualquer edição por script.
+- O benchmark (fase 1) **não** entra no `gate-all`: precisa de rede e de
+  minutos. Ele vive em `scripts/bench-longmemeval.sh`.
+
 
 ## How to continue
 

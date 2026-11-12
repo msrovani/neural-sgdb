@@ -3,13 +3,13 @@
 Guia de instalação, contrato e troubleshooting do servidor MCP
 (`examples/mcp_server.rs`).
 
-## Contrato atual (v1.5.6)
+## Contrato atual (v1.5.7)
 
 | Campo | Valor |
 |-------|-------|
 | Protocolo | JSON-RPC 2.0 over **stdio** (uma linha JSON por mensagem) |
 | Handshake | `initialize` → `protocolVersion: 2025-11-25` |
-| `serverInfo.version` | `1.5.6` (`MCP_CONTRACT_VERSION` em `examples/mcp_server.rs`) |
+| `serverInfo.version` | `1.5.7` (`MCP_CONTRACT_VERSION` em `examples/mcp_server.rs`) |
 | Tools | **5** (`remember`, `recall`, `health`, `curate`, `decide`) — 40 nomes antigos/alias ainda funcionam em `tools/call` (`ALIAS_SURFACE`, `stable`/`deprecated` em `contract.json` + resource `nsgdb://contract`) |
 | Retrieval default (v1.3.0) | `lexical` sem vetor; `hybrid` (RRF) com embedder de host REAL; `semantic` com `embedding=` do caller — `health.semantic_ready`/`retrieval_default` |
 | Embedding (via B, v1.4.3) | `NEURAL_SGDB_EMBEDDER=multilingual\|candle\|onnx\|local` → modelo `paraphrase-multilingual-MiniLM-L12-v2` (384, in-process em `crates/nsgdb-embed`); `model_id` auto-declarado no `remember`. Cadeia de fallback: caller `embedding=` (A) → host in-process (B) → `embedder_http`/ollama (C) → lexical (honesto, ADR-0008) |
@@ -53,7 +53,7 @@ servidor por `scripts/gen-mcp-surface.sh` — nao editar a mao (o `check` do
 gate de release falha se estiver stale):
 
 <!-- BEGIN GENERATED: mcp-surface -->
-**MCP contract `1.5.6`** · **5** tools em `tools/list` · **40** aliases em `tools/call` (20 stable, 20 deprecated)
+**MCP contract `1.5.7`** · **5** tools em `tools/list` · **40** aliases em `tools/call` (20 stable, 20 deprecated)
 
 Tools (`tools/list`): `remember`, `recall`, `health`, `curate`, `decide`
 

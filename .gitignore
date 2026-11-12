@@ -23,3 +23,7 @@ sgdb_memory.db
 
 # Chrome extension build artifact (gerado via Compress-Archive)
 nsgdb-ext.zip
+
+# Benchmark público (fase 1 / 1.5.7): dataset de 278 MB e relatórios de run.
+evals/datasets/
+evals/runs/

@@ -1,7 +1,7 @@
 {
   "generated_by": "scripts/gate-all.sh",
-  "crate": "1.5.6",
-  "mcp_contract": "1.5.6",
+  "crate": "1.5.7",
+  "mcp_contract": "1.5.7",
   "checks": {
     "lib": { "command": "cargo test --lib", "total": 448, "failed": 0 },
     "p2p": { "command": "cargo test --features p2p --lib", "total": 464, "failed": 0 },

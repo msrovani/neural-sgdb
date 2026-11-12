@@ -449,3 +449,49 @@ Duas leituras, e a segunda é a que importa:
 (grep confirma zero call-sites fora do próprio módulo e do bench). Candidato
 natural a remoção, ou a reimplementação com a rotação — mas só com demanda
 medida, como a casa faz.
+
+
+## LongMemEval-S — benchmark público (release 1.5.7)
+
+Primeiro número de retrieval do nsgdb comparável a outro projeto: 500 perguntas
+públicas, mesma estatística que a maioria publica (`hit@k` = qualquer sessão de
+evidência no top-k), dataset com sha256 pinado. Retrieval **lexical** (o default,
+ADR-0008), sem LLM, sem embedder, determinístico.
+
+Dataset: `xiaowu0162/longmemeval` (v1) variante **S**, sha256
+`08d8dad4be43ee2049a22ff5674eb86725d0ce5ff434cde2627e5e8e7e117894`, medido em
+`007adc8` (Windows, `cargo run --release`).
+
+| modo | o que mede | hit@5 | recall@5 | recall-all@5 |
+|---|---|---|---|---|
+| `component` | sessão inteira indexada (ranking puro) | **0.956** | 0.894 | 0.808 |
+| `pipeline` | teto de 2 KB por turno (custo da captura) | **0.950** | 0.891 | 0.814 |
+
+Por fatia (`component`): knowledge-update 1.000 · multi-session 0.977 ·
+single-session-assistant 0.911 · single-session-preference 0.733 ·
+single-session-user 0.971 · temporal-reasoning 0.970.
+
+### Como reproduzir
+
+```bash
+bash scripts/fetch-longmemeval.sh                 # oracle + S, sha256 verificado
+bash scripts/bench-longmemeval.sh                 # S completo, os dois modos
+bash scripts/bench-longmemeval.sh evals/datasets/longmemeval_oracle
+cargo run --release --example longmemeval -- --limit 20 --mode pipeline --dump 3
+```
+
+O relatório JSON em `evals/runs/` carrega commit, sha256, modo, k, OS/arch e o
+placar por pergunta.
+
+### O que este número NÃO diz
+
+- **Não é QA accuracy.** É retrieval: se a sessão certa está no top-5, não se a
+  resposta foi gerada corretamente (Mem0/Zep/Hindsight publicam a outra métrica).
+- **A variante original não tem abstention** (a "cleaned" re-release adiciona
+  ~30 perguntas); por isso `abstention_excluded: 0` no relatório.
+- **`oracle` é teto, não benchmark**: nessa fatia o haystack contém só as
+  sessões de resposta — 1.000 ali não vale como manchete.
+- **Comparação com o ai-memory** (0.951 zero-LLM / 0.972 component, harness
+  deles): mesmo dataset e mesma estatística, mas o nsgdb indexa sessões direto,
+  sem pipeline de hooks — nosso `pipeline` mede só o corte de 2 KB, não a
+  captura completa deles. Mesma ordem de grandeza, não equivalência.

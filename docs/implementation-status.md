@@ -1,6 +1,6 @@
 # neural-sgdb — Implementation Status
 
-> **Current snapshot (2026-11-10, v1.5.6).** Capability matrix vs the shipped
+> **Current snapshot (2026-11-12, v1.5.7).** Capability matrix vs the shipped
 > codebase. For the public contract see [`docs/api.md`](api.md); for architecture
 > narrative see [`docs/architecture/README.md`](architecture/README.md).
 > v1.4.3 = DX release (P0.1 semantic-on with a real embedder; P0.3 structured
@@ -39,6 +39,7 @@
 | Agent protocol | `cargo run --release --example agent_protocol` | **25/25 exit 0** |
 | Claw sandbox | `scripts/claw-sandbox.ps1` (host-side, MCP) | **25/25 exit 0** |
 | Clippy / doc gates | `-D warnings` | green |
+| Benchmark público (v1.5.7) | IMPLEMENTED | `examples/longmemeval.rs` + `scripts/bench-longmemeval.sh`: LongMemEval-S, 500 perguntas, hit@5 **0.956** component / **0.950** pipeline (lexical), sha256 pinado |
 | Gate total numa passada | `bash scripts/gate-all.sh check` | matriz em `docs/generated/gate-matrix.json` (lib/p2p/no_std/multi_agent/hot/bare-metal/clippy/docs) |
 
 ## Capability matrix
@@ -221,7 +222,7 @@ drift — drift é número de *release* em doc vivo, pego pelo docs-version-gate
 | Conflitos | `curate(op=conflicts/audit_resolve)` | `ConflictRecord` (CFL1), `resolve_conflict`, `RejectedByAuthority` | partition/conflict/authority tests | Doc 04 §5 | IMPLEMENTED |
 | Auditoria | `curate(op=audit_*)` | `audit_checkpoint/verify/rollback_to/audit_forget`, `Hasher` | audit tests, AUD1 golden | ADR-0006 | IMPLEMENTED |
 | Storage backends | `Storage` trait (`docs/api.md`) | `InMemory`, `FileStorage`, `TickvFile`, IDX2 snapshot | parity tests + recovery/compaction tests | Doc 05 | IMPLEMENTED |
-| MCP surface | `contract.json` + `nsgdb://contract` (1.5.6) | `examples/mcp_server.rs` (5 tools + `ALIAS_SURFACE`) | hot test **223/0** (anunciado==servido) | `docs/MCP.md`, `docs/doctrine.md` | IMPLEMENTED |
+| MCP surface | `contract.json` + `nsgdb://contract` (1.5.7) | `examples/mcp_server.rs` (5 tools + `ALIAS_SURFACE`) | hot test **223/0** (anunciado==servido) | `docs/MCP.md`, `docs/doctrine.md` | IMPLEMENTED |
 | `no_std` + zero-dep | `VERSIONING.md`, `SECURITY.md` | `alloc`-only lib, `x86_64-unknown-none` | gate no_std **364+2** + target check | `docs/api.md` §compat | IMPLEMENTED |
 | Observabilidade | `health(view=*)`, `validate` §§1-8 | `HealthReport`, `ValidateIssue`, `HygieneReport`, metrics | validate/hygiene tests | Doc 06 | IMPLEMENTED |
 | Política de memória sensível (host) | — (core não interpreta conteúdo) | `MemoryConnector` policy metadata + `RecallPolicy` (only_own_scope / vulnerable_context) + log de escrita sobre terceiro | `connectors/tests/test_contract.py::test_sensitive_policy_metadata_and_cross_scope_protection` (5/5) | ADR-0021, `docs/sensitive-agent-memory.md` | IMPLEMENTED (host-side) |

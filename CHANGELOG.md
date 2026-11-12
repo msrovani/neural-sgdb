@@ -10,6 +10,28 @@ All notable changes to this project. Format based on
 
 - **`scripts/gate-all.sh` — gate total numa passada, com matriz versionada.** Mede lib, p2p, no_std, multi_agent, hot test, bare-metal, clippy e as duas checagens de docs, grava `docs/generated/gate-matrix.json` e (no modo `check`) falha se a matriz divergir da medicao. O hot test compara a matriz: `crate`/`mcp_contract` errados ou gate com 0 assercoes falham em vez de passar em silencio.
 
+## [1.5.7] — 2026-11-12 (benchmark público: o primeiro número comparável)
+
+### Added
+
+- **Benchmark público LongMemEval-S** (`examples/longmemeval.rs`,
+  `scripts/bench-longmemeval.sh`, `scripts/fetch-longmemeval.sh`): 500 perguntas,
+  dataset com sha256 pinado (278 MB, fora do repo — `evals/datasets/` é
+  gitignored). Dois modos: `component` (sessão inteira indexada) e `pipeline`
+  (teto de 2 KB **por turno**, como na captura real). `hit@5` **0.956**
+  component / **0.950** pipeline; `recall@5` 0.894 / 0.891; `recall-all@5`
+  0.808 / 0.814. Proveniência (commit, sha256, máquina, data) no JSON do run.
+  Fora do `gate-all`: rede + minutos.
+- `--dump N` no harness: evidência e keys dos hits das N primeiras perguntas.
+
+### Notes
+
+Dois achados do próprio harness, ambos registrados no fonte: (a) `Hit.key` é a
+key CANÔNICA (`md/L3/sess/<sid>`), não a crua do `remember` — comparar com a
+crua dava **0.000 em tudo com o ranking perfeito**; (b) as session ids do
+dataset se sobrepõem por prefixo (`..._1` × `..._10`) e a ART recusa prefix-key,
+o que exigiu key com terminador (`sess/<sid>/s`).
+
 ## [1.5.6] — 2026-11-10 (consumidor real: path+scope, envelope unico, cold-start em 1 chamada)
 
 ### Fixed

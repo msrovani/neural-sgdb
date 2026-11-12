@@ -1,4 +1,4 @@
-"""Contract tests do adapter contra o mcp_server real (contrato MCP 1.5.6)."""
+"""Contract tests do adapter contra o mcp_server real (contrato MCP 1.5.7)."""
 
 from __future__ import annotations
 

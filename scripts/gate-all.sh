@@ -80,6 +80,14 @@ run_hot() { # logfile
   fi
 }
 
+# `gen` REGENERA: a matriz no repo pode estar stale (bump de versao, contagem
+# nova) e o hot test compara com ela — deixar o arquivo velho no lugar faria o
+# proprio `gen` falhar por drift, que e justamente o que ele veio consertar.
+# A anterior vai para o temp (nao para o repo) e so serve de diff no log.
+if [ "$MODE" != "check" ] && [ -f "$OUT" ]; then
+  mv "$OUT" "$LOGS/gate-matrix.previous.json"
+fi
+
 echo "gate-all: crate=$CRATE contrato=$CONTRACT modo=$MODE"
 echo "gate-all: build do mcp_server (o hot test recusa binario mais antigo que o fonte)"
 if cargo build --example mcp_server >"$LOGS/build-server.log" 2>&1; then
