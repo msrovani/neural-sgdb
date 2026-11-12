@@ -512,6 +512,29 @@ fn hits_json(hits: &[neural_sgdb::Hit]) -> String {
     serde_json::to_string(&arr).unwrap_or_else(|_| "[]".into())
 }
 
+/// v1.5.8: como `hit_json`, anexando a proveniencia da fusao RRF quando o
+/// chamador pediu `explain=true`. Campo ausente em todo o resto (default
+/// byte-identico).
+fn hit_json_explained(
+    h: &neural_sgdb::Hit,
+    rrf: Option<&neural_sgdb::RrfBreakdown>,
+) -> Value {
+    let mut obj = hit_json(h);
+    if let Some(br) = rrf {
+        let side = |c: Option<neural_sgdb::RrfContribution>| match c {
+            Some(c) => json!({"rank": c.rank, "weight": c.weight}),
+            None => Value::Null,
+        };
+        obj["rrf"] = json!({
+            "semantic": side(br.semantic),
+            "lexical": side(br.lexical),
+            "k_rrf": br.k_rrf,
+            "fused": br.fused,
+        });
+    }
+    obj
+}
+
 /// v1.2.0 (b): preview de payload — corta o `text` de cada hit em N bytes
 /// (char-boundary safe; o clamp do core está em sgdb.rs e é privado).
 /// `None` = full (default, compat). O texto cortado carrega a marca `…`;
@@ -587,7 +610,7 @@ fn error_code_label(c: neural_sgdb::ErrorCode) -> &'static str {
 
 /// NÃºmero de tools em `tools/list` (aliases antigos ainda funcionam em tools/call).
 const EXPECTED_MCP_TOOL_COUNT: usize = 5;
-const MCP_CONTRACT_VERSION: &str = "1.5.7";
+const MCP_CONTRACT_VERSION: &str = "1.5.8";
 const BUILD_GIT: &str = env!("NEURAL_SGDB_BUILD_GIT");
 
 /// Lista pÃºblica: 5 tools. Os 40 nomes antigos continuam vÃ¡lidos em `tools/call`.
@@ -904,6 +927,7 @@ fn mcp_listed_tools() -> Value {
          "inputSchema":{"type":"object","properties":{
            "query":{"type":"string"},
            "mode":{"type":"string","enum":["semantic","lexical","hybrid","causal"],"default":"lexical"},
+           "explain":{"type":"boolean","default":false,"description":"v1.5.8 (mode=hybrid): inclui por hit `rrf` = contribuicao de cada stream (rank 1-based e peso 1/(k+rank)) e o `fused`. Implica payload estruturado; nos outros modos retorna erro em vez de ignorar o pedido"},
            "causal_depth":{"type":"integer","minimum":0,"default":4,"description":"v1.4.4 (mode=causal): quantos ancestrais da linha de versao accompany cada hit (0 = so o hit)"},
            "format":{"type":"string","enum":["json"]},
            "max_payload_bytes":{"type":"integer","description":"v1.2.0: preview opt-in — corta o text de cada hit em N bytes (marca …). Default = full."},
@@ -2486,7 +2510,46 @@ fn main() {
                         // v1.1.26: as dims anunciadas no schema chegam aqui
                         // (o no-op silencioso era o bug).
                         let dims_filter = mcp_scope_filter(args);
-                        let all = match recall_for_mcp(
+                        // v1.5.8: `explain=true` devolve, por hit, de QUAL
+                        // stream RRF veio cada voto. So a fusao tem streams
+                        // para explicar — nos outros modos o pedido seria um
+                        // no-op silencioso (a familia de bug do v1.1.23).
+                        let explain = args["explain"].as_bool().unwrap_or(false);
+                        if explain && mode != "hybrid" {
+                            send(&error_response(
+                                &id,
+                                -32602,
+                                "explain=true exige mode=hybrid (so o RRF tem streams para explicar)",
+                            ));
+                            continue;
+                        }
+                        let mut rrf_by_key: std::collections::HashMap<
+                            String,
+                            neural_sgdb::RrfBreakdown,
+                        > = std::collections::HashMap::new();
+                        let explained = if explain {
+                            let pairs = if scope.is_empty() {
+                                db.recall_hybrid_rrf_explained(&emb, query, need)
+                            } else {
+                                db.recall_hybrid_rrf_explained_scoped(&emb, query, need, &scope)
+                            };
+                            match pairs {
+                                Ok(v) => {
+                                    for (h, br) in v.iter() {
+                                        rrf_by_key.insert(h.key.clone(), *br);
+                                    }
+                                    Some(v.into_iter().map(|(h, _)| h).collect::<Vec<_>>())
+                                }
+                                Err(e) => {
+                                    send(&json!({"jsonrpc":"2.0","id":id,"result":
+                                        mcp_core_error_result(&e)}));
+                                    continue;
+                                }
+                            }
+                        } else {
+                            None
+                        };
+                        let all = if let Some(v) = explained { v } else { match recall_for_mcp(
                             &mut db,
                             &mode,
                             &scope,
@@ -2504,9 +2567,20 @@ fn main() {
                                     mcp_core_error_result(&e)}));
                                 continue;
                             }
-                        };
+                        } };
                         let (mut page, next) = paginate(&all, args["cursor"].as_str(), size);
-                        let json_fmt = args["format"].as_str().unwrap_or("") == "json";
+                        // explain implica payload estruturado: em prosa o
+                        // breakdown nao teria onde caber.
+                        let json_fmt =
+                            explain || args["format"].as_str().unwrap_or("") == "json";
+                        let hits_value: Value = if explain {
+                            json!(page
+                                .iter()
+                                .map(|h| hit_json_explained(h, rrf_by_key.get(&h.key)))
+                                .collect::<Vec<_>>())
+                        } else {
+                            json!(page.iter().map(hit_json).collect::<Vec<_>>())
+                        };
                         // v1.2.0 (b): preview opt-in — default = full (compat).
                         if let Some(mb) = args["max_payload_bytes"].as_u64() {
                             preview_text(&mut page, mb as usize);
@@ -2523,7 +2597,7 @@ fn main() {
                         let text = if json_fmt {
                             match &causal_rows_json {
                                 Some(rows) => json!({ "hits": rows }).to_string(),
-                                None => hits_json(&page),
+                                None => hits_value.to_string(),
                             }
                         } else if page.is_empty() {
                             db.recall_empty_hint(&scope, &mode)
@@ -2559,7 +2633,7 @@ fn main() {
                         let structured = if json_fmt {
                             match &causal_rows_json {
                                 Some(rows) => json!({"hits": rows, "scope": scope, "mode": mode, "scope_dims": filter_echo, "truncated": next.is_some(), "recall": status}),
-                                None => json!({"hits": page.iter().map(hit_json).collect::<Vec<_>>(), "scope": scope, "mode": mode, "scope_dims": filter_echo, "truncated": next.is_some(), "recall": status}),
+                                None => json!({"hits": hits_value, "scope": scope, "mode": mode, "scope_dims": filter_echo, "truncated": next.is_some(), "recall": status}),
                             }
                         } else {
                             json!({"hit_count": page.len(), "scope": scope, "mode": mode, "scope_dims": filter_echo, "truncated": next.is_some(), "recall": status})

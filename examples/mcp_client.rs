@@ -375,6 +375,35 @@ fn main() {
         !is_err && txt.contains("hot test beta"), txt.clone());
     rep.check("hits hibridos exibem path/type (v1.1.6)",
         !is_err && txt.contains("path=") && txt.contains("type="), txt.clone());
+
+    // ---------- v1.5.8: explain por stream no recall hibrido ----------
+    // Ideia copiada do ai-memory: quando o ranking surpreende, saber DE QUAL
+    // stream veio cada voto. Default (sem explain) fica byte-identico.
+    let (txt, is_err) = srv.tool("recall", json!({"query": "telepatia converge", "k": 3,
+        "mode": "hybrid", "embedding": q_emb.clone(), "explain": true}));
+    let explained: Value = serde_json::from_str(&txt).unwrap_or(Value::Null);
+    let explained_arr = explained.as_array().cloned().unwrap_or_default();
+    rep.check("recall hybrid explain=true: rrf por hit fecha a conta",
+        !is_err
+            && !explained_arr.is_empty()
+            && explained_arr.iter().all(|h| {
+                let rrf = &h["rrf"];
+                let sem = rrf["semantic"]["weight"].as_f64();
+                let lex = rrf["lexical"]["weight"].as_f64();
+                let fused = rrf["fused"].as_f64();
+                rrf["k_rrf"].as_f64() == Some(60.0)
+                    && (sem.is_some() || lex.is_some())
+                    && fused.is_some_and(|f| f > 0.0
+                        && (f - (sem.unwrap_or(0.0) + lex.unwrap_or(0.0))).abs() < 1e-6)
+                    && h["score"].as_f64() == fused
+            }),
+        txt.clone());
+    // Explain fora da fusao seria no-op silencioso (familia do bug v1.1.23):
+    // recusa em voz alta em vez de devolver hits sem o campo pedido.
+    let (txt, is_err) = srv.tool("recall", json!({"query": "telepatia converge", "k": 3,
+        "mode": "lexical", "explain": true}));
+    rep.check("recall explain=true fora de mode=hybrid: erro -32602 explicito",
+        is_err && txt.contains("mode=hybrid"), txt.clone());
     // v1.1.6 item 1: format=json â€” hits ESTRUTURADOS para consumo mÃ¡quina.
     let (txt, is_err) = srv.tool("recall", json!({"query": "telepatia converge", "k": 3, "format": "json"}));
     let parsed: Value = serde_json::from_str(&txt).unwrap_or(Value::Null);

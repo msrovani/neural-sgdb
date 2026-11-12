@@ -10,6 +10,38 @@ All notable changes to this project. Format based on
 
 - **`scripts/gate-all.sh` — gate total numa passada, com matriz versionada.** Mede lib, p2p, no_std, multi_agent, hot test, bare-metal, clippy e as duas checagens de docs, grava `docs/generated/gate-matrix.json` e (no modo `check`) falha se a matriz divergir da medicao. O hot test compara a matriz: `crate`/`mcp_contract` errados ou gate com 0 assercoes falham em vez de passar em silencio.
 
+## [1.5.8] — 2026-11-12 (explain por stream no recall híbrido)
+
+### Added
+
+- **`explain` por stream no `recall` híbrido** (`recall(mode=hybrid,
+  explain=true)`), ideia copiada do ai-memory: cada hit traz `rrf` com o rank
+  (1-based) e o peso `1/(60+rank)` de cada stream, mais o `fused`. Sem isso,
+  quando o ranking surpreende só resta adivinhar de onde veio o voto.
+  No core: `RrfBreakdown`, `RrfContribution`, `Sgdb::rrf_fuse_explained`,
+  `recall_hybrid_rrf_explained` e `_scoped` — métodos novos, **sem campo novo
+  no `Hit`** (default byte-idêntico; nada muda para quem não pede).
+- `explain=true` fora de `mode=hybrid` recusa em voz alta (`-32602`) em vez de
+  devolver hits sem o campo pedido — a família de bug do anunciado≠servido
+  (v1.1.23).
+- `explain` implica payload estruturado; `MCP_CONTRACT_VERSION` 1.5.8.
+- Testes: lib **451** (+3: ordem com/sem explain, escopo, e o dobro de voto na
+  fusão) e hot test **225** (+2: conta do `rrf` por hit, recusa fora de hybrid).
+
+### Notes
+
+**Achado medido ao escrever o teste (não corrigido aqui):** uma memória
+semântica tem duas storage keys — `md/L4/<id>` e o companion `md/L2/<id>` — e o
+recall lexical devolve a do companion. Como a fusão RRF é por key, o MESMO dado
+aparece como **dois hits** no híbrido e os dois votos **nunca somam**: na
+prática a "fusão" é união. O ramo que soma dois votos existe e está testado
+direto na fusão (`rrf_fuse_explained_double_vote_sums`), mas não é alcançável
+por corpus hoje. Unificar as keys (ou fundir por id de memória) é candidato para
+1.5.11 (tier+breadth) ou 1.6.0.
+
+Mutação provada: trocar `a.score += s` por `a.score += 0.0 * s` na fusão
+derruba `rrf_fuse_explained_double_vote_sums` (`fused` 0.0164 vs 0.0328).
+
 ## [1.5.7] — 2026-11-12 (benchmark público: o primeiro número comparável)
 
 ### Added

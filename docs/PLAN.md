@@ -9,8 +9,8 @@ The crate README is the entry point; this file is the plan behind it.
 
 ## Status
 
-- Release line: **v1.5.7** (crate `version` in `Cargo.toml`, MCP contract
-  `1.5.7`). `1.5.7` = fase 1 do plano de ideias copiadas (benchmark público
+- Release line: **v1.5.8** (crate `version` in `Cargo.toml`, MCP contract
+  `1.5.8`). `1.5.8` = fase 2 do plano de ideias copiadas (benchmark público
   LongMemEval-S). `1.5.5` entregou as fases 1-5; `1.5.6` fecha o que o uso real
   apontou: `recall(path=)` honra scope, envelope único de erro nas recusas de
   `path`, gate de build no hot test, `DEFAULT_SCOPE` consistente e

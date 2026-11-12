@@ -151,7 +151,8 @@ pub use sgdb::{
     HygieneReport,
     LexicalAnchorReranker,
     RecallLedger, RecallProbe, RecallWeights, RememberOptions, RememberOutcome, Reranker,
-    ResolveOutcome, ScoreBreakdown, ScopeDimDescriptor, ScopeDistribution, ScopeProbes, Sgdb,
+    ResolveOutcome, RrfBreakdown, RrfContribution, ScoreBreakdown, ScopeDimDescriptor,
+    ScopeDistribution, ScopeProbes, Sgdb,
     ValidateIssue,
 };
 pub use storage::{ErrorCode, InMemory, SnapshotStorage, Storage, SgdbError};

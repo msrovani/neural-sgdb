@@ -631,6 +631,33 @@ impl RecallWeights {
 /// Decomposição do score de um hit ponderado (v1.1.10 item 3, memrust-style):
 /// cada sinal exposto em PENALIDADE (0..1, menor = melhor) + o `total`
 /// ponderado. O consumidor vê o "porquê" do ranking sem re-derivar.
+/// Contribuição de UM stream para a fusão RRF (v1.5.8): posição 1-based no
+/// ranking daquele stream e o peso `1/(k_rrf + rank)`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RrfContribution {
+    pub rank: u32,
+    pub weight: f32,
+}
+
+/// Decomposição da fusão RRF de um hit (v1.5.8, fase 2 das ideias copiadas).
+///
+/// Existe pelo mesmo motivo do `ScoreBreakdown`: quando o ranking surpreende,
+/// sem saber DE QUAL stream veio cada voto a única saída é adivinhar. O
+/// ai-memory expõe isso por hit (`explain=true` com `rrf.fts/vector/graph/...`);
+/// aqui são os dois streams que o core funde — semântico e lexical.
+///
+/// `fused` é a soma dos `weight` presentes e é IGUAL ao `Hit.score` devolvido
+/// pela variante explicada (invariante testada).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RrfBreakdown {
+    pub semantic: Option<RrfContribution>,
+    pub lexical: Option<RrfContribution>,
+    /// Constante usada na fusão (`1/(k_rrf + rank)`, default 60.0) — sem ela o
+    /// consumidor não consegue reproduzir o score.
+    pub k_rrf: f32,
+    pub fused: f32,
+}
+
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct ScoreBreakdown {
     /// 1−cos (path semântico).
@@ -4966,6 +4993,94 @@ impl Sgdb {
                 h
             })
             .collect()
+    }
+
+    /// Fusão RRF que TAMBÉM devolve a proveniência da fusão (v1.5.8).
+    ///
+    /// Mesma ordenação e mesmos scores de `rrf_fuse` (mesmo acumulador, mesma
+    /// constante, mesmo `truncate`), com o rank de cada stream por hit. É
+    /// método separado, e não um campo no `Hit`, porque `Hit` é construído em
+    /// muitos pontos: um campo novo mexeria em todos eles para servir a UMA
+    /// rota de explicação.
+    pub fn rrf_fuse_explained(
+        semantic: Vec<Hit>,
+        lexical: Vec<Hit>,
+        k: usize,
+        k_rrf: f32,
+    ) -> Vec<(Hit, RrfBreakdown)> {
+        use alloc::collections::BTreeMap;
+        struct Acc {
+            score: f32,
+            hit: Hit,
+            br: RrfBreakdown,
+        }
+        let mut acc: BTreeMap<String, Acc> = BTreeMap::new();
+        for (rank, h) in semantic.into_iter().enumerate() {
+            let s = 1.0 / (k_rrf + (rank as f32 + 1.0));
+            acc.insert(
+                h.key.clone(),
+                Acc {
+                    score: s,
+                    hit: h,
+                    br: RrfBreakdown {
+                        semantic: Some(RrfContribution { rank: rank as u32 + 1, weight: s }),
+                        lexical: None,
+                        k_rrf,
+                        fused: s,
+                    },
+                },
+            );
+        }
+        for (rank, h) in lexical.into_iter().enumerate() {
+            let s = 1.0 / (k_rrf + (rank as f32 + 1.0));
+            let c = RrfContribution { rank: rank as u32 + 1, weight: s };
+            acc.entry(h.key.clone())
+                .and_modify(|a| {
+                    a.score += s;
+                    a.br.lexical = Some(c);
+                    a.br.fused = a.score;
+                })
+                .or_insert(Acc {
+                    score: s,
+                    hit: h,
+                    br: RrfBreakdown { semantic: None, lexical: Some(c), k_rrf, fused: s },
+                });
+        }
+        let mut v: Vec<Acc> = acc.into_values().collect();
+        v.sort_by(|a, b| b.score.total_cmp(&a.score));
+        v.truncate(k.max(1));
+        v.into_iter()
+            .map(|mut a| {
+                a.hit.score = a.score;
+                a.br.fused = a.score;
+                (a.hit, a.br)
+            })
+            .collect()
+    }
+
+    /// Recall híbrido RRF com explain por stream (v1.5.8).
+    pub fn recall_hybrid_rrf_explained(
+        &mut self,
+        query_emb: &[f32],
+        query_text: &str,
+        k: usize,
+    ) -> Result<Vec<(Hit, RrfBreakdown)>, SgdbError> {
+        let sem = self.recall_oversampled(query_emb, k.max(1) * 4, 4)?;
+        let lex = self.recall_lexical(query_text, k.max(1) * 4)?;
+        Ok(Self::rrf_fuse_explained(sem, lex, k, 60.0))
+    }
+
+    /// Recall híbrido RRF escopado com explain por stream (v1.5.8).
+    pub fn recall_hybrid_rrf_explained_scoped(
+        &mut self,
+        query_emb: &[f32],
+        query_text: &str,
+        k: usize,
+        scope: &str,
+    ) -> Result<Vec<(Hit, RrfBreakdown)>, SgdbError> {
+        let sem = self.recall_scoped(query_emb, k.max(1) * 4, scope)?;
+        let lex = self.recall_lexical_scoped(query_text, k.max(1) * 4, scope)?;
+        Ok(Self::rrf_fuse_explained(sem, lex, k, 60.0))
     }
 
     /// Recall híbrido com RRF (v1.1.14): semântico ∪ lexical fundidos por
@@ -12853,5 +12968,115 @@ mod v144_causal_tests {
             none.iter().all(|c| c.hit.path == RecallPath::Causal),
             "o path continua causal mesmo sem a trilha"
         );
+    }
+}
+
+#[cfg(test)]
+mod rrf_explain_tests {
+    use super::*;
+    use crate::{InMemory, RememberOptions};
+
+    fn opts(scope: &str) -> RememberOptions<'_> {
+        RememberOptions {
+            scope: Some(scope),
+            entities: &[],
+            content_type: None,
+            scope_dims: None,
+            model_id: None,
+            index_key: false,
+        }
+    }
+
+    fn keys(v: &[Hit]) -> Vec<String> {
+        v.iter().map(|h| h.key.clone()).collect()
+    }
+
+    #[test]
+    fn rrf_explain_is_same_ranking_and_sums_to_the_score() {
+        // v1.5.8: explicar NAO pode mudar o ranking, e o breakdown tem de
+        // fechar a conta — `fused` = soma dos votos = `Hit.score`.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic_with("a", "alpha beta gamma", &[1.0, 0.0, 0.0, 0.0], opts("s"))
+            .unwrap();
+        db.remember_semantic_with("b", "delta epsilon zeta", &[0.0, 1.0, 0.0, 0.0], opts("s"))
+            .unwrap();
+        let q = [1.0, 0.0, 0.0, 0.0];
+        let plain = db.recall_hybrid_rrf_scoped(&q, "alpha gamma", 5, "s").unwrap();
+        let expl = db.recall_hybrid_rrf_explained_scoped(&q, "alpha gamma", 5, "s").unwrap();
+        assert_eq!(
+            keys(&plain),
+            expl.iter().map(|(h, _)| h.key.clone()).collect::<Vec<_>>(),
+            "explicar mudou a ordem do recall hibrido"
+        );
+        assert!(!expl.is_empty(), "corpus vazio: o teste nao exercita nada");
+        for (h, br) in &expl {
+            assert_eq!(br.k_rrf, 60.0);
+            let sum = br.semantic.map(|c| c.weight).unwrap_or(0.0)
+                + br.lexical.map(|c| c.weight).unwrap_or(0.0);
+            assert!(
+                (br.fused - sum).abs() < 1e-6,
+                "fused {} != soma dos streams {}",
+                br.fused,
+                sum
+            );
+            assert_eq!(br.fused, h.score);
+            for c in [br.semantic, br.lexical].into_iter().flatten() {
+                assert!(c.rank >= 1);
+                assert!(c.weight > 0.0);
+            }
+        }
+        // Nota MEDIDA aqui (2026-11-12): um doc semantico tem dois storage keys
+        // — `md/L4/<id>` (semantico) e o companion `md/L2/<id>` (lexical) — e o
+        // mesmo dado aparece como DOIS hits: o RRF funde por key, entao os dois
+        // votos nunca somam no mesmo hit. Exigir "hit nos dois streams" seria
+        // testar algo que esta fusao nao faz; o teste garante a conta por hit e
+        // que os dois streams contribuiram.
+        assert!(
+            expl.iter().any(|(_, br)| br.semantic.is_some()),
+            "nenhum voto semantico"
+        );
+        assert!(
+            expl.iter().any(|(_, br)| br.lexical.is_some()),
+            "nenhum voto lexical"
+        );
+    }
+
+    #[test]
+    fn rrf_explain_scoped_honors_scope() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic_with("a", "alpha beta", &[1.0, 0.0], opts("proj/x")).unwrap();
+        db.remember_semantic_with("b", "alpha beta", &[1.0, 0.0], opts("proj/y")).unwrap();
+        let q = [1.0, 0.0];
+        let x = db.recall_hybrid_rrf_explained_scoped(&q, "alpha", 5, "proj/x").unwrap();
+        // keys sao CANONICAS (`md/L4/a`), nao a crua do remember; o escopo vive
+        // na meta, nao na key — por isso a assercao e por sufixo.
+        assert!(x.iter().any(|(h, _)| h.key.ends_with("/a")));
+        assert!(!x.iter().any(|(h, _)| h.key.ends_with("/b")));
+    }
+    #[test]
+    fn rrf_fuse_explained_double_vote_sums() {
+        // O ramo que soma DOIS votos no mesmo hit nao e alcancavel por corpus
+        // (L4 e L2 sao storage keys distintas — ver o teste acima), entao ele e
+        // exercitado direto na fusao: a mesma lista nos dois streams dobra.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic_with("a", "alpha beta gamma", &[1.0, 0.0], opts("s")).unwrap();
+        let sem = db.recall_scoped(&[1.0, 0.0], 5, "s").unwrap();
+        assert!(!sem.is_empty(), "semantic recall vazio: teste nao exercita nada");
+        let doubled = Sgdb::rrf_fuse_explained(sem.clone(), sem.clone(), 5, 60.0);
+        assert!(!doubled.is_empty());
+        for (h, br) in &doubled {
+            let (a, b) = match (br.semantic, br.lexical) {
+                (Some(a), Some(b)) => (a, b),
+                _ => panic!("key nos dois streams sem os dois votos no breakdown"),
+            };
+            assert!(
+                (br.fused - (a.weight + b.weight)).abs() < 1e-6,
+                "dois votos nao somaram: fused {} vs {}",
+                br.fused,
+                a.weight + b.weight
+            );
+            assert_eq!(br.fused, h.score, "score devolvido != fused");
+            assert_eq!(a.rank, b.rank);
+        }
     }
 }
