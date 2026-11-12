@@ -39,6 +39,7 @@
 | Agent protocol | `cargo run --release --example agent_protocol` | **25/25 exit 0** |
 | Claw sandbox | `scripts/claw-sandbox.ps1` (host-side, MCP) | **25/25 exit 0** |
 | Clippy / doc gates | `-D warnings` | green |
+| Gate total numa passada | `bash scripts/gate-all.sh check` | matriz em `docs/generated/gate-matrix.json` (lib/p2p/no_std/multi_agent/hot/bare-metal/clippy/docs) |
 
 ## Capability matrix
 

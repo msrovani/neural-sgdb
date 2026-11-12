@@ -1,0 +1,16 @@
+{
+  "generated_by": "scripts/gate-all.sh",
+  "crate": "1.5.6",
+  "mcp_contract": "1.5.6",
+  "checks": {
+    "lib": { "command": "cargo test --lib", "total": 448, "failed": 0 },
+    "p2p": { "command": "cargo test --features p2p --lib", "total": 464, "failed": 0 },
+    "no_std": { "command": "cargo test --no-default-features --lib", "total": 378, "failed": 0 },
+    "multi_agent": { "command": "cargo test --test multi_agent", "total": 21, "failed": 0 },
+    "hot_test": { "command": "cargo run --example mcp_client", "total": 223, "failed": 0 },
+    "bare_metal": { "command": "cargo check --no-default-features --target x86_64-unknown-none", "result": "clean" },
+    "clippy": { "command": "cargo clippy --example mcp_server --example mcp_client -- -D warnings", "result": "clean" },
+    "gen_mcp_surface": { "command": "bash scripts/gen-mcp-surface.sh check", "result": "clean" },
+    "docs_version_gate": { "command": "bash scripts/docs-version-gate.sh", "result": "clean" }
+  }
+}

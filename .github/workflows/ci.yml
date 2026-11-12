@@ -107,6 +107,22 @@ jobs:
       - name: golden vectors (NMD1/MDM1 v8/AUD1/TKLV)
         run: cargo test --lib golden
 
+  # v1.5.6+: fechar release era um ritual de oito comandos colados em prosa, e
+  # gate que nao roda nao falha (o `--shuffle` de v1.4.5 e os 220/0 do hot test
+  # contra um binario 1.5.0 obsoleto). O job roda o MESMO gate que o agente roda
+  # na mao; `check` mede tudo de novo e compara com a matriz commitada, entao
+  # bump de versao ou contagem que mudou sem regerar a matriz derruba a run.
+  gate-total:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-none
+      - uses: Swatinem/rust-cache@v2
+      - name: gate total (lib/p2p/no_std/multi_agent/hot/bare-metal/clippy/docs)
+        run: bash scripts/gate-all.sh check
+
   mcp-windows:
     runs-on: windows-latest
     steps:

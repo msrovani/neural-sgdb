@@ -166,6 +166,67 @@ fn assert_fresh_build(bin: &str) {
     }
 }
 
+/// A matriz de gates e um pin de release: se foi gerada para OUTRA versao, ou
+/// registra um gate com 0 assercoes (gate vazio, a falha silenciosa do
+/// `--shuffle` na v1.4.5), o hot test para aqui em vez de passar em silencio.
+fn assert_gate_matrix(server_contract: Option<&str>) {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/docs/generated/gate-matrix.json"
+    );
+    let Ok(bytes) = std::fs::read(path) else {
+        println!(
+            "AVISO gate-matrix.json ausente: rode `bash scripts/gate-all.sh` \
+             (o hot test segue sem comparar a matriz)"
+        );
+        return;
+    };
+    // Arquivo vazio = ainda nao gerado (bootstrap): o `gen` roda o hot test
+    // ANTES de escrever a matriz, entao vazio nao pode ser fatal (deadlock).
+    if bytes.iter().all(|b| b.is_ascii_whitespace()) {
+        println!("AVISO gate-matrix.json vazio (bootstrap): rode `bash scripts/gate-all.sh`");
+        return;
+    }
+    let Ok(v) = serde_json::from_slice::<Value>(&bytes) else {
+        panic!("{path} ilegivel; rode `bash scripts/gate-all.sh`");
+    };
+    assert_eq!(
+        v["crate"].as_str(),
+        Some(env!("CARGO_PKG_VERSION")),
+        "matriz de gates gerada para crate {} mas o crate e {} — rode `bash scripts/gate-all.sh`",
+        v["crate"],
+        env!("CARGO_PKG_VERSION")
+    );
+    if let Some(c) = server_contract {
+        assert_eq!(
+            v["mcp_contract"].as_str(),
+            Some(c),
+            "matriz de gates diz contrato {} mas o server anunciou {} — rode `bash scripts/gate-all.sh`",
+            v["mcp_contract"],
+            c
+        );
+    }
+    let checks = v["checks"].as_object().expect("matriz de gates sem bloco `checks`");
+    let mut resumo = Vec::new();
+    for key in ["lib", "p2p", "no_std", "multi_agent", "hot_test"] {
+        let total = checks.get(key).and_then(|c| c["total"].as_u64()).unwrap_or(0);
+        assert!(
+            total > 0,
+            "gate '{key}' registrado com 0 assercoes na matriz (gate vazio)"
+        );
+        resumo.push(format!("{key}={total}"));
+    }
+    for key in ["bare_metal", "clippy", "gen_mcp_surface", "docs_version_gate"] {
+        let r = checks.get(key).and_then(|c| c["result"].as_str()).unwrap_or("");
+        assert_eq!(r, "clean", "gate '{key}' nao esta 'clean' na matriz ({r})");
+    }
+    println!(
+        "PASS matriz de gates em dia (crate {}, {} )",
+        v["crate"],
+        resumo.join(" ")
+    );
+}
+
 fn server_bin() -> String {
     if let Ok(b) = std::env::var("NEURAL_SGDB_MCP_BIN") {
         return b;
@@ -226,6 +287,11 @@ fn main() {
     rep.check("serverInfo version == CARGO_PKG_VERSION",
         r["result"]["serverInfo"]["version"] == env!("CARGO_PKG_VERSION"),
         format!("server={} crate={}", r["result"]["serverInfo"]["version"], env!("CARGO_PKG_VERSION")));
+    // v1.5.6: a matriz de gates (docs/generated/gate-matrix.json, escrita por
+    // scripts/gate-all.sh) e um PIN comparado aqui — de proposito sem virar
+    // assercao numerada, para o pin nao mudar o proprio total que ele compara
+    // (mesmo espirito do `assert_fresh_build`).
+    assert_gate_matrix(r["result"]["serverInfo"]["mcp_contract_version"].as_str());
     rep.check("serverInfo mcp_tool_count 5",
         r["result"]["serverInfo"]["mcp_tool_count"] == 5, r.to_string());
     let instr = r["result"]["instructions"].as_str().unwrap_or("");

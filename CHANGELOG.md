@@ -6,6 +6,10 @@ All notable changes to this project. Format based on
 
 ## [Unreleased]
 
+### Added
+
+- **`scripts/gate-all.sh` — gate total numa passada, com matriz versionada.** Mede lib, p2p, no_std, multi_agent, hot test, bare-metal, clippy e as duas checagens de docs, grava `docs/generated/gate-matrix.json` e (no modo `check`) falha se a matriz divergir da medicao. O hot test compara a matriz: `crate`/`mcp_contract` errados ou gate com 0 assercoes falham em vez de passar em silencio.
+
 ## [1.5.6] — 2026-11-10 (consumidor real: path+scope, envelope unico, cold-start em 1 chamada)
 
 ### Fixed
