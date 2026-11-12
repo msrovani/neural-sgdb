@@ -105,7 +105,12 @@ if cargo check --no-default-features --target x86_64-unknown-none >"$LOGS/bare_m
 else
   bad bare_metal "$LOGS/bare_metal.log"
 fi
-if cargo clippy --example mcp_server --example mcp_client -- -D warnings >"$LOGS/clippy.log" 2>&1; then
+# MESMA invocacao do CI (`--all-targets --all-features`), nao um subconjunto: a
+# versao anterior olhava so os dois exemplos do MCP e o `utility_bench` (novo na
+# 1.5.6) entrou na main com 4 lints sob `-D warnings` — o gate local dizia
+# "clippy clean" e o CI ficou vermelho em 7d5217e. Gate que mede menos que o CI
+# nao e um gate mais rapido, e um gate falso.
+if cargo clippy --all-targets --all-features -- -D warnings >"$LOGS/clippy.log" 2>&1; then
   CLIPPY=clean; ok clippy clean
 else
   bad clippy "$LOGS/clippy.log"
@@ -134,7 +139,7 @@ cat >"$TMP_MATRIX" <<EOF
     "multi_agent": { "command": "cargo test --test multi_agent", "total": $MA_T, "failed": $MA_F },
     "hot_test": { "command": "cargo run --example mcp_client", "total": $HOT_T, "failed": $HOT_F },
     "bare_metal": { "command": "cargo check --no-default-features --target x86_64-unknown-none", "result": "$BARE" },
-    "clippy": { "command": "cargo clippy --example mcp_server --example mcp_client -- -D warnings", "result": "$CLIPPY" },
+    "clippy": { "command": "cargo clippy --all-targets --all-features -- -D warnings", "result": "$CLIPPY" },
     "gen_mcp_surface": { "command": "bash scripts/gen-mcp-surface.sh check", "result": "$SURFACE" },
     "docs_version_gate": { "command": "bash scripts/docs-version-gate.sh", "result": "$DOCSV" }
   }

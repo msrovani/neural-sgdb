@@ -40,7 +40,7 @@ fn main() {
     
     // Domínio 1: infra/ops
     let mut db = Sgdb::open(InMemory::new()).unwrap();
-    let _ = db.set_default_scope(Some("project/infra".into()));
+    db.set_default_scope(Some("project/infra".into()));
     
     // memória base
     db.remember_text_with("ops/runbook/deploy", 
@@ -78,9 +78,11 @@ fn main() {
         let lex_ok = hits_lex.iter().any(|h| c.gold_keys.contains(&h.key.as_str()));
         let sem_ok = hits_sem.iter().any(|h| c.gold_keys.contains(&h.key.as_str()));
         
-        println!("  q='{}' | lexical: {} ({}ms, {}cands) | semantic: {} ({}ms, {}cands)",
-            c.query, if lex_ok {"OK"} else {"MISS"}, format!("{:.2}", lex_ms), hits_lex.len(),
-            if sem_ok {"OK"} else {"MISS"}, format!("{:.2}", sem_ms), hits_sem.len());
+        // `domain` entra na linha: era campo nunca lido (dead_code sob `-D warnings`)
+        // e o rotulo pertence a saida — dois dominios no mesmo relatorio.
+        println!("  [{}] q='{}' | lexical: {} ({:.2}ms, {}cands) | semantic: {} ({:.2}ms, {}cands)",
+            c.domain, c.query, if lex_ok {"OK"} else {"MISS"}, lex_ms, hits_lex.len(),
+            if sem_ok {"OK"} else {"MISS"}, sem_ms, hits_sem.len());
     }
     
     // Domínio 2: produto/docs
@@ -98,7 +100,7 @@ fn main() {
     let h2 = db2.recall_lexical_scoped(q2, 3, "product/docs").unwrap();
     let ms2 = t0.elapsed().as_secs_f64() * 1000.0;
     let ok2 = h2.iter().any(|h| h.key == "docs/api/auth");
-    println!("  q='{}' | lexical: {} ({}ms, {}cands)", q2, if ok2 {"OK"} else {"MISS"}, format!("{:.2}", ms2), h2.len());
+    println!("  q='{}' | lexical: {} ({:.2}ms, {}cands)", q2, if ok2 {"OK"} else {"MISS"}, ms2, h2.len());
     
     // Teste de isolamento de escopo
     let global = db.recall_lexical("token interno", 5).unwrap();
