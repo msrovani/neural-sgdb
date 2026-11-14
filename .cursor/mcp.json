@@ -2,17 +2,9 @@
   "mcpServers": {
     "neural-sgdb": {
       "type": "stdio",
-      "command": "powershell",
-      "args": [
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        "${workspaceFolder}${/}scripts${/}mcp-server.ps1"
-      ],
-      "env": {
-        "NEURAL_SGDB_DEFAULT_SCOPE": "project/neural-sgdb"
-      }
+      "command": "bash",
+      "args": ["${workspaceFolder}${/}scripts${/}mcp-server.sh"],
+      "env": { "NEURAL_SGDB_DEFAULT_SCOPE": "project/neural-sgdb" }
     }
   }
 }
