@@ -495,3 +495,29 @@ placar por pergunta.
   deles): mesmo dataset e mesma estatística, mas o nsgdb indexa sessões direto,
   sem pipeline de hooks — nosso `pipeline` mede só o corte de 2 KB, não a
   captura completa deles. Mesma ordem de grandeza, não equivalência.
+
+## LongMemEval-S — hibrido (RRF), antes/depois da fusao por memoria (release 1.5.10)
+
+Comando (dataset com sha256 pinado; 500 perguntas, k=5):
+
+```
+cargo run --release --example longmemeval --   --dataset evals/datasets/longmemeval_s --mode hybrid --limit 500
+```
+
+| metrica | fusao por storage key (1.5.8/1.5.9) | fusao por memoria (1.5.10) |
+|---|---|---|
+| hit@5 | 0.932 | 0.840 |
+| recall@5 | 0.847 | 0.705 |
+| recall-all@5 | 0.752 | 0.566 |
+
+Fatias (hit@5 antes -> depois): knowledge-update 1.000 -> 0.962;
+multi-session 0.947 -> 0.902; single-session-assistant 0.929 -> 0.857;
+single-session-preference 0.633 -> 0.267; single-session-user 0.943 -> 0.814;
+temporal-reasoning 0.940 -> 0.842.
+
+**Leitura honesta:** a fusao por key era um bug (o mesmo dado duas vezes, votos
+que nunca se somavam) e o numero dela era inflado por duplicatas que acertavam
+por acidente. A fusao correta mede o que o RRF realmente entrega com o embedder
+`demo`: menos que o lexical puro (hit@5 0.950 no modo pipeline). O gargalo e o
+sinal semantico, nao a fusao. Nenhum peso/constante foi ajustado para melhorar
+este numero.

@@ -10,6 +10,44 @@ All notable changes to this project. Format based on
 
 - **`scripts/gate-all.sh` — gate total numa passada, com matriz versionada.** Mede lib, p2p, no_std, multi_agent, hot test, bare-metal, clippy e as duas checagens de docs, grava `docs/generated/gate-matrix.json` e (no modo `check`) falha se a matriz divergir da medicao. O hot test compara a matriz: `crate`/`mcp_contract` errados ou gate com 0 assercoes falham em vez de passar em silencio.
 
+## [1.5.10] — 2026-11-12 (fusao RRF por MEMORIA, nao por storage key)
+
+### Fixed
+
+- **O hibrido devolvia o mesmo dado duas vezes e nunca somava os votos.** Um
+  doc semantico tem duas storage keys — o primario `md/L4/<id>` e o companion
+  `md/L2/<id>` (que e o que o indice lexical indexa). A fusao era por key, entao
+  o mesmo item ocupava DUAS vagas no top-k e cada voto caia numa key diferente.
+  Achado na 1.5.8, quando o `explain` mostrou um stream por vez.
+- `Sgdb::rrf_fuse` agora funde por identidade de memoria (`Hit.rel ?? Hit.key`,
+  `rel` ja carrega o primario de um hit de companion) e **delega** a
+  `rrf_fuse_explained` — uma regra de fusao so, sem copia (licao v1.1.25).
+- Teste de lib novo com mutacao provada: com a fusao por key o doc aparece como
+  `md/L2/dup/a` + `md/L4/dup/a`; com a identidade aparece uma vez, recebendo
+  `sem.weight + lex.weight` e `fused == score`.
+
+### Notes — resultado NEGATIVO medido (honesto)
+
+O benchmark publico ganhou um modo `hybrid` (`examples/longmemeval.rs`) porque
+`component`/`pipeline` sao lexicais e nao passam pelo RRF. LongMemEval-S, 500
+perguntas, k=5, mesmo dataset/sha256/modo, so o codigo da fusao muda:
+
+| metrica | antes (por key) | depois (por memoria) |
+|---|---|---|
+| hit@5 | **0.932** | **0.840** |
+| recall@5 | 0.847 | 0.705 |
+| recall-all@5 | 0.752 | 0.566 |
+
+Os dumps mostram a causa: antes o top-5 misturava `md/L2` e `md/L4` da mesma
+sessao (a mesma evidencia aparecia, contada duas vezes); depois o voto lexical
+de uma sessao se soma ao semantico dela e o top-5 fica coerente — mas com o
+embedder `demo` (trigram de 256-dim, ruido alto) dois votos MEDIOCRES passam a
+bater um voto lexical FORTE, e a evidencia sai do top-5. Ou seja: a fusao
+correta expos que a qualidade do sinal semantico e o gargalo. Nao se ajustou
+peso nem constante para "consertar" o numero — isso seria tunar o benchmark com
+o proprio benchmark. Candidatos: RRF ponderado por stream, ou so fundir quando o
+embedder for real (nao-`demo`).
+
 ## [1.5.9] — 2026-11-12 (escrita condicional: CAS otimista)
 
 ### Added

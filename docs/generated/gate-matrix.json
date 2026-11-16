@@ -1,11 +1,11 @@
 {
   "generated_by": "scripts/gate-all.sh",
-  "crate": "1.5.9",
-  "mcp_contract": "1.5.9",
+  "crate": "1.5.10",
+  "mcp_contract": "1.5.10",
   "checks": {
-    "lib": { "command": "cargo test --lib", "total": 454, "failed": 0 },
-    "p2p": { "command": "cargo test --features p2p --lib", "total": 470, "failed": 0 },
-    "no_std": { "command": "cargo test --no-default-features --lib", "total": 384, "failed": 0 },
+    "lib": { "command": "cargo test --lib", "total": 455, "failed": 0 },
+    "p2p": { "command": "cargo test --features p2p --lib", "total": 471, "failed": 0 },
+    "no_std": { "command": "cargo test --no-default-features --lib", "total": 385, "failed": 0 },
     "multi_agent": { "command": "cargo test --test multi_agent", "total": 21, "failed": 0 },
     "hot_test": { "command": "cargo run --example mcp_client", "total": 227, "failed": 0 },
     "bare_metal": { "command": "cargo check --no-default-features --target x86_64-unknown-none", "result": "clean" },

@@ -5031,27 +5031,25 @@ impl Sgdb {
     /// Fusão RRF (v1.1.14, §4 P0): `score = Σ 1/(k_rrf + rank)` sobre as
     /// listas semantic + lexical (rank 1-indexed, `k_rrf=60` default Qdrant).
     /// Rank, não score bruto — BM25 e cosseno não são comparáveis.
+    /// Identidade de FUSAO de um hit (v1.5.10): a MEMORIA, nao a storage key.
+    ///
+    /// Um doc L4/L5 tem DUAS storage keys — o primario (`md/L4/<id>`) e o
+    /// companion textual (`md/L2/<id>`, que e o que o indice lexical indexa).
+    /// Fundir por key tratava os dois como hits distintos: o mesmo dado
+    /// aparecia duas vezes no resultado e cada voto caia numa key diferente,
+    /// entao o RRF nunca somava os dois sinais do mesmo item. `Hit.rel` ja
+    /// carrega o primario de um hit de companion, entao a identidade e
+    /// `rel ?? key` (um L3 textual e seu proprio primario: rel = None).
+    fn fusion_key(h: &Hit) -> String {
+        h.rel.clone().unwrap_or_else(|| h.key.clone())
+    }
+
     pub fn rrf_fuse(semantic: Vec<Hit>, lexical: Vec<Hit>, k: usize, k_rrf: f32) -> Vec<Hit> {
-        use alloc::collections::BTreeMap;
-        let mut acc: BTreeMap<String, (f32, Hit)> = BTreeMap::new();
-        for (rank, h) in semantic.into_iter().enumerate() {
-            let s = 1.0 / (k_rrf + (rank as f32 + 1.0));
-            acc.insert(h.key.clone(), (s, h));
-        }
-        for (rank, h) in lexical.into_iter().enumerate() {
-            let s = 1.0 / (k_rrf + (rank as f32 + 1.0));
-            acc.entry(h.key.clone())
-                .and_modify(|e| e.0 += s)
-                .or_insert((s, h));
-        }
-        let mut v: Vec<(f32, Hit)> = acc.into_values().collect();
-        v.sort_by(|a, b| b.0.total_cmp(&a.0));
-        v.truncate(k.max(1));
-        v.into_iter()
-            .map(|(s, mut h)| {
-                h.score = s;
-                h
-            })
+        // v1.5.10: UMA regra de fusao (a explicada). Duas copias divergem — a
+        // licao do v1.1.25 — e a ordenacao daqui e comportamento publico.
+        Self::rrf_fuse_explained(semantic, lexical, k, k_rrf)
+            .into_iter()
+            .map(|(h, _)| h)
             .collect()
     }
 
@@ -5078,7 +5076,7 @@ impl Sgdb {
         for (rank, h) in semantic.into_iter().enumerate() {
             let s = 1.0 / (k_rrf + (rank as f32 + 1.0));
             acc.insert(
-                h.key.clone(),
+                Self::fusion_key(&h),
                 Acc {
                     score: s,
                     hit: h,
@@ -5094,7 +5092,7 @@ impl Sgdb {
         for (rank, h) in lexical.into_iter().enumerate() {
             let s = 1.0 / (k_rrf + (rank as f32 + 1.0));
             let c = RrfContribution { rank: rank as u32 + 1, weight: s };
-            acc.entry(h.key.clone())
+            acc.entry(Self::fusion_key(&h))
                 .and_modify(|a| {
                     a.score += s;
                     a.br.lexical = Some(c);
@@ -11562,19 +11560,36 @@ mod tests {
         let hits_recall = db.recall(&[1.0, 0.0], 10).unwrap();
         let hits_hybrid = db.recall_hybrid_rrf(&[1.0, 0.0], "alpha", 10).unwrap();
         assert_eq!(hits_recall.len(), 3);
-        assert!(hits_hybrid.len() >= 3, "hybrid pelo menos 3: {}", hits_hybrid.len());
+        // v1.5.10: a fusao e por MEMORIA, entao o doc que casa nos dois streams
+        // aparece UMA vez (antes vinha como md/L4/a e md/L2/a) e com os dois
+        // votos somados, o que o poe na frente. Por isso a ordem nao e mais a
+        // semantica pura — e o que a fusao existe para fazer.
+        assert_eq!(hits_hybrid.len(), 3, "hybrid com duplicata de storage key: {hits_hybrid:?}");
         // Os 3 docs semânticos devem aparecer em ambas as listas
         let keys_r: Vec<&str> = hits_recall.iter().map(|h| h.key.as_str()).collect();
         let keys_h: Vec<&str> = hits_hybrid.iter().map(|h| h.key.as_str()).collect();
         for k in &keys_r {
             assert!(keys_h.contains(k), "hybrid não contém {k}");
         }
-        // Ordem relativa dos 3 docs semânticos deve ser a mesma
+        // O doc "a" e o unico que o lexical casa ("alpha"): leva os DOIS votos
+        // e por isso lidera. "b" e "c" mantem entre si a ordem state-first
+        // (c antes de b, como no recall semantico).
         let sem_in_recall: Vec<&str> = keys_r.clone();
         let sem_in_hybrid: Vec<&str> = keys_h.iter()
             .filter(|k| sem_in_recall.contains(k))
             .copied().collect();
-        assert_eq!(sem_in_recall, sem_in_hybrid, "ordem state-first preservada");
+        assert_eq!(
+            sem_in_hybrid.len(),
+            3,
+            "hybrid perdeu doc semantico: {sem_in_hybrid:?}"
+        );
+        assert_eq!(
+            sem_in_hybrid[0], "md/L4/a",
+            "quem casa nos dois streams nao subiu: {sem_in_hybrid:?}"
+        );
+        let tail_r: Vec<&str> = sem_in_recall.iter().copied().filter(|k| *k != "md/L4/a").collect();
+        let tail_h: Vec<&str> = sem_in_hybrid.iter().copied().filter(|k| *k != "md/L4/a").collect();
+        assert_eq!(tail_r, tail_h, "ordem state-first dos nao-casados mudou");
     }
 
     // ── Regressão: recall legado não degradou ────────────────────────────
@@ -13212,5 +13227,43 @@ mod conditional_write_tests {
         let err = db.remember_text_if_match("k3", "x", Some("v"), true, opts("s"));
         assert!(matches!(err, Err(SgdbError::Invalid(_))), "os dois modos juntos passaram");
         assert!(payload(&mut db, "k3").is_empty(), "recusa nao pode escrever");
+    }
+    #[test]
+    fn hybrid_fuses_one_memory_once_instead_of_one_per_storage_key() {
+        // v1.5.10: um doc semantico tem DUAS storage keys — o primario
+        // `md/L4/<id>` e o companion `md/L2/<id>` (que o lexical indexa).
+        // Fundir por key devolvia o MESMO dado duas vezes e cada voto caia numa
+        // key diferente, entao o RRF nunca somava os dois sinais do item.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_semantic_with("dup/a", "alpha beta gamma", &[1.0, 0.0], opts("s"))
+            .unwrap();
+        let q = [1.0, 0.0];
+        let hits = db.recall_hybrid_rrf_scoped(&q, "alpha gamma", 5, "s").unwrap();
+        let keys: Vec<&String> = hits.iter().map(|h| &h.key).collect();
+        assert_eq!(
+            keys.iter().filter(|k| k.ends_with("/a")).count(),
+            1,
+            "o mesmo dado apareceu mais de uma vez: {keys:?}"
+        );
+        assert!(hits.iter().any(|h| h.key == "md/L4/dup/a"), "primario ausente: {keys:?}");
+        assert!(
+            !hits.iter().any(|h| h.key.starts_with("md/L2/")),
+            "companion virou hit separado em vez de voto: {keys:?}"
+        );
+        // e o hit UNICO recebeu OS DOIS votos
+        let expl = db.recall_hybrid_rrf_explained_scoped(&q, "alpha gamma", 5, "s").unwrap();
+        let (h, br) = expl
+            .iter()
+            .find(|(h, _)| h.key == "md/L4/dup/a")
+            .expect("hit do primario");
+        let sem = br.semantic.expect("voto semantico ausente");
+        let lex = br.lexical.expect("voto lexical ausente");
+        assert!(
+            (br.fused - (sem.weight + lex.weight)).abs() < 1e-6,
+            "fused {} != sem+lex {}",
+            br.fused,
+            sem.weight + lex.weight
+        );
+        assert_eq!(h.score, br.fused);
     }
 }

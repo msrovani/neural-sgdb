@@ -50,6 +50,10 @@ const CAPTURE_CAP: usize = 2048;
 enum Mode {
     Component,
     Pipeline,
+    /// v1.5.10: escrita semantica (embedding demo) + recall HIBRIDO (RRF), para
+    /// medir a fusao. Sem este modo o benchmark NAO passa pelo RRF — o
+    /// `component`/`pipeline` sao lexicais por desenho.
+    Hybrid,
 }
 
 impl Mode {
@@ -57,6 +61,7 @@ impl Mode {
         match self {
             Mode::Component => "component",
             Mode::Pipeline => "pipeline",
+            Mode::Hybrid => "hybrid",
         }
     }
 }
@@ -78,7 +83,7 @@ struct Args {
 
 fn usage(msg: &str) -> ! {
     eprintln!("longmemeval: {msg}");
-    eprintln!("uso: --dataset <arquivo> [--mode component|pipeline] [--limit N] [--stratify N] [--k 5] [--json <saida>] [--sha256 <hex>] [--commit <sha>]");
+    eprintln!("uso: --dataset <arquivo> [--mode component|pipeline|hybrid] [--limit N] [--stratify N] [--k 5] [--json <saida>] [--sha256 <hex>] [--commit <sha>]");
     std::process::exit(2);
 }
 
@@ -106,6 +111,7 @@ fn parse_args() -> Args {
                 a.mode = match next(i).as_str() {
                     "component" => Mode::Component,
                     "pipeline" => Mode::Pipeline,
+                    "hybrid" => Mode::Hybrid,
                     other => usage(&format!("mode desconhecido: {other}")),
                 };
                 i += 2;
@@ -208,6 +214,9 @@ fn run_question(q: &serde_json::Value, mode: Mode, k: usize, dump: bool) -> Scor
     let cap = match mode {
         Mode::Component => None,
         Mode::Pipeline => Some(CAPTURE_CAP),
+        // hybrid captura como o pipeline (o caso real): o teto por turno e o
+        // que o host grava, nao um detalhe do modo de scoring.
+        Mode::Hybrid => Some(CAPTURE_CAP),
     };
     for (i, turns) in sessions.iter().enumerate() {
         let sid = sids
@@ -222,24 +231,34 @@ fn run_question(q: &serde_json::Value, mode: Mode, k: usize, dump: bool) -> Scor
         // `/s` terminador: as session ids do dataset se sobrepõem por prefixo
         // (`..._1` é prefixo de `..._10`) e a ART recusa prefix-key. Sem o
         // sufixo, a 21ª pergunta já estoura com "storage key is a prefix".
-        db.remember_text_with(
-            &format!("sess/{sid}/s"),
-            &text,
-            RememberOptions {
-                scope: Some(SCOPE),
-                entities: &[],
-                content_type: Some("text"),
-                scope_dims: None,
-                model_id: None,
-                index_key: false,
-            },
-        )
-        .expect("remember da sessão");
+        let opts = RememberOptions {
+            scope: Some(SCOPE),
+            entities: &[],
+            content_type: Some("text"),
+            scope_dims: None,
+            model_id: None,
+            index_key: false,
+        };
+        let key = format!("sess/{sid}/s");
+        if mode == Mode::Hybrid {
+            db.remember_semantic_with(&key, &text, &neural_sgdb::demo_embed(&text), opts)
+                .expect("remember da sessao (semantico)");
+        } else {
+            db.remember_text_with(&key, &text, opts).expect("remember da sessao");
+        }
     }
 
-    let hits = db
-        .recall_lexical_scoped(question, k, SCOPE)
-        .expect("recall lexical escopado");
+    let hits = match mode {
+        Mode::Hybrid => {
+            // o RRF funde os dois streams: e onde a deduplicacao por memoria
+            // (e nao por storage key) faz diferenca.
+            let q = neural_sgdb::demo_embed(question);
+            db.recall_hybrid_rrf_scoped(&q, question, k, SCOPE)
+                .expect("recall hibrido escopado")
+        }
+        _ => db.recall_lexical_scoped(question, k, SCOPE)
+            .expect("recall lexical escopado"),
+    };
     if dump {
         println!(
             "DUMP {qid} [{qtype}] evid={:?} hits={:?}",
