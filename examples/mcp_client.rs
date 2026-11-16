@@ -427,6 +427,29 @@ fn main() {
             && sc4["written"].as_bool() == Some(false)
             && sc4["conflict"]["current_version"].as_str().is_some_and(|v| Some(v) != cur.as_deref()),
         format!("{} / {}", r3, r4));
+    // ---------- v1.5.11: feed incremental (changes_since) ----------
+    let r = srv.rpc("tools/call", json!({"name": "curate", "arguments": {
+        "op": "changes_since", "since": 0, "limit": 50}}));
+    let sc = &r["result"]["structuredContent"];
+    let cursor = sc["next_cursor"].as_u64().unwrap_or(0);
+    rep.check("curate op=changes_since: feed com keys/versoes e cursor que avanca",
+        r["result"]["isError"].as_bool() != Some(true)
+            && sc["changes"].as_array().is_some_and(|a| !a.is_empty()
+                && a.iter().all(|c| c["key"].as_str().is_some()
+                    && c["version_id"].as_str().is_some()))
+            && cursor > 0,
+        r.to_string());
+    // Retomar do next_cursor nao pode repetir o que ja veio.
+    let r = srv.rpc("tools/call", json!({"name": "curate", "arguments": {
+        "op": "changes_since", "since": cursor, "limit": 50}}));
+    let sc2 = &r["result"]["structuredContent"];
+    let repeated = sc2["changes"].as_array()
+        .map(|a| a.iter().filter_map(|c| c["tick"].as_u64()).filter(|t| *t <= cursor).count())
+        .unwrap_or(0);
+    rep.check("curate op=changes_since: retomar do next_cursor nao repete mudanca",
+        repeated == 0 && sc2["next_cursor"].as_u64().unwrap_or(0) >= cursor,
+        r.to_string());
+
 
     // v1.1.6 item 1: format=json â€” hits ESTRUTURADOS para consumo mÃ¡quina.
     let (txt, is_err) = srv.tool("recall", json!({"query": "telepatia converge", "k": 3, "format": "json"}));

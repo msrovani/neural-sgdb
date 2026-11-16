@@ -631,6 +631,29 @@ impl RecallWeights {
 /// Decomposição do score de um hit ponderado (v1.1.10 item 3, memrust-style):
 /// cada sinal exposto em PENALIDADE (0..1, menor = melhor) + o `total`
 /// ponderado. O consumidor vê o "porquê" do ranking sem re-derivar.
+/// Uma entrada do feed incremental (v1.5.11).
+///
+/// E uma NOTIFICACAO de mudanca, nao o conteudo: o host usa `key` para
+/// re-ler o que precisa. `version_id` permite descartar o que ja tem (se o
+/// host guardou a versao da ultima sync, comparar ids evita releitura).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChangeEntry {
+    pub key: String,
+    /// Tick local da ULTIMA escrita desta memoria neste no.
+    pub tick: u64,
+    pub memory_id: String,
+    pub version_id: String,
+}
+
+/// Pagina do feed incremental. `next_cursor` e o valor a passar de volta em
+/// `changes_since` para continuar; `more` avisa que ficou coisa para tras.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct ChangePage {
+    pub changes: Vec<ChangeEntry>,
+    pub next_cursor: u64,
+    pub more: bool,
+}
+
 /// Resultado de [`Sgdb::remember_text_if_match`] (v1.5.9).
 ///
 /// `Conflict` carrega a versao ATUAL: quem perdeu a corrida precisa dela para
@@ -5031,6 +5054,54 @@ impl Sgdb {
     /// Fusão RRF (v1.1.14, §4 P0): `score = Σ 1/(k_rrf + rank)` sobre as
     /// listas semantic + lexical (rank 1-indexed, `k_rrf=60` default Qdrant).
     /// Rank, não score bruto — BM25 e cosseno não são comparáveis.
+    /// Feed incremental: o que mudou neste no depois de `since` (v1.5.11).
+    ///
+    /// Estado, nao log: cada memoria aparece UMA vez, com o tick da sua ultima
+    /// escrita local — reescrever duas vezes antes da sync devolve um item, e
+    /// nao dois. O cursor e o tick (`next_cursor`), entao a chamada seguinte
+    /// continua exatamente de onde parou.
+    ///
+    /// **Limite honesto:** `delete` nao gera evento. O feed responde "o que
+    /// existe mudou", nao "o que deixou de existir"; quem replica precisa
+    /// cruzar com o proprio inventario (ou com `audit_checkpoint`) para ver
+    /// ausencia. Tambem e local ao NO: escritas recebidas por replicacao
+    /// entram com o counter do no de origem.
+    pub fn changes_since(&mut self, since: u64, limit: usize) -> Result<ChangePage, SgdbError> {
+        let node = self.engine.node_id;
+        let rows = self.engine.changes_since_clock(node, since);
+        let cap = limit.max(1);
+        let mut changes: Vec<ChangeEntry> = Vec::new();
+        let mut next_cursor = since;
+        let mut more = false;
+        let mut i = 0;
+        while i < rows.len() {
+            let tick = rows[i].0;
+            let mut j = i;
+            while j < rows.len() && rows[j].0 == tick {
+                j += 1;
+            }
+            // O grupo INTEIRO de um tick entra ou nao: o cursor e o tick, e
+            // parar no meio dele perderia as mudancas restantes para sempre.
+            if changes.len() + (j - i) > cap {
+                more = true;
+                break;
+            }
+            for (t, sk) in &rows[i..j] {
+                if let Some(m) = self.engine.meta(sk)? {
+                    changes.push(ChangeEntry {
+                        key: sk.clone(),
+                        tick: *t,
+                        memory_id: m.memory_id,
+                        version_id: m.version_id,
+                    });
+                }
+            }
+            next_cursor = tick;
+            i = j;
+        }
+        Ok(ChangePage { changes, next_cursor, more })
+    }
+
     /// Identidade de FUSAO de um hit (v1.5.10): a MEMORIA, nao a storage key.
     ///
     /// Um doc L4/L5 tem DUAS storage keys — o primario (`md/L4/<id>`) e o
@@ -13265,5 +13336,78 @@ mod conditional_write_tests {
             sem.weight + lex.weight
         );
         assert_eq!(h.score, br.fused);
+    }
+}
+
+#[cfg(test)]
+mod changes_since_tests {
+    use super::*;
+    use crate::{InMemory, RememberOptions};
+
+    fn opts(scope: &str) -> RememberOptions<'_> {
+        RememberOptions {
+            scope: Some(scope),
+            entities: &[],
+            content_type: None,
+            scope_dims: None,
+            model_id: None,
+            index_key: false,
+        }
+    }
+
+    #[test]
+    fn changes_since_is_a_cursor_feed() {
+        // v1.5.11: o feed e um CURSOR — passar `next_cursor` de volta nao pode
+        // repetir o que ja veio, e reescrever um doc nao pode virar N itens.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_text_with("c1", "primeiro", opts("s")).unwrap();
+        let p1 = db.changes_since(0, 10).unwrap();
+        assert_eq!(p1.changes.len(), 1, "primeira pagina: {:?}", p1.changes);
+        let cursor = p1.next_cursor;
+        assert!(cursor > 0, "cursor nao avancou");
+        assert!(!p1.more);
+
+        let p2 = db.changes_since(cursor, 10).unwrap();
+        assert!(p2.changes.is_empty(), "feed repetiu mudancas: {:?}", p2.changes);
+        assert_eq!(p2.next_cursor, cursor);
+
+        let v_before = db.version_of("c1").unwrap().unwrap();
+        db.remember_text_with("c1", "segundo", opts("s")).unwrap();
+        let p3 = db.changes_since(cursor, 10).unwrap();
+        assert_eq!(p3.changes.len(), 1, "mesma memoria como N itens: {:?}", p3.changes);
+        assert_eq!(p3.changes[0].key, "md/L3/c1");
+        assert_eq!(
+            p3.changes[0].version_id,
+            db.version_of("c1").unwrap().unwrap(),
+            "feed nao aponta para a versao corrente"
+        );
+        assert_ne!(p3.changes[0].version_id, v_before, "versao nao mudou na reescrita?");
+    }
+
+    #[test]
+    fn changes_since_paginates_without_losing_changes() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        for k in ["p1", "p2", "p3"] {
+            db.remember_text_with(k, "conteudo", opts("s")).unwrap();
+        }
+        let mut seen: Vec<String> = Vec::new();
+        let mut cursor = 0u64;
+        for _ in 0..10 {
+            let page = db.changes_since(cursor, 1).unwrap();
+            for c in &page.changes {
+                seen.push(c.key.clone());
+            }
+            if page.changes.is_empty() {
+                break;
+            }
+            assert!(page.next_cursor >= cursor, "cursor regrediu");
+            cursor = page.next_cursor;
+            if !page.more {
+                break;
+            }
+        }
+        seen.sort();
+        seen.dedup();
+        assert_eq!(seen.len(), 3, "paginacao perdeu mudanca: {seen:?}");
     }
 }

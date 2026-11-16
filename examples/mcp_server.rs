@@ -644,7 +644,7 @@ fn error_code_label(c: neural_sgdb::ErrorCode) -> &'static str {
 
 /// NÃºmero de tools em `tools/list` (aliases antigos ainda funcionam em tools/call).
 const EXPECTED_MCP_TOOL_COUNT: usize = 5;
-const MCP_CONTRACT_VERSION: &str = "1.5.10";
+const MCP_CONTRACT_VERSION: &str = "1.5.11";
 const BUILD_GIT: &str = env!("NEURAL_SGDB_BUILD_GIT");
 
 /// Lista pÃºblica: 5 tools. Os 40 nomes antigos continuam vÃ¡lidos em `tools/call`.
@@ -997,9 +997,9 @@ fn mcp_listed_tools() -> Value {
          }},
          "annotations":{"readOnlyHint":true}},
         {"name":"curate",
-         "description":"Mutacao pontual / grafo L6 + metadado cognitivo. op= explain|reinforce|feedback|forget|forget_purge|expire_old|decay|consolidate|diary|profile|associate|related_to|contradicts|supersede|conflicts|resolve_conflict|merge_memories|audit_checkpoint|audit_verify|audit_resolve|audit_trail|rollback_to|set_ttl|expire_ttl|set_event|close_event|timeline|gc|recall_ann|commit_run|deprecate_run|promote_run|export_delta|set_authority|hygiene. ADR-0010: commit_run/deprecate_run usam scope_run (+ facts/anti_patterns). promote_run: merge do sandbox run no escopo base (keys do run com prefixo <run>/; estrategias fail|ours|theirs via merge_strategy; base_dims via base_user/base_agent/base_app). v1.4.4: explain(full=true) junta a proveniencia completa (authority/clock/audit_refs); forget_purge = forget COMPURGADO (tombstone→delete→elo FORGET, nesta ordem); audit_resolve deixa a decisao HITL na chain; audit_trail LE a trilha (key?/since?/limit?); export_delta = pull direcionado do anti-entropy (node/since/max); set_authority marca a memoria como HITL (0..=255, MDM1 v8). hygiene = relatorio READ-ONLY de conteudo (superseded sem sucessora, key com md/ duplicado, entity orfa, texto duplicado) — REPORTA, nao decide. v1.5.0: set_trigger pattern+namespaces|forget_trigger pattern|triggers [path] = ativacao condicional por caminho (o host diz em que arquivo esta, o core devolve/ativa os namespaces). Use uma storage key completa md/L4/.... Nao hoarde: so depois de evidencia.",
+         "description":"Mutacao pontual / grafo L6 + metadado cognitivo. op= explain|reinforce|feedback|forget|forget_purge|expire_old|decay|consolidate|diary|profile|associate|related_to|contradicts|supersede|conflicts|resolve_conflict|merge_memories|audit_checkpoint|audit_verify|audit_resolve|audit_trail|rollback_to|set_ttl|expire_ttl|set_event|close_event|timeline|gc|recall_ann|commit_run|deprecate_run|promote_run|export_delta|set_authority|hygiene. ADR-0010: commit_run/deprecate_run usam scope_run (+ facts/anti_patterns). promote_run: merge do sandbox run no escopo base (keys do run com prefixo <run>/; estrategias fail|ours|theirs via merge_strategy; base_dims via base_user/base_agent/base_app). v1.4.4: explain(full=true) junta a proveniencia completa (authority/clock/audit_refs); forget_purge = forget COMPURGADO (tombstone→delete→elo FORGET, nesta ordem); audit_resolve deixa a decisao HITL na chain; audit_trail LE a trilha (key?/since?/limit?); export_delta = pull direcionado do anti-entropy (node/since/max); set_authority marca a memoria como HITL (0..=255, MDM1 v8). hygiene = relatorio READ-ONLY de conteudo (superseded sem sucessora, key com md/ duplicado, entity orfa, texto duplicado) — REPORTA, nao decide. v1.5.0: set_trigger pattern+namespaces|forget_trigger pattern|triggers [path] = ativacao condicional por caminho. v1.5.11: changes_since(since?, limit?) = feed incremental (o que mudou desde o cursor, cada memoria UMA vez, next_cursor para retomar) (o host diz em que arquivo esta, o core devolve/ativa os namespaces). Use uma storage key completa md/L4/.... Nao hoarde: so depois de evidencia.",
          "inputSchema":{"type":"object","properties":{
-           "op":{"type":"string","enum":["explain","reinforce","feedback","forget","forget_purge","expire_old","decay","consolidate","diary","profile","associate","related_to","contradicts","supersede","conflicts","resolve_conflict","merge_memories","audit_checkpoint","audit_verify","audit_resolve","audit_trail","rollback_to","set_ttl","expire_ttl","set_event","close_event","timeline","gc","recall_ann","commit_run","deprecate_run","promote_run","export_delta","set_authority","hygiene","set_trigger","forget_trigger","triggers"]},
+           "op":{"type":"string","enum":["explain","reinforce","feedback","forget","forget_purge","expire_old","decay","consolidate","diary","profile","associate","related_to","contradicts","supersede","conflicts","resolve_conflict","merge_memories","audit_checkpoint","audit_verify","audit_resolve","audit_trail","rollback_to","set_ttl","expire_ttl","set_event","close_event","timeline","gc","recall_ann","commit_run","deprecate_run","promote_run","export_delta","set_authority","hygiene","set_trigger","forget_trigger","triggers","changes_since"]},
            "key":{"type":"string"},
            "delta":{"type":"number"},
            "positive":{"type":"boolean"},
@@ -1010,7 +1010,7 @@ fn mcp_listed_tools() -> Value {
            "open_only":{"type":"boolean","description":"v1.4.4 (op=conflicts): so conflitos ABERTOS (o host nao filtra mais em memoria)"},
            "full":{"type":"boolean","description":"v1.4.4 (op=explain):proveniencia COMPLETA numa chamada (authority, clock, audit_refs, meta) p/ o consumidor justificar a resposta"},
            "reason":{"type":"string","description":"v1.4.4: motivo do forget_purge / audit_resolve (o digest do elo FORGET/RESOLVE e o hash deste texto)"},
-           "since":{"type":"integer","description":"v1.4.4 (op=audit_trail|export_delta): cursor — elo/memoria a partir daqui"},
+           "since":{"type":"integer","description":"v1.4.4 (op=audit_trail|export_delta): cursor — elo/memoria a partir daqui. v1.5.11 (op=changes_since): tick do `next_cursor` da pagina anterior (0 = desde o inicio)"},
            "node":{"type":"integer","description":"v1.4.4 (op=export_delta): no do CRDT cujo contador filtra o delta"},
            "max":{"type":"integer","description":"v1.4.4 (op=export_delta): teto do batch (0 = sem teto)"},
            "authority":{"type":"integer","description":"v1.4.4 (op=set_authority): 0 = learned na mesh, 255 = aprovado por HITL (MDM1 v8)"},
@@ -3338,6 +3338,34 @@ fn main() {
                                 send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                     "content":[{"type":"text","text":text}], "isError":false,
                                     "structuredContent": json!({"node": node, "since": since, "records": items})}}));
+                            }
+                            Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true,"structuredContent":mcp_error_data(&e)}})),
+                        }
+                    }
+                    // v1.5.11: feed incremental — "o que mudou desde o meu
+                    // cursor". Estado, nao log: cada memoria aparece UMA vez,
+                    // com o tick da ultima escrita; reescrever nao duplica.
+                    "changes_since" => {
+                        let since = args["since"].as_u64().unwrap_or(0);
+                        let limit = args["limit"].as_u64().unwrap_or(100) as usize;
+                        match db.changes_since(since, limit) {
+                            Ok(page) => {
+                                let items: Vec<Value> = page.changes.iter().map(|c| json!({
+                                    "key": c.key, "tick": c.tick,
+                                    "memory_id": c.memory_id, "version_id": c.version_id,
+                                })).collect();
+                                let text = format!(
+                                    "changes_since(since={since}): {} mudanca(s), next_cursor={}",
+                                    items.len(), page.next_cursor
+                                );
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":{
+                                    "content":[{"type":"text","text":text}], "isError":false,
+                                    "structuredContent": json!({
+                                        "changes": items,
+                                        "next_cursor": page.next_cursor,
+                                        "more": page.more
+                                    })}}));
                             }
                             Err(e) => send(&json!({"jsonrpc":"2.0","id":id,"result":{
                                 "content":[{"type":"text","text":mcp_actionable_error(e)}],"isError":true,"structuredContent":mcp_error_data(&e)}})),

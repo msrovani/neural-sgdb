@@ -20,7 +20,7 @@ EXPECTED_TOOLS = frozenset({"remember", "recall", "health", "curate", "decide"})
 # Mesma regra do crate: bump de contrato = pin atualizado no mesmo passo.
 # Sem este pin, uma tool nova aparecia como "sobrou" e o `frozenset` acusava
 # uma mudanca que nao era erro — o diagnostico errado, que e pior que nenhum.
-EXPECTED_CONTRACT = "1.5.10"
+EXPECTED_CONTRACT = "1.5.11"
 
 
 class McpError(RuntimeError):

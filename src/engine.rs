@@ -1577,6 +1577,23 @@ impl AiosDatabaseEngine {
     /// seu clock `(node, last_seen)` e recebe só as memórias escritas
     /// DEPOIS. Varre as entradas do `clock_index` para o nó (bounded pelo
     /// contador do nó, não pelo corpus todo).
+    /// Feed incremental (v1.5.11): pares `(tick local, storage key)` escritos
+    /// DEPOIS de `since`, em ordem CRESCENTE de tick.
+    ///
+    /// `keys_since_clock` perde o tick (devolve so as keys), e o cursor do feed
+    /// E o tick — sem ele o chamador nao consegue retomar de onde parou.
+    pub fn changes_since_clock(&self, node: u8, since: u64) -> Vec<(u64, String)> {
+        let mut out = Vec::new();
+        for ((n, c), keys) in self.clock_index.range((node, since + 1)..=(node, u64::MAX)) {
+            if *n == node {
+                for k in keys {
+                    out.push((*c, k.clone()));
+                }
+            }
+        }
+        out
+    }
+
     pub fn keys_since_clock(&self, node: u8, since: u64) -> Vec<String> {
         let mut out = Vec::new();
         for ((n, _c), keys) in self.clock_index.range((node, since + 1)..=(node, u64::MAX)) {

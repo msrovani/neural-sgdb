@@ -10,6 +10,33 @@ All notable changes to this project. Format based on
 
 - **`scripts/gate-all.sh` — gate total numa passada, com matriz versionada.** Mede lib, p2p, no_std, multi_agent, hot test, bare-metal, clippy e as duas checagens de docs, grava `docs/generated/gate-matrix.json` e (no modo `check`) falha se a matriz divergir da medicao. O hot test compara a matriz: `crate`/`mcp_contract` errados ou gate com 0 assercoes falham em vez de passar em silencio.
 
+## [1.5.11] — 2026-11-12 (feed incremental: changes_since)
+
+### Added
+
+- **`Sgdb::changes_since(since, limit) -> ChangePage`** + `ChangeEntry`: "o que
+  mudou desde o meu cursor" num round trip, para o host sincronizar sem
+  varrer o banco. Estado, nao log — cada memoria aparece UMA vez, com o tick da
+  sua ultima escrita local e o `version_id` dela (quem guarda a versao da ultima
+  sync descarta o que ja tem). O cursor e o tick: `next_cursor` volta para a
+  chamada seguinte e nao repete nada.
+- Construido sobre o `clock_index` que ja existia (`Engine::changes_since_clock`
+  devolve `(tick, key)`; `keys_since_clock` perdia o tick, e o tick E o cursor).
+  Uma pagina corta no INICIO de um tick, nunca no meio — o cursor e o tick, e
+  cortar no meio perderia as mudancas restantes para sempre.
+- MCP: `curate op=changes_since` (`since?`, `limit?`, default 100) devolvendo
+  `{changes:[{key,tick,memory_id,version_id}], next_cursor, more}`.
+- Testes: lib **457** (+2) e hot test **229** (+2). Mutacao provada: fazer o
+  cursor nao avancar (`next_cursor = tick` -> `= since`) derruba os dois testes.
+
+### Notes
+
+Limite declarado no metodo: `delete` **nao** gera evento — o feed responde "o
+que existe mudou", nao "o que deixou de existir"; quem replica tem de cruzar com
+o proprio inventario (ou com `audit_checkpoint`) para ver ausencia. O feed
+tambem e local ao NO: escrita recebida por replicacao entra com o counter do no
+de origem.
+
 ## [1.5.10] — 2026-11-12 (fusao RRF por MEMORIA, nao por storage key)
 
 ### Fixed
