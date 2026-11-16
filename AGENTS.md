@@ -1509,3 +1509,54 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps                   # doc gate (P0-
 - **Format contracts**: NMD1/TKLV byte-identical to the OS — golden tests
   (`golden_nmd1_bytes`, `golden_record_bytes`, `fnv1a64_known_vector`) pin the
   layout; change them in the same commit as any format change.
+
+## Sessao 1.5.7 -> 1.5.11 — licoes que custaram tempo (2026-11-12)
+
+Registro do que se repetiu ou surpreendeu nesta linha de releases (benchmark
+publico, `explain` por stream, escrita condicional, fusao por memoria, feed
+incremental). Vale como checklist para a proxima.
+
+- **Fundir por storage key != fundir por memoria.** Um doc L4/L5 tem DUAS keys:
+  o primario (`md/L4/<id>`) e o companion textual (`md/L2/<id>`, o que o indice
+  lexical indexa). `Hit.rel` ja aponta do companion para o primario, entao a
+  identidade de fusao e `rel ?? key`. Antes disso o hibrido devolvia o mesmo dado
+  duas vezes e nunca somava os dois votos (achado exposto pelo `explain` da
+  1.5.8, corrigido na 1.5.10). Detalhe do efeito medido: `docs/negative-results.md`.
+- **Um teste que codifica o comportamento ANTIGO vira falha na release certa.**
+  `recall_impl_and_recall_impl_dims_same_state_first_order` exigia "ordem
+  semantica preservada" no hibrido; com a fusao correta quem casa nos dois
+  streams sobe, e o teste *tinha* de mudar. Atualizar expectativa e legitimo —
+  mas **fortaleca** a assercao (sem duplicata, dois votos no mesmo hit) e diga
+  isso no commit. Nunca afrouxe para passar.
+- **Mutacao pode sobreviver porque o ramo e INALCANCAVEL.** O teste do dobro de
+  voto no RRF falhava em provar mutacao no corpus (L4 e L2 sao keys distintas);
+  a prova saiu de chamar a fusao DIRETO com a mesma lista nos dois streams. Se a
+  mutacao sobrevive, a pergunta e "meu teste executa esse ramo?".
+- **`clippy::large_enum_variant` em enum novo que carrega `RememberOutcome`.**
+  O conserto e boxar a variante (`Box<RememberOutcome>`), nao `#[allow]`. Aconteceu
+  duas vezes na 1.5.9 (lib e depois o exemplo) — o gate so acusa o proximo.
+- **Benchmark sem o caminho que voce mudou nao mede nada.** `component`/`pipeline`
+  do LongMemEval sao lexicais: nenhuma mudanca no RRF aparece ali. Antes de
+  afirmar efeito, prove que o harness EXERCITA o codigo e meca antes/depois com
+  so a variavel em questao mudando (mesmo dataset, sha256, k, modo).
+- **Cursor de feed e um tick, nao um offset.** `changes_since` pagina cortando no
+  INICIO de um tick (`next_cursor = tick`), nunca no meio — senao as mudancas
+  restantes daquele tick se perdem para sempre. `keys_since_clock` existia mas
+  descartava o tick; por isso `changes_since_clock`.
+- **Ancora de substituicao: use a LINHA INTEIRA e `assert count==1`.** O arquivo e
+  CRLF e `str_replace` falha por detalhe invisivel; `pub struct X {` casa dentro
+  de `impl` e o `#[derive(...)]` logo acima pode grudar na struct nova (aconteceu
+  ao inserir `RrfContribution`: o `Default` do `ScoreBreakdown` foi para a struct
+  errada). Enum so existe em escopo de modulo: inserir "antes de version_of"
+  coloca o `enum` DENTRO do `impl` e o compilador recusa.
+- **Python nativo (Windows) nao ve `/tmp` do Git Bash.** Arquivos temporarios de
+  analise vao para dentro do repo e sao apagados depois.
+- **API anonima do GitHub: 60 req/h.** Ao estourar, badge (`ci.yml/badge.svg`) e
+  pagina do commit NAO provam a run corrente (badge pode refletir a anterior, e a
+  pagina carrega checks via JS). Espere o `reset` do `/rate_limit` e confirme
+  `runs/<id>` + `jobs` pela API; `head_sha` curto devolve vazio (40 chars).
+- **O job `test` do CI leva ~10 min** e o `run_terminal_command` corta em 295 s:
+  faca laco de `sleep` curto e verifique o status, nunca um `sleep 600`.
+- **`git checkout -- arquivo` + restore por copia** e uma forma segura de medir
+  "HEAD vs worktree" (usada para provar que a falha de um teste era minha) —
+  copie para fora do repo antes e restaure logo depois.

@@ -47,3 +47,34 @@ artifact that reproduces it.
   benchmark-driven, gated on larger corpora.
 - **Overlay mesh routing / production crypto transport:** seam only (ADR-0006).
 - **Relation inference / multi-hop graph:** deliberate non-goal (ADR + roadmap).
+
+## RRF hybrid fused by memory (1.5.10) — the fix is right, the number got WORSE
+
+- **What changed:** the hybrid fused streams by *storage key*, so a semantic
+  memory (`md/L4/<id>`) and its text companion (`md/L2/<id>`, the one the
+  lexical index holds) were counted as two different hits: the same memory
+  occupied two of the top-k slots and its two votes never met. 1.5.10 fused by
+  **memory identity** (`Hit.rel ?? Hit.key`).
+- **Artifact:** `examples/longmemeval.rs --mode hybrid` (new mode; the
+  `component`/`pipeline` modes are lexical and never touch the RRF, so the
+  published benchmark could not measure this at all before).
+  LongMemEval-S, 500 questions, k=5, same dataset/sha256 — only the fusion code
+  differs.
+- **Result:** hit@5 **0.932 → 0.840**, recall@5 0.847 → 0.705,
+  recall-all@5 0.752 → 0.566.
+- **Why (from `--dump`):** before, the top-5 mixed `md/L2` and `md/L4` of the
+  same session — the right evidence appeared because duplicates were *double
+  counted*. After the fix the ranking is coherent, and with the `demo` embedder
+  (256-dim trigram, noisy) **two mediocre votes outrank one strong lexical
+  vote**, pushing the evidence out of the top-5.
+- **Decision:** keep the fix (returning the same datum twice and never summing
+  its votes is a bug regardless of the score), and publish the honest number.
+  **No weight or `k_rrf` tuning** was done to recover the metric — that would be
+  fitting the benchmark with the benchmark itself.
+- **Candidate fixes (not implemented):** weighted RRF per stream; or only
+  fusing when the embedder is real (not `demo`); or measuring with a real
+  embedder before judging the fusion at all.
+- **Lesson:** a correctness fix can lower a metric whose previous value came
+  from the bug. Measure the *mechanism* too (`--dump` showed duplicates), not
+  only the aggregate — and never quote a fused-retrieval number whose harness
+  never exercises the fusion.
