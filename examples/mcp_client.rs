@@ -404,6 +404,30 @@ fn main() {
         "mode": "lexical", "explain": true}));
     rep.check("recall explain=true fora de mode=hybrid: erro -32602 explicito",
         is_err && txt.contains("mode=hybrid"), txt.clone());
+    // ---------- v1.5.9: escrita condicional (CAS otimista) ----------
+    let cond_key = "cond/k1";
+    let r = srv.rpc("tools/call", json!({"name": "remember", "arguments": {
+        "text": "condicional v1", "key": cond_key, "create_only": true}}));
+    let first_ok = r["result"]["structuredContent"]["storage_key"].as_str().is_some();
+    let r2 = srv.rpc("tools/call", json!({"name": "remember", "arguments": {
+        "text": "condicional v2", "key": cond_key, "create_only": true}}));
+    let sc2 = &r2["result"]["structuredContent"];
+    let cur = sc2["conflict"]["current_version"].as_str().map(String::from);
+    rep.check("remember create_only: grava uma vez e recusa a segunda com a versao corrente",
+        first_ok && sc2["written"].as_bool() == Some(false) && cur.is_some(), r2.to_string());
+    // A versao que o CONFLITO devolveu aceita a escrita; a mesma versao, ja
+    // consumida, recusa — prova que houve CAS, nao um check fixo.
+    let r3 = srv.rpc("tools/call", json!({"name": "remember", "arguments": {
+        "text": "condicional v2", "key": cond_key, "expect_version": cur.clone().unwrap_or_default()}}));
+    let r4 = srv.rpc("tools/call", json!({"name": "remember", "arguments": {
+        "text": "condicional v3", "key": cond_key, "expect_version": cur.clone().unwrap_or_default()}}));
+    let sc4 = &r4["result"]["structuredContent"];
+    rep.check("remember expect_version: aceita a versao corrente e recusa a ja consumida",
+        r3["result"]["structuredContent"]["storage_key"].as_str().is_some()
+            && sc4["written"].as_bool() == Some(false)
+            && sc4["conflict"]["current_version"].as_str().is_some_and(|v| Some(v) != cur.as_deref()),
+        format!("{} / {}", r3, r4));
+
     // v1.1.6 item 1: format=json â€” hits ESTRUTURADOS para consumo mÃ¡quina.
     let (txt, is_err) = srv.tool("recall", json!({"query": "telepatia converge", "k": 3, "format": "json"}));
     let parsed: Value = serde_json::from_str(&txt).unwrap_or(Value::Null);

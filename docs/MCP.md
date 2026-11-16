@@ -3,13 +3,13 @@
 Guia de instalação, contrato e troubleshooting do servidor MCP
 (`examples/mcp_server.rs`).
 
-## Contrato atual (v1.5.8)
+## Contrato atual (v1.5.9)
 
 | Campo | Valor |
 |-------|-------|
 | Protocolo | JSON-RPC 2.0 over **stdio** (uma linha JSON por mensagem) |
 | Handshake | `initialize` → `protocolVersion: 2025-11-25` |
-| `serverInfo.version` | `1.5.8` (`MCP_CONTRACT_VERSION` em `examples/mcp_server.rs`) |
+| `serverInfo.version` | `1.5.9` (`MCP_CONTRACT_VERSION` em `examples/mcp_server.rs`) |
 | Tools | **5** (`remember`, `recall`, `health`, `curate`, `decide`) — 40 nomes antigos/alias ainda funcionam em `tools/call` (`ALIAS_SURFACE`, `stable`/`deprecated` em `contract.json` + resource `nsgdb://contract`) |
 | Retrieval default (v1.3.0) | `lexical` sem vetor; `hybrid` (RRF) com embedder de host REAL; `semantic` com `embedding=` do caller — `health.semantic_ready`/`retrieval_default` |
 | Embedding (via B, v1.4.3) | `NEURAL_SGDB_EMBEDDER=multilingual\|candle\|onnx\|local` → modelo `paraphrase-multilingual-MiniLM-L12-v2` (384, in-process em `crates/nsgdb-embed`); `model_id` auto-declarado no `remember`. Cadeia de fallback: caller `embedding=` (A) → host in-process (B) → `embedder_http`/ollama (C) → lexical (honesto, ADR-0008) |
@@ -53,7 +53,7 @@ servidor por `scripts/gen-mcp-surface.sh` — nao editar a mao (o `check` do
 gate de release falha se estiver stale):
 
 <!-- BEGIN GENERATED: mcp-surface -->
-**MCP contract `1.5.8`** · **5** tools em `tools/list` · **40** aliases em `tools/call` (20 stable, 20 deprecated)
+**MCP contract `1.5.9`** · **5** tools em `tools/list` · **40** aliases em `tools/call` (20 stable, 20 deprecated)
 
 Tools (`tools/list`): `remember`, `recall`, `health`, `curate`, `decide`
 
@@ -396,3 +396,24 @@ strings **idênticas** na escrita e em `recall_entities`.
 - `explain` implica resposta estruturada (mesmo sem `format=json`).
 - Fora de `mode=hybrid` o pedido é recusado com `-32602`: o RRF é a única rota
   com dois streams para explicar.
+
+## Escrita condicional no `remember` (v1.5.9)
+
+`remember` aceita `create_only: true` **ou** `expect_version: "<versao>"`:
+
+```json
+// cria (nunca sobrescreve)
+{"text": "...", "key": "cond/k1", "create_only": true}
+
+// CAS: grava so se a versao corrente for esta
+{"text": "...", "key": "cond/k1", "expect_version": "<versao>"}
+```
+
+Recusa nao e erro: a resposta traz `written: false` e
+`conflict.current_version` (a versao ATUAL, para o chamador reler e refazer o
+CAS). No batch (`memories[]`), a recusa entra em `results` com `written:false`
+e conta como `skipped`.
+
+Limites declarados: so o caminho textual (sem `embedding`) e `author=agent`;
+`create_only` + `expect_version` juntos e `-32602`. O CAS e otimista contra o
+estado LOCAL do processo — nao ha lock entre processos.

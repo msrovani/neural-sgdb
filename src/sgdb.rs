@@ -631,6 +631,19 @@ impl RecallWeights {
 /// Decomposição do score de um hit ponderado (v1.1.10 item 3, memrust-style):
 /// cada sinal exposto em PENALIDADE (0..1, menor = melhor) + o `total`
 /// ponderado. O consumidor vê o "porquê" do ranking sem re-derivar.
+/// Resultado de [`Sgdb::remember_text_if_match`] (v1.5.9).
+///
+/// `Conflict` carrega a versao ATUAL: quem perdeu a corrida precisa dela para
+/// decidir (reler o texto novo e refazer o CAS) — devolver so "falhou" obriga
+/// o chamador a uma segunda leitura para saber contra o que perdeu.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ConditionalWrite {
+    /// Boxado: `RememberOutcome` carrega 6 strings e sem o box a variante
+    /// dominava o tamanho do enum (`clippy::large_enum_variant`).
+    Written(alloc::boxed::Box<RememberOutcome>),
+    Conflict { current_version: Option<String> },
+}
+
 /// Contribuição de UM stream para a fusão RRF (v1.5.8): posição 1-based no
 /// ranking daquele stream e o peso `1/(k_rrf + rank)`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1732,6 +1745,54 @@ impl Sgdb {
         Ok(self.engine.meta(&sk)?.map(|m| m.version_id))
     }
 
+    /// Escrita CONDICIONAL sobre a versao corrente (v1.5.9, fase 3 das
+    /// ideias copiadas do ai-memory).
+    ///
+    /// Dois modos, exclusivos entre si:
+    /// * `create_only = true` — grava SO se a memoria nao existe; se existe,
+    ///   devolve `Conflict` com a versao corrente (nunca sobrescreve).
+    /// * `expect_version = Some(v)` — grava SO se a versao corrente e `v`
+    ///   (CAS otimista); divergencia devolve `Conflict` com a versao ATUAL.
+    ///
+    /// `Conflict` NAO e erro: e o resultado normal de uma corrida perdida, e
+    /// o chamador decide (reler, reescrever com a versao nova, desistir).
+    ///
+    /// **Limite honesto:** o par (ler versao, escrever) nao e atomico entre
+    /// processos distintos. `Sgdb` e single-writer por instancia; dois
+    /// processos escrevendo a mesma key podem ambos passar pelo check. O que
+    /// isto entrega e CAS otimista contra o estado LOCAL, e contra escritas
+    /// concorrentes dentro do mesmo processo.
+    ///
+    /// Caminho textual (L3, sem vetor) por desenho: no L4 a versao depende do
+    /// embedding do host, entao casar versao ali exigiria versionar tambem o
+    /// vetor — assunto de outra release.
+    pub fn remember_text_if_match(
+        &mut self,
+        key: &str,
+        text: &str,
+        expect_version: Option<&str>,
+        create_only: bool,
+        opts: RememberOptions<'_>,
+    ) -> Result<ConditionalWrite, SgdbError> {
+        if create_only && expect_version.is_some() {
+            return Err(SgdbError::Invalid(
+                "create_only e expect_version sao exclusivos: criar novo OU casar a versao corrente",
+            ));
+        }
+        let current = self.version_of(key)?;
+        if create_only {
+            if current.is_some() {
+                return Ok(ConditionalWrite::Conflict { current_version: current });
+            }
+        } else if let Some(exp) = expect_version {
+            if current.as_deref() != Some(exp) {
+                return Ok(ConditionalWrite::Conflict { current_version: current });
+            }
+        }
+        let out = self.remember_text_with(key, text, opts)?;
+        Ok(ConditionalWrite::Written(alloc::boxed::Box::new(out)))
+    }
+
     /// Linhagem causal (Phase 3 — DAG): do doc em `key` para trás, seguindo
     /// o parent mais recente de cada versão. Cada elo expõe version_id,
     /// memory_id (slot), storage key, origem, tick de criação e parents —
@@ -2095,7 +2156,6 @@ impl Sgdb {
         let refs: Vec<&str> = namespaces.iter().map(|n| n.as_str()).collect();
         self.recall_entities_dims(&refs, k, filter)
     }
-
 
     /// Tipo de conteúdo DECLARADO da memória (v1.1.6 item 2 — seam de WRITE):
     /// o writer declara o rótulo estável (`text`/`json`/`code`/`embedding`/
@@ -6611,7 +6671,6 @@ fn clamp(s: &str, max: usize) -> String {
         t
     }
 }
-
 
 /// Normalização determinística p/ consolidação (v1.1.10 item 2): tokeniza via
 /// BM25 do lexical (lowercase + sem pontuação) e re-une com espaço — dois
@@ -12513,7 +12572,6 @@ mod tests {
         );
     }
 
-
     /// ADR-0013 promete que `scope` é ESPELHO de `scope_dims.user`. A escrita
     /// com AMBOS (legado `scope=` + dims) tem de preservar a invariante:
     /// `set_scope` faz write-through, e `set_scope_dims` não pode clobberá-lo.
@@ -12556,7 +12614,6 @@ mod tests {
         let auto = db.recall_oversampled(&q, 5, 16).unwrap();
         assert_eq!(keys_of(&d1), keys_of(&auto));
     }
-
 
     #[test]
     fn delete_is_o1_via_reverse_clock_index() {
@@ -13078,5 +13135,82 @@ mod rrf_explain_tests {
             assert_eq!(br.fused, h.score, "score devolvido != fused");
             assert_eq!(a.rank, b.rank);
         }
+    }
+}
+
+#[cfg(test)]
+mod conditional_write_tests {
+    use super::*;
+    use crate::{InMemory, RememberOptions};
+
+    fn opts(scope: &str) -> RememberOptions<'_> {
+        RememberOptions {
+            scope: Some(scope),
+            entities: &[],
+            content_type: None,
+            scope_dims: None,
+            model_id: None,
+            index_key: false,
+        }
+    }
+
+    fn payload(db: &mut Sgdb, key: &str) -> String {
+        db.get(MemoryLayer::L3EpisodicLong, key)
+            .unwrap()
+            .map(|d| String::from_utf8_lossy(&d.payload).into_owned())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn create_only_never_overwrites() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        assert!(matches!(
+            db.remember_text_if_match("k1", "primeiro", None, true, opts("s")),
+            Ok(ConditionalWrite::Written(_))
+        ));
+        let v1 = db.version_of("k1").unwrap().expect("versao apos escrita");
+        // v1.5.9: a segunda escrita cria->conflito; o texto NAO pode ter mudado.
+        match db.remember_text_if_match("k1", "segundo", None, true, opts("s")) {
+            Ok(ConditionalWrite::Conflict { current_version }) => {
+                assert_eq!(current_version.as_deref(), Some(v1.as_str()));
+            }
+            other => panic!("create_only nao recusou: {other:?}"),
+        }
+        assert_eq!(payload(&mut db, "k1"), "primeiro", "create_only sobrescreveu");
+        assert_eq!(db.version_of("k1").unwrap().as_deref(), Some(v1.as_str()));
+    }
+
+    #[test]
+    fn expect_version_is_compare_and_swap() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        assert!(matches!(
+            db.remember_text_if_match("k2", "estado A", None, true, opts("s")),
+            Ok(ConditionalWrite::Written(_))
+        ));
+        let v1 = db.version_of("k2").unwrap().expect("versao");
+        // versao errada -> conflito, sem escrita
+        match db.remember_text_if_match("k2", "estado B", Some("versao-que-nao-existe"), false, opts("s")) {
+            Ok(ConditionalWrite::Conflict { current_version }) => {
+                assert_eq!(current_version.as_deref(), Some(v1.as_str()));
+            }
+            other => panic!("CAS aceitou versao errada: {other:?}"),
+        }
+        assert_eq!(payload(&mut db, "k2"), "estado A");
+        // versao corrente -> escreve e a versao muda
+        assert!(matches!(
+            db.remember_text_if_match("k2", "estado B", Some(v1.as_str()), false, opts("s")),
+            Ok(ConditionalWrite::Written(_))
+        ));
+        assert_eq!(payload(&mut db, "k2"), "estado B");
+        let v2 = db.version_of("k2").unwrap().expect("versao 2");
+        assert_ne!(v2, v1, "a escrita condicional nao bumpou a versao");
+    }
+
+    #[test]
+    fn create_only_and_expect_version_are_exclusive() {
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let err = db.remember_text_if_match("k3", "x", Some("v"), true, opts("s"));
+        assert!(matches!(err, Err(SgdbError::Invalid(_))), "os dois modos juntos passaram");
+        assert!(payload(&mut db, "k3").is_empty(), "recusa nao pode escrever");
     }
 }

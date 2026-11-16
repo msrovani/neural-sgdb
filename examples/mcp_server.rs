@@ -180,6 +180,16 @@ fn embed_for(host: Option<&dyn Embedder>, text: &str, payload: &Value) -> Result
     }
 }
 
+/// Resultado de `remember_one` (v1.5.9): escrita normal OU recusa condicional.
+///
+/// `Conflict` e um resultado LEGITIMO (corrida perdida), nao erro: por isso
+/// ele nao vira `isError` nem conta como falha no batch.
+enum RememberOneResult {
+    /// `out` boxado pelo mesmo motivo de `ConditionalWrite` (large_enum_variant).
+    Written { out: Box<neural_sgdb::RememberOutcome>, semantic: bool },
+    Conflict { current_version: Option<String> },
+}
+
 /// v1.2.0 (a): write de UMA memoria a partir de params JSON - a MESMA logica
 /// do handler single, fatorada para o batch (`memories[]`) reusar sem
 /// duplicacao. Devolve o `RememberOutput` + se o path foi semantico.
@@ -188,7 +198,7 @@ fn remember_one(
     params: &Value,
     host: Option<&dyn Embedder>,
     host_model_id: Option<&'static str>,
-) -> Result<(neural_sgdb::RememberOutcome, bool), String> {
+) -> Result<RememberOneResult, String> {
     let text = params["text"].as_str().unwrap_or("");
     // v1.2.0 (fork/merge): key EXPLÍCITA opt-in — o host nomeia a memória
     // (ex.: prefixo do sandbox run p/ promote_run). Default segue gerando.
@@ -269,16 +279,40 @@ fn remember_one(
         let out = db
             .remember_operational(layer, &key, text, emb.as_deref(), opts)
             .map_err(mcp_actionable_error)?;
-        return Ok((out, semantic));
+        return Ok(RememberOneResult::Written { out: Box::new(out), semantic });
     }
     let semantic = has_caller_embedding(params) || host.is_some();
+    // v1.5.9: escrita CONDICIONAL (CAS otimista). Recusa em voz alta fora do
+    // caminho textual: no L4 a versao depende do embedding do host, entao
+    // "casar a versao" ali exigiria versionar tambem o vetor.
+    let expect_version = params["expect_version"].as_str();
+    let create_only = params["create_only"].as_bool().unwrap_or(false);
+    if expect_version.is_some() || create_only {
+        if semantic {
+            return Err(
+                "escrita condicional (expect_version/create_only) so no caminho textual:                  remova o embedding (L4 dependera do vetor do host)"
+                    .into(),
+            );
+        }
+        return match db.remember_text_if_match(&key, text, expect_version, create_only, opts) {
+            Ok(neural_sgdb::ConditionalWrite::Written(out)) => {
+                Ok(RememberOneResult::Written { out, semantic: false })
+            }
+            Ok(neural_sgdb::ConditionalWrite::Conflict { current_version }) => {
+                Ok(RememberOneResult::Conflict { current_version })
+            }
+            Err(e) => Err(mcp_actionable_error(e)),
+        };
+    }
     let written = if semantic {
         let emb = embed_for(host, text, params)?;
         db.remember_semantic_with(&key, text, &emb, opts)
     } else {
         db.remember_text_with(&key, text, opts)
     };
-    written.map(|out| (out, semantic)).map_err(mcp_actionable_error)
+    written
+        .map(|out| RememberOneResult::Written { out: Box::new(out), semantic })
+        .map_err(mcp_actionable_error)
 }
 
 /// #8 â€” parse do URI de resource `memory://{layer}/{key}` (ex: memory://L2/ts/0000).
@@ -610,7 +644,7 @@ fn error_code_label(c: neural_sgdb::ErrorCode) -> &'static str {
 
 /// NÃºmero de tools em `tools/list` (aliases antigos ainda funcionam em tools/call).
 const EXPECTED_MCP_TOOL_COUNT: usize = 5;
-const MCP_CONTRACT_VERSION: &str = "1.5.8";
+const MCP_CONTRACT_VERSION: &str = "1.5.9";
 const BUILD_GIT: &str = env!("NEURAL_SGDB_BUILD_GIT");
 
 /// Lista pÃºblica: 5 tools. Os 40 nomes antigos continuam vÃ¡lidos em `tools/call`.
@@ -919,6 +953,8 @@ fn mcp_listed_tools() -> Value {
            "if_exists":{"type":"string","enum":["add","reinforce","supersede","reject"],"description":"v1.2.0: quando o probe acha memória equivalente (mesma entity 1-hop ou tokens + texto igual). Default add = doutrina ADD-only intacta."},
            "author":{"type":"string","enum":["agent","system"],"default":"agent","description":"v1.4.4 (ISSUE 2): system = escrita OPERACIONAL - dado de sistema proprio (sys/, hw/, config): indexa mas NAO ticka o relogio (sem inflacao causal por overwrite de boot). Exige layer=. v1.5.0: em L4/L5 o texto vai para o companion /L2/ (nao se perde) e scope/entities/type/index_key sao APLICADOS; embedding= so vale em L4/L5."},
            "layer":{"type":"string","enum":["L0","L1","L2","L3","L4","L5","L6","L7"],"description":"v1.4.4: camada EXPLICITA, so com author=system (com author=agent e recusado - memoria cognitiva tem camada por tipo, ADR-0008). v1.5.0: L4/L5 exigem embedding= e gravam o texto no companion /L2/ (Hit.text/text_of)."},
+           "expect_version":{"type":"string","description":"v1.5.9: escrita CONDICIONAL (CAS otimista) — grava so se a versao corrente da key for esta. Divergencia devolve written=false + conflict.current_version, sem escrever. Exclusivo com create_only; so no caminho textual (sem embedding)"},
+           "create_only":{"type":"boolean","default":false,"description":"v1.5.9: grava so se a key NAO existe (nunca sobrescreve). Se existe, written=false + conflict.current_version. Exclusivo com expect_version; so no caminho textual (sem embedding)"},
            "index_key":{"type":"boolean","default":false,"description":"v1.4.4 (ISSUE 12): indexa os tokens da KEY no lexical — busca pelo NOME da key acha o que o payload não contém. Default false = só payload."}
          }},
          "annotations":{"destructiveHint":true,"idempotentHint":true}},
@@ -2142,7 +2178,7 @@ fn main() {
                                 // dispatch recursivo: roda o handler single
                                 // com os params merged (reuso da MESMA lógica).
                                 match remember_one(&mut db, &merged, embedder.as_deref(), embedder_model_id_for(&embedder_effective)) {
-                                    Ok((out, semantic)) => {
+                                    Ok(RememberOneResult::Written { out, semantic }) => {
                                         let indexed = if semantic { "semantic" } else { "lexical" };
                                         let sk = out.storage_key.clone();
                                         results.push(json!({"index": mi, "storage_key": sk, "indexed": indexed}));
@@ -2155,6 +2191,17 @@ fn main() {
                                                 let _ = db.supersede(&ek, &sk);
                                             }
                                         }
+                                    }
+                                    Ok(RememberOneResult::Conflict { current_version }) => {
+                                        // escrita condicional recusou: nao e falha,
+                                        // e "pulada com motivo" — o chamador ve
+                                        // contra qual versao perdeu.
+                                        results.push(json!({
+                                            "index": mi,
+                                            "written": false,
+                                            "conflict": {"current_version": current_version},
+                                        }));
+                                        skipped += 1;
                                     }
                                     Err(e) => {
                                         results.push(json!({"index": mi, "error": mcp_actionable_error(e)}));
@@ -2176,7 +2223,7 @@ fn main() {
                         // v1.2.0: single remember delega ao MESMO remember_one
                         // do batch (regra copiada diverge — lição v1.1.25).
                         match remember_one(&mut db, args, embedder.as_deref(), embedder_model_id_for(&embedder_effective)) {
-                            Ok((out, semantic)) => {
+                            Ok(RememberOneResult::Written { out, semantic }) => {
                                 let indexed = if semantic { "semantic" } else { "lexical" };
                                 let structured = json!({
                                     "storage_key": out.storage_key,
@@ -2191,6 +2238,21 @@ fn main() {
                                     "memoria armazenada ({})\nindexed={indexed}\nscope={:?}\n{}",
                                     out.storage_key, out.scope, out.recall_hint
                                 );
+                                send(&json!({"jsonrpc":"2.0","id":id,"result":
+                                    mcp_tool_result(&prose, structured, false)}));
+                            }
+                            Ok(RememberOneResult::Conflict { current_version }) => {
+                                // v1.5.9: escrita condicional recusou. `isError`
+                                // false de proposito — corrida perdida e resultado,
+                                // nao falha; `written:false` torna isso explicito.
+                                let structured = json!({
+                                    "written": false,
+                                    "conflict": {"current_version": current_version},
+                                });
+                                let prose = match &current_version {
+                                    Some(v) => format!("nao gravado: a versao corrente e {v}"),
+                                    None => "nao gravado: a memoria nao existe".to_string(),
+                                };
                                 send(&json!({"jsonrpc":"2.0","id":id,"result":
                                     mcp_tool_result(&prose, structured, false)}));
                             }

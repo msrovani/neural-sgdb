@@ -146,7 +146,8 @@ pub use harness::{
     MergeStrategy, MOM_ANTI_PATTERN, PromoteRunReport,
 };
 pub use sgdb::{
-    AdaptiveRecall, AuditReport, CandidateSignals, CausalHit, CognitiveOps, ConsolidateConfig,
+    AdaptiveRecall, AuditReport, CandidateSignals, CausalHit, CognitiveOps, ConditionalWrite,
+    ConsolidateConfig,
     DecayConfig, ForgetOutcome, GcConfig, GcReport, HealthReport, Hit, HitProvenance,
     HygieneReport,
     LexicalAnchorReranker,

@@ -10,6 +10,36 @@ All notable changes to this project. Format based on
 
 - **`scripts/gate-all.sh` — gate total numa passada, com matriz versionada.** Mede lib, p2p, no_std, multi_agent, hot test, bare-metal, clippy e as duas checagens de docs, grava `docs/generated/gate-matrix.json` e (no modo `check`) falha se a matriz divergir da medicao. O hot test compara a matriz: `crate`/`mcp_contract` errados ou gate com 0 assercoes falham em vez de passar em silencio.
 
+## [1.5.9] — 2026-11-12 (escrita condicional: CAS otimista)
+
+### Added
+
+- **`Sgdb::remember_text_if_match`** + `ConditionalWrite` — escrita condicional
+  em cima de `version_of` (fase 3 das ideias copiadas do ai-memory). Dois modos,
+  exclusivos: `create_only` (grava so se a key nao existe) e `expect_version`
+  (CAS: grava so se a versao corrente e a esperada). Recusa devolve
+  `Conflict { current_version }` — **nao e erro**: e o resultado normal de uma
+  corrida perdida, e o chamador decide. `Conflict` carrega a versao ATUAL para
+  nao custar uma segunda leitura a quem perdeu.
+- MCP `remember(expect_version=, create_only=)` no single **e** no batch
+  (`memories[]` herda do topo). Recusa -> `written=false` +
+  `conflict.current_version`, `isError` false; no batch conta como `skipped`
+  (pulada com motivo), nao como falha. Sem campo em `RememberOptions` (143
+  sitios de construcao: o metodo novo e quem carrega o modo).
+- Recusa em voz alta quando o modo nao existe: caminho semantico (embedding do
+  host) e `author=system`. No L4 a versao depende do vetor, entao "casar
+  versao" ali exigiria versionar tambem o embedding — fora do escopo.
+- Testes: lib **454** (+3) e hot test **227** (+2). Mutacao provada: inverter o
+  CAS (`!=` -> `==`) derruba `expect_version_is_compare_and_swap`.
+
+### Notes
+
+**Limite honesto, documentado no metodo:** o par (ler versao, escrever) nao e
+atomico entre PROCESSOS. `Sgdb` e single-writer por instancia; dois processos
+escrevendo a mesma key podem ambos passar pelo check. O que a release entrega e
+CAS otimista contra o estado local e contra escritas concorrentes no mesmo
+processo — nao um lock distribuido.
+
 ## [1.5.8] — 2026-11-12 (explain por stream no recall híbrido)
 
 ### Added
