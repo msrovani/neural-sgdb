@@ -644,7 +644,7 @@ fn error_code_label(c: neural_sgdb::ErrorCode) -> &'static str {
 
 /// NÃºmero de tools em `tools/list` (aliases antigos ainda funcionam em tools/call).
 const EXPECTED_MCP_TOOL_COUNT: usize = 5;
-const MCP_CONTRACT_VERSION: &str = "1.5.11";
+const MCP_CONTRACT_VERSION: &str = "1.5.12";
 const BUILD_GIT: &str = env!("NEURAL_SGDB_BUILD_GIT");
 
 /// Lista pÃºblica: 5 tools. Os 40 nomes antigos continuam vÃ¡lidos em `tools/call`.
@@ -997,7 +997,7 @@ fn mcp_listed_tools() -> Value {
          }},
          "annotations":{"readOnlyHint":true}},
         {"name":"curate",
-         "description":"Mutacao pontual / grafo L6 + metadado cognitivo. op= explain|reinforce|feedback|forget|forget_purge|expire_old|decay|consolidate|diary|profile|associate|related_to|contradicts|supersede|conflicts|resolve_conflict|merge_memories|audit_checkpoint|audit_verify|audit_resolve|audit_trail|rollback_to|set_ttl|expire_ttl|set_event|close_event|timeline|gc|recall_ann|commit_run|deprecate_run|promote_run|export_delta|set_authority|hygiene. ADR-0010: commit_run/deprecate_run usam scope_run (+ facts/anti_patterns). promote_run: merge do sandbox run no escopo base (keys do run com prefixo <run>/; estrategias fail|ours|theirs via merge_strategy; base_dims via base_user/base_agent/base_app). v1.4.4: explain(full=true) junta a proveniencia completa (authority/clock/audit_refs); forget_purge = forget COMPURGADO (tombstone→delete→elo FORGET, nesta ordem); audit_resolve deixa a decisao HITL na chain; audit_trail LE a trilha (key?/since?/limit?); export_delta = pull direcionado do anti-entropy (node/since/max); set_authority marca a memoria como HITL (0..=255, MDM1 v8). hygiene = relatorio READ-ONLY de conteudo (superseded sem sucessora, key com md/ duplicado, entity orfa, texto duplicado) — REPORTA, nao decide. v1.5.0: set_trigger pattern+namespaces|forget_trigger pattern|triggers [path] = ativacao condicional por caminho. v1.5.11: changes_since(since?, limit?) = feed incremental (o que mudou desde o cursor, cada memoria UMA vez, next_cursor para retomar) (o host diz em que arquivo esta, o core devolve/ativa os namespaces). Use uma storage key completa md/L4/.... Nao hoarde: so depois de evidencia.",
+         "description":"Mutacao pontual / grafo L6 + metadado cognitivo. op= explain|reinforce|feedback|forget|forget_purge|expire_old|decay|consolidate|diary|profile|associate|related_to|contradicts|supersede|conflicts|resolve_conflict|merge_memories|audit_checkpoint|audit_verify|audit_resolve|audit_trail|rollback_to|set_ttl|expire_ttl|set_event|close_event|timeline|gc|recall_ann|commit_run|deprecate_run|promote_run|export_delta|set_authority|hygiene. ADR-0010: commit_run/deprecate_run usam scope_run (+ facts/anti_patterns). promote_run: merge do sandbox run no escopo base (keys do run com prefixo <run>/; estrategias fail|ours|theirs via merge_strategy; base_dims via base_user/base_agent/base_app). v1.4.4: explain(full=true) junta a proveniencia completa (authority/clock/audit_refs); forget_purge = forget COMPURGADO (tombstone→delete→elo FORGET, nesta ordem); audit_resolve deixa a decisao HITL na chain; audit_trail LE a trilha (key?/since?/limit?); export_delta = pull direcionado do anti-entropy (node/since/max); set_authority marca a memoria como HITL (0..=255, MDM1 v8). hygiene = relatorio READ-ONLY de conteudo (superseded sem sucessora, key com md/ duplicado, entity orfa, texto duplicado) — REPORTA, nao decide. v1.5.0: set_trigger pattern+namespaces|forget_trigger pattern|triggers [path] = ativacao condicional por caminho. v1.5.11: changes_since(since?, limit?) = feed incremental (o que mudou desde o cursor, cada memoria UMA vez, next_cursor para retomar). v1.5.12: delecoes vem com deleted=true (tombstone) (o host diz em que arquivo esta, o core devolve/ativa os namespaces). Use uma storage key completa md/L4/.... Nao hoarde: so depois de evidencia.",
          "inputSchema":{"type":"object","properties":{
            "op":{"type":"string","enum":["explain","reinforce","feedback","forget","forget_purge","expire_old","decay","consolidate","diary","profile","associate","related_to","contradicts","supersede","conflicts","resolve_conflict","merge_memories","audit_checkpoint","audit_verify","audit_resolve","audit_trail","rollback_to","set_ttl","expire_ttl","set_event","close_event","timeline","gc","recall_ann","commit_run","deprecate_run","promote_run","export_delta","set_authority","hygiene","set_trigger","forget_trigger","triggers","changes_since"]},
            "key":{"type":"string"},
@@ -3346,6 +3346,7 @@ fn main() {
                     // v1.5.11: feed incremental — "o que mudou desde o meu
                     // cursor". Estado, nao log: cada memoria aparece UMA vez,
                     // com o tick da ultima escrita; reescrever nao duplica.
+                    // v1.5.12: delecoes vem como `deleted=true` (tombstone).
                     "changes_since" => {
                         let since = args["since"].as_u64().unwrap_or(0);
                         let limit = args["limit"].as_u64().unwrap_or(100) as usize;
@@ -3354,6 +3355,7 @@ fn main() {
                                 let items: Vec<Value> = page.changes.iter().map(|c| json!({
                                     "key": c.key, "tick": c.tick,
                                     "memory_id": c.memory_id, "version_id": c.version_id,
+                                    "deleted": c.deleted,
                                 })).collect();
                                 let text = format!(
                                     "changes_since(since={since}): {} mudanca(s), next_cursor={}",

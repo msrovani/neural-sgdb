@@ -8,6 +8,28 @@ All notable changes to this project. Format based on
 
 ### Added
 
+- **`changes_since` reporta AUSENCIA: delecao vira tombstone `deleted=true`**
+  (v1.5.12). `Sgdb::delete` (e por consequencia `forget_purge`) grava
+  `sys/deltomb/<storage_key>` = `TMB1` + tick + `memory_id` + `version_id` e
+  avanca o relogio local em 1 tick; o feed mescla upserts vivos e tombstones,
+  ordena por `(tick, key)` e mantem a regra de pagina (corta no inicio de um
+  tick, nunca no meio). `ChangeEntry` ganhou o campo publico `deleted`; o MCP
+  (`curate op=changes_since`) devolve `deleted` em cada item. Recriar a mesma
+  key limpa o tombstone. Teste `changes_since_reports_deletion_as_tombstone`
+  com **mutacao provada** nos dois sentidos: omitir o tombstone do feed
+  (`delecao ausente do feed`) e marcar `deleted:false` (`delecao veio como
+  upsert`) derrubam o teste. Limites documentados em `docs/MCP.md` (tombstones
+  acumulam sem GC, uma entrada por key, so delecao fisica, feed local ao no,
+  caminhos que nao passam por `Sgdb::delete` nao geram tombstone).
+
+- **Harness `longmemeval` ganhou `--mode hybrid --embed-url http://host:port`**:
+  usa um embedder REAL via HTTP (contrato do trait `Embedder` + `/embed_batch`)
+  em vez do `demo`, e `scripts/embed_server.py` serve um modelo
+  sentence-transformers local. Medicao em `BENCHMARKS.md`: hybrid com
+  `all-MiniLM-L6-v2` (384d) hit@5 **0.974** vs lexical 0.950 vs demo 0.840 — a
+  fusao por memoria ajuda quando o sinal semantico presta. Sem mudanca de
+  biblioteca nem de contrato MCP.
+
 ### Docs
 
 - **Licoes da linha 1.5.7–1.5.11 registradas** (documentacao apenas, sem mudanca

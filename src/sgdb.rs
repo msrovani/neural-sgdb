@@ -636,13 +636,20 @@ impl RecallWeights {
 /// E uma NOTIFICACAO de mudanca, nao o conteudo: o host usa `key` para
 /// re-ler o que precisa. `version_id` permite descartar o que ja tem (se o
 /// host guardou a versao da ultima sync, comparar ids evita releitura).
+///
+/// v1.5.12: `deleted=true` e um TOMBSTONE — a memoria existia e foi removida
+/// (`delete`/`forget_purge`); o host deve descarta-la localmente em vez de
+/// re-ler `key`. `memory_id`/`version_id` sao os da ULTIMA versao viva.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChangeEntry {
     pub key: String,
-    /// Tick local da ULTIMA escrita desta memoria neste no.
+    /// Tick local da ULTIMA escrita (ou deleção) desta memoria neste no.
     pub tick: u64,
     pub memory_id: String,
     pub version_id: String,
+    /// `true` quando a memoria foi REMOVIDA: o host deve trata-la como
+    /// ausente. `false` = upsert (existe). Tombstones acumulam — ver docs.
+    pub deleted: bool,
 }
 
 /// Pagina do feed incremental. `next_cursor` e o valor a passar de volta em
@@ -667,8 +674,48 @@ pub enum ConditionalWrite {
     Conflict { current_version: Option<String> },
 }
 
+/// Pesos por stream na fusão RRF (v1.5.12).
+///
+/// `semantic` e `lexical` multiplicam o voto de cada stream. O default
+/// (1.0/1.0) é o RRF clássico — nenhuma mudança de comportamento. Peso
+/// não-finito/negativo é recusado pelo recall ponderado (a fusão pura sanitiza
+/// para 0); os dois em 0 é uma fusão sem sinal, também recusada.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RrfWeights {
+    pub semantic: f32,
+    pub lexical: f32,
+}
+
+impl Default for RrfWeights {
+    fn default() -> Self {
+        Self { semantic: 1.0, lexical: 1.0 }
+    }
+}
+
+impl RrfWeights {
+    /// 1.0/1.0 — o RRF clássico.
+    pub const fn uniform() -> Self {
+        Self { semantic: 1.0, lexical: 1.0 }
+    }
+
+    /// Rejeita peso não-finito/negativo e a fusão sem nenhum stream.
+    pub fn validate(&self) -> Result<(), SgdbError> {
+        if !self.semantic.is_finite() || !self.lexical.is_finite() {
+            return Err(SgdbError::Invalid("RrfWeights: weights must be finite"));
+        }
+        if self.semantic < 0.0 || self.lexical < 0.0 {
+            return Err(SgdbError::Invalid("RrfWeights: weights must be >= 0"));
+        }
+        if self.semantic == 0.0 && self.lexical == 0.0 {
+            return Err(SgdbError::Invalid("RrfWeights: at least one stream must be > 0"));
+        }
+        Ok(())
+    }
+}
+
 /// Contribuição de UM stream para a fusão RRF (v1.5.8): posição 1-based no
-/// ranking daquele stream e o peso `1/(k_rrf + rank)`.
+/// ranking daquele stream e o voto JÁ ponderado pelo stream
+/// (`w_stream / (k_rrf + rank)`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RrfContribution {
     pub rank: u32,
@@ -691,6 +738,8 @@ pub struct RrfBreakdown {
     /// Constante usada na fusão (`1/(k_rrf + rank)`, default 60.0) — sem ela o
     /// consumidor não consegue reproduzir o score.
     pub k_rrf: f32,
+    /// Pesos por stream usados nesta fusão (v1.5.12). Default 1.0/1.0.
+    pub weights: RrfWeights,
     pub fused: f32,
 }
 
@@ -5061,43 +5110,58 @@ impl Sgdb {
     /// nao dois. O cursor e o tick (`next_cursor`), entao a chamada seguinte
     /// continua exatamente de onde parou.
     ///
-    /// **Limite honesto:** `delete` nao gera evento. O feed responde "o que
-    /// existe mudou", nao "o que deixou de existir"; quem replica precisa
-    /// cruzar com o proprio inventario (ou com `audit_checkpoint`) para ver
-    /// ausencia. Tambem e local ao NO: escritas recebidas por replicacao
-    /// entram com o counter do no de origem.
+    /// **Ausencia (v1.5.12):** delecoes sao reportadas como entradas com
+    /// `deleted=true` (tombstone persistido em `sys/deltomb/<storage_key>`).
+    /// Tombstones ACUMULAM e nao sao compactados aqui — o host pode cruzar com
+    /// `audit_checkpoint`/inventario para reconciliar. Assim como os upserts, o
+    /// feed e local ao NO: escritas recebidas por replicacao entram com o
+    /// counter do no de origem.
     pub fn changes_since(&mut self, since: u64, limit: usize) -> Result<ChangePage, SgdbError> {
         let node = self.engine.node_id;
         let rows = self.engine.changes_since_clock(node, since);
+        let mut items: Vec<(u64, String, ChangeEntry)> = Vec::new();
+        for (t, sk) in rows {
+            if let Some(m) = self.engine.meta(&sk)? {
+                items.push((t, sk.clone(), ChangeEntry {
+                    key: sk,
+                    tick: t,
+                    memory_id: m.memory_id,
+                    version_id: m.version_id,
+                    deleted: false,
+                }));
+            }
+        }
+        for (t, sk, mid, vid) in self.engine.delete_tombstones_since(since)? {
+            items.push((t, sk.clone(), ChangeEntry {
+                key: sk,
+                tick: t,
+                memory_id: mid,
+                version_id: vid,
+                deleted: true,
+            }));
+        }
+        items.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
         let cap = limit.max(1);
         let mut changes: Vec<ChangeEntry> = Vec::new();
         let mut next_cursor = since;
         let mut more = false;
         let mut i = 0;
-        while i < rows.len() {
-            let tick = rows[i].0;
+        while i < items.len() {
+            let tick = items[i].0;
             let mut j = i;
-            while j < rows.len() && rows[j].0 == tick {
-                j += 1;
-            }
+            while j < items.len() && items[j].0 == tick { j += 1; }
+            let group_len = j - i;
             // O grupo INTEIRO de um tick entra ou nao: o cursor e o tick, e
             // parar no meio dele perderia as mudancas restantes para sempre.
-            if changes.len() + (j - i) > cap {
-                more = true;
-                break;
-            }
-            for (t, sk) in &rows[i..j] {
-                if let Some(m) = self.engine.meta(sk)? {
-                    changes.push(ChangeEntry {
-                        key: sk.clone(),
-                        tick: *t,
-                        memory_id: m.memory_id,
-                        version_id: m.version_id,
-                    });
-                }
+            if !changes.is_empty() && changes.len() + group_len > cap { more = true; break; }
+            if changes.is_empty() && group_len > cap { more = j < items.len(); }
+            for (_, _, e) in &items[i..j] {
+                changes.push(e.clone());
             }
             next_cursor = tick;
             i = j;
+            if !more && changes.len() >= cap && i < items.len() { more = true; break; }
+            if more { break; }
         }
         Ok(ChangePage { changes, next_cursor, more })
     }
@@ -5115,10 +5179,35 @@ impl Sgdb {
         h.rel.clone().unwrap_or_else(|| h.key.clone())
     }
 
+    /// Peso inválido não tem significado físico no RRF: negativo/NaN/inf viram
+    /// 0 (o recall validado recusa antes; a fusão pura não mente).
+    fn sanitize_rrf_weight(w: f32) -> f32 {
+        if w.is_finite() && w > 0.0 { w } else { 0.0 }
+    }
+
     pub fn rrf_fuse(semantic: Vec<Hit>, lexical: Vec<Hit>, k: usize, k_rrf: f32) -> Vec<Hit> {
         // v1.5.10: UMA regra de fusao (a explicada). Duas copias divergem — a
         // licao do v1.1.25 — e a ordenacao daqui e comportamento publico.
         Self::rrf_fuse_explained(semantic, lexical, k, k_rrf)
+            .into_iter()
+            .map(|(h, _)| h)
+            .collect()
+    }
+
+    /// Fusão RRF PONDERADA por stream (v1.5.12).
+    ///
+    /// `weights` multiplica o voto de cada stream: `w / (k_rrf + rank)`.
+    /// `RrfWeights::default()` (1.0/1.0) reproduz `rrf_fuse` exatamente. A
+    /// identidade de fusão continua sendo a MEMÓRIA (`rel ?? key`), então
+    /// ponderar NÃO reintroduz as duplicatas que a 1.5.10 removeu.
+    pub fn rrf_fuse_weighted(
+        semantic: Vec<Hit>,
+        lexical: Vec<Hit>,
+        k: usize,
+        k_rrf: f32,
+        weights: RrfWeights,
+    ) -> Vec<Hit> {
+        Self::rrf_fuse_weighted_explained(semantic, lexical, k, k_rrf, weights)
             .into_iter()
             .map(|(h, _)| h)
             .collect()
@@ -5137,7 +5226,21 @@ impl Sgdb {
         k: usize,
         k_rrf: f32,
     ) -> Vec<(Hit, RrfBreakdown)> {
+        Self::rrf_fuse_weighted_explained(semantic, lexical, k, k_rrf, RrfWeights::default())
+    }
+
+    /// `rrf_fuse_explained` com pesos por stream (v1.5.12). É a ÚNICA
+    /// implementação da fusão; as outras variantes delegam para cá.
+    pub fn rrf_fuse_weighted_explained(
+        semantic: Vec<Hit>,
+        lexical: Vec<Hit>,
+        k: usize,
+        k_rrf: f32,
+        weights: RrfWeights,
+    ) -> Vec<(Hit, RrfBreakdown)> {
         use alloc::collections::BTreeMap;
+        let w_sem = Self::sanitize_rrf_weight(weights.semantic);
+        let w_lex = Self::sanitize_rrf_weight(weights.lexical);
         struct Acc {
             score: f32,
             hit: Hit,
@@ -5145,7 +5248,7 @@ impl Sgdb {
         }
         let mut acc: BTreeMap<String, Acc> = BTreeMap::new();
         for (rank, h) in semantic.into_iter().enumerate() {
-            let s = 1.0 / (k_rrf + (rank as f32 + 1.0));
+            let s = w_sem / (k_rrf + (rank as f32 + 1.0));
             acc.insert(
                 Self::fusion_key(&h),
                 Acc {
@@ -5155,13 +5258,14 @@ impl Sgdb {
                         semantic: Some(RrfContribution { rank: rank as u32 + 1, weight: s }),
                         lexical: None,
                         k_rrf,
+                        weights,
                         fused: s,
                     },
                 },
             );
         }
         for (rank, h) in lexical.into_iter().enumerate() {
-            let s = 1.0 / (k_rrf + (rank as f32 + 1.0));
+            let s = w_lex / (k_rrf + (rank as f32 + 1.0));
             let c = RrfContribution { rank: rank as u32 + 1, weight: s };
             acc.entry(Self::fusion_key(&h))
                 .and_modify(|a| {
@@ -5172,7 +5276,13 @@ impl Sgdb {
                 .or_insert(Acc {
                     score: s,
                     hit: h,
-                    br: RrfBreakdown { semantic: None, lexical: Some(c), k_rrf, fused: s },
+                    br: RrfBreakdown {
+                        semantic: None,
+                        lexical: Some(c),
+                        k_rrf,
+                        weights,
+                        fused: s,
+                    },
                 });
         }
         let mut v: Vec<Acc> = acc.into_values().collect();
@@ -5236,6 +5346,36 @@ impl Sgdb {
         let sem = self.recall_scoped(query_emb, k.max(1) * 4, scope)?;
         let lex = self.recall_lexical_scoped(query_text, k.max(1) * 4, scope)?;
         Ok(Self::rrf_fuse(sem, lex, k, 60.0))
+    }
+
+    /// Recall híbrido RRF com pesos por stream (v1.5.12): o host decide
+    /// quanto cada sinal vale, sem tocar no `k_rrf` nem na identidade de fusão.
+    pub fn recall_hybrid_rrf_weighted(
+        &mut self,
+        query_emb: &[f32],
+        query_text: &str,
+        k: usize,
+        weights: RrfWeights,
+    ) -> Result<Vec<Hit>, SgdbError> {
+        weights.validate()?;
+        let sem = self.recall_oversampled(query_emb, k.max(1) * 4, 4)?;
+        let lex = self.recall_lexical(query_text, k.max(1) * 4)?;
+        Ok(Self::rrf_fuse_weighted(sem, lex, k, 60.0, weights))
+    }
+
+    /// Variante escopada de `recall_hybrid_rrf_weighted` (v1.5.12).
+    pub fn recall_hybrid_rrf_weighted_scoped(
+        &mut self,
+        query_emb: &[f32],
+        query_text: &str,
+        k: usize,
+        scope: &str,
+        weights: RrfWeights,
+    ) -> Result<Vec<Hit>, SgdbError> {
+        weights.validate()?;
+        let sem = self.recall_scoped(query_emb, k.max(1) * 4, scope)?;
+        let lex = self.recall_lexical_scoped(query_text, k.max(1) * 4, scope)?;
+        Ok(Self::rrf_fuse_weighted(sem, lex, k, 60.0, weights))
     }
 
     /// ---- v1.1.28 (ADR-0017, Movimento 3): PREFETCH DE CANDIDATOS ----
@@ -6246,7 +6386,8 @@ impl Sgdb {
         self.engine.delete_conflict(conflict_id)
     }
 
-    /// Deleção **física** (tombstone + remoção dos índices derivados).
+    /// Deleção **física** (remoção do doc + índices derivados) com tombstone
+    /// de AUSÊNCIA para o feed incremental (`changes_since`, `deleted=true`).
     ///
     /// Diferente do estado lógico (`set_state`/`supersede`/`invalidate`), que
     /// PRESERVA o doc na história (invalidar-não-deletar), aqui o doc some do
@@ -6262,10 +6403,15 @@ impl Sgdb {
     /// remoção completa da memória.
     pub fn delete(&mut self, key: &str) -> Result<bool, SgdbError> {
         let sk = self.resolve_known_key(key);
+        // Captura identidade antes da remocao para o tombstone do feed.
+        let meta = self.engine.meta(&sk)?;
         let existed = self.engine.delete(&sk)?;
-        // v1.1.3 S4 — recuperação proativa: delete físico deixa o id no BQ
-        // (append-only); quando os órfãos passam do limiar, reempacota na hora.
         if existed {
+            let tick = self.engine.bump_local_tick();
+            let (mid, vid) = meta.map(|m| (m.memory_id, m.version_id)).unwrap_or_default();
+            self.engine.put_delete_tombstone(&sk, tick, &mid, &vid)?;
+            // v1.1.3 S4 — recuperação proativa: delete físico deixa o id no BQ
+            // (append-only); quando os órfãos passam do limiar, reempacota na hora.
             self.reclaim_bq_orphans(crate::limits::DEFAULT_BQ_ORPHAN_THRESHOLD);
         }
         Ok(existed)
@@ -13118,6 +13264,9 @@ mod v144_causal_tests {
 mod rrf_explain_tests {
     use super::*;
     use crate::{InMemory, RememberOptions};
+    // no_std: este modulo roda nos dois perfis (alloc, sem std).
+    use alloc::collections::BTreeSet;
+    use alloc::vec;
 
     fn opts(scope: &str) -> RememberOptions<'_> {
         RememberOptions {
@@ -13221,6 +13370,114 @@ mod rrf_explain_tests {
             assert_eq!(br.fused, h.score, "score devolvido != fused");
             assert_eq!(a.rank, b.rank);
         }
+    }
+
+    /// Hit mínimo para exercitar a fusão SEM depender do corpus: os pesos
+    /// precisam de ranks controlados, e um corpus real não dá isso.
+    fn bare_hit(key: &str) -> Hit {
+        Hit {
+            key: key.to_string(),
+            text: String::new(),
+            dist: 0.0,
+            provenance: None,
+            path: RecallPath::Semantic,
+            content_type: ContentType::Text,
+            payload_type: ContentType::Text,
+            score: 0.0,
+            matched_terms: Vec::new(),
+            validity: None,
+            rel: None,
+            score_breakdown: None,
+            type_scores: None,
+        }
+    }
+
+    #[test]
+    fn weighted_rrf_neutral_is_byte_identical_to_classic() {
+        let sem = vec![bare_hit("s1"), bare_hit("s2")];
+        let lex = vec![bare_hit("s2"), bare_hit("s3")];
+        let classic = Sgdb::rrf_fuse(sem.clone(), lex.clone(), 5, 60.0);
+        let neutral = Sgdb::rrf_fuse_weighted(
+            sem.clone(),
+            lex.clone(),
+            5,
+            60.0,
+            RrfWeights::default(),
+        );
+        assert_eq!(keys(&classic), keys(&neutral), "1.0/1.0 mudou o ranking classico");
+        assert_eq!(
+            classic.iter().map(|h| h.score).collect::<Vec<_>>(),
+            neutral.iter().map(|h| h.score).collect::<Vec<_>>(),
+            "1.0/1.0 mudou os scores"
+        );
+    }
+
+    #[test]
+    fn weighted_rrf_lexical_bias_recovers_order_without_duplicates() {
+        // `w` é ruído semântico (rank 1) que o lexical põe em último (rank 10);
+        // `a` é a evidência lexical (rank 1) e NÃO aparece no semântico.
+        let mut lex = vec![bare_hit("a")];
+        for k in 2..=9 {
+            lex.push(bare_hit(&format!("l{k}")));
+        }
+        lex.push(bare_hit("w"));
+        let sem = vec![bare_hit("w")];
+
+        let neutral = Sgdb::rrf_fuse_weighted_explained(
+            sem.clone(),
+            lex.clone(),
+            20,
+            60.0,
+            RrfWeights::default(),
+        );
+        assert_eq!(neutral[0].0.key, "w", "sem peso, o ruido semantico ganha o topo");
+
+        let lex_first = Sgdb::rrf_fuse_weighted_explained(
+            sem.clone(),
+            lex.clone(),
+            20,
+            60.0,
+            RrfWeights { semantic: 0.1, lexical: 1.0 },
+        );
+        assert_eq!(lex_first[0].0.key, "a", "peso lexical nao recuperou o topo");
+
+        // Dedup: cada MEMÓRIA aparece uma vez, mesmo com dois votos.
+        let mut seen = BTreeSet::new();
+        for (h, br) in &lex_first {
+            assert!(
+                seen.insert(Sgdb::fusion_key(h)),
+                "duplicata na fusao ponderada: {}",
+                h.key
+            );
+            let sum = br.semantic.map(|c| c.weight).unwrap_or(0.0)
+                + br.lexical.map(|c| c.weight).unwrap_or(0.0);
+            assert!((br.fused - sum).abs() < 1e-6, "fused != soma dos votos");
+            assert_eq!(br.weights, RrfWeights { semantic: 0.1, lexical: 1.0 });
+            assert_eq!(br.fused, h.score);
+        }
+        let w = lex_first.iter().find(|(h, _)| h.key == "w").expect("w sumiu");
+        assert!(
+            w.1.semantic.is_some() && w.1.lexical.is_some(),
+            "w deveria carregar os dois votos no breakdown"
+        );
+    }
+
+    #[test]
+    fn weighted_rrf_rejects_bad_weights() {
+        assert!(RrfWeights { semantic: -1.0, lexical: 1.0 }.validate().is_err());
+        assert!(RrfWeights { semantic: f32::NAN, lexical: 1.0 }.validate().is_err());
+        assert!(RrfWeights { semantic: 0.0, lexical: 0.0 }.validate().is_err());
+        assert!(RrfWeights::default().validate().is_ok());
+        assert!(RrfWeights::uniform().validate().is_ok());
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        let err = db.recall_hybrid_rrf_weighted_scoped(
+            &[1.0, 0.0],
+            "x",
+            3,
+            "s",
+            RrfWeights { semantic: 0.0, lexical: 0.0 },
+        );
+        assert!(err.is_err(), "recall aceitou fusao sem sinal");
     }
 }
 
@@ -13409,5 +13666,42 @@ mod changes_since_tests {
         seen.sort();
         seen.dedup();
         assert_eq!(seen.len(), 3, "paginacao perdeu mudanca: {seen:?}");
+    }
+
+    #[test]
+    fn changes_since_reports_deletion_as_tombstone() {
+        // v1.5.12: o host precisa ver AUSENCIA. Uma delecao vira entrada
+        // `deleted=true` com identidade preservada e cursor que avanca; retomar
+        // do cursor nao repete o tombstone. Mutacao provada: se o feed omitir a
+        // delecao (ou marcar deleted=false), este teste falha.
+        let mut db = Sgdb::open(InMemory::new()).unwrap();
+        db.remember_text_with("gone", "vai sumir", opts("s")).unwrap();
+        let mid = db.memory_id("gone").unwrap().unwrap();
+        let vid = db.version_of("gone").unwrap().unwrap();
+        let baseline = db.changes_since(0, 100).unwrap().next_cursor;
+        assert!(db.delete("gone").unwrap(), "delete deveria remover");
+        let page = db.changes_since(baseline, 100).unwrap();
+        let hit = page
+            .changes
+            .iter()
+            .find(|c| c.key == "md/L3/gone")
+            .expect("delecao ausente do feed (tombstone perdido)");
+        assert!(hit.deleted, "delecao veio como upsert: {:?}", hit);
+        assert_eq!(hit.memory_id, mid, "tombstone perdeu a identidade");
+        assert_eq!(hit.version_id, vid, "tombstone perdeu a versao");
+        assert!(hit.tick > baseline, "tombstone nao avancou o cursor");
+        let again = db.changes_since(page.next_cursor, 100).unwrap();
+        assert!(
+            !again.changes.iter().any(|c| c.key == "md/L3/gone"),
+            "tombstone repetiu apos retomar: {:?}", again.changes
+        );
+        // idempotencia: deletar de novo nao inventa outro tombstone visivel
+        assert!(!db.delete("gone").unwrap());
+        let once = db.changes_since(baseline, 100).unwrap();
+        assert_eq!(
+            once.changes.iter().filter(|c| c.key == "md/L3/gone").count(),
+            1,
+            "tombstone duplicado: {:?}", once.changes
+        );
     }
 }

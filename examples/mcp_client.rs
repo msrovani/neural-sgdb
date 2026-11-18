@@ -436,7 +436,8 @@ fn main() {
         r["result"]["isError"].as_bool() != Some(true)
             && sc["changes"].as_array().is_some_and(|a| !a.is_empty()
                 && a.iter().all(|c| c["key"].as_str().is_some()
-                    && c["version_id"].as_str().is_some()))
+                    && c["version_id"].as_str().is_some()
+                    && c["deleted"].as_bool() == Some(false)))
             && cursor > 0,
         r.to_string());
     // Retomar do next_cursor nao pode repetir o que ja veio.
@@ -706,6 +707,26 @@ fn main() {
     let (txt, is_err) = srv.tool("curate", json!({"op": "expire_ttl", "now": 12345678909999u64}));
     rep.check("expire_ttl com now>expires_at expira 1", !is_err && txt.contains("1 TTLs"), txt.clone());
     rep.phase("metadado cognitivo", &t);
+
+    // ---------- v1.5.12: delecao visivel no feed (tombstone) ----------
+    // Roda DEPOIS da auditoria: `forget_purge` anexa um elo FORGET ao ledger e a
+    // fase acima pina o PRIMEIRO checkpoint como `seq=0`.
+    let r = srv.rpc("tools/call", json!({"name": "curate", "arguments": {
+        "op": "changes_since", "since": 0, "limit": 500}}));
+    let cur_before = r["result"]["structuredContent"]["next_cursor"].as_u64().unwrap_or(0);
+    let (_, del_err) = srv.tool("remember", json!({
+        "key": "csgone", "text": "some e volta no feed como tombstone", "scope": "mcp-smoke"}));
+    let r = srv.rpc("tools/call", json!({"name": "curate", "arguments": {
+        "op": "forget_purge", "key": "md/L3/csgone", "reason": "tombstone-feed"}}));
+    let purge_ok = r["result"]["isError"].as_bool() != Some(true);
+    let r = srv.rpc("tools/call", json!({"name": "curate", "arguments": {
+        "op": "changes_since", "since": cur_before, "limit": 500}}));
+    let sc3 = &r["result"]["structuredContent"];
+    let tomb = sc3["changes"].as_array().is_some_and(|a| a.iter().any(|c| {
+        c["key"].as_str() == Some("md/L3/csgone") && c["deleted"].as_bool() == Some(true)
+    }));
+    rep.check("curate op=changes_since: delecao aparece como tombstone deleted=true",
+        !del_err && purge_ok && tomb, r.to_string());
 
     // ---------- fase 6c: ADR-0010 commit_run / deprecate_run ----------
     let t = Instant::now();

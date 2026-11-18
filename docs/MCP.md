@@ -3,13 +3,13 @@
 Guia de instalação, contrato e troubleshooting do servidor MCP
 (`examples/mcp_server.rs`).
 
-## Contrato atual (v1.5.11)
+## Contrato atual (v1.5.12)
 
 | Campo | Valor |
 |-------|-------|
 | Protocolo | JSON-RPC 2.0 over **stdio** (uma linha JSON por mensagem) |
 | Handshake | `initialize` → `protocolVersion: 2025-11-25` |
-| `serverInfo.version` | `1.5.11` (`MCP_CONTRACT_VERSION` em `examples/mcp_server.rs`) |
+| `serverInfo.version` | `1.5.12` (`MCP_CONTRACT_VERSION` em `examples/mcp_server.rs`) |
 | Tools | **5** (`remember`, `recall`, `health`, `curate`, `decide`) — 40 nomes antigos/alias ainda funcionam em `tools/call` (`ALIAS_SURFACE`, `stable`/`deprecated` em `contract.json` + resource `nsgdb://contract`) |
 | Retrieval default (v1.3.0) | `lexical` sem vetor; `hybrid` (RRF) com embedder de host REAL; `semantic` com `embedding=` do caller — `health.semantic_ready`/`retrieval_default` |
 | Embedding (via B, v1.4.3) | `NEURAL_SGDB_EMBEDDER=multilingual\|candle\|onnx\|local` → modelo `paraphrase-multilingual-MiniLM-L12-v2` (384, in-process em `crates/nsgdb-embed`); `model_id` auto-declarado no `remember`. Cadeia de fallback: caller `embedding=` (A) → host in-process (B) → `embedder_http`/ollama (C) → lexical (honesto, ADR-0008) |
@@ -53,7 +53,7 @@ servidor por `scripts/gen-mcp-surface.sh` — nao editar a mao (o `check` do
 gate de release falha se estiver stale):
 
 <!-- BEGIN GENERATED: mcp-surface -->
-**MCP contract `1.5.11`** · **5** tools em `tools/list` · **40** aliases em `tools/call` (20 stable, 20 deprecated)
+**MCP contract `1.5.12`** · **5** tools em `tools/list` · **40** aliases em `tools/call` (20 stable, 20 deprecated)
 
 Tools (`tools/list`): `remember`, `recall`, `health`, `curate`, `decide`
 
@@ -418,7 +418,7 @@ Limites declarados: so o caminho textual (sem `embedding`) e `author=agent`;
 `create_only` + `expect_version` juntos e `-32602`. O CAS e otimista contra o
 estado LOCAL do processo — nao ha lock entre processos.
 
-## Feed incremental: `curate op=changes_since` (v1.5.11)
+## Feed incremental: `curate op=changes_since` (v1.5.12)
 
 ```json
 {"op": "changes_since", "since": 0, "limit": 100}
@@ -427,7 +427,8 @@ estado LOCAL do processo — nao ha lock entre processos.
 Resposta:
 
 ```json
-{"changes": [{"key": "md/L3/x", "tick": 12, "memory_id": "...", "version_id": "..."}],
+{"changes": [{"key": "md/L3/x", "tick": 12, "memory_id": "...", "version_id": "...",
+              "deleted": false}],
  "next_cursor": 12, "more": false}
 ```
 
@@ -435,4 +436,32 @@ Resposta:
 - Estado, nao log: reescrever a mesma memoria duas vezes antes da sync devolve
   **um** item, com o tick da ultima escrita.
 - `more: true` = ficou coisa para tras; siga com o `next_cursor` devolvido.
-- `delete` nao vira evento: o feed diz o que mudou, nao o que sumiu.
+- `deleted: true` (v1.5.12) = TOMBSTONE: a memoria existia e foi removida
+  (`delete`/`forget_purge`). O host deve **descartar** `key` localmente em vez
+  de re-le-la; `memory_id`/`version_id` sao os da ultima versao viva e servem
+  para casar o tombstone com o que o host guardou.
+- Recriar a mesma `key` limpa o tombstone: o proximo feed daquela key vem com
+  `deleted: false`.
+
+### Limite honesto das delecoes (v1.5.12)
+
+- **Tombstones acumulam.** Cada `sys/deltomb/<storage_key>` fica no banco ate a
+  key ser recriada (que limpa) — nao ha compactacao/GC no `changes_since`. O
+  custo por tombstone e pequeno (tick + dois ids), mas o numero cresce com o
+  total de delecoes da historia do no. Quem quiser um feed enxuto tem de cruzar
+  com `audit_trail`/`audit_checkpoint` e recriar o inventario por fora.
+- **Uma entrada por key.** O tombstone guarda o tick da ULTIMA remocao; deletar
+  a mesma key de novo (idempotente, `delete` devolve `false`) nao cria evento.
+  O feed continua sendo estado, nao log — nao ha historico de "sumiu, voltou,
+  sumiu".
+- **So delecao fisica.** `forget`/`supersede`/`invalidate` (invalidar-nao-
+  deletar) nao geram tombstone: o doc continua existindo e aparece como upsert
+  (`deleted: false`) quando o estado muda. O que vira ausencia e `delete` e
+  `forget_purge`.
+- **Local ao NO.** O tick e o contador local; uma delecao replicada de outro no
+  entra com o counter da origem (mesma regra dos upserts). Delecoes feitas em
+  outro no que nunca chegaram por replicacao so aparecem no cruzamento com o
+  inventario — o tombstone nao substitui anti-entropy.
+- **`key` sem meta viva.** Se o doc sumiu por um caminho que nao passou por
+  `Sgdb::delete` (ex.: GC de TTL, `reclaim_bq_orphans` de indice derivado),
+  nao existe tombstone: a ausencia so aparece no cruzamento com o inventario.

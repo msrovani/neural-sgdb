@@ -40,7 +40,7 @@
 //!   ... --json evals/runs/1.5.7-oracle.json --sha256 <hex> --commit <sha>
 
 use neural_sgdb::{InMemory, RememberOptions, Sgdb};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 const SCOPE: &str = "bench";
 /// Fronteira de captura do `pipeline` — o mesmo 2 KB do hook do harness real.
@@ -79,11 +79,20 @@ struct Args {
     /// Existe porque um harness que devolve 0.000 em tudo pode ser um ranking
     /// ruim OU um mapeamento de key errado — e esses dois pedem conserto oposto.
     dump: usize,
+    /// URL de um embedder REAL (`http://host:port`) para o modo `hybrid`; sem
+    /// ela o hybrid usa `demo_embed` (o baseline negativo de 1.5.10).
+    embed_url: Option<String>,
+    /// Pesos do RRF por stream (default 1.0/1.0, o RRF classico).
+    w_sem: f32,
+    w_lex: f32,
+    /// `memory` (correta, 1.5.10+) ou `storage` (pre-1.5.10: por storage key,
+    /// permite duplicatas da mesma memória) — só para medir o artefato.
+    fusion_by: String,
 }
 
 fn usage(msg: &str) -> ! {
     eprintln!("longmemeval: {msg}");
-    eprintln!("uso: --dataset <arquivo> [--mode component|pipeline|hybrid] [--limit N] [--stratify N] [--k 5] [--json <saida>] [--sha256 <hex>] [--commit <sha>]");
+    eprintln!("uso: --dataset <arquivo> [--mode component|pipeline|hybrid] [--limit N] [--stratify N] [--k 5] [--json <saida>] [--sha256 <hex>] [--commit <sha>] [--embed-url http://host:port] [--w-sem 1.0] [--w-lex 1.0] [--fusion memory|storage]");
     std::process::exit(2);
 }
 
@@ -98,6 +107,10 @@ fn parse_args() -> Args {
         sha256: "unspecified".to_string(),
         commit: "unspecified".to_string(),
         dump: 0,
+        embed_url: None,
+        w_sem: 1.0,
+        w_lex: 1.0,
+        fusion_by: "memory".to_string(),
     };
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -123,6 +136,10 @@ fn parse_args() -> Args {
             "--sha256" => { a.sha256 = next(i); i += 2; }
             "--commit" => { a.commit = next(i); i += 2; }
             "--dump" => { a.dump = next(i).parse().unwrap_or(0); i += 2; }
+            "--embed-url" => { a.embed_url = Some(next(i)); i += 2; }
+            "--w-sem" => { a.w_sem = next(i).parse().unwrap_or(1.0); i += 2; }
+            "--w-lex" => { a.w_lex = next(i).parse().unwrap_or(1.0); i += 2; }
+            "--fusion" => { a.fusion_by = next(i); i += 2; }
             "--help" | "-h" => usage("ajuda"),
             other => usage(&format!("flag desconhecida: {other}")),
         }
@@ -136,6 +153,8 @@ struct Scored {
     hit: bool,
     recall: f64,
     recall_all: bool,
+    /// Hits que repetem a MESMA memória de fusão (`rel ?? key`) no top-k.
+    dups: usize,
 }
 
 fn as_array<'a>(v: &'a serde_json::Value, what: &str) -> &'a Vec<serde_json::Value> {
@@ -198,7 +217,154 @@ fn session_of(key: &str) -> &str {
     }
 }
 
-fn run_question(q: &serde_json::Value, mode: Mode, k: usize, dump: bool) -> Scored {
+/// Cliente HTTP minimo para um embedder REAL (v1.5.12): fala o contrato do
+/// `Embedder` (`POST /embed`) mais um `/embed_batch` usado so pelo harness.
+/// Zero dep nova (std::net + serde_json, ja dev-dep) - o modelo roda fora do
+/// crate, via `scripts/embed_server.py`.
+struct RemoteEmbedder {
+    base: String,
+}
+
+impl RemoteEmbedder {
+    fn new(base: &str) -> Self {
+        Self { base: base.trim_end_matches('/').to_string() }
+    }
+
+    fn embed(&self, text: &str) -> Result<Vec<f32>, String> {
+        let body = serde_json::json!({ "text": text }).to_string();
+        let v = http_post_json(&self.base, "/embed", &body)?;
+        parse_embedding(&v["embedding"])
+    }
+
+    fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, String> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        let body = serde_json::json!({ "texts": texts }).to_string();
+        let v = http_post_json(&self.base, "/embed_batch", &body)?;
+        let arr = v["embeddings"].as_array().ok_or("resposta sem embeddings")?;
+        let mut out = Vec::with_capacity(arr.len());
+        for e in arr {
+            out.push(parse_embedding(e)?);
+        }
+        Ok(out)
+    }
+}
+
+fn parse_embedding(v: &serde_json::Value) -> Result<Vec<f32>, String> {
+    let arr = v.as_array().ok_or("embedding nao e array")?;
+    if arr.is_empty() || arr.len() > neural_sgdb::MAX_EMBEDDING_DIM {
+        return Err("dimensionalidade fora do contrato".to_string());
+    }
+    let mut out = Vec::with_capacity(arr.len());
+    for x in arr {
+        let f = x.as_f64().ok_or("embedding nao numerico")? as f32;
+        if !f.is_finite() {
+            return Err("embedding nao-finito".to_string());
+        }
+        out.push(f);
+    }
+    Ok(out)
+}
+
+/// POST HTTP/1.1 cru contra o embedder local (mesmo padrao de
+/// `examples/embedder_http.rs`, sem client TLS).
+fn http_post_json(base: &str, path: &str, body: &str) -> Result<serde_json::Value, String> {
+    use std::io::{Read, Write};
+    let rest = base.strip_prefix("http://").ok_or("embed-url deve ser http://host:port")?;
+    let (host, port) = rest.rsplit_once(':').ok_or("embed-url deve ser http://host:port")?;
+    let port: u16 = port.parse().map_err(|_| "porta invalida")?;
+    let mut stream = std::net::TcpStream::connect((host, port))
+        .map_err(|e| format!("connect {host}:{port}: {e}"))?;
+    let req = format!(
+        "POST {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(req.as_bytes()).map_err(|e| format!("write: {e}"))?;
+    stream.flush().map_err(|e| format!("flush: {e}"))?;
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+    let mut resp = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                resp.extend_from_slice(&chunk[..n]);
+                if resp.len() > 64 * 1024 * 1024 {
+                    return Err("resposta do embedder grande demais".to_string());
+                }
+            }
+            Err(e) => return Err(format!("read: {e}")),
+        }
+    }
+    let body = http_body(&resp).ok_or("resposta sem Content-Length")?;
+    serde_json::from_str(body).map_err(|e| format!("resposta nao-JSON: {e}"))
+}
+
+fn http_body(buf: &[u8]) -> Option<&str> {
+    let head_end = buf.windows(4).position(|w| w == b"\r\n\r\n")?;
+    let head = std::str::from_utf8(&buf[..head_end]).ok()?;
+    let len = head
+        .lines()
+        .find_map(|l| l.strip_prefix("Content-Length:").or_else(|| l.strip_prefix("content-length:")))?
+        .trim()
+        .parse::<usize>()
+        .ok()?;
+    let start = head_end + 4;
+    if buf.len() >= start + len {
+        std::str::from_utf8(&buf[start..start + len]).ok()
+    } else {
+        None
+    }
+}
+
+/// RRF por STORAGE KEY (estado pre-1.5.10), só para medição comparativa: a
+/// mesma memória pode aparecer duas vezes (primário L4 e companion L2), o que
+/// infla k efetivo e impede a soma dos dois votos. Mesma fórmula/pesos/k_rrf.
+fn rrf_fuse_by_storage_key(
+    semantic: Vec<neural_sgdb::Hit>,
+    lexical: Vec<neural_sgdb::Hit>,
+    k: usize,
+    k_rrf: f32,
+    w_sem: f32,
+    w_lex: f32,
+) -> Vec<neural_sgdb::Hit> {
+    use std::collections::BTreeMap;
+    struct Acc { score: f32, hit: neural_sgdb::Hit }
+    let mut acc: BTreeMap<String, Acc> = BTreeMap::new();
+    for (rank, h) in semantic.into_iter().enumerate() {
+        let s = w_sem / (k_rrf + (rank as f32 + 1.0));
+        acc.insert(h.key.clone(), Acc { score: s, hit: h });
+    }
+    for (rank, h) in lexical.into_iter().enumerate() {
+        let s = w_lex / (k_rrf + (rank as f32 + 1.0));
+        acc.entry(h.key.clone())
+            .and_modify(|a| a.score += s)
+            .or_insert(Acc { score: s, hit: h });
+    }
+    let mut v: Vec<Acc> = acc.into_values().collect();
+    v.sort_by(|a, b| b.score.total_cmp(&a.score));
+    v.truncate(k.max(1));
+    v.into_iter().map(|mut a| { a.hit.score = a.score; a.hit }).collect()
+}
+
+/// Knobs do modo hybrid: de onde vem o vetor e como os dois rankings fundem.
+/// (Agrupados para a assinatura do `run_question` ficar dentro do limite do
+/// clippy sem `#[allow]`.)
+struct HybridCfg<'a> {
+    embed_url: Option<&'a str>,
+    w_sem: f32,
+    w_lex: f32,
+    fusion_by: &'a str,
+}
+
+fn run_question(
+    q: &serde_json::Value,
+    mode: Mode,
+    k: usize,
+    dump: bool,
+    cfg: &HybridCfg,
+) -> Scored {
     let qid = as_str(&q["question_id"], "question_id");
     let qtype = as_str(&q["question_type"], "question_type");
     let question = as_str(&q["question"], "question");
@@ -218,6 +384,10 @@ fn run_question(q: &serde_json::Value, mode: Mode, k: usize, dump: bool) -> Scor
         // que o host grava, nao um detalhe do modo de scoring.
         Mode::Hybrid => Some(CAPTURE_CAP),
     };
+    // Prepara as sessões antes de gravar: com embedder remoto, TODAS as
+    // sessões da pergunta vão num batch só (um round-trip por pergunta em vez
+    // de um por sessão — o modelo real é o custo dominante do benchmark).
+    let mut prepared: Vec<(String, String)> = Vec::new();
     for (i, turns) in sessions.iter().enumerate() {
         let sid = sids
             .get(i)
@@ -228,6 +398,17 @@ fn run_question(q: &serde_json::Value, mode: Mode, k: usize, dump: bool) -> Scor
         if text.is_empty() {
             continue;
         }
+        prepared.push((format!("sess/{sid}/s"), text));
+    }
+    let remote = if mode == Mode::Hybrid { cfg.embed_url.map(RemoteEmbedder::new) } else { None };
+    let batch_embs: Option<Vec<Vec<f32>>> = match &remote {
+        Some(r) => {
+            let texts: Vec<String> = prepared.iter().map(|(_, t)| t.clone()).collect();
+            Some(r.embed_batch(&texts).expect("embedding remoto das sessões"))
+        }
+        None => None,
+    };
+    for (i, (key, text)) in prepared.iter().enumerate() {
         // `/s` terminador: as session ids do dataset se sobrepõem por prefixo
         // (`..._1` é prefixo de `..._10`) e a ART recusa prefix-key. Sem o
         // sufixo, a 21ª pergunta já estoura com "storage key is a prefix".
@@ -239,22 +420,40 @@ fn run_question(q: &serde_json::Value, mode: Mode, k: usize, dump: bool) -> Scor
             model_id: None,
             index_key: false,
         };
-        let key = format!("sess/{sid}/s");
         if mode == Mode::Hybrid {
-            db.remember_semantic_with(&key, &text, &neural_sgdb::demo_embed(&text), opts)
+            let emb = match &batch_embs {
+                Some(v) => v[i].clone(),
+                None => neural_sgdb::demo_embed(text),
+            };
+            db.remember_semantic_with(key, text, &emb, opts)
                 .expect("remember da sessao (semantico)");
         } else {
-            db.remember_text_with(&key, &text, opts).expect("remember da sessao");
+            db.remember_text_with(key, text, opts).expect("remember da sessao");
         }
     }
 
     let hits = match mode {
         Mode::Hybrid => {
-            // o RRF funde os dois streams: e onde a deduplicacao por memoria
-            // (e nao por storage key) faz diferenca.
-            let q = neural_sgdb::demo_embed(question);
-            db.recall_hybrid_rrf_scoped(&q, question, k, SCOPE)
-                .expect("recall hibrido escopado")
+            let q = match &remote {
+                Some(r) => r.embed(question).expect("embedding remoto da query"),
+                None => neural_sgdb::demo_embed(question),
+            };
+            if cfg.fusion_by == "storage" {
+                // Estado pre-1.5.10 (por storage key): permite a mesma memória
+                // duas vezes no top-k. Só para medir o artefato de k efetivo.
+                let sem = db.recall_scoped(&q, k.max(1) * 4, SCOPE).expect("recall semantico");
+                let lex = db.recall_lexical_scoped(question, k.max(1) * 4, SCOPE).expect("recall lexical");
+                rrf_fuse_by_storage_key(sem, lex, k, 60.0, cfg.w_sem, cfg.w_lex)
+            } else {
+                db.recall_hybrid_rrf_weighted_scoped(
+                    &q,
+                    question,
+                    k,
+                    SCOPE,
+                    neural_sgdb::RrfWeights { semantic: cfg.w_sem, lexical: cfg.w_lex },
+                )
+                .expect("recall hibrido ponderado escopado")
+            }
         }
         _ => db.recall_lexical_scoped(question, k, SCOPE)
             .expect("recall lexical escopado"),
@@ -270,7 +469,20 @@ fn run_question(q: &serde_json::Value, mode: Mode, k: usize, dump: bool) -> Scor
     let hit = evidence.iter().any(|e| found.iter().any(|f| f == e));
     let matched = evidence.iter().filter(|e| found.iter().any(|f| &f == e)).count();
     let recall = if evidence.is_empty() { 0.0 } else { matched as f64 / evidence.len() as f64 };
-    Scored { qtype: qtype.to_string(), hit, recall, recall_all: matched == evidence.len() && !evidence.is_empty() }
+    // Duplicata = duas storage keys da MESMA memória no top-k. Com a fusão por
+    // memória (1.5.10) isto tem de ser 0 em toda pergunta.
+    let mut seen = BTreeSet::new();
+    let dups = hits
+        .iter()
+        .filter(|h| !seen.insert(h.rel.clone().unwrap_or_else(|| h.key.clone())))
+        .count();
+    Scored {
+        qtype: qtype.to_string(),
+        hit,
+        recall,
+        recall_all: matched == evidence.len() && !evidence.is_empty(),
+        dups,
+    }
 }
 
 #[derive(Default)]
@@ -279,6 +491,7 @@ struct Slice {
     hit: usize,
     recall_sum: f64,
     recall_all: usize,
+    dups: usize,
 }
 
 impl Slice {
@@ -287,6 +500,7 @@ impl Slice {
         self.hit += usize::from(s.hit);
         self.recall_sum += s.recall;
         self.recall_all += usize::from(s.recall_all);
+        self.dups += s.dups;
     }
     fn hit_rate(&self) -> f64 { if self.n == 0 { 0.0 } else { self.hit as f64 / self.n as f64 } }
     fn recall_mean(&self) -> f64 { if self.n == 0 { 0.0 } else { self.recall_sum / self.n as f64 } }
@@ -335,7 +549,13 @@ fn main() {
             abstention_total += 1;
             continue;
         }
-        let s = run_question(q, args.mode, args.k, args.dump > per_question.len());
+        let cfg = HybridCfg {
+            embed_url: args.embed_url.as_deref(),
+            w_sem: args.w_sem,
+            w_lex: args.w_lex,
+            fusion_by: &args.fusion_by,
+        };
+        let s = run_question(q, args.mode, args.k, args.dump > per_question.len(), &cfg);
         by_type.entry(s.qtype.clone()).or_default().add(&s);
         overall.add(&s);
         per_question.push(serde_json::json!({
@@ -359,6 +579,7 @@ fn main() {
         "OVERALL", overall.n, overall.hit_rate(), overall.recall_mean(), overall.recall_all_rate()
     );
     println!();
+    println!("duplicatas de memoria no top-k: {} (fusao por memoria => 0)", overall.dups);
     println!("tempo: {:.1}s ({} perguntas)", started.elapsed().as_secs_f64(), overall.n);
 
     if let Some(path) = &args.json {
@@ -370,6 +591,11 @@ fn main() {
             "dataset": args.dataset,
             "dataset_sha256": args.sha256,
             "mode": args.mode.label(),
+            "embedder": if args.mode == Mode::Hybrid {
+                if args.embed_url.is_some() { "http" } else { "demo" }
+            } else {
+                "none"
+            },
             "capture_cap_bytes": if args.mode == Mode::Pipeline { Some(CAPTURE_CAP) } else { None },
             "k": args.k,
             "os": std::env::consts::OS,
@@ -380,7 +606,10 @@ fn main() {
                 "hit": overall.hit_rate(),
                 "recall": overall.recall_mean(),
                 "recall_all": overall.recall_all_rate(),
+                "duplicate_hits": overall.dups,
             },
+            "rrf_weights": { "semantic": args.w_sem, "lexical": args.w_lex },
+            "fusion": args.fusion_by,
             "slices": by_type.iter().map(|(t, s)| (t.clone(), serde_json::json!({
                 "n": s.n, "hit": s.hit_rate(), "recall": s.recall_mean(), "recall_all": s.recall_all_rate(),
             }))).collect::<BTreeMap<_, _>>(),

@@ -521,3 +521,48 @@ por acidente. A fusao correta mede o que o RRF realmente entrega com o embedder
 `demo`: menos que o lexical puro (hit@5 0.950 no modo pipeline). O gargalo e o
 sinal semantico, nao a fusao. Nenhum peso/constante foi ajustado para melhorar
 este numero.
+
+## LongMemEval-S — hibrido com embedder REAL, antes/depois (release 1.5.12)
+
+A medicao de 1.5.10 mostrou o hybrid com o embedder `demo` (trigram hash, 256d)
+ABAIXO do lexical puro. Aqui o MESMO harness roda o stream semantico com um
+modelo real — `all-MiniLM-L6-v2` (384d, normalizado) servido localmente por
+`scripts/embed_server.py` e consumido via HTTP pelo trait `Embedder`
+(`--embed-url`). O baseline lexical e o modo `pipeline` (mesmo teto de captura
+de 2 KB do hybrid). Dataset, sha256, 500 perguntas e k=5 identicos; a UNICA
+variavel alterada e o embedder.
+
+| modo | embedder | hit@5 | recall@5 | recall-all@5 |
+|---|---|---|---|---|
+| `pipeline` (lexical) | — | 0.950 | 0.891 | 0.814 |
+| `hybrid` | `demo` (1.5.10) | 0.840 | 0.705 | 0.566 |
+| `hybrid` | `all-MiniLM-L6-v2` (384d) | **0.974** | **0.928** | **0.860** |
+
+Fatias (hit@5 lexical -> hybrid real): knowledge-update 1.000 -> 1.000;
+multi-session 0.962 -> 0.977; single-session-assistant 0.911 -> 0.982;
+single-session-preference 0.733 -> 0.933; single-session-user 0.971 -> 0.957;
+temporal-reasoning 0.962 -> 0.970.
+
+**Leitura honesta:** com sinal semantico que presta, a fusao por memoria AJUDA —
++2.4 pp de hit@5 e +3.7 pp de recall@5 sobre o lexical puro, e +13.4 pp de hit@5
+sobre o hybrid com `demo`. O veredito de 1.5.10 era sobre o embedder, nao sobre
+a fusao. Uma fatia regride (single-session-user -1.4 pp): a fusao nao e
+monotonica por fatia. Nenhum peso/`k_rrf` foi ajustado — `k_rrf=60` e o default
+de sempre.
+
+Custo: 1156 s para 500 perguntas com o modelo em CPU (o embedder domina; o
+lexical roda em 12 s). O numero mede qualidade, nao latencia.
+
+Reproduzir (modelo real fora do crate):
+
+```bash
+python scripts/embed_server.py all-MiniLM-L6-v2 8791   # num terminal
+cargo run --release --example longmemeval -- \
+  --dataset evals/datasets/longmemeval_s --mode hybrid --limit 500 --k 5 \
+  --embed-url http://127.0.0.1:8791
+```
+
+Relatorios: `evals/runs/1.5.12-lexical-pipeline.json` e
+`evals/runs/1.5.12-hybrid-real.json` (o JSON de hybrid carrega
+`"embedder": "http"`).
+

@@ -153,7 +153,7 @@ pub use sgdb::{
     HygieneReport,
     LexicalAnchorReranker,
     RecallLedger, RecallProbe, RecallWeights, RememberOptions, RememberOutcome, Reranker,
-    ResolveOutcome, RrfBreakdown, RrfContribution, ScoreBreakdown, ScopeDimDescriptor,
+    ResolveOutcome, RrfBreakdown, RrfContribution, RrfWeights, ScoreBreakdown, ScopeDimDescriptor,
     ScopeDistribution, ScopeProbes, Sgdb,
     ValidateIssue,
 };

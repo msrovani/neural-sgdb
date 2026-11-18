@@ -49,6 +49,34 @@ fn ttl_key(sk: &str) -> Vec<u8> {
     k
 }
 
+fn deltomb_key(sk: &str) -> Vec<u8> {
+    let mut k = Vec::with_capacity(12 + sk.len());
+    k.extend_from_slice(b"sys/deltomb/");
+    k.extend_from_slice(sk.as_bytes());
+    k
+}
+
+fn decode_deltomb(b: &[u8]) -> Option<(u64, String, String)> {
+    if b.len() < 4 + 8 + 2 + 2 || &b[0..4] != b"TMB1" {
+        return None;
+    }
+    let mut off = 4;
+    let mut t = [0u8; 8];
+    t.copy_from_slice(&b[off..off + 8]);
+    let tick = u64::from_le_bytes(t);
+    off += 8;
+    let ml = u16::from_le_bytes([b[off], b[off + 1]]) as usize;
+    off += 2;
+    if off + ml + 2 > b.len() { return None; }
+    let mid = core::str::from_utf8(&b[off..off + ml]).ok()?.to_string();
+    off += ml;
+    let vl = u16::from_le_bytes([b[off], b[off + 1]]) as usize;
+    off += 2;
+    if off + vl > b.len() { return None; }
+    let vid = core::str::from_utf8(&b[off..off + vl]).ok()?.to_string();
+    Some((tick, mid, vid))
+}
+
 /// Evento temporal (v1.1.15 §4 P2, mem0 jul/26): `sys/event/<sk>` →
 /// `state_key u16len+bytes | event_end u64le`. Liga memórias do MESMO fato
 /// evolutivo (timeline limpa, `recall_timeline`); `event_end=0` = aberto.
@@ -366,6 +394,9 @@ impl AiosDatabaseEngine {
             ));
         }
         let blob = doc.encode();
+        // Recriação da mesma key: um tombstone de deleção antigo não pode
+        // mascarar o retorno da memória no feed incremental.
+        let _ = self.clear_delete_tombstone(&sk);
 
         // ADC-lite: overwrite de L4/L5 subtrai o vetor ANTIGO da média antes
         // de somar o novo (sem isso o overwrite contaria 2x). Um get a mais
@@ -1655,6 +1686,76 @@ impl AiosDatabaseEngine {
     /// para registrar `last_reinforced` sem tickar o relógio.
     pub fn own_counter(&self) -> u64 {
         self.own_clock_watermark
+    }
+
+    /// Avança o relógio local em 1 tick e devolve o novo contador (v1.5.12).
+    /// Usado por mutações que não passam por `put_doc` (ex.: tombstone de
+    /// deleção) mas precisam aparecer no feed `changes_since` DEPOIS das
+    /// escritas anteriores.
+    pub fn bump_local_tick(&mut self) -> u64 {
+        self.own_clock_watermark = self.own_clock_watermark.saturating_add(1);
+        self.own_clock_watermark
+    }
+
+    // ── Tombstones de deleção (v1.5.12, feed changes_since) ───────────────
+    //
+    // `sys/deltomb/<sk>` = "TMB1"(4) + tick(u64 LE) + mid_len(u16 LE) + mid
+    //   + vid_len(u16 LE) + vid.
+    //
+    // O doc some no `delete`, então o `clock_index` reverso e a meta não
+    // permitem mais dizer "esta key deixou de existir". O tombstone preserva
+    // identidade + tick da remoção para o host ver AUSÊNCIA no feed.
+    // Acumulam até remoção explícita (recriação da key limpa o tombstone).
+
+    /// Persiste/atualiza o tombstone de deleção de `sk`.
+    pub fn put_delete_tombstone(
+        &mut self,
+        sk: &str,
+        tick: u64,
+        memory_id: &str,
+        version_id: &str,
+    ) -> Result<(), SgdbError> {
+        let mut v = Vec::with_capacity(12 + memory_id.len() + version_id.len());
+        v.extend_from_slice(b"TMB1");
+        v.extend_from_slice(&tick.to_le_bytes());
+        let ml = u16::try_from(memory_id.len()).unwrap_or(u16::MAX);
+        v.extend_from_slice(&ml.to_le_bytes());
+        v.extend_from_slice(&memory_id.as_bytes()[..ml as usize]);
+        let vl = u16::try_from(version_id.len()).unwrap_or(u16::MAX);
+        v.extend_from_slice(&vl.to_le_bytes());
+        v.extend_from_slice(&version_id.as_bytes()[..vl as usize]);
+        self.storage.put(&deltomb_key(sk), &v)
+    }
+
+    /// Remove o tombstone de deleção de `sk` (ex.: a memória foi recriada).
+    pub fn clear_delete_tombstone(&mut self, sk: &str) -> Result<(), SgdbError> {
+        self.storage.delete(&deltomb_key(sk))
+    }
+
+    /// Tombstones de deleção com `tick > since`, em ordem `(tick, sk)`.
+    pub fn delete_tombstones_since(
+        &mut self,
+        since: u64,
+    ) -> Result<Vec<(u64, String, String, String)>, SgdbError> {
+        let rows = self.storage.scan_prefix(b"sys/deltomb/")?;
+        let mut out = Vec::new();
+        for (k, v) in rows {
+            let Some((tick, mid, vid)) = decode_deltomb(&v) else { continue };
+            if tick <= since {
+                continue;
+            }
+            let sk = core::str::from_utf8(&k)
+                .ok()
+                .and_then(|s| s.strip_prefix("sys/deltomb/"))
+                .unwrap_or("")
+                .to_string();
+            if sk.is_empty() {
+                continue;
+            }
+            out.push((tick, sk, mid, vid));
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        Ok(out)
     }
 
     // ── L6 relations (v0.8, roadmap Phase 12) ─────────────────────────────

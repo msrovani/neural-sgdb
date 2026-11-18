@@ -71,9 +71,15 @@ artifact that reproduces it.
   its votes is a bug regardless of the score), and publish the honest number.
   **No weight or `k_rrf` tuning** was done to recover the metric — that would be
   fitting the benchmark with the benchmark itself.
-- **Candidate fixes (not implemented):** weighted RRF per stream; or only
-  fusing when the embedder is real (not `demo`); or measuring with a real
-  embedder before judging the fusion at all.
+- **Follow-up (1.5.12) — measured with a REAL embedder:** the same harness,
+  same dataset/sha256, ran `hybrid` with `all-MiniLM-L6-v2` (384d, local HTTP
+  endpoint via `scripts/embed_server.py`). hit@5 **0.840 -> 0.974** (lexical
+  baseline 0.950), recall@5 0.705 -> 0.928, recall-all 0.566 -> 0.860. So the
+  fusion DOES help when the semantic signal is real: the 1.5.10 verdict was
+  about the `demo` embedder, not the fusion. No weights or `k_rrf` were tuned
+  (`k_rrf=60` unchanged). One slice regressed (single-session-user 0.971 ->
+  0.957). Artifacts: `evals/runs/1.5.12-hybrid-real.json` and
+  `1.5.12-lexical-pipeline.json`; see `BENCHMARKS.md`.
 - **Lesson:** a correctness fix can lower a metric whose previous value came
   from the bug. Measure the *mechanism* too (`--dump` showed duplicates), not
   only the aggregate — and never quote a fused-retrieval number whose harness

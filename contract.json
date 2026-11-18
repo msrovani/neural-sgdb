@@ -1,5 +1,5 @@
 {
-  "mcp_contract_version": "1.5.11",
+  "mcp_contract_version": "1.5.12",
   "tools": [
     "remember",
     "recall",
@@ -53,4 +53,4 @@
   "retrieval_default_without_vector": "lexical",
   "retrieval_default_with_real_embedder": "hybrid",
   "retrieval_default_with_caller_embedding": "semantic"
-}
+}

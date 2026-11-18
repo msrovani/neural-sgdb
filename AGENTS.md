@@ -1522,6 +1522,11 @@ incremental). Vale como checklist para a proxima.
   identidade de fusao e `rel ?? key`. Antes disso o hibrido devolvia o mesmo dado
   duas vezes e nunca somava os dois votos (achado exposto pelo `explain` da
   1.5.8, corrigido na 1.5.10). Detalhe do efeito medido: `docs/negative-results.md`.
+  **Seguimento 1.5.12:** a queda 0.932 -> 0.840 do hybrid com `demo` NAO era a
+  fusao — era o embedder. Com `all-MiniLM-L6-v2` (384d, HTTP via
+  `scripts/embed_server.py`) o hybrid sobe para hit@5 **0.974** contra 0.950 do
+  lexical. Antes de condenar um mecanismo de fusao, rode-o com um sinal que
+  preste; e continue sem ajustar peso/`k_rrf` para "consertar" o numero.
 - **Um teste que codifica o comportamento ANTIGO vira falha na release certa.**
   `recall_impl_and_recall_impl_dims_same_state_first_order` exigia "ordem
   semantica preservada" no hibrido; com a fusao correta quem casa nos dois
