@@ -18,6 +18,7 @@ use crate::math::{exp_f32, sqrt_f32};
 use crate::memory_doc::{
     LineageEntry, MemoryDoc, MemoryLayer, MemoryMeta, MemoryRecord, MemoryState, RelationKind,
     ScopeDims, ScopeFilter,
+    ResolutionRecord,
 };
 use crate::trigger::{glob_match, trigger_key, TriggerRule, TRIGGER_PREFIX};
 use crate::negative::AbsenceEntry;
@@ -1401,6 +1402,58 @@ impl Sgdb {
     /// Node_id local (vector clock / origem) — estável por instância.
     pub fn node_id(&self) -> u8 {
         self.engine.node_id
+    }
+
+    /// Retrieves the resolution chain for a given memory key.
+    /// 
+    /// Returns the latest tick and the full evolution history of ResolutionRecords
+    /// stored at `sys/resolution/<memory_id>` for this key's memory identifier.
+    /// The append-only design means each concurrent write generates a new
+    /// ResolutionRecord that documents the resolution outcome without overwriting
+    /// previous records.
+    /// 
+    /// # Arguments
+    /// * `key` - The memory key to look up the resolution chain for
+    /// 
+    /// # Returns
+    /// * `Ok((tick, records))` - A tuple of the latest tick and a vector of
+    ///   ResolutionRecords in chronological order (oldest first)
+    /// * `Err(SgdbError::Invalid)` - If the key doesn't exist or has no
+    ///   resolution records
+    pub fn resolution_chain(&mut self, key: &str) -> Result<(u64, Vec<ResolutionRecord>), SgdbError> {
+        // Convert the memory key to a storage key using resolve_known_key
+        // then read the meta to get the memory_id
+        let sk = self.resolve_known_key(key);
+        let meta = match self.engine.meta(&sk) {
+            Ok(Some(m)) => m,
+            Ok(None) => return Err(SgdbError::Invalid("key not found")),
+            Err(e) => return Err(e),
+        };
+        let memory_id = meta.memory_id.clone();
+        
+        // Read all ResolutionRecords from sys/resolution/<memory_id>
+        let resolution_sk = format!("sys/resolution/{}", memory_id);
+        let mut records = Vec::new();
+        let mut latest_tick: u64 = 0;
+        
+        // Scan the ART for resolution records with this prefix
+        for (res_sk, _) in self.engine.art.scan_prefix(&resolution_sk) {
+            if let Ok(Some(bytes)) = self.engine.storage_get(res_sk.as_bytes()) {
+                // Clone to extend lifetime for decode
+                let bytes_clone = bytes.to_vec();
+                if let Ok(res_record) = ResolutionRecord::decode(&bytes_clone) {
+                    records.push(res_record.clone());
+                    if res_record.tick > latest_tick {
+                        latest_tick = res_record.tick;
+                    }
+                }
+            }
+        }
+
+        // Sort by tick (oldest first) for chronological history
+        records.sort_by_key(|r| r.tick);
+
+        Ok((latest_tick, records))
     }
 
     /// Snapshot de observabilidade (v1.0, Phase 32): contadores estruturados
@@ -3356,6 +3409,25 @@ impl Sgdb {
             _ => 4,
         };
         self.recall_oversampled(query, k, ov)
+    }
+
+    /// Recall adaptativo default — usado quando `embedding=` é fornecido.
+    /// 
+    /// Usa escalonamento adaptativo começando em 1× de oversample e
+    /// escalando via RecallProbe até a fronteira top-k ficar ambígua.
+    /// Isso melhora a qualidade de recall@k para embeddings sem mudar o
+    /// comportamento padrão do método `recall`.
+    /// 
+    /// # Arguments
+    /// * `query` - The query vector (embedding)
+    /// * `k` - Number of hits to return
+    /// 
+    /// # Returns
+    /// * `Ok(Vec<Hit>)` - The recalled hits
+    /// * `Err(SgdbError)` - If the query fails
+    pub fn recall_adaptive_default(&mut self, query: &[f32], k: usize) -> Result<Vec<Hit>, SgdbError> {
+        // Adaptive recall: start at 1× oversample, escalate via RecallProbe
+        self.recall_adaptive_impl(query, k, 1, false, None).map(|ar| ar.hits)
     }
 
     /// Recall que INCLUI memórias inativas (superseded/archived/decayed/

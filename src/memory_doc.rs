@@ -573,6 +573,209 @@ pub struct LineageEntry {
     pub parent_ids: Vec<String>,
 }
 
+/// ResolutionRecord — NS-Mem style append-only evolution chain (Phase 4).
+///
+/// Each ResolutionRecord validates which version of knowledge is best/current
+/// when concurrent/identical knowledge arrives. Modeled after Bitcoin's
+/// blockchain: always append, never overwrite physically. When concurrent
+/// knowledge for the same key arrives, generate a third registro validating
+/// qual é o melhor/mais atual.
+///
+/// Storage: sys/resolution/<storage_key> — each entry is a ResolutionRecord
+/// (tick + winner_id + winner_version + lost_votes + reason).
+/// The latest (highest tick) entry is the current "truth" for
+/// display, but the full chain is queryable for analysis.
+///
+/// Format: TMB2 + tick u64 LE + winner_memory_id (32 hex) + winner_version_id (32 hex)
+/// + lost_votes u64 LE + reason_len u16 LE + reason bytes
+///
+/// Rationale (from conversation):
+/// - "um sistema neural deveria ter como premissa append only, com conhecimentos
+///   concomitantes e 'identicos' gerando um terceiro registro, que validaria qual
+///   é o melhor/mais atual"
+/// - ResolutionRecord captures the evolution chain without physical deletion
+/// - Backward compatible: existing sys/deltomb/<key> tombstones still work
+/// - changes_since can include resolution entries for full chain analysis
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolutionRecord {
+    /// Tick quando este registro foi criado (monotônico, usado para ordering).
+    pub tick: u64,
+    /// ID da memória vencedora (o version_id que venceu esta resolução).
+    pub winner_memory_id: String,
+    /// ID da versão da memória vencedora.
+    pub winner_version_id: String,
+    /// Votos "perdidos" — quantas versões concorrentes foram derrotadas.
+    pub lost_votes: u64,
+    /// Motivo da resolução (por que esta versão venceu).
+    pub reason: String,
+}
+
+impl ResolutionRecord {
+    /// Cria um novo ResolutionRecord com o tick inicial.
+    pub fn new(
+        tick: u64,
+        winner_memory_id: &str,
+        winner_version_id: &str,
+        lost_votes: u64,
+        reason: &str,
+    ) -> Self {
+        ResolutionRecord {
+            tick,
+            winner_memory_id: String::from(winner_memory_id),
+            winner_version_id: String::from(winner_version_id),
+            lost_votes,
+            reason: String::from(reason),
+        }
+    }
+
+    /// Serializa para bytes (formato TMB2).
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        // Magic "TMB2" — 4 bytes identificador
+        out.extend_from_slice(b"TMB2");
+        // Tick u64 LE
+        out.extend_from_slice(&self.tick.to_le_bytes());
+        // winner_memory_id: 32 hex chars = 16 bytes, padded/encoded as string len + bytes
+        let mw_len = self.winner_memory_id.len();
+        out.extend_from_slice(&(mw_len as u16).to_le_bytes());
+        out.extend_from_slice(self.winner_memory_id.as_bytes());
+        // winner_version_id: 32 hex chars = 16 bytes
+        let vv_len = self.winner_version_id.len();
+        out.extend_from_slice(&(vv_len as u16).to_le_bytes());
+        out.extend_from_slice(self.winner_version_id.as_bytes());
+        // lost_votes u64 LE
+        out.extend_from_slice(&self.lost_votes.to_le_bytes());
+        // reason_len u16 LE + reason bytes
+        let r_len = self.reason.len();
+        out.extend_from_slice(&(r_len as u16).to_le_bytes());
+        out.extend_from_slice(self.reason.as_bytes());
+        out
+    }
+
+    /// Decode a ResolutionRecord from bytes (formato TMB2).
+    /// Retorna Err se os dados estiverem truncados ou form Invalid.
+    pub fn decode(data: &[u8]) -> Result<Self, &'static str> {
+        if data.len() < 4 || &data[0..4] != b"TMB2" {
+            return Err("bad resolution magic");
+        }
+        if data.len() < 8 {
+            return Err("truncated tick");
+        }
+        let tick = u64::from_le_bytes(data[4..12].try_into().map_err(|_| "tick decode")?);
+
+        let mut off = 12;
+        // winner_memory_id
+        if off + 2 > data.len() {
+            return Err("truncated winner_memory_id len");
+        }
+        let mw_len = u16::from_le_bytes(data[off..off + 2].try_into().map_err(|_| "mw len decode")?) as usize;
+        off += 2;
+        if off + mw_len > data.len() {
+            return Err("truncated winner_memory_id");
+        }
+        let winner_memory_id = String::from(core::str::from_utf8(&data[off..off + mw_len])
+            .map_err(|_| "utf8 winner_memory_id")?);
+        off += mw_len;
+
+        // winner_version_id
+        if off + 2 > data.len() {
+            return Err("truncated winner_version_id len");
+        }
+        let vv_len = u16::from_le_bytes(data[off..off + 2].try_into().map_err(|_| "vv len decode")?) as usize;
+        off += 2;
+        if off + vv_len > data.len() {
+            return Err("truncated winner_version_id");
+        }
+        let winner_version_id = String::from(core::str::from_utf8(&data[off..off + vv_len])
+            .map_err(|_| "utf8 winner_version_id")?);
+        off += vv_len;
+
+        // lost_votes
+        if off + 8 > data.len() {
+            return Err("truncated lost_votes");
+        }
+        let lost_votes = u64::from_le_bytes(data[off..off + 8].try_into().map_err(|_| "lost_votes decode")?);
+        off += 8;
+
+        // reason
+        if off + 2 > data.len() {
+            return Err("truncated reason len");
+        }
+        let r_len = u16::from_le_bytes(data[off..off + 2].try_into().map_err(|_| "r len decode")?) as usize;
+        off += 2;
+        if off + r_len > data.len() {
+            return Err("truncated reason");
+        }
+        let reason = String::from(core::str::from_utf8(&data[off..off + r_len])
+            .map_err(|_| "utf8 reason")?);
+
+        Ok(ResolutionRecord {
+            tick,
+            winner_memory_id,
+            winner_version_id,
+            lost_votes,
+            reason,
+        })
+    }
+
+    /// Returns the storage key for this resolution record.
+    pub fn storage_key(&self, memory_id: &str) -> String {
+        alloc::format!("sys/resolution/{}", memory_id)
+    }
+
+    /// Returns the latest tick from a chain of resolution records.
+    /// Given a list of encoded ResolutionRecord bytes, returns the highest tick.
+    #[allow(clippy::explicit_auto_deref)]
+    pub fn latest_tick(records: &[&[u8]]) -> Option<u64> {
+        let mut latest: Option<u64> = None;
+        for record_data in records {
+            match Self::decode(*record_data) {
+                Ok(r) => {
+                    latest = match latest {
+                        Some(l) => Some(if r.tick > l { r.tick } else { l }),
+                        None => Some(r.tick),
+                    };
+                }
+                Err(_) => continue,
+            }
+        }
+        latest
+    }
+}
+
+/// alias for backwards compat / shorthand
+pub type ResolutionEntry = ResolutionRecord;
+
+/// Conveniência: decode múltiplos registros de uma vez.
+/// Retorna (latest_tick, all_records) — útil para changes_since.
+pub fn decode_resolution_chain(data: &[u8]) -> (Option<u64>, Vec<ResolutionRecord>) {
+    let mut records = Vec::new();
+    let mut off = 0;
+    let mut latest: Option<u64> = None;
+
+    while off < data.len() {
+        // Try to decode one record starting at off
+        match ResolutionRecord::decode(&data[off..]) {
+            Ok(r) => {
+                records.push(r.clone());
+                latest = match latest {
+                    Some(l) => Some(if r.tick > l { r.tick } else { l }),
+                    None => Some(r.tick),
+                };
+                // Advance past this record
+                let encoded_len = r.encode().len();
+                off += encoded_len;
+            }
+            Err(_) => {
+                // Can't decode from here; try next offset
+                off += 1;
+            }
+        }
+    }
+
+    (latest, records)
+}
+
 const META_MAGIC: &[u8; 4] = b"MDM1";
 /// v1 (v0.6): memória + proveniência · v2 (v0.7): version_id · v3 (v0.9):
 /// last_reinforced · v4 (v1.1.4): scope · v5 (v1.1.4): entities · v6
@@ -981,6 +1184,14 @@ pub struct MemoryDoc {
     pub payload: Vec<u8>,
     /// Opcional: embedding binário (para L4/L5 BQ) — bits empacotados.
     pub bitvec: Option<Vec<u64>>,
+    /// Tipo de conteúdo DECLARADO pelo writer (v1.1.6 item 2 — seam): rótulo
+    /// estável (`text`/`json`/`code`/`embedding`/`binary`). Quem fornece
+    /// declara (mesmo contrato de `entities`/`Embedder`); o consumidor para
+    /// de depender do detector heurístico (`ContentType::stable_label`/
+    /// `parse_stable_label`). `None` = não declarado (detector decide).
+    /// Side-table MDM1 v6 — NMD1 intacto; v1–v5 decodificam com `None`
+    /// (migração explícita, nunca reinterpreta bytes antigos).
+    pub content_type: Option<String>,
     /// Proveniência/identidade (v0.6) — **SOMENTE em memória**; NÃO entra no
     /// NMD1 (contrato byte-idêntico com o OS). Persiste em `sys/meta/` e é
     /// anexada pelo engine no `get`; viaja com o doc na replicação.
@@ -997,6 +1208,7 @@ impl MemoryDoc {
             clock: VectorClock::new(),
             payload,
             bitvec: None,
+            content_type: None,
             meta: None,
         }
     }
@@ -1046,6 +1258,17 @@ impl MemoryDoc {
         }
         if self.payload.len() > crate::limits::MAX_VLEN {
             return Err("payload exceeds MAX_VLEN");
+        }
+        // Phase 4: embedding dimension validation
+        // When content_type declares embedding, validate that payload length
+        // is a multiple of 4 (f32 vector elements). This prevents silent
+        // corruption from mismatched embeddings.
+        if let Some(ref ct) = self.content_type {
+            if (ct == "embedding" || ct.starts_with("embedding")) && !self.payload.len().is_multiple_of(4) {
+                return Err(
+                    "embedding payload length must be multiple of 4 (f32 elements)"
+                );
+            }
         }
         Ok(self.encode())
     }
@@ -1102,6 +1325,7 @@ impl MemoryDoc {
             clock,
             payload,
             bitvec,
+            content_type: None,
             meta: None, // meta NÃO é serializado no NMD1 — engine anexa via sys/meta/
         })
     }
@@ -2146,5 +2370,65 @@ mod v144_golden_tests {
             }
         }
         assert_eq!(diffs, 1, "so o byte do authority muda entre 0 e 255");
+        let vc = VectorClock::default();
+        assert!(vc.is_vacuous());
+    }
+
+    #[test]
+    fn resolution_record_new_and_encode_decode() {
+        let rr = ResolutionRecord::new(
+            100,
+            "mem_00000000000000000000000000000000",
+            "version_00000000000000000000000000000000",
+            3,
+            "Better version arrived",
+        );
+        let encoded = rr.encode();
+        let decoded = ResolutionRecord::decode(&encoded).unwrap();
+        assert_eq!(rr, decoded);
+    }
+
+    #[test]
+    fn resolution_record_latest_tick() {
+        let rr1 = ResolutionRecord::new(50, "m1", "v1", 1, "first");
+        let rr2 = ResolutionRecord::new(200, "m2", "v2", 3, "second wins");
+        let rr3 = ResolutionRecord::new(150, "m3", "v3", 2, "third");
+
+        let encoded1 = rr1.encode();
+        let encoded2 = rr2.encode();
+        let encoded3 = rr3.encode();
+
+        let chain: Vec<u8> = encoded1.into_iter().chain(encoded2).chain(encoded3).collect();
+    let (latest, all) = decode_resolution_chain(&chain);
+    assert_eq!(latest, Some(200));
+    assert_eq!(all.len(), 3);
+    }
+
+    #[test]
+    fn resolution_record_storage_key() {
+        let rr = ResolutionRecord::new(100, "mem_abc", "ver_xyz", 0, "test");
+        let key = rr.storage_key("my_memory_id");
+        assert_eq!(key, "sys/resolution/my_memory_id");
+    }
+
+    #[test]
+    fn resolution_record_chain_append_only() {
+        // Simulate: new knowledge arrives for same key → append new record,
+        // never overwrite existing.
+        let rr1 = ResolutionRecord::new(1, "m1", "v1", 0, "initial");
+        let rr2 = ResolutionRecord::new(2, "m2", "v2", 1, "updated");
+        let rr3 = ResolutionRecord::new(3, "m3", "v3", 2, "latest");
+
+        let encoded1 = rr1.encode();
+        let encoded2 = rr2.encode();
+        let encoded3 = rr3.encode();
+
+        // Chain: all three exist, latest tick = 3
+        // Concatenate all records into a single byte slice
+        let chain: Vec<u8> = encoded1.into_iter().chain(encoded2).chain(encoded3).collect();
+        let (latest, all) = decode_resolution_chain(&chain);
+        assert_eq!(latest, Some(3));
+        assert_eq!(all.len(), 3);
+        // All three records are preserved (append-only)
     }
 }

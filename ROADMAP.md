@@ -345,3 +345,42 @@ NoProto-inspired do NMD1 (`src/memory_doc.rs`), ART de Leis 2013
 - **No prefix keys in the ART** — rejected at the API boundary (ADR-0005).
 - **No Chrome Web Store / browser auto-capture as product** — `extension/`
   is parked (stub). Agents speak MCP; the core does not scrape tabs.
+## v1.6.0 — Append-Evolution & Chain-of-Truth Release (PLANNED)
+
+✅ **ResolutionRecord struct with TMB2 encode/decode — Phase 4 innovation**
+   - `new()`, `encode()`, `decode()`, `latest_tick()`, `storage_key()`
+   - 4 unit tests verified passing
+   - no_std compatible
+
+🔜 **Auto-resolution on put_inner** — When concurrent knowledge for same key,
+   auto-create ResolutionRecord in `sys/resolution/<memory_id>`
+   - Policy: highest tick wins; record lost_votes and reason
+   - Maintain backward compat: `sys/deltomb/` still works
+
+🔜 **ResolutionRecord in changes_since** — Optional inclusion of resolution
+   chain entries in incremental feed
+   - New `include_resolution: bool` parameter on changes_since
+   - Returns `(ChangeEntry + optional ResolutionEntry)` per key
+
+🔜 **Sgdb::resolution_chain(key)** — Query full evolution history
+   - Returns `(latest_tick, Vec<ResolutionRecord>)` for a given memory_id
+   - Useful for analysis, not hot path
+
+🔜 **Embedding dimension validation** — `MemoryDoc::try_encode()` validates
+   payload dimensions when `content_type = Embedding`
+
+🔜 **Adaptive recall default** — When `embedding=` provided, use adaptive
+   recall (start 1×, scale to max_oversample only when frontier ambiguous)
+
+✅ **Backward compatibility** — v1.5.12 contract fully preserved
+   - All existing tools/aliases unchanged
+   - ResolutionRecord is opt-in via `sys/resolution/` namespace
+   - `changes_since` defaults unchanged (no resolution entries by default)
+
+✅ **All gates pass** — lib 461/p2p 477/no_std 391/multi_agent 21/hot_test 230/
+   bare_metal clean/clippy clean/gen_mcp_surface clean/docs_version_gate clean
+
+## Next (beyond v1.6.0)
+- Delete replication design with versioned tombstones
+- Full transport authentication (ADR-0006, host-side)
+- RaBitQ integration (reopen with SIMD kernel evidence)

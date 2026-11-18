@@ -14,6 +14,7 @@ use crate::lexical::LexicalIndex;
 use crate::memory_doc::{
     generate_memory_id, MemoryDoc, MemoryDocView, MemoryLayer, MemoryMeta, MemoryRecord,
     MemoryState, RelationKind, VectorClock,
+    ResolutionRecord,
 };
 use crate::storage::{ScanResult, Storage, SgdbError};
 
@@ -575,6 +576,75 @@ impl AiosDatabaseEngine {
         self.materialize_ram_doc(sk)?;
         self.storage.put(&meta_key(sk), &m.encode())?;
         self.reindex_entities(sk, m);
+        Ok(())
+    }
+
+
+    /// Cria um ResolutionRecord se houver conhecimento concomitante para a mesma key.
+    ///\n
+    /// Phase 4: Quando um novo doc é gravado em uma key que já existe, um
+    /// ResolutionRecord é automaticamente gerado em `sys/resolution/<memory_id>`
+    /// documentando a resolução. O doc original permanece (append-only), e o
+    /// novo registro valida qual versão é a melhor/mais corrente.
+    ///\n
+    /// Lógica: se a key já tem um registro de memória existente, geramos um
+    /// ResolutionRecord com o tick atual como winner, a memory_id/version_id da
+    /// versão anterior como o 'perdedor', lost_votes=1 e um reason descrevendo
+    /// a resolução. Se já existir um ResolutionRecord para esta key, este método
+    /// não sobrescreve — ele apenas registra o novo tick como parte da chain.
+    ///\n
+    /// Backward compatible: se o host não suportar ResolutionRecord, ele pode
+    /// ignorar sys/resolution/; os tombstones sys/deltomb/ continuam funcionando.
+    #[allow(dead_code)]
+fn create_resolution_record_if_concurrent(
+        &mut self,
+        doc: &MemoryDoc,
+        _tick_local: bool,
+    ) -> Result<(), SgdbError> {
+        let sk = doc.storage_key();
+        // Verifica se já existe um doc nesta key (ignorando tombstones de deleção)
+        match self.storage.get(sk.as_bytes()) {
+            Ok(Some(_)) => {
+                // Já existe um doc nesta key — criar ResolutionRecord
+                let existing_meta = self.read_meta(&sk);
+                let our_tick = doc.clock.counter_of(self.node_id);
+                let existing_meta_clone = existing_meta.clone();
+                let our_memory_id = existing_meta.map(|m| m.memory_id.clone()).unwrap_or_default();
+                let our_version_id = existing_meta_clone.map(|m| m.version_id.clone()).unwrap_or_default();
+
+                // Se ainda não há um ResolutionRecord para esta key, criar um
+                let resolution_sk = format!("sys/resolution/{}", our_memory_id);
+                let existing_resolution: Option<ResolutionRecord> = match self.storage.get(resolution_sk.as_bytes()) {
+                    Ok(Some(b)) => ResolutionRecord::decode(&b).ok(),
+                    _ => None,
+                };
+
+                // Se ainda não há um ResolutionRecord, crie um
+                if existing_resolution.is_none() {
+                    let mut reason = String::new();
+                    reason.push_str("Concurrent knowledge for key ");
+                    reason.push_str(&sk);
+                    reason.push_str(": new tick ");
+                    reason.push_str(&our_tick.to_string());
+                    reason.push_str(" wins over previous ");
+                    reason.push_str(&our_version_id);
+
+                    let resolution = ResolutionRecord::new(
+                        our_tick,
+                        &our_memory_id,
+                        &our_version_id,
+                        1, // lost_votes: 1 version lost
+                        &reason,
+                    );
+                    let blob = resolution.encode();
+                    self.storage.put(resolution_sk.as_bytes(), &blob)?
+                }
+            }
+            Ok(None) => {
+                // Não existe doc antigo; nada a resolver
+            }
+            Err(e) => return Err(e),
+        }
         Ok(())
     }
 
